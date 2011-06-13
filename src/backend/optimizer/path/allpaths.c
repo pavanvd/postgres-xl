@@ -35,12 +35,14 @@
 #include "optimizer/var.h"
 #include "parser/parse_clause.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
 #ifdef PGXC
+#ifndef XCP
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_class.h"
 #include "pgxc/pgxc.h"
-#endif
-#include "rewrite/rewriteManip.h"
+#endif /* XCP */
+#endif /* PGXC */
 #include "utils/lsyscache.h"
 
 
@@ -277,6 +279,7 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	 */
 
 #ifdef PGXC
+#ifndef XCP
 	/*
 	 * If we are on the coordinator, we always want to use
 	 * the remote query path unless it is a pg_catalog table
@@ -289,7 +292,8 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 		add_path(rel, create_remotequery_path(root, rel));
 	else
 	{
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 	/* Consider sequential scan */
 	add_path(rel, create_seqscan_path(root, rel));
@@ -300,8 +304,10 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	/* Consider TID scans */
 	create_tidscan_paths(root, rel);
 #ifdef PGXC
+#ifndef XCP
 	}
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 	/* Now find the cheapest of the paths for this rel */
 	set_cheapest(rel);

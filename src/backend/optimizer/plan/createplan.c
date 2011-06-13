@@ -46,9 +46,13 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
+#ifdef XCP
+#include "catalog/pg_aggregate.h"
+#else
 #include "rewrite/rewriteManip.h"
+#endif /* XCP */
 #include "commands/tablecmds.h"
-#endif
+#endif /* PGXC */
 #include "utils/lsyscache.h"
 
 
@@ -64,6 +68,11 @@ static Plan *create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_p
 static Result *create_result_plan(PlannerInfo *root, ResultPath *best_path);
 static Material *create_material_plan(PlannerInfo *root, MaterialPath *best_path);
 static Plan *create_unique_plan(PlannerInfo *root, UniquePath *best_path);
+#ifdef XCP
+static RemoteSubplan *create_remotescan_plan(PlannerInfo *root,
+					   RemoteSubPath *best_path);
+static RemoteSubplan *find_push_down_plan(Plan *plan);
+#endif
 static SeqScan *create_seqscan_plan(PlannerInfo *root, Path *best_path,
 					List *tlist, List *scan_clauses);
 static IndexScan *create_indexscan_plan(PlannerInfo *root, IndexPath *best_path,
@@ -86,6 +95,7 @@ static CteScan *create_ctescan_plan(PlannerInfo *root, Path *best_path,
 static WorkTableScan *create_worktablescan_plan(PlannerInfo *root, Path *best_path,
 						  List *tlist, List *scan_clauses);
 #ifdef PGXC
+#ifndef XCP
 static RemoteQuery *create_remotequery_plan(PlannerInfo *root, Path *best_path,
 						  List *tlist, List *scan_clauses);
 static Plan *create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path,
@@ -103,9 +113,10 @@ static List *pgxc_process_grouping_targetlist(PlannerInfo *root,
 static List *pgxc_process_having_clause(PlannerInfo *root, List *remote_tlist,
 												Node *havingQual, List **local_qual,
 												List **remote_qual, bool *reduce_plan);
-#endif
 static ForeignScan *create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 						List *tlist, List *scan_clauses);
+#endif /* PGXC */
+#endif /* XCP */
 static NestLoop *create_nestloop_plan(PlannerInfo *root, NestPath *best_path,
 					 Plan *outer_plan, Plan *inner_plan);
 static MergeJoin *create_mergejoin_plan(PlannerInfo *root, MergePath *best_path,
@@ -193,14 +204,20 @@ static Plan *prepare_sort_from_pathkeys(PlannerInfo *root,
 						   Oid **p_collations,
 						   bool **p_nullsFirst);
 static Material *make_material(Plan *lefttree);
+static int add_sort_column(AttrNumber colIdx, Oid sortOp, bool nulls_first,
+				int numCols, AttrNumber *sortColIdx,
+				Oid *sortOperators, bool *nullsFirst);
 
 #ifdef PGXC
+#ifndef XCP
+extern bool is_foreign_qual(Node *clause);
 static void findReferencedVars(List *parent_vars, Plan *plan, List **out_tlist, Relids *out_relids);
 static void create_remote_clause_expr(PlannerInfo *root, Plan *parent, StringInfo clauses,
 	  List *qual, RemoteQuery *scan);
 static void create_remote_expr(PlannerInfo *root, Plan *parent, StringInfo expr,
 	  Node *node, RemoteQuery *scan);
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 /*
  * create_plan
@@ -258,10 +275,18 @@ create_plan_recurse(PlannerInfo *root, Path *best_path)
 		case T_WorkTableScan:
 		case T_ForeignScan:
 #ifdef PGXC
+#ifndef XCP
 		case T_RemoteQuery:
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 			plan = create_scan_plan(root, best_path);
 			break;
+#ifdef XCP
+		case T_RemoteSubplan:
+			plan = (Plan *) create_remotescan_plan(root,
+												   (RemoteSubPath *) best_path);
+			break;
+#endif
 		case T_HashJoin:
 		case T_MergeJoin:
 		case T_NestLoop:
@@ -401,13 +426,14 @@ create_scan_plan(PlannerInfo *root, Path *best_path)
 			break;
 
 #ifdef PGXC
+#ifndef XCP
 		case T_RemoteQuery:
 			plan = (Plan *) create_remotequery_plan(root,
 													  best_path,
 													  tlist,
 													  scan_clauses);
 			break;
-#endif
+#endif /* XCP */
 
 		case T_ForeignScan:
 			plan = (Plan *) create_foreignscan_plan(root,
@@ -415,6 +441,7 @@ create_scan_plan(PlannerInfo *root, Path *best_path)
 													tlist,
 													scan_clauses);
 			break;
+#endif /* PGXC */
 
 		default:
 			elog(ERROR, "unrecognized node type: %d",
@@ -660,18 +687,22 @@ create_join_plan(PlannerInfo *root, JoinPath *best_path)
 #endif
 
 #ifdef PGXC
+#ifndef XCP
 	/*
 	 * Check if this join can be reduced to an equiv. remote scan node
 	 * This can only be executed on a remote Coordinator
 	 */
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 		plan = create_remotejoin_plan(root, best_path, plan, outer_plan, inner_plan);
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 	return plan;
 }
 
+
 #ifdef PGXC
+#ifndef XCP
 /*
  * create_remotejoin_plan
  * 	check if the children plans involve remote entities from the same remote
@@ -1292,7 +1323,8 @@ create_remote_expr(PlannerInfo *root, Plan *parent, StringInfo expr,
 	appendStringInfo(expr, " %s", exprstr);
 	return;
 }
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 /*
  * create_append_plan
@@ -1686,6 +1718,54 @@ create_unique_plan(PlannerInfo *root, UniquePath *best_path)
 
 	return plan;
 }
+
+
+#ifdef XCP
+/*
+ * create_remotescan_plan
+ *	  Create a RemoteSubquery plan for 'best_path' and (recursively) plans
+ *	  for its subpaths.
+ *
+ *	  Returns a Plan node.
+ */
+static RemoteSubplan *
+create_remotescan_plan(PlannerInfo *root,
+					   RemoteSubPath *best_path)
+{
+	RemoteSubplan  *plan;
+	Plan	   	   *subplan;
+
+	subplan = create_plan(root, best_path->subpath);
+
+	/* We don't want any excess columns in the remote tuples */
+	disuse_physical_tlist(subplan, best_path->subpath);
+
+	plan = make_remotesubplan(root, subplan,
+							  best_path->path.distribution,
+							  best_path->subpath->distribution,
+							  best_path->path.pathkeys);
+
+	copy_path_costsize(&plan->scan.plan, (Path *) best_path);
+
+	return plan;
+}
+
+
+static RemoteSubplan *
+find_push_down_plan(Plan *plan)
+{
+	if (IsA(plan, RemoteSubplan) &&
+			list_length(((RemoteSubplan *) plan)->nodeList) > 1 &&
+			((RemoteSubplan *) plan)->execOnAll)
+		return (RemoteSubplan *) plan;
+	if (IsA(plan, Hash) ||
+			IsA(plan, Material) ||
+			IsA(plan, Unique) ||
+			IsA(plan, Limit))
+		return find_push_down_plan(plan->lefttree);
+	return NULL;
+}
+#endif
 
 
 /*****************************************************************************
@@ -2462,6 +2542,7 @@ create_worktablescan_plan(PlannerInfo *root, Path *best_path,
 
 
 #ifdef PGXC
+#ifndef XCP
 /*
  * create_remotequery_plan
  *	 Returns a remotequery plan for the base relation scanned by 'best_path'
@@ -2656,7 +2737,8 @@ create_remotequery_plan(PlannerInfo *root, Path *best_path,
 
 	return scan_plan;
 }
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 /*
  * create_foreignscan_plan
@@ -2779,6 +2861,27 @@ create_nestloop_plan(PlannerInfo *root,
 		else
 			prev = cell;
 	}
+#ifdef XCP
+	/*
+	 * While NestLoop is executed it rescans inner plan. We do not want to
+	 * rescan RemoteSubplan and do not support it.
+	 * So if inner_plan is a RemoteSubplan, materialize it.
+	 */
+	if (IsA(inner_plan, RemoteSubplan))
+	{
+		Plan	   *matplan = (Plan *) make_material(inner_plan);
+
+		/*
+		 * We assume the materialize will not spill to disk, and therefore
+		 * charge just cpu_operator_cost per tuple.  (Keep this estimate in
+		 * sync with cost_mergejoin.)
+		 */
+		copy_plan_costsize(matplan, inner_plan);
+		matplan->total_cost += cpu_operator_cost * matplan->plan_rows;
+
+		inner_plan = matplan;
+	}
+#endif
 
 	join_plan = make_nestloop(tlist,
 							  joinclauses,
@@ -3953,7 +4056,241 @@ make_remotequery(List *qptlist,
 
 	return node;
 }
-#endif
+
+
+#ifdef XCP
+/*
+ * make_remotesubplan
+ * 	Create a RemoteSubplan node to execute subplan on remote nodes.
+ *  leftree - the subplan which we want to push down to remote node.
+ *  resultDistribution - the distribution of the remote result. May be NULL -
+ * results are coming to the invoking node
+ *  targetDistribution - determines how source data of the subplan are
+ * distributed, where we should send the subplan and how combine results.
+ *	pathkeys - the remote subplan is sorted according to these keys, executor
+ * 		should perform merge sort of incoming tuples
+ */
+RemoteSubplan *
+make_remotesubplan(PlannerInfo *root,
+				   Plan *lefttree,
+				   Distribution *resultDistribution,
+				   Distribution *targetDistribution,
+				   List *pathkeys)
+{
+	RemoteSubplan *node = makeNode(RemoteSubplan);
+	Plan	   *plan = &node->scan.plan;
+	Bitmapset  *tmpset;
+	int			nodenum;
+
+	plan->qual = NIL;
+	plan->lefttree = lefttree;
+	plan->righttree = NULL;
+	copy_plan_costsize(plan, lefttree);
+	if (resultDistribution)
+	{
+		node->distributionType = resultDistribution->distributionType;
+		node->distributionKey = resultDistribution->distributionKey;
+		tmpset = bms_copy(resultDistribution->nodes);
+		while ((nodenum = bms_first_member(tmpset)) >= 0)
+			node->distributionNodes = lappend_int(node->distributionNodes,
+												  nodenum);
+		bms_free(tmpset);
+	}
+	else
+	{
+		node->distributionType = LOCATOR_TYPE_SINGLE;
+		node->distributionKey = InvalidAttrNumber;
+		node->distributionNodes = NULL;
+	}
+	/* determine where subplan will be executed */
+	tmpset = bms_copy(targetDistribution->nodes);
+	while ((nodenum = bms_first_member(tmpset)) >= 0)
+		node->nodeList = lappend_int(node->nodeList, nodenum);
+	bms_free(tmpset);
+	node->execOnAll = !IsReplicated(targetDistribution->distributionType);
+	plan->targetlist = lefttree->targetlist;
+	/* We do not need to merge sort if only one node is yielding tuples */
+	if (pathkeys && node->execOnAll && list_length(node->nodeList) > 1)
+	{
+		List	   *tlist = lefttree->targetlist;
+		ListCell   *i;
+		int			numsortkeys;
+		AttrNumber *sortColIdx;
+		Oid		   *sortOperators;
+		bool	   *nullsFirst;
+
+		/*
+		 * We will need at most list_length(pathkeys) sort columns; possibly less
+		 */
+		numsortkeys = list_length(pathkeys);
+		sortColIdx = (AttrNumber *) palloc(numsortkeys * sizeof(AttrNumber));
+		sortOperators = (Oid *) palloc(numsortkeys * sizeof(Oid));
+		nullsFirst = (bool *) palloc(numsortkeys * sizeof(bool));
+
+		numsortkeys = 0;
+
+		foreach(i, pathkeys)
+		{
+			PathKey    *pathkey = (PathKey *) lfirst(i);
+			EquivalenceClass *ec = pathkey->pk_eclass;
+			TargetEntry *tle = NULL;
+			Oid			pk_datatype = InvalidOid;
+			Oid			sortop;
+			ListCell   *j;
+
+			if (ec->ec_has_volatile)
+			{
+				/*
+				 * If the pathkey's EquivalenceClass is volatile, then it must
+				 * have come from an ORDER BY clause, and we have to match it to
+				 * that same targetlist entry.
+				 */
+				if (ec->ec_sortref == 0)	/* can't happen */
+					elog(ERROR, "volatile EquivalenceClass has no sortref");
+				tle = get_sortgroupref_tle(ec->ec_sortref, tlist);
+				Assert(tle);
+				Assert(list_length(ec->ec_members) == 1);
+				pk_datatype = ((EquivalenceMember *) linitial(ec->ec_members))->em_datatype;
+			}
+			else
+			{
+				/*
+				 * Otherwise, we can sort by any non-constant expression listed in
+				 * the pathkey's EquivalenceClass.  For now, we take the first one
+				 * that corresponds to an available item in the tlist.	If there
+				 * isn't any, use the first one that is an expression in the
+				 * input's vars.  (The non-const restriction only matters if the
+				 * EC is below_outer_join; but if it isn't, it won't contain
+				 * consts anyway, else we'd have discarded the pathkey as
+				 * redundant.)
+				 *
+				 * XXX if we have a choice, is there any way of figuring out which
+				 * might be cheapest to execute?  (For example, int4lt is likely
+				 * much cheaper to execute than numericlt, but both might appear
+				 * in the same equivalence class...)  Not clear that we ever will
+				 * have an interesting choice in practice, so it may not matter.
+				 */
+				foreach(j, ec->ec_members)
+				{
+					EquivalenceMember *em = (EquivalenceMember *) lfirst(j);
+
+					if (em->em_is_const || em->em_is_child)
+						continue;
+
+					tle = tlist_member((Node *) em->em_expr, tlist);
+					if (tle)
+					{
+						pk_datatype = em->em_datatype;
+						break;		/* found expr already in tlist */
+					}
+
+					/*
+					 * We can also use it if the pathkey expression is a relabel
+					 * of the tlist entry, or vice versa.  This is needed for
+					 * binary-compatible cases (cf. make_pathkey_from_sortinfo).
+					 * We prefer an exact match, though, so we do the basic search
+					 * first.
+					 */
+					tle = tlist_member_ignore_relabel((Node *) em->em_expr, tlist);
+					if (tle)
+					{
+						pk_datatype = em->em_datatype;
+						break;		/* found expr already in tlist */
+					}
+				}
+
+				if (!tle)
+				{
+					/* No matching tlist item; look for a computable expression */
+					Expr	   *sortexpr = NULL;
+
+					foreach(j, ec->ec_members)
+					{
+						EquivalenceMember *em = (EquivalenceMember *) lfirst(j);
+						List	   *exprvars;
+						ListCell   *k;
+
+						if (em->em_is_const || em->em_is_child)
+							continue;
+						sortexpr = em->em_expr;
+						exprvars = pull_var_clause((Node *) sortexpr,
+												   PVC_INCLUDE_PLACEHOLDERS);
+						foreach(k, exprvars)
+						{
+							if (!tlist_member_ignore_relabel(lfirst(k), tlist))
+								break;
+						}
+						list_free(exprvars);
+						if (!k)
+						{
+							pk_datatype = em->em_datatype;
+							break;	/* found usable expression */
+						}
+					}
+					if (!j)
+						elog(ERROR, "could not find pathkey item to sort");
+
+					/*
+					 * Do we need to insert a Result node?
+					 */
+					if (!is_projection_capable_plan(lefttree))
+					{
+						/* copy needed so we don't modify input's tlist below */
+						tlist = copyObject(tlist);
+						lefttree = (Plan *) make_result(root, tlist, NULL,
+														lefttree);
+					}
+
+					/*
+					 * Add resjunk entry to input's tlist
+					 */
+					tle = makeTargetEntry(sortexpr,
+										  list_length(tlist) + 1,
+										  NULL,
+										  true);
+					tlist = lappend(tlist, tle);
+					lefttree->targetlist = tlist;	/* just in case NIL before */
+				}
+			}
+
+			/*
+			 * Look up the correct sort operator from the PathKey's slightly
+			 * abstracted representation.
+			 */
+			sortop = get_opfamily_member(pathkey->pk_opfamily,
+										 pk_datatype,
+										 pk_datatype,
+										 pathkey->pk_strategy);
+			if (!OidIsValid(sortop))	/* should not happen */
+				elog(ERROR, "could not find member %d(%u,%u) of opfamily %u",
+					 pathkey->pk_strategy, pk_datatype, pk_datatype,
+					 pathkey->pk_opfamily);
+
+			/*
+			 * The column might already be selected as a sort key, if the pathkeys
+			 * contain duplicate entries.  (This can happen in scenarios where
+			 * multiple mergejoinable clauses mention the same var, for example.)
+			 * So enter it only once in the sort arrays.
+			 */
+			numsortkeys = add_sort_column(tle->resno,
+										  sortop,
+										  pathkey->pk_nulls_first,
+										  numsortkeys,
+										  sortColIdx, sortOperators, nullsFirst);
+		}
+		Assert(numsortkeys > 0);
+
+		node->sort = makeNode(SimpleSort);
+		node->sort->numCols = numsortkeys;
+		node->sort->sortColIdx = sortColIdx;
+		node->sort->sortOperators = sortOperators;
+		node->sort->nullsFirst = nullsFirst;
+	}
+	return node;
+}
+#endif /* XCP */
+#endif /* PGXC */
+
 
 static ForeignScan *
 make_foreignscan(List *qptlist,
@@ -4240,6 +4577,9 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	Sort	   *node = makeNode(Sort);
 	Plan	   *plan = &node->plan;
 	Path		sort_path;		/* dummy for result of cost_sort */
+#ifdef XCP
+	RemoteSubplan *pushdown;
+#endif
 
 	copy_plan_costsize(plan, lefttree); /* only care about copying size */
 	cost_sort(&sort_path, root, NIL,
@@ -4261,6 +4601,70 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	node->collations = collations;
 	node->nullsFirst = nullsFirst;
 
+#ifdef XCP
+	pushdown = find_push_down_plan(lefttree);
+	if (pushdown)
+	{
+		/*
+		 * Insert new sort node immediately below the pushdown plan
+		 */
+		plan->lefttree = pushdown->scan.plan.lefttree;
+		pushdown->scan.plan.lefttree = plan;
+
+		if (pushdown->sort)
+		{
+			/* We already sort results, need to prepend new keys to existing */
+			AttrNumber *newSortColIdx;
+			Oid 	   *newSortOperators;
+			bool 	   *newNullsFirst;
+			int 		newNumCols;
+			int 		i, j;
+
+			newNumCols = pushdown->sort->numCols + numCols;
+			newSortColIdx = (AttrNumber *) palloc(newNumCols * sizeof(AttrNumber));
+			newSortOperators = (Oid *) palloc(newNumCols * sizeof(Oid));
+			newNullsFirst = (bool *) palloc(newNumCols * sizeof(bool));
+
+			/* Copy sort columns */
+			for (i = 0; i < numCols; i++)
+			{
+				newSortColIdx[i] = sortColIdx[i];
+				newSortOperators[i] = sortOperators[i];
+				newNullsFirst[i] = nullsFirst[i];
+			}
+
+			newNumCols = numCols;
+			/* Continue and copy old keys of the subplan which is now under the
+			 * sort */
+			for (j = 0; j < pushdown->sort->numCols; j++)
+				newNumCols = add_sort_column(pushdown->sort->sortColIdx[j],
+											 pushdown->sort->sortOperators[j],
+											 pushdown->sort->nullsFirst[j],
+											 newNumCols,
+											 newSortColIdx,
+											 newSortOperators,
+											 newNullsFirst);
+
+			pushdown->sort->numCols = newNumCols;
+			pushdown->sort->sortColIdx = newSortColIdx;
+			pushdown->sort->sortOperators = newSortOperators;
+			pushdown->sort->nullsFirst = newNullsFirst;
+		}
+		else
+		{
+			pushdown->sort = makeNode(SimpleSort);
+			pushdown->sort->numCols = numCols;
+			pushdown->sort->sortColIdx = sortColIdx;
+			pushdown->sort->sortOperators = sortOperators;
+			pushdown->sort->nullsFirst = nullsFirst;
+		}
+		/*
+		 * lefttree is not actually a Sort, but we hope it is not important and
+		 * the result will be used as a generic Plan node.
+		 */
+		return (Sort *) lefttree;
+	}
+#endif
 	return node;
 }
 
@@ -4748,6 +5152,39 @@ materialize_finished_plan(Plan *subplan)
 	return matplan;
 }
 
+
+#ifdef XCP
+typedef struct
+{
+	List *subtlist;
+	List *aggrefs;
+	Bitmapset *colnos;
+} find_referenced_cols_context;
+
+static bool
+find_referenced_cols_walker(Node *node, find_referenced_cols_context *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Var))
+	{
+		TargetEntry *tle = tlist_member(node, context->subtlist);
+		if (!tle)
+			elog(ERROR, "variable not found in subplan target list");
+		context->colnos = bms_add_member(context->colnos, tle->resno);
+		return false;
+	}
+	if (IsA(node, Aggref))
+	{
+		context->aggrefs = lappend(context->aggrefs, node);
+		return false;
+	}
+	return expression_tree_walker(node, find_referenced_cols_walker,
+								  (void *) context);
+}
+#endif
+
+
 Agg *
 make_agg(PlannerInfo *root, List *tlist, List *qual,
 		 AggStrategy aggstrategy, const AggClauseCosts *aggcosts,
@@ -4759,7 +5196,163 @@ make_agg(PlannerInfo *root, List *tlist, List *qual,
 	Plan	   *plan = &node->plan;
 	Path		agg_path;		/* dummy for result of cost_agg */
 	QualCost	qual_cost;
+#ifdef XCP
+	RemoteSubplan *pushdown;
 
+	/*
+	 * If lefttree is a distributed subplan we may optimize aggregates by
+	 * pushing down transition phase to remote data notes, and therefore reduce
+	 * traffic and distribute evaluation load.
+	 * We need to find all Var and Aggref expressions in tlist and qual and make
+	 * up a new tlist from these expressions. Update original Vars.
+	 * Create new Agg node with the new tlist and aggdistribution AGG_SLAVE.
+	 * Set new Agg node as a lefttree of the distributed subplan, moving
+	 * existing lefttree down under the new Agg node. Set new tlist to the
+	 * distributed subplan - it should be matching to the subquery.
+	 * Set node's aggdistribution to AGG_MASTER and continue node initialization
+	 */
+	pushdown = find_push_down_plan(lefttree);
+	if (pushdown)
+	{
+		Agg		   *phase1 = makeNode(Agg);
+		Plan	   *plan1 = &phase1->plan;
+		List	   *newtlist;
+		ListCell   *lc;
+		int			i;
+		find_referenced_cols_context context;
+		Plan 	   *tmp;
+
+		context.subtlist = pushdown->scan.plan.targetlist;
+		context.aggrefs = NIL;
+		context.colnos = NULL;
+		find_referenced_cols_walker((Node *) tlist, &context);
+		find_referenced_cols_walker((Node *) qual, &context);
+
+		phase1->aggdistribution = AGG_SLAVE;
+		phase1->aggstrategy = aggstrategy;
+		phase1->grpOperators = grpOperators;
+		phase1->numGroups = numGroups;
+		/*
+		 * Phase1 aggregate is referencing columns as they are listed in the
+		 * subtree of the RemoteSubplan. The RemoteSubplan should return them,
+		 * but ther positions will be probably changed, as they seen to phase2
+		 * aggregate. So we should copy specified group column indexes to the
+		 * phase1 aggregate node and then update supplied numbers in-place so
+		 * they are used later for phase2.
+		 */
+		phase1->numCols = numGroupCols;
+		phase1->grpColIdx = (AttrNumber *) palloc(sizeof(AttrNumber) * numGroupCols);
+		for (i = 0; i < numGroupCols; i++)
+		{
+			phase1->grpColIdx[i] = grpColIdx[i];
+			context.colnos = bms_add_member(context.colnos, grpColIdx[i]);
+		}
+
+		newtlist = NIL;
+		foreach (lc, context.subtlist)
+		{
+			TargetEntry *tle = (TargetEntry *) lfirst(lc);
+			if (bms_is_member(tle->resno, context.colnos))
+			{
+				TargetEntry *newtle = makeTargetEntry(tle->expr,
+													  list_length(newtlist) + 1,
+													  tle->resname,
+													  tle->resjunk);
+				newtlist = lappend(newtlist, newtle);
+				if (newtle->resno != tle->resno)
+				{
+					/*
+					 * Update group column indexes.
+					 * New tle can not be greater then old tle, so we do not
+					 * risk to update index twice.
+					 */
+					for (i = 0; i < numGroupCols; i++)
+						if (grpColIdx[i] == tle->resno)
+							grpColIdx[i] = newtle->resno;
+				}
+			}
+		}
+		bms_free(context.colnos);
+		/*
+		 * Aggregate reference handling.
+		 * Phase 1 aggregate actually returns value of transition type.
+		 * Respective targent entry of the distributed subplan node should have
+		 * a Var here, to avoid the respective aggregate reference of Phase 2
+		 * was replaced by a Var.
+		 * All aggregate functions of Phase 2 will be of one argument.
+		 */
+		foreach (lc, context.aggrefs)
+		{
+			Aggref *aggref = (Aggref *) lfirst(lc);
+			Aggref *newagg;
+			TargetEntry *newtle;
+			HeapTuple	aggTuple;
+			Form_pg_aggregate aggform;
+			Oid 	aggtranstype;
+
+			aggTuple = SearchSysCache1(AGGFNOID,
+									   ObjectIdGetDatum(aggref->aggfnoid));
+			if (!HeapTupleIsValid(aggTuple))
+				elog(ERROR, "cache lookup failed for aggregate %u",
+					 aggref->aggfnoid);
+			aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
+			aggtranstype = aggform->aggtranstype;
+			ReleaseSysCache(aggTuple);
+			/*
+			 * Make a copy for Phase 1. We are going to modify origin in-place.
+			 * XXX This may be not coorect, and we should use mutator instead
+			 * of walker.
+			 */
+			newagg = copyObject(aggref);
+			newagg->aggtype = aggform->aggtranstype;
+			newtle = makeTargetEntry((Expr *) newagg,
+									 list_length(newtlist) + 1,
+									 NULL,
+									 false);
+			newtlist = lappend(newtlist, newtle);
+			/*
+			 * The set_plan_refs() will replace this by a Var
+			 */
+			aggref->args = list_make1(makeTargetEntry((Expr *) newagg,
+													  1,
+													  NULL,
+													  false));
+		}
+
+		copy_plan_costsize(plan1, (Plan *) pushdown); // ???
+
+		/*
+		 * We will produce a single output tuple if not grouping, and a tuple per
+		 * group otherwise.
+		 */
+		if (aggstrategy == AGG_PLAIN)
+			plan1->plan_rows = 1;
+		else
+			plan1->plan_rows = numGroups;
+
+		plan1->targetlist = newtlist;
+		plan1->qual = NIL;
+		plan1->lefttree = pushdown->scan.plan.lefttree;
+		pushdown->scan.plan.lefttree = plan1;
+		plan1->righttree = NULL;
+
+		/*
+		 * Update target lists of all plans from lefttree till phase1.
+		 * All they should be the same if the tree is transparent for push
+		 * down modification
+		 */
+		tmp = lefttree;
+		while (tmp != plan1)
+		{
+			tmp->targetlist = newtlist;
+			tmp = tmp->lefttree;
+		}
+
+		node->aggdistribution = AGG_MASTER;
+	}
+	else
+		node->aggdistribution = AGG_ONENODE;
+#endif
 	node->aggstrategy = aggstrategy;
 	node->numCols = numGroupCols;
 	node->grpColIdx = grpColIdx;
@@ -4945,6 +5538,9 @@ make_unique(Plan *lefttree, List *distinctList)
 	AttrNumber *uniqColIdx;
 	Oid		   *uniqOperators;
 	ListCell   *slitem;
+#ifdef XCP
+	RemoteSubplan *pushdown;
+#endif
 
 	copy_plan_costsize(plan, lefttree);
 
@@ -4988,6 +5584,30 @@ make_unique(Plan *lefttree, List *distinctList)
 	node->numCols = numCols;
 	node->uniqColIdx = uniqColIdx;
 	node->uniqOperators = uniqOperators;
+
+#ifdef XCP
+	/*
+	 * We want to filter out duplicates on nodes to reduce amount of data sent
+	 * over network and reduce coordinator load.
+	 */
+	pushdown = find_push_down_plan(lefttree);
+	if (pushdown)
+	{
+		Unique	   *node1 = makeNode(Unique);
+		Plan	   *plan1 = &node1->plan;
+
+		copy_plan_costsize(plan1, pushdown->scan.plan.lefttree);
+		plan1->targetlist = pushdown->scan.plan.lefttree->targetlist;
+		plan1->qual = NIL;
+		plan1->lefttree = pushdown->scan.plan.lefttree;
+		pushdown->scan.plan.lefttree = plan1;
+		plan1->righttree = NULL;
+
+		node1->numCols = numCols;
+		node1->uniqColIdx = uniqColIdx;
+		node1->uniqOperators = uniqOperators;
+	}
+#endif
 
 	return node;
 }
@@ -5094,6 +5714,9 @@ make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
 {
 	Limit	   *node = makeNode(Limit);
 	Plan	   *plan = &node->plan;
+#ifdef XCP
+	RemoteSubplan *pushdown;
+#endif
 
 	copy_plan_costsize(plan, lefttree);
 
@@ -5152,6 +5775,35 @@ make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
 	node->limitOffset = limitOffset;
 	node->limitCount = limitCount;
 
+#ifdef XCP
+	if ((limitOffset == NULL || offset_est > 0) &&
+			(limitCount == NULL || count_est > 0))
+	{
+		/*
+		 * We may reduce amount of rows sent over the network and do not send more
+		 * rows then necessary
+		 */
+		pushdown = find_push_down_plan(lefttree);
+		if (pushdown)
+		{
+			Limit	   *node1 = makeNode(Limit);
+			Plan	   *plan1 = &node1->plan;
+
+			copy_plan_costsize(plan1, pushdown->scan.plan.lefttree);
+			plan1->targetlist = pushdown->scan.plan.lefttree->targetlist;
+			plan1->qual = NIL;
+			plan1->lefttree = pushdown->scan.plan.lefttree;
+			pushdown->scan.plan.lefttree = plan1;
+			plan1->righttree = NULL;
+
+			node1->limitOffset = NULL;
+			node1->limitCount = (Node *) makeConst(INT8OID, -1, sizeof(int64),
+									   Int64GetDatum(offset_est + count_est),
+												   false, FLOAT8PASSBYVAL);
+		}
+	}
+#endif
+
 	return node;
 }
 
@@ -5198,6 +5850,26 @@ make_result(PlannerInfo *root,
 	plan->righttree = NULL;
 	node->resconstantqual = resconstantqual;
 
+#ifdef XCP
+	if (subplan)
+	{
+		/*
+		 * We do not gain performance when pushing down Result, but Result on
+		 * top of RemoteSubplan would not allow to push down other plan nodes
+		 */
+		RemoteSubplan *pushdown;
+		pushdown = find_push_down_plan(subplan);
+		if (pushdown)
+		{
+			/* This will be set as lefttree of the Result plan */
+			plan->lefttree = pushdown->scan.plan.lefttree;
+			pushdown->scan.plan.lefttree = plan;
+			/* Now RemoteSubplan returns different values */
+			pushdown->scan.plan.targetlist = tlist;
+			return (Result *) subplan;
+		}
+	}
+#endif /* XCP */
 	return node;
 }
 
@@ -5295,6 +5967,10 @@ is_projection_capable_plan(Plan *plan)
 		case T_Append:
 		case T_MergeAppend:
 		case T_RecursiveUnion:
+#ifdef XCP
+		/* XXX consider making it projection capable */
+		case T_RemoteSubplan:
+#endif
 			return false;
 		default:
 			break;
@@ -5302,13 +5978,15 @@ is_projection_capable_plan(Plan *plan)
 	return true;
 }
 
+
 #ifdef PGXC
+#ifndef XCP
 /*
  * findReferencedVars()
  *
- *	Constructs a list of those Vars in targetlist which are found in 
+ *	Constructs a list of those Vars in targetlist which are found in
  *  parent_vars (in other words, the intersection of targetlist and
- *  parent_vars).  Returns a new list in *out_tlist and a bitmap of 
+ *  parent_vars).  Returns a new list in *out_tlist and a bitmap of
  *  those relids found in the result.
  *
  *  Additionally do look at the qual references to other vars! They
@@ -5353,7 +6031,7 @@ findReferencedVars(List *parent_vars, Plan *plan, List **out_tlist, Relids *out_
 	*out_tlist	= tlist;
 	*out_relids = relids;
 }
-
+#endif /* XCP */
 
 /*
  * create_remoteinsert_plan()
@@ -5480,10 +6158,14 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 		/* Replace step query */
 		pfree(fstep->sql_statement);
 		fstep->sql_statement = pstrdup(buf->data);
-
-		/* Set combine_type, it is COMBINE_TYPE_NONE for SELECT */
+		/* set combine_type, it is COMBINE_TYPE_NONE for SELECT */
+#ifdef XCP
+		fstep->combine_type = IsReplicated(rel_loc_info->locatorType) ?
+								  COMBINE_TYPE_SAME : COMBINE_TYPE_SUM;
+#else
 		fstep->combine_type = rel_loc_info->locatorType == LOCATOR_TYPE_REPLICATED ?
 								  COMBINE_TYPE_SAME : COMBINE_TYPE_SUM;
+#endif
 		fstep->read_only = false;
 
 		pfree(buf->data);
@@ -5498,7 +6180,11 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 	 */
 	fstep = make_remotequery(NIL, ttab, NIL, ttab->relid);
 
+#ifdef XCP
+	if (IsReplicated(rel_loc_info->locatorType))
+#else
 	if (rel_loc_info->locatorType == LOCATOR_TYPE_REPLICATED)
+#endif
 	{
 		/*
 		 * For replicated case we need two extra steps. One is to determine
@@ -5612,6 +6298,8 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 	return (Plan *) fstep;
 }
 
+
+#ifndef XCP
 /*
  * create_remotegrouping_plan
  * Check if the grouping and aggregates can be pushed down to the
@@ -6305,4 +6993,5 @@ pgxc_process_having_clause(PlannerInfo *root, List *remote_tlist, Node *havingQu
 
 	return remote_tlist;
 }
-#endif
+#endif /* XCP */
+#endif /* PGXC */

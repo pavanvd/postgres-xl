@@ -123,8 +123,13 @@ InitMultinodeExecutor(void)
 			init_pgxc_handle(&dn_handles[i]);
 	}
 
+#ifdef XCP
+	/* Data node never connects to a coordinator */
+	if (IS_PGXC_COORDINATOR && co_handles == NULL)
+#else
 	/* Same but for Coordinators */
 	if (co_handles == NULL)
+#endif
 	{
 		co_handles = (PGXCNodeHandle *) palloc(NumCoords * sizeof(PGXCNodeHandle));
 
@@ -145,8 +150,13 @@ InitMultinodeExecutor(void)
  * Builds up a connection string
  */
 char *
+#ifdef XCP
+PGXCNodeConnStr(char *host, char *port, char *dbname,
+				char *user, char *remote_type, int parent_node)
+#else
 PGXCNodeConnStr(char *host, char *port, char *dbname,
 				char *user, char *remote_type)
+#endif
 {
 	char	   *out,
 				connstr[256];
@@ -156,10 +166,15 @@ PGXCNodeConnStr(char *host, char *port, char *dbname,
 	 * Build up connection string
 	 * remote type can be coordinator, datanode or application.
 	 */
+#ifdef XCP
+	num = snprintf(connstr, sizeof(connstr),
+				   "host=%s port=%s dbname=%s user=%s options='-c remotetype=%s -c parentnode=%d'",
+				   host, port, dbname, user, remote_type, parent_node);
+#else
 	num = snprintf(connstr, sizeof(connstr),
 				   "host=%s port=%s dbname=%s user=%s options='-c remotetype=%s'",
 				   host, port, dbname, user, remote_type);
-
+#endif
 	/* Check for overflow */
 	if (num > 0 && num < sizeof(connstr))
 	{
@@ -684,6 +699,10 @@ release_handles(void)
 		}
 	}
 
+#ifdef XCP
+	if (IS_PGXC_COORDINATOR)
+	{
+#endif
 	/* Collect Coordinator handles */
 	for (i = 0; i < NumCoords; i++)
 	{
@@ -701,6 +720,9 @@ release_handles(void)
 			pgxc_node_free(handle);
 		}
 	}
+#ifdef XCP
+	}
+#endif
 
 	/* Here We have to add also the list of Coordinator Connections we want to drop at the same time */
 	PoolManagerReleaseConnections(dn_ndisc, dn_discard, co_ndisc, co_discard);
@@ -1149,6 +1171,85 @@ pgxc_node_send_bind(PGXCNodeHandle * handle, const char *portal,
 }
 
 
+#ifdef XCP
+/*
+ * Send BINDPLAN message down to the Data node
+ */
+int
+pgxc_node_send_bindplan(PGXCNodeHandle * handle, const char *portal,
+						const char *planstr, int paramlen, char *params)
+{
+	uint16		n16;
+	int			pnameLen;
+	int			planLen;
+	int 		paramCodeLen;
+	int 		paramValueLen;
+	int 		paramOutLen;
+	int			msgLen;
+
+	/* Invalid connection state, return error */
+	if (handle->state != DN_CONNECTION_STATE_IDLE)
+		return EOF;
+
+	/* portal name size (allow NULL) */
+	pnameLen = portal ? strlen(portal) + 1 : 1;
+	/* query plan size */
+	planLen = strlen(planstr) + 1;
+	/* size of parameter codes array (always empty for now) */
+	paramCodeLen = 2;
+	/* size of parameter values array, 2 if no params */
+	paramValueLen = paramlen ? paramlen : 2;
+	/* size of output parameter codes array (always empty for now) */
+	paramOutLen = 2;
+	/* size + pnameLen + queryLen + parameters */
+	msgLen = 4 + pnameLen + planLen + paramCodeLen + paramValueLen + paramOutLen;
+
+	/* msgType + msgLen */
+	if (ensure_out_buffer_capacity(handle->outEnd + 1 + msgLen, handle) != 0)
+	{
+		add_error_message(handle, "out of memory");
+		return EOF;
+	}
+
+	handle->outBuffer[handle->outEnd++] = 'b';
+	/* size */
+	msgLen = htonl(msgLen);
+	memcpy(handle->outBuffer + handle->outEnd, &msgLen, 4);
+	handle->outEnd += 4;
+	/* portal name */
+	if (portal)
+	{
+		memcpy(handle->outBuffer + handle->outEnd, portal, pnameLen);
+		handle->outEnd += pnameLen;
+	}
+	else
+		handle->outBuffer[handle->outEnd++] = '\0';
+	/* query plan */
+	memcpy(handle->outBuffer + handle->outEnd, planstr, planLen);
+	handle->outEnd += planLen;
+	/* parameter codes (none) */
+	handle->outBuffer[handle->outEnd++] = 0;
+	handle->outBuffer[handle->outEnd++] = 0;
+	/* parameter values */
+	if (paramlen)
+	{
+		memcpy(handle->outBuffer + handle->outEnd, params, paramlen);
+		handle->outEnd += paramlen;
+	}
+	else
+	{
+		handle->outBuffer[handle->outEnd++] = 0;
+		handle->outBuffer[handle->outEnd++] = 0;
+	}
+	/* output parameter codes (none) */
+	handle->outBuffer[handle->outEnd++] = 0;
+	handle->outBuffer[handle->outEnd++] = 0;
+
+ 	return 0;
+}
+#endif
+
+
 /*
  * Send DESCRIBE message (portal or statement) down to the Data node
  */
@@ -1334,7 +1435,7 @@ pgxc_node_send_sync(PGXCNodeHandle * handle)
 
 
 /*
- * Send the GXID down to the Data node
+ * Send series of Extended Query protocol messages to the data node
  */
 int
 pgxc_node_send_query_extended(PGXCNodeHandle *handle, const char *query,
@@ -1360,6 +1461,29 @@ pgxc_node_send_query_extended(PGXCNodeHandle *handle, const char *query,
 
 	return 0;
 }
+
+
+#ifdef XCP
+/*
+ * Send series of Datanode Query protocol messages to the data node
+ */
+int
+pgxc_node_send_datanode_query(PGXCNodeHandle *handle, const char *query,
+							  const char *portal, int paramlen, char *params,
+							  int fetch_size)
+{
+	if (pgxc_node_send_bindplan(handle, portal, query, paramlen, params))
+		return EOF;
+	if (fetch_size >= 0)
+		if (pgxc_node_send_execute(handle, portal, fetch_size))
+			return EOF;
+	if (pgxc_node_send_sync(handle))
+		return EOF;
+
+	return 0;
+}
+#endif
+
 
 /*
  * This method won't return until connection buffer is empty or error occurs
@@ -1512,7 +1636,14 @@ pgxc_node_send_snapshot(PGXCNodeHandle *handle, Snapshot snapshot)
 	memcpy(handle->outBuffer + handle->outEnd, &nval, 4);
 	handle->outEnd += 4;
 
+#ifdef XCP
+	if (GlobalTransactionIdIsValid(snapshot->recent_global_xmin))
+		nval = htonl(snapshot->recent_global_xmin);
+	else
+		nval = htonl(RecentGlobalXmin);
+#else
 	nval = htonl(snapshot->recent_global_xmin);
+#endif
 	memcpy(handle->outBuffer + handle->outEnd, &nval, 4);
 	handle->outEnd += 4;
 
@@ -1591,6 +1722,218 @@ add_error_message(PGXCNodeHandle *handle, const char *message)
 	else
 		handle->error = pstrdup(message);
 }
+
+
+#ifdef XCP
+static int load_balancer = 0;
+/*
+ * Get one of the specified nodes to query replicated data source.
+ * If session already owns one or more  of the requested connection,
+ * the function returns existing one to avoid contacting pooler.
+ * If preferred node is specified it will be used, but anyway, if session
+ * does not own preferred connection but owns another from the list existing
+ * connection is returned.
+ * Performs basic load balancing.
+ */
+PGXCNodeHandle *
+get_any_handle(List *datanodelist)
+{
+	List 	   *preferred = GetPreferredDataNodes();
+	ListCell   *lc1,
+			   *lc2;
+	int			i, node;
+	int			candidate = 0;
+
+	/* sanity check */
+	Assert(list_length(datanodelist) > 0);
+
+	/* i is just a counter; node is incremented inside the loop */
+	for (i = 0, node = load_balancer; i < NumDataNodes; i++)
+	{
+		/* At the moment node is an index in the array, and we may need to wrap it */
+		if (node >= NumDataNodes)
+			node -= NumDataNodes;
+		/* See if handle is already used */
+		if (dn_handles[node].sock != NO_SOCKET)
+		{
+			/*
+			 * It's time to convert index into 1-based node number.
+			 * On next iteration it will be the next index.
+			 */
+			node++;
+			foreach(lc1, datanodelist)
+				if (lfirst_int(lc1) == node)
+				{
+					/* The node is requested */
+
+					/*
+					 * If no preferred nodes we return immediately with current
+					 * node. Increment load_balancer for the next time.
+					 */
+					if (preferred == NIL)
+					{
+						if (++load_balancer == NumDataNodes)
+							load_balancer = 0;
+						/* We have incremented node, now it is node number, not index */
+						return &dn_handles[node - 1];
+					}
+
+					/* See if the node is preferred one */
+					foreach(lc2, preferred)
+						if (lfirst_int(lc2) == node)
+						{
+							/* Current node is preferred, return it */
+							if (++load_balancer == NumDataNodes)
+								load_balancer = 0;
+							/* We have incremented node, now it is node number, not index */
+							return &dn_handles[node - 1];
+						}
+
+					/*
+					 * If we do not have a candidate remember current node.
+					 * We will return it if we do not find preferred node among
+					 * those are requested and already in use
+					 */
+					if (candidate == 0)
+						candidate = node;
+				}
+		}
+		else
+			/* We skip the handle but should increment index */
+			node++;
+	}
+
+	/*
+	 * We have nodes in use to return but none of them is preferred.
+	 * Return first found one.
+	 */
+	if (candidate > 0)
+	{
+		if (++load_balancer == NumDataNodes)
+			load_balancer = 0;
+		/* We have incremented node, now it is node number, not index */
+		return &dn_handles[candidate - 1];
+	}
+
+	/*
+	 * None of requested nodes is in use, need to get one from the pool.
+	 * Figure out which.
+	 */
+	/* i is just a counter; node is incremented inside the loop */
+	for (i = 0, node = load_balancer; i < NumDataNodes; i++)
+	{
+		/* At the moment node is an index in the array, and we may need to wrap it */
+		if (node >= NumDataNodes)
+			node -= NumDataNodes;
+		/* Look only at empty slots, we have already checked existing handles */
+		if (dn_handles[node].sock == NO_SOCKET)
+		{
+			/*
+			 * It's time to convert index into 1-based node number.
+			 * On next iteration it will be the next index.
+			 */
+			node++;
+			foreach(lc1, datanodelist)
+				if (lfirst_int(lc1) == node)
+				{
+					/* The node is requested */
+
+					/*
+					 * If no preferred nodes we acquire connection to current
+					 * node and return it immediately.
+					 * Increment load_balancer for the next time.
+					 */
+					if (preferred == NIL)
+					{
+						List   *allocate = lappend_int(NIL, node);
+						int    *fds = PoolManagerGetConnections(allocate, NIL);
+
+						if (!fds)
+						{
+							ereport(ERROR,
+									(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+									 errmsg("Failed to get pooled connections")));
+						}
+
+						pgxc_node_init(&dn_handles[node - 1], fds[0], node);
+						datanode_count++;
+
+						if (++load_balancer == NumDataNodes)
+							load_balancer = 0;
+						/* We have incremented node, now it is node number, not index */
+						return &dn_handles[node - 1];
+					}
+
+					/* See if the node is preferred one */
+					foreach(lc2, preferred)
+						if (lfirst_int(lc2) == node)
+						{
+							/* Current node is preferred, allocate and return it */
+							List   *allocate = lappend_int(NIL, node);
+							int    *fds = PoolManagerGetConnections(allocate, NIL);
+
+							if (!fds)
+							{
+								ereport(ERROR,
+										(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+										 errmsg("Failed to get pooled connections")));
+							}
+
+							pgxc_node_init(&dn_handles[node - 1], fds[0], node);
+							datanode_count++;
+
+							if (++load_balancer == NumDataNodes)
+								load_balancer = 0;
+							/* We have incremented node, now it is node number, not index */
+							return &dn_handles[node - 1];
+						}
+
+					/*
+					 * If we do not have a candidate remember current node.
+					 * We will return it if we do not find preferred node among
+					 * those are requested and already in use
+					 */
+					if (candidate == 0)
+						candidate = node;
+				}
+		}
+		else
+			/* We skip the handle but should increment index */
+			node++;
+	}
+
+	/*
+	 * We have nodes to return but none of them is preferred.
+	 * Return first found one.
+	 */
+	if (candidate > 0)
+	{
+		List   *allocate = lappend_int(NIL, node);
+		int    *fds = PoolManagerGetConnections(allocate, NIL);
+
+		if (!fds)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+					 errmsg("Failed to get pooled connections")));
+		}
+
+		pgxc_node_init(&dn_handles[node - 1], fds[0], node);
+		datanode_count++;
+
+		if (++load_balancer == NumDataNodes)
+			load_balancer = 0;
+		/* We have incremented node, now it is node number, not index */
+		return &dn_handles[candidate - 1];
+	}
+
+	/* We should not get here, one of the cases should be met */
+	Assert(false);
+	/* Keep compiler quiet */
+	return NULL;
+}
+#endif
+
 
 /*
  * for specified list return array of PGXCNodeHandles

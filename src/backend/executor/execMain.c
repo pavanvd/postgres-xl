@@ -961,6 +961,23 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 	queryDesc->tupDesc = tupType;
 	queryDesc->planstate = planstate;
 
+#ifdef XCP
+	/* Parameters to filter out result rows */
+	if (queryDesc->plannedstmt->distributionKey != InvalidAttrNumber)
+	{
+		Form_pg_attribute attr;
+		estate->es_distributionKey = queryDesc->plannedstmt->distributionKey;
+		attr = tupType->attrs[estate->es_distributionKey - 1];
+		estate->es_locator = createLocator(
+				queryDesc->plannedstmt->distributionType,
+				RELATION_ACCESS_INSERT,
+				attr->atttypid,
+				queryDesc->plannedstmt->distributionNodes);
+		estate->es_distributionNodes = (int *) palloc0(
+				list_length(queryDesc->plannedstmt->distributionNodes) * sizeof(int));
+	}
+#endif
+
 	/*
 	 * If doing SELECT INTO, initialize the "into" relation.  We must wait
 	 * till now so we have the "clean" result tuple type to create the new
@@ -1446,6 +1463,31 @@ ExecutePlan(EState *estate,
 		 */
 		if (TupIsNull(slot))
 			break;
+
+#ifdef XCP
+		if (PGXC_PARENT_NODE && estate->es_distributionKey != InvalidAttrNumber)
+		{
+			Datum 		value;
+			bool		isnull;
+			int			ncount, i;
+			bool		skip;
+
+			value = slot_getattr(slot, estate->es_distributionKey, &isnull);
+			ncount = GET_NODES(estate->es_locator, value, isnull,
+							   estate->es_distributionNodes, NULL);
+
+			/* Skip undesired slot */
+			skip = true;
+			for (i = 0; i < ncount; i++)
+				if (estate->es_distributionNodes[i] == PGXC_PARENT_NODE)
+				{
+					skip = false;
+					break;
+				}
+			if (skip)
+				continue;
+		}
+#endif
 
 		/*
 		 * If we have a junk filter, then project a new tuple with the junk

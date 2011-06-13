@@ -83,7 +83,11 @@ extern Tuplesortstate *tuplesort_begin_datum(Oid datumType,
 extern Tuplesortstate *tuplesort_begin_merge(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
 					 Oid *sortOperators, bool *nullsFirstFlags,
+#ifdef XCP
+					 ResponseCombiner *combiner,
+#else
 					 RemoteQueryState *combiner,
+#endif
 					 int workMem);
 #endif
 

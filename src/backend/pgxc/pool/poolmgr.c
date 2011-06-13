@@ -53,6 +53,9 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#ifdef XCP
+#include "access/gtm.h"
+#endif
 
 /* Configuration options */
 int			NumDataNodes = 2;
@@ -89,6 +92,17 @@ static PoolHandle *Handle = NULL;
 
 static int	is_pool_cleaning = false;
 static int	server_fd = -1;
+
+#ifdef XCP
+static void parseconfig_node_hosts(char *rawstring,
+					   PGXCNodeConnectionInfo *connectionInfos,
+					   int num_nodes,
+					   char const *param_name);
+static void parseconfig_node_ports(char *rawstring,
+					   PGXCNodeConnectionInfo *connectionInfos,
+					   int num_nodes,
+					   char const *param_name);
+#endif
 
 static void agent_init(PoolAgent *agent, const char *database, const char *user_name);
 static void agent_destroy(PoolAgent *agent);
@@ -140,6 +154,147 @@ static void pooler_quickdie(SIGNAL_ARGS);
 static volatile sig_atomic_t shutdown_requested = false;
 
 
+#ifdef XCP
+static void
+parseconfig_node_hosts(char *rawstring,
+					   PGXCNodeConnectionInfo *connectionInfos,
+					   int num_nodes,
+					   char const *param_name)
+{
+	List	   *elemlist;
+	ListCell   *l;
+	int			i;
+
+	/* Parse string into list of identifiers */
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
+	{
+		/* syntax error in list */
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid list syntax for \"%s\"", param_name)));
+	}
+
+	i = 0;
+	foreach(l, elemlist)
+	{
+		char	   *curhost = (char *) lfirst(l);
+
+		connectionInfos[i].host = pstrdup(curhost);
+		if (connectionInfos[i].host == NULL)
+		{
+			ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+		}
+		/* Ignore extra entries, if any */
+		if (++i == num_nodes)
+			break;
+	}
+	list_free(elemlist);
+
+	/* Validate */
+	if (i == 0)
+	{
+		/* syntax error in list */
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid list syntax for \"%s\"", param_name)));
+	}
+	else if (i == 1)
+	{
+		/* Copy all values from first */
+		for (; i < num_nodes; i++)
+		{
+			connectionInfos[i].host = pstrdup(connectionInfos[0].host);
+			if (connectionInfos[i].host == NULL)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("out of memory")));
+			}
+		}
+	}
+	else if (i < num_nodes)
+	{
+		/* syntax error in list */
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid list syntax for \"%s\"", param_name)));
+	}
+
+}
+
+
+static void
+parseconfig_node_ports(char *rawstring,
+					   PGXCNodeConnectionInfo *connectionInfos,
+					   int num_nodes,
+					   char const *param_name)
+{
+	List	   *elemlist;
+	ListCell   *l;
+	int			i;
+
+	/* Parse string into list of identifiers */
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
+	{
+		/* syntax error in list */
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid list syntax for \"%s\"", param_name)));
+	}
+
+	i = 0;
+	foreach(l, elemlist)
+	{
+		char	   *curport = (char *) lfirst(l);
+
+		connectionInfos[i].port = pstrdup(curport);
+		if (connectionInfos[i].port == NULL)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
+		}
+		/* Ignore extra entries, if any */
+		if (++i == num_nodes)
+			break;
+	}
+	list_free(elemlist);
+
+	/* Validate */
+	if (i == 0)
+	{
+		/* syntax error in list */
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid list syntax for \"%s\"", param_name)));
+	}
+	else if (i == 1)
+	{
+		/* Copy all values from first */
+		for (; i < num_nodes; i++)
+		{
+			connectionInfos[i].port = pstrdup(connectionInfos[0].port);
+			if (connectionInfos[i].port == NULL)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("out of memory")));
+			}
+		}
+	}
+	else if (i < num_nodes)
+	{
+		/* syntax error in list */
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid list syntax for \"%s\"", param_name)));
+	}
+}
+#endif
+
+
 /*
  * Initialize internal structures
  */
@@ -147,10 +302,12 @@ int
 PoolManagerInit()
 {
 	char	   *rawstring;
+#ifndef XCP
 	List	   *elemlist;
 	ListCell   *l;
 	int			i, count;
 	MemoryContext old_context;
+#endif
 
 	elog(DEBUG1, "Pooler process is started: %d", getpid());
 
@@ -162,6 +319,11 @@ PoolManagerInit()
 												ALLOCSET_DEFAULT_MINSIZE,
 												ALLOCSET_DEFAULT_INITSIZE,
 												ALLOCSET_DEFAULT_MAXSIZE);
+
+#ifdef XCP
+	/* Allocate pooler structures in the Pooler context */
+	MemoryContextSwitchTo(PoolerMemoryContext);
+#endif
 
 	/*
 	 * If possible, make this process a group leader, so that the postmaster
@@ -194,8 +356,10 @@ PoolManagerInit()
 	 */
 	PG_SETMASK(&UnBlockSig);
 
+#ifndef XCP
 	/* Allocate pooler structures in the Pooler context */
 	old_context = MemoryContextSwitchTo(PoolerMemoryContext);
+#endif
 
 	poolAgents = (PoolAgent **) palloc(MaxConnections * sizeof(PoolAgent *));
 	if (poolAgents == NULL)
@@ -205,21 +369,66 @@ PoolManagerInit()
 				 errmsg("out of memory")));
 	}
 
+#ifdef XCP
+	datanode_connInfos = (PGXCNodeConnectionInfo *)
+						 palloc(NumDataNodes * sizeof(PGXCNodeConnectionInfo));
+	if (datanode_connInfos == NULL)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+	}
+	if (IS_PGXC_COORDINATOR)
+	{
+		coord_connInfos = (PGXCNodeConnectionInfo *)
+						  palloc(NumCoords * sizeof(PGXCNodeConnectionInfo));
+		if (coord_connInfos == NULL)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
+		}
+	}
+
+	/* Parse Host/Port data for Coordinators and Datanodes */
+	rawstring = pstrdup(DataNodeHosts);
+	parseconfig_node_hosts(rawstring, datanode_connInfos, NumDataNodes,
+						   "data_node_hosts");
+	pfree(rawstring);
+
+	rawstring = pstrdup(DataNodePorts);
+	parseconfig_node_ports(rawstring, datanode_connInfos, NumDataNodes,
+						   "data_node_ports");
+	pfree(rawstring);
+
+	if (IS_PGXC_COORDINATOR)
+	{
+		rawstring = pstrdup(CoordinatorHosts);
+		parseconfig_node_hosts(rawstring, coord_connInfos, NumCoords,
+							   "coordinator_hosts");
+		pfree(rawstring);
+
+		rawstring = pstrdup(CoordinatorPorts);
+		parseconfig_node_ports(rawstring, coord_connInfos, NumCoords,
+							   "coordinator_ports");
+		pfree(rawstring);
+	}
+#else
 	datanode_connInfos = (PGXCNodeConnectionInfo *)
 						 palloc(NumDataNodes * sizeof(PGXCNodeConnectionInfo));
 	coord_connInfos = (PGXCNodeConnectionInfo *)
 					  palloc(NumCoords * sizeof(PGXCNodeConnectionInfo));
 	if (coord_connInfos == NULL
 		|| datanode_connInfos == NULL)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_OUT_OF_MEMORY),
-				 errmsg("out of memory")));
-	}
+ 	{
+ 		ereport(ERROR,
+ 				(errcode(ERRCODE_OUT_OF_MEMORY),
+ 				 errmsg("out of memory")));
+ 	}
 
 	/* Parse Host/Port/Password/User data for Coordinators and Datanodes */
 	for (count = 0; count < 2; count++)
-	{
+ 	{
 		PGXCNodeConnectionInfo *connectionInfos;
 		int num_nodes;
 		if (count == 0)
@@ -240,7 +449,7 @@ PoolManagerInit()
 		/* Do that for Coordinator and Datanode strings */
 		/* Parse string into list of identifiers */
 		if (!SplitIdentifierString(rawstring, ',', &elemlist))
-		{
+ 		{
 			/* syntax error in list */
 			ereport(FATAL,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -256,8 +465,8 @@ PoolManagerInit()
 			if (connectionInfos[i].host == NULL)
 			{
 				ereport(ERROR,
-					(errcode(ERRCODE_OUT_OF_MEMORY),
-					 errmsg("out of memory")));
+ 					(errcode(ERRCODE_OUT_OF_MEMORY),
+ 					 errmsg("out of memory")));
 			}
 			/* Ignore extra entries, if any */
 			if (++i == num_nodes)
@@ -294,7 +503,7 @@ PoolManagerInit()
 			ereport(FATAL,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("invalid list syntax for \"data_node_hosts\"")));
-		}
+ 		}
 
 		/* Parse port data for Coordinators and Datanodes */
 		/* Need a modifiable copy */
@@ -329,7 +538,7 @@ PoolManagerInit()
 				break;
 		}
 		list_free(elemlist);
-		pfree(rawstring);
+ 		pfree(rawstring);
 
 		/* Validate */
 		if (i == 0)
@@ -365,8 +574,8 @@ PoolManagerInit()
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("invalid list syntax for \"coordinator_ports\"")));
 		}
-	}
-
+ 	}
+#endif
 	/* End of Parsing for Datanode and Coordinator Data */
 
 	PoolerLoop();
@@ -448,6 +657,10 @@ GetPoolManagerHandle(void)
 void
 PoolManagerCloseHandle(PoolHandle *handle)
 {
+#ifdef XCP
+	if (!handle)
+		return;
+#endif
 	close(Socket(handle->port));
 	free(handle);
 }
@@ -703,12 +916,20 @@ agent_destroy(PoolAgent *agent)
 void
 PoolManagerDisconnect(void)
 {
+#ifdef XCP
+	if (!Handle)
+		return; /* not even connected */
+#else
 	Assert(Handle);
-
+#endif
 	pool_putmessage(&Handle->port, 'd', NULL, 0);
 	pool_flush(&Handle->port);
 
 	close(Socket(Handle->port));
+#ifdef XCP
+	free(Handle);
+	Handle = NULL;
+#endif
 }
 
 
@@ -2083,7 +2304,10 @@ grow_pool(DatabasePool * dbPool, int index, char client_conn_type)
 
 	if (!nodePool)
 	{
-		char *remote_type;
+		char   *remote_type;
+#ifdef XCP
+		int		parent_node;
+#endif
 
 		/* Allocate new DBNode Pool */
 		nodePool = (PGXCNodePool *) palloc(sizeof(PGXCNodePool));
@@ -2100,26 +2324,49 @@ grow_pool(DatabasePool * dbPool, int index, char client_conn_type)
 		if (IS_PGXC_COORDINATOR)
 		{
 			remote_type = pstrdup("coordinator");
+#ifdef XCP
+			parent_node = 0;
+#endif
 		}
 		else if (IS_PGXC_DATANODE)
 		{
 			remote_type = pstrdup("datanode");
+#ifdef XCP
+			parent_node = PGXCNodeId;
+#endif
 		}
 
 		if (client_conn_type == REMOTE_CONN_DATANODE)
 			/* initialize it */
+#ifdef XCP
+			nodePool->connstr = PGXCNodeConnStr(datanode_connInfos[index].host,
+												datanode_connInfos[index].port,
+												dbPool->database,
+												dbPool->user_name,
+												remote_type,
+												parent_node);
+#else
 			nodePool->connstr = PGXCNodeConnStr(datanode_connInfos[index].host,
 												datanode_connInfos[index].port,
 												dbPool->database,
 												dbPool->user_name,
 												remote_type);
+#endif
 		else if (client_conn_type == REMOTE_CONN_COORD)
+#ifdef XCP
+			nodePool->connstr = PGXCNodeConnStr(coord_connInfos[index].host,
+												coord_connInfos[index].port,
+												dbPool->database,
+												dbPool->user_name,
+												remote_type,
+												parent_node);
+#else
 			nodePool->connstr = PGXCNodeConnStr(coord_connInfos[index].host,
 												coord_connInfos[index].port,
 												dbPool->database,
 												dbPool->user_name,
 												remote_type);
-
+#endif
 		if (!nodePool->connstr)
 		{
 			pfree(nodePool);

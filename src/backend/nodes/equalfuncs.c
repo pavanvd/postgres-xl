@@ -187,8 +187,10 @@ _equalAggref(Aggref *a, Aggref *b)
 	COMPARE_SCALAR_FIELD(aggfnoid);
 	COMPARE_SCALAR_FIELD(aggtype);
 #ifdef PGXC
+#ifndef XCP
 	COMPARE_SCALAR_FIELD(aggtrantype);
 	COMPARE_SCALAR_FIELD(agghas_collectfn);
+#endif /* XCP */
 #endif /* PGXC */
 	COMPARE_SCALAR_FIELD(aggcollid);
 	COMPARE_SCALAR_FIELD(inputcollid);

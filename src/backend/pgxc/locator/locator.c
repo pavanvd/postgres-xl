@@ -63,6 +63,25 @@ static List *get_preferred_node_list(void);
 static void init_mapping_table(int nodeCount, int mapTable[]);
 
 
+#ifdef XCP
+static int locate_replicated_all(Locator *self, Datum value, bool isnull,
+					  int *nodes, int *primarynode);
+static int locate_replicated_one(Locator *self, Datum value, bool isnull,
+					  int *nodes, int *primarynode);
+static int locate_roundrobin_insert(Locator *self, Datum value, bool isnull,
+					     int *nodes, int *primarynode);
+static int locate_roundrobin_select(Locator *self, Datum value, bool isnull,
+					     int *nodes, int *primarynode);
+static int locate_hash_insert(Locator *self, Datum value, bool isnull,
+						int *nodes, int *primarynode);
+static int locate_hash_select(Locator *self, Datum value, bool isnull,
+						int *nodes, int *primarynode);
+static int locate_modulo_insert(Locator *self, Datum value, bool isnull,
+						  int *nodes, int *primarynode);
+static int locate_modulo_select(Locator *self, Datum value, bool isnull,
+						  int *nodes, int *primarynode);
+#endif
+
 /*
  * init_mapping_table - initializes a mapping table
  *
@@ -117,6 +136,50 @@ get_preferred_node_list(void)
 	list_free(rawlist);
 	return result;
 }
+
+
+#ifdef XCP
+/*
+ * Returns preferred data nodes as a list of integers from 1 to NumDataNodes
+ * or NIL if none is defined
+ */
+List *
+GetPreferredDataNodes(void)
+{
+	if (PreferredDataNodes && !globalPreferredNodes)
+	{
+		char	   *rawstring;
+		List	   *elemlist;
+		ListCell   *l;
+
+		/* Get writeable copy */
+		rawstring = pstrdup(PreferredDataNodes);
+
+		/* Parse string into list of identifiers */
+		if (!SplitIdentifierString(rawstring, ',', &elemlist))
+		{
+			/* syntax error in list */
+			ereport(FATAL,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("invalid list syntax for \"data_node_ports\"")));
+		}
+
+		/* Store entries */
+		foreach(l, elemlist)
+		{
+			char	   *curnode = (char *) lfirst(l);
+			int 		nnode = atoi(curnode);
+
+			/* Silently skip invalid values */
+			if (nnode > 0 && nnode <= NumDataNodes)
+				globalPreferredNodes = lappend_int(globalPreferredNodes, nnode);
+		}
+		list_free_deep(elemlist);
+		pfree(rawstring);
+	}
+	return globalPreferredNodes;
+}
+#endif
 
 
 /*
@@ -465,8 +528,13 @@ GetRoundRobinNode(Oid relid)
 
 	Relation	rel = relation_open(relid, AccessShareLock);
 
-	Assert (rel->rd_locator_info->locatorType == LOCATOR_TYPE_REPLICATED ||
+#ifdef XCP
+    Assert (IsReplicated(rel->rd_locator_info->locatorType) ||
 			rel->rd_locator_info->locatorType == LOCATOR_TYPE_RROBIN);
+#else
+    Assert (rel->rd_locator_info->locatorType == LOCATOR_TYPE_REPLICATED ||
+			rel->rd_locator_info->locatorType == LOCATOR_TYPE_RROBIN);
+#endif
 
 	ret_node = lfirst_int(rel->rd_locator_info->roundRobinNode);
 
@@ -816,7 +884,11 @@ RelationBuildLocator(Relation rel)
 	 * we choose a node to use for balancing reads.
 	 */
 	if (relationLocInfo->locatorType == LOCATOR_TYPE_RROBIN
+#ifdef XCP
+		|| IsReplicated(relationLocInfo->locatorType))
+#else
 		|| relationLocInfo->locatorType == LOCATOR_TYPE_REPLICATED)
+#endif
 	{
 		/*
 		 * pick a random one to start with,
@@ -899,3 +971,206 @@ FreeRelationLocInfo(RelationLocInfo *relationLocInfo)
 		pfree(relationLocInfo);
 	}
 }
+
+
+#ifdef XCP
+Locator *
+createLocator(char locatorType, RelationAccessType accessType,
+			  Oid dataType, List *nodeList)
+{
+	Locator    *locator;
+	ListCell   *lc;
+	int			i;
+
+	Assert(list_length(nodeList) > 0);
+	locator = (Locator *) palloc(sizeof(Locator) +
+								 (list_length(nodeList) - 1) * sizeof(int));
+	locator->dataType = dataType;
+	i = 0;
+	foreach(lc, nodeList)
+		locator->nodeMap[i++] = lfirst_int(lc);
+	locator->nodeCount = list_length(nodeList);
+	locator->roundRobinNode = -1;
+	switch (locatorType)
+	{
+		case LOCATOR_TYPE_REPLICATED:
+			if (accessType == RELATION_ACCESS_INSERT ||
+					accessType == RELATION_ACCESS_UPDATE)
+				locator->locateNodes = locate_replicated_all;
+			else
+				locator->locateNodes = locate_replicated_one;
+			break;
+		case LOCATOR_TYPE_RROBIN:
+			if (accessType == RELATION_ACCESS_INSERT)
+				locator->locateNodes = locate_roundrobin_insert;
+			else
+				locator->locateNodes = locate_roundrobin_select;
+			break;
+		case LOCATOR_TYPE_HASH:
+			if (accessType == RELATION_ACCESS_INSERT)
+				locator->locateNodes = locate_hash_insert;
+			else
+				locator->locateNodes = locate_hash_select;
+			break;
+		case LOCATOR_TYPE_MODULO:
+			if (accessType == RELATION_ACCESS_INSERT)
+				locator->locateNodes = locate_modulo_insert;
+			else
+				locator->locateNodes = locate_modulo_select;
+			break;
+		default:
+			ereport(ERROR, (errmsg("Error: no such supported locator type: %c\n",
+								   locatorType)));
+	}
+	return locator;
+}
+
+
+static int
+locate_replicated_all(Locator *self, Datum value, bool isnull,
+					  int *nodes, int *primarynode)
+{
+	if (primarynode)
+	{
+		*primarynode = primary_data_node;
+		if (primary_data_node > 0)
+		{
+			if (self->roundRobinNode < 0)
+			{
+				int i, j;
+				for (i = 0, j = 0; i < self->nodeCount; i++)
+					if (self->nodeMap[i] == primary_data_node)
+						self->roundRobinNode = i;
+					else
+						nodes[j++] = self->nodeMap[i];
+				return j;
+			}
+			else
+			{
+				if (self->roundRobinNode > 0)
+					memcpy(nodes, self->nodeMap,
+						   self->roundRobinNode * sizeof(int));
+				if (self->roundRobinNode < self->nodeCount - 1)
+					memcpy(nodes + self->roundRobinNode,
+						   self->nodeMap + self->roundRobinNode + 1,
+						   (self->nodeCount - self->roundRobinNode - 1) * sizeof(int));
+				return self->nodeCount - 1;
+			}
+		}
+		/* if primary node is not configured fallthru and return all as
+		 * ordinary nodes */
+	}
+	memcpy(nodes, self->nodeMap, self->nodeCount * sizeof(int));
+	return self->nodeCount;
+}
+
+
+static int
+locate_replicated_one(Locator *self, Datum value, bool isnull,
+					  int *nodes, int *primarynode)
+{
+	if (primarynode)
+	{
+		*primarynode = primary_data_node;
+		if (primary_data_node > 0)
+			return 0;
+		/* if primary node is not configured fallthru and return one as an
+		 * ordinary node */
+	}
+	if (++self->roundRobinNode >= self->nodeCount)
+		self->roundRobinNode = 0;
+	*nodes = self->nodeMap[self->roundRobinNode];
+	return 1;
+}
+
+
+static int
+locate_roundrobin_insert(Locator *self, Datum value, bool isnull,
+						 int *nodes, int *primarynode)
+{
+	if (primarynode)
+		*primarynode = 0;
+	if (++self->roundRobinNode >= self->nodeCount)
+		self->roundRobinNode = 0;
+	*nodes = self->nodeMap[self->roundRobinNode];
+	return 1;
+}
+
+
+static int
+locate_roundrobin_select(Locator *self, Datum value, bool isnull,
+						 int *nodes, int *primarynode)
+{
+	if (primarynode)
+		*primarynode = 0;
+	memcpy(nodes, self->nodeMap, self->nodeCount * sizeof(int));
+	return self->nodeCount;
+}
+
+
+static int
+locate_hash_insert(Locator *self, Datum value, bool isnull,
+						int *nodes, int *primarynode)
+{
+	int nErr;
+	if (primarynode)
+		*primarynode = 0;
+	if (isnull)
+		*nodes = self->nodeMap[0];
+	else
+		*nodes = self->nodeMap[hash_range_int(compute_hash(self->dataType, value, &nErr)) % self->nodeCount];
+	return 1;
+}
+
+
+static int
+locate_hash_select(Locator *self, Datum value, bool isnull,
+						int *nodes, int *primarynode)
+{
+	int nErr;
+	if (primarynode)
+		*primarynode = 0;
+	if (isnull)
+	{
+		memcpy(nodes, self->nodeMap, self->nodeCount * sizeof(int));
+		return self->nodeCount;
+	}
+	else
+	{
+		*nodes = self->nodeMap[hash_range_int(compute_hash(self->dataType, value, &nErr)) % self->nodeCount];
+		return 1;
+	}
+}
+
+
+static int
+locate_modulo_insert(Locator *self, Datum value, bool isnull,
+						  int *nodes, int *primarynode)
+{
+	if (primarynode)
+		*primarynode = 0;
+	if (isnull)
+		*nodes = self->nodeMap[0];
+	else
+		*nodes = self->nodeMap[abs(DatumGetInt32(value)) % self->nodeCount];
+	return 1;
+}
+
+static int
+locate_modulo_select(Locator *self, Datum value, bool isnull,
+						  int *nodes, int *primarynode)
+{
+	if (primarynode)
+		*primarynode = 0;
+	if (isnull)
+	{
+		memcpy(nodes, self->nodeMap, self->nodeCount * sizeof(int));
+		return self->nodeCount;
+	}
+	else
+	{
+		*nodes = self->nodeMap[abs(DatumGetInt32(value)) % self->nodeCount];
+		return 1;
+	}
+}
+#endif

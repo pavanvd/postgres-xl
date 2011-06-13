@@ -737,7 +737,11 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 
 		if (IsA(queryDesc->planstate, RemoteQueryState))
 		{
+#ifdef XCP
+			ResponseCombiner *node = (ResponseCombiner *) queryDesc->planstate;
+#else
 			RemoteQueryState *node = (RemoteQueryState *) queryDesc->planstate;
+#endif
 			RemoteQuery *step = (RemoteQuery *) queryDesc->planstate->plan;
 
 			/*
@@ -761,7 +765,11 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 			context->query_step->exec_nodes = makeNode(ExecNodes);
 			context->query_step->exec_nodes->tableusagetype = TABLE_USAGE_TYPE_USER;
 			context->query_step->exec_nodes->baselocatortype = rel_loc_info1->locatorType;
+#ifdef XCP
+			if (IsReplicated(rel_loc_info1->locatorType))
+#else
 			if (rel_loc_info1->locatorType == LOCATOR_TYPE_REPLICATED)
+#endif
 			{
 				RemoteQuery *step1, *step2, *step3;
 				/*
@@ -1149,7 +1157,11 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 					pgxc_join = find_or_create_pgxc_join(column_base->relid, column_base->relalias,
 										 column_base2->relid, column_base2->relalias, context);
 
+#ifdef XCP
+					if (IsReplicated(rel_loc_info1->locatorType))
+#else
 					if (rel_loc_info1->locatorType == LOCATOR_TYPE_REPLICATED)
+#endif
 					{
 
 						/* add to replicated join conditions */
@@ -1159,7 +1171,11 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 						if (colvar->varlevelsup != colvar2->varlevelsup)
 							context->multilevel_join = true;
 
+#ifdef XCP
+						if (IsReplicated(rel_loc_info2->locatorType))
+#else
 						if (rel_loc_info2->locatorType == LOCATOR_TYPE_REPLICATED)
+#endif
 							pgxc_join->join_type = JOIN_REPLICATED_ONLY;
 						else
 						{
@@ -1182,7 +1198,11 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 
 						return false;
 					}
+#ifdef XCP
+					else if (IsReplicated(rel_loc_info2->locatorType))
+#else
 					else if (rel_loc_info2->locatorType == LOCATOR_TYPE_REPLICATED)
+#endif
 					{
 						/* note nature of join between the two relations */
 						pgxc_join->join_type = JOIN_REPLICATED_PARTITIONED;
@@ -1749,7 +1769,12 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 		/* Note replicated table usage for determining safe queries */
 		if (context->query_step->exec_nodes)
 		{
+#ifdef XCP
+			if (table_usage_type == TABLE_USAGE_TYPE_USER &&
+					IsReplicated(rel_loc_info->locatorType))
+#else
 			if (table_usage_type == TABLE_USAGE_TYPE_USER && IsReplicated(rel_loc_info))
+#endif
 				table_usage_type = TABLE_USAGE_TYPE_USER_REPLICATED;
 
 			context->query_step->exec_nodes->tableusagetype = table_usage_type;
@@ -2057,7 +2082,11 @@ get_plan_combine_type(Query *query, char baselocatortype)
 		case CMD_INSERT:
 		case CMD_UPDATE:
 		case CMD_DELETE:
+#ifdef XCP
+			return IsReplicated(baselocatortype) ?
+#else
 			return baselocatortype == LOCATOR_TYPE_REPLICATED ?
+#endif
 					COMBINE_TYPE_SAME : COMBINE_TYPE_SUM;
 
 		default:

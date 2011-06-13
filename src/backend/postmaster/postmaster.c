@@ -474,11 +474,14 @@ static void ShmemBackendArrayAdd(Backend *bn);
 static void ShmemBackendArrayRemove(Backend *bn);
 #endif   /* EXEC_BACKEND */
 
+#ifdef XCP
+int parentPGXCNode = 0;
+#endif
+
 #ifdef PGXC
 bool isPGXCCoordinator = false;
 bool isPGXCDataNode = false;
 int remoteConnType = REMOTE_CONN_APP;
-
 #define StartPoolManager()		StartChildProcess(PoolerProcess)
 #endif
 
@@ -1195,10 +1198,20 @@ PostmasterMain(int argc, char *argv[])
 	pmState = PM_STARTUP;
 
 #ifdef PGXC /* PGXC_COORD */
+#ifdef XCP
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+
+	/*
+	 * Initialize the Data Node connection pool
+	 */
+	PgPoolerPID = StartPoolManager();
+
+	MemoryContextSwitchTo(oldcontext);
+#else
 	if (IS_PGXC_COORDINATOR)
 	{
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-	
+
 		/*
 		 * Initialize the Data Node connection pool
 		 */
@@ -1206,7 +1219,8 @@ PostmasterMain(int argc, char *argv[])
 
 		MemoryContextSwitchTo(oldcontext);
 	}
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 	status = ServerLoop();
 
@@ -1604,11 +1618,15 @@ ServerLoop(void)
 		if (PgStatPID == 0 && pmState == PM_RUN)
 			PgStatPID = pgstat_start();
 
-#ifdef PGXC /* PGXC_COORD */
+#ifdef PGXC
 		/* If we have lost the pooler, try to start a new one */
+#ifdef XCP
+		if (PgPoolerPID == 0 && pmState == PM_RUN)
+#else
 		if (IS_PGXC_COORDINATOR && PgPoolerPID == 0 && pmState == PM_RUN)
+#endif /* XCP */
 			PgPoolerPID = StartPoolManager();
-#endif
+#endif /* PGXC */
 		/* If we need to signal the autovacuum launcher, do so now */
 		if (avlauncher_needs_signal)
 		{
@@ -2241,9 +2259,13 @@ SIGHUP_handler(SIGNAL_ARGS)
 		if (StartupPID != 0)
 			signal_child(StartupPID, SIGHUP);
 #ifdef PGXC /* PGXC_COORD */
+#ifdef XCP
+		if (PgPoolerPID != 0)
+#else
 		if (IS_PGXC_COORDINATOR && PgPoolerPID != 0)
+#endif /* XCP */
 			signal_child(PgPoolerPID, SIGHUP);
-#endif
+#endif /* PGXC */
 		if (BgWriterPID != 0)
 			signal_child(BgWriterPID, SIGHUP);
 		if (WalWriterPID != 0)
@@ -2392,9 +2414,13 @@ pmdie(SIGNAL_ARGS)
 				/* and the walwriter too */
 				if (WalWriterPID != 0)
 					signal_child(WalWriterPID, SIGTERM);
-#ifdef PGXC /* PGXC_COORD */
+#ifdef PGXC 
 				/* and the pool manager too */
+#ifdef XCP
+				if (PgPoolerPID != 0)
+#else
 				if (IS_PGXC_COORDINATOR && PgPoolerPID != 0)
+#endif /* XCP */
 					signal_child(PgPoolerPID, SIGTERM);
 
 				/* Unregister Node on GTM */
@@ -2402,7 +2428,7 @@ pmdie(SIGNAL_ARGS)
 					UnregisterGTM(PGXC_NODE_COORDINATOR);
 				else if (IS_PGXC_DATANODE)
 					UnregisterGTM(PGXC_NODE_DATANODE);
-#endif
+#endif /* PGXC */
 				pmState = PM_WAIT_BACKENDS;
 			}
 
@@ -2427,7 +2453,11 @@ pmdie(SIGNAL_ARGS)
 			if (StartupPID != 0)
 				signal_child(StartupPID, SIGQUIT);
 #ifdef PGXC /* PGXC_COORD */
+#ifdef XCP
+			if (PgPoolerPID != 0)
+#else
 			if (IS_PGXC_COORDINATOR && PgPoolerPID != 0)
+#endif /* XCP */
 				signal_child(PgPoolerPID, SIGQUIT);
 #endif
 			if (BgWriterPID != 0)
@@ -2561,10 +2591,14 @@ reaper(SIGNAL_ARGS)
 				PgArchPID = pgarch_start();
 			if (PgStatPID == 0)
 				PgStatPID = pgstat_start();
-#ifdef PGXC /* PGXC_COORD */
+#ifdef PGXC
+#ifdef XCP
+			if (PgPoolerPID == 0)
+#else
 			if (IS_PGXC_COORDINATOR && PgPoolerPID == 0)
+#endif /* XCP */
 				PgPoolerPID = StartPoolManager();
-#endif
+#endif /* PGXC */
 
 			/* at this point we are really open for business */
 			ereport(LOG,
@@ -2723,7 +2757,11 @@ reaper(SIGNAL_ARGS)
 		 * Was it the pool manager?  TODO decide how to handle 
 		 * Probably we should restart the system
 		 */
+#ifdef XCP
+		if (pid == PgPoolerPID)
+#else
 		if (IS_PGXC_COORDINATOR && pid == PgPoolerPID)
+#endif /* XCP */
 		{
 			PgPoolerPID = 0;
 			if (!EXIT_STATUS_0(exitstatus))
@@ -2952,8 +2990,20 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 		signal_child(AutoVacPID, (SendStop ? SIGSTOP : SIGQUIT));
 	}
 
-#ifdef PGXC /* PGXC_COORD */
+#ifdef PGXC
 	/* Take care of the pool manager too */
+#ifdef XCP
+	if (pid == PgPoolerPID)
+		PgPoolerPID = 0;
+	else if (PgPoolerPID != 0 && !FatalError)
+	{
+		ereport(DEBUG2,
+			(errmsg_internal("sending %s to process %d",
+							 (SendStop ? "SIGSTOP" : "SIGQUIT"),
+							 (int) PgPoolerPID)));
+		signal_child(PgPoolerPID, (SendStop ? SIGSTOP : SIGQUIT));
+	}
+#else
 	if (IS_PGXC_COORDINATOR)
 	{
 		if (pid == PgPoolerPID)
@@ -2967,7 +3017,8 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 			signal_child(PgPoolerPID, (SendStop ? SIGSTOP : SIGQUIT));
 		}
 	}
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 	/*
 	 * Force a power-cycle of the pgarch process too.  (This isn't absolutely
@@ -3122,7 +3173,7 @@ PostmasterStateMachine(void)
 		 */
 		if (CountChildren(BACKEND_TYPE_NORMAL | BACKEND_TYPE_AUTOVAC) == 0 &&
 			StartupPID == 0 &&
-#ifdef PGXC /* PGXC_COORD */
+#ifdef PGXC
 			PgPoolerPID == 0 &&
 #endif
 			WalReceiverPID == 0 &&
@@ -3219,7 +3270,7 @@ PostmasterStateMachine(void)
 			PgArchPID == 0 && PgStatPID == 0)
 		{
 			/* These other guys should be dead already */
-#ifdef PGXC /* PGXC_COORD */
+#ifdef PGXC
 			Assert(PgPoolerPID == 0);
 #endif
 			Assert(StartupPID == 0);
@@ -3431,6 +3482,16 @@ BackendStartup(Port *port)
 		bn->child_slot = 0;
 
 #ifdef PGXC /* PGXC_COORD */
+#ifdef XCP
+	pool_handle = GetPoolManagerHandle();
+	if (pool_handle == NULL)
+	{
+		ereport(ERROR,
+			(errcode(ERRCODE_IO_ERROR),
+			 errmsg("Can not connect to pool manager")));
+		return STATUS_ERROR;
+	}
+#else
 	/* Don't get a Pooler Handle if Postmaster is activated from another Coordinator */
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
@@ -3443,8 +3504,8 @@ BackendStartup(Port *port)
 			return STATUS_ERROR;
 		}
 	}
-#endif 
-
+#endif /* XCP */
+#endif /* PGXC */
 
 #ifdef EXEC_BACKEND
 	pid = backend_forkexec(port);
@@ -3474,11 +3535,17 @@ BackendStartup(Port *port)
 		/* Perform additional initialization and collect startup packet */
 		BackendInitialize(port);
 
-#ifdef PGXC /* PGXC_COORD */
+#ifdef PGXC
+		/* User is authenticated and dbname is known at this point */
+#ifdef XCP
+		PoolManagerConnect(pool_handle, port->database_name, port->user_name);
+#endif
 		if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 		{
-			/* User is authenticated and dbname is known at this point */
+#ifndef XCP
 			PoolManagerConnect(pool_handle, port->database_name, port->user_name);
+#endif
+			InitGTM();
 		}
 #endif 
 
@@ -3488,7 +3555,9 @@ BackendStartup(Port *port)
 #endif   /* EXEC_BACKEND */
 
 #ifdef PGXC /* PGXC_COORD */
+#ifndef XCP
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+#endif
 		PoolManagerCloseHandle(pool_handle);
 #endif 
 

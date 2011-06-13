@@ -1717,10 +1717,19 @@ initialize_peragg(WindowAggState *winstate, WindowFunc *wfunc,
 	HeapTuple	aggTuple;
 	Form_pg_aggregate aggform;
 	Oid			aggtranstype;
+#ifdef XCP
+	Oid			aggcollecttype;
+#endif
 	AclResult	aclresult;
 	Oid			transfn_oid,
+#ifdef XCP
+				collectfn_oid,
+#endif
 				finalfn_oid;
 	Expr	   *transfnexpr,
+#ifdef XCP
+			   *collectfnexpr,
+#endif
 			   *finalfnexpr;
 	Datum		textInitVal;
 	int			i;
@@ -1746,6 +1755,9 @@ initialize_peragg(WindowAggState *winstate, WindowFunc *wfunc,
 	 */
 
 	peraggstate->transfn_oid = transfn_oid = aggform->aggtransfn;
+#ifdef XCP
+	collectfn_oid = aggform->aggcollectfn;
+#endif
 #ifdef PGXC
 	/* For PGXC final function is executed when combining, disable it here */
 	peraggstate->finalfn_oid = finalfn_oid = InvalidOid;
@@ -1799,16 +1811,28 @@ initialize_peragg(WindowAggState *winstate, WindowFunc *wfunc,
 														false);
 		pfree(declaredArgTypes);
 	}
+#ifdef XCP
+	aggcollecttype = aggform->aggcollecttype;
+#endif
 
 	/* build expression trees using actual argument & result types */
 	build_aggregate_fnexprs(inputTypes,
 							numArguments,
 							aggtranstype,
+#ifdef XCP
+							aggcollecttype,
+#endif
 							wfunc->wintype,
 							wfunc->inputcollid,
 							transfn_oid,
+#ifdef XCP
+							collectfn_oid,
+#endif
 							finalfn_oid,
 							&transfnexpr,
+#ifdef XCP
+							&collectfnexpr,
+#endif
 							&finalfnexpr);
 
 	fmgr_info(transfn_oid, &peraggstate->transfn);

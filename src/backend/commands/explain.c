@@ -694,6 +694,11 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_ForeignScan:
 			pname = sname = "Foreign Scan";
 			break;
+#ifdef XCP
+		case T_RemoteSubplan:
+			pname = "Remote Subquery Scan";
+			break;
+#endif /* XCP */
 		case T_Material:
 			pname = sname = "Materialize";
 			break;
@@ -724,6 +729,21 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					strategy = "???";
 					break;
 			}
+#ifdef XCP
+			switch (((Agg *) plan)->aggstrategy)
+			{
+				case AGG_SLAVE:
+					operation = "Transition";
+					break;
+				case AGG_MASTER:
+					operation = "Collection";
+					break;
+				default:
+					operation = NULL;
+					break;
+			}
+#endif
+
 			break;
 		case T_WindowAgg:
 			pname = sname = "WindowAgg";
@@ -843,6 +863,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_ValuesScan:
 		case T_CteScan:
 		case T_WorkTableScan:
+			ExplainScanTarget((Scan *) plan, es);
+			break;
 #ifdef PGXC
 		case T_RemoteQuery:
 			{
@@ -864,13 +886,51 @@ ExplainNode(PlanState *planstate, List *ancestors,
 						appendStringInfo(es->str, " (Node Count [%d])", nc);
 					}
 				}
-#endif
 				ExplainScanTarget((Scan *) plan, es);
 			}
 			break;
+#endif
 		case T_ForeignScan:
 			ExplainScanTarget((Scan *) plan, es);
 			break;
+#ifdef XCP
+		case T_RemoteSubplan:
+			{
+				RemoteSubplan  *rsubplan = (RemoteSubplan *) plan;
+				bool 			replicated;
+				replicated = IsReplicated(rsubplan->distributionType);
+				/* print out destination nodes */
+				if (es->format == EXPLAIN_FORMAT_TEXT)
+				{
+					bool 			first = true;
+					ListCell 	   *lc;
+
+					foreach(lc, rsubplan->nodeList)
+					{
+						if (first)
+						{
+							appendStringInfo(es->str, " on %s (%d",
+											 replicated ? "any" : "all",
+											 lfirst_int(lc));
+							first = false;
+						}
+						else
+							appendStringInfo(es->str, ",%d", lfirst_int(lc));
+					}
+					appendStringInfoChar(es->str, ')');
+				}
+				else
+				{
+					ExplainPropertyText("Replicated",
+										replicated ? "yes" : "no",
+										es);
+					ExplainPropertyList("Node List",
+										((RemoteSubplan *) plan)->nodeList,
+										es);
+				}
+			}
+			break;
+#endif /* XCP */
 		case T_BitmapIndexScan:
 			{
 				BitmapIndexScan *bitmapindexscan = (BitmapIndexScan *) plan;
@@ -1051,9 +1111,13 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_ValuesScan:
 		case T_CteScan:
 		case T_WorkTableScan:
+		case T_SubqueryScan:
 #ifdef PGXC
 		case T_RemoteQuery:
 #endif
+#ifdef XCP
+		case T_RemoteSubplan:
+#endif /* XCP */
 		case T_SubqueryScan:
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
 			break;

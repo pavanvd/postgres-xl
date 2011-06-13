@@ -147,7 +147,15 @@ extern void free_attstatsslot(Oid atttype,
 				  Datum *values, int nvalues,
 				  float4 *numbers, int nnumbers);
 extern char *get_namespace_name(Oid nspid);
-
+#ifdef XCP
+extern Oid	get_namespaceid(const char *nspname);
+extern char *get_typ_name(Oid typid);
+extern Oid	get_typ_namespace(Oid typid);
+extern Oid	get_typname_typid(const char *typname, Oid typnamespace);
+extern Oid	get_funcid(const char *funcname, oidvector *argtypes, Oid funcnsp);
+extern Oid	get_opnamespace(Oid opno);
+extern Oid	get_operid(const char *oprname, Oid oprleft, Oid oprright, Oid oprnsp);
+#endif
 #define type_is_array(typid)  (get_element_type(typid) != InvalidOid)
 /* type_is_array_domain accepts both plain arrays and domains over arrays */
 #define type_is_array_domain(typid)  (get_base_element_type(typid) != InvalidOid)

@@ -2850,8 +2850,11 @@ setSchemaName(char *context_schema, char **stmt_schema_name)
 bool
 CheckLocalIndexColumn (char loctype, char *partcolname, char *indexcolname)
 {
-
+#ifdef XCP
+	if (IsReplicated(loctype))
+#else
 	if (loctype == LOCATOR_TYPE_REPLICATED)
+#endif
 		/* always safe */
 		return true;
 	if (loctype == LOCATOR_TYPE_RROBIN)
@@ -2924,7 +2927,11 @@ checkLocalFKConstraints(CreateStmtContext *cxt)
 		refloctype = GetLocatorType(pk_rel_id);
 
 		/* If referenced table is replicated, the constraint is safe */
+#ifdef XCP
+		if (IsReplicated(refloctype))
+#else
 		if (refloctype == LOCATOR_TYPE_REPLICATED)
+#endif
 			continue;
 		else if (refloctype == LOCATOR_TYPE_RROBIN)
 		{

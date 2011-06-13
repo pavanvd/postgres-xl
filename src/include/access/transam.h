@@ -162,7 +162,13 @@ extern XLogRecPtr TransactionIdGetCommitLSN(TransactionId xid);
 extern void SetNextTransactionId(TransactionId xid);
 extern void SetForceXidFromGTM(bool value);
 extern bool GetForceXidFromGTM(void);
+#ifdef XCP
+extern GlobalTransactionId GetNewGlobalTransactionId(bool *timestamp_received,
+						  GTM_Timestamp *timestamp);
+extern TransactionId GetNewTransactionId(GlobalTransactionId gxid, bool isSubXact);
+#else
 extern TransactionId GetNewTransactionId(bool isSubXact, bool *timestamp_received, GTM_Timestamp *timestamp);
+#endif /* XCP */
 #else
 extern TransactionId GetNewTransactionId(bool isSubXact);
 #endif /* PGXC */

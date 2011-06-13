@@ -21,6 +21,24 @@
 #include "storage/block.h"
 
 
+#ifdef XCP
+/*
+ * Distribution
+ *
+ * Distribution is a attribute of distributed plan node. It describes on which
+ * node execution results can be found.
+ */
+typedef struct Distribution
+{
+	NodeTag		type;
+
+	char		distributionType;
+	AttrNumber	distributionKey;
+	Bitmapset  *nodes;
+} Distribution;
+#endif
+
+
 /*
  * Relids
  *		Set of relation identifiers (indexes into the rangetable).
@@ -225,8 +243,10 @@ typedef struct PlannerInfo
 	bool		hasRecursion;	/* true if planning a recursive WITH item */
 
 #ifdef PGXC
+#ifndef XCP
 	/* This field is used only when RemoteScan nodes are involved */
 	int         rs_alias_index; /* used to build the alias reference */
+#endif
 #endif
 
 	/* These fields are used only when hasRecursion is true: */
@@ -644,6 +664,9 @@ typedef struct Path
 
 	List	   *pathkeys;		/* sort ordering of path's output */
 	/* pathkeys is a List of PathKey nodes; see above */
+#ifdef XCP
+	Distribution *distribution;
+#endif
 } Path;
 
 /*----------
@@ -867,6 +890,14 @@ typedef struct UniquePath
 	List	   *uniq_exprs;		/* expressions to be made unique */
 	double		rows;			/* estimated number of result tuples */
 } UniquePath;
+
+#ifdef XCP
+typedef struct RemoteSubPath
+{
+	Path		path;
+	Path	   *subpath;
+} RemoteSubPath;
+#endif
 
 /*
  * All join-type paths share these fields.

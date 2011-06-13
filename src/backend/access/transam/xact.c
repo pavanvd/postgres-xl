@@ -363,12 +363,31 @@ GetCurrentGlobalTransactionId(void)
 static GlobalTransactionId
 GetGlobalTransactionId(TransactionState s)
 {
+#ifndef XCP
 	GTM_Timestamp gtm_timestamp;
 	bool		received_tp = false;
+#endif
 
 	/*
 	 * Here we receive timestamp at the same time as gxid.
 	 */
+#ifdef XCP
+	if (!GlobalTransactionIdIsValid(s->globalTransactionId))
+	{
+		GTM_Timestamp gtm_timestamp;
+		bool		received_tp = false;
+
+		s->globalTransactionId = GetNewGlobalTransactionId(&received_tp,
+														   &gtm_timestamp);
+
+		/* Set a timestamp value if and only if it has been received from GTM */
+		if (received_tp)
+		{
+			GTMxactStartTimestamp = (TimestampTz) gtm_timestamp;
+			GTMdeltaTimestamp = GTMxactStartTimestamp - stmtStartTimestamp;
+		}
+	}
+#else
 	if (!GlobalTransactionIdIsValid(s->globalTransactionId))
 		s->globalTransactionId = (GlobalTransactionId) GetNewTransactionId(s->parent != NULL,
 																		   &received_tp,
@@ -376,10 +395,11 @@ GetGlobalTransactionId(TransactionState s)
 
 	/* Set a timestamp value if and only if it has been received from GTM */
 	if (received_tp)
-	{
+ 	{
 		GTMxactStartTimestamp = (TimestampTz) gtm_timestamp;
 		GTMdeltaTimestamp = GTMxactStartTimestamp - stmtStartTimestamp;
 	}
+#endif /* XCP */
 
 	return s->globalTransactionId;
 }
@@ -545,6 +565,14 @@ AssignTransactionId(TransactionState s)
 	 * the Xid as "running".  See GetNewTransactionId.
 	 */
 #ifdef PGXC  /* PGXC_COORD */
+#ifdef XCP
+	/* Assign GXID to the current transaction if not yet set */
+	GetGlobalTransactionId(s);
+	elog(DEBUG1, "New transaction id assigned = %d, isSubXact = %s",
+		s->globalTransactionId, isSubXact ? "true" : "false");
+
+	s->transactionId = GetNewTransactionId(s->globalTransactionId,isSubXact);
+#else
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
 		s->transactionId = (TransactionId) GetGlobalTransactionId(s);
@@ -563,9 +591,10 @@ AssignTransactionId(TransactionState s)
 			GTMdeltaTimestamp = GTMxactStartTimestamp - stmtStartTimestamp;
 		}
 	}
+#endif /* XCP */
 #else
 	s->transactionId = GetNewTransactionId(isSubXact);
-#endif
+#endif /* PGXC */
 
 	if (isSubXact)
 		SubTransSetParent(s->transactionId, s->parent->transactionId, false);
@@ -2292,6 +2321,12 @@ CommitTransaction(bool contact_gtm)
 	s->maxChildXids = 0;
 
 #ifdef PGXC
+#ifdef XCP
+	s->globalTransactionId = InvalidGlobalTransactionId;
+	s->globalCommitTransactionId = InvalidGlobalTransactionId;
+	s->ArePGXCNodesPrepared = false;
+	if (IS_PGXC_DATANODE || IsConnFromCoord())
+#else
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
 		s->globalTransactionId = InvalidGlobalTransactionId;
@@ -2299,6 +2334,7 @@ CommitTransaction(bool contact_gtm)
 		s->ArePGXCNodesPrepared = false;
 	}
 	else if (IS_PGXC_DATANODE || IsConnFromCoord())
+#endif /* XCP */
 		SetNextTransactionId(InvalidTransactionId);
 #endif
 
@@ -2576,6 +2612,9 @@ PrepareTransaction(void)
 	s->maxChildXids = 0;
 
 #ifdef PGXC /* PGXC_DATANODE */
+#ifdef XCP
+	s->globalTransactionId = InvalidGlobalTransactionId;
+#endif
 	if (IS_PGXC_DATANODE || IsConnFromCoord())
 		SetNextTransactionId(InvalidTransactionId);
 #endif
@@ -2852,9 +2891,14 @@ CleanupTransaction(void)
 	s->maxChildXids = 0;
 
 #ifdef PGXC  /* PGXC_DATANODE */
+#ifdef XCP
+	s->globalTransactionId = InvalidGlobalTransactionId;
+	if (IS_PGXC_DATANODE || IsConnFromCoord())
+#else
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 		s->globalTransactionId = InvalidGlobalTransactionId;
 	else if (IS_PGXC_DATANODE || IsConnFromCoord())
+#endif /* XCP */
 		SetNextTransactionId(InvalidTransactionId);
 #endif
 
@@ -4818,8 +4862,10 @@ PushTransaction(void)
 	 * failure.
 	 */
 #ifdef PGXC  /* PGXC_COORD */
+#ifndef XCP
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-		s->globalTransactionId = InvalidGlobalTransactionId;
+#endif
+	s->globalTransactionId = InvalidGlobalTransactionId;
 #endif
 	s->transactionId = InvalidTransactionId;	/* until assigned */
 	s->subTransactionId = currentSubTransactionId;

@@ -224,7 +224,11 @@ foreign_qual_walker(Node *node, foreign_qual_context *context)
 char *
 deparseSql(RemoteQueryState *scanstate)
 {
+#ifdef XCP
+	EState		   *estate = scanstate->combiner.ss.ps.state;
+#else
 	EState		   *estate = scanstate->ss.ps.state;
+#endif
 	bool			prefix;
 	List		   *context;
 	StringInfoData	sql;
@@ -243,7 +247,11 @@ deparseSql(RemoteQueryState *scanstate)
 elog(DEBUG2, "%s(%u) called", __FUNCTION__, __LINE__);
 
 	/* extract RemoteQuery and RangeTblEntry */
+#ifdef XCP
+	scan = (RemoteQuery *)scanstate->combiner.ss.ps.plan;
+#else
 	scan = (RemoteQuery *)scanstate->ss.ps.plan;
+#endif
 	rte = list_nth(estate->es_range_table, scan->scan.scanrelid - 1);
 
 	/* prepare to deparse plan */
@@ -278,7 +286,11 @@ elog(DEBUG2, "%s(%u) called", __FUNCTION__, __LINE__);
 	 * columns because some columns may be used only in parent Sort/Agg/Limit
 	 * nodes.
 	 */
+#ifdef XCP
+	tupdesc = scanstate->combiner.ss.ss_currentRelation->rd_att;
+#else
 	tupdesc = scanstate->ss.ss_currentRelation->rd_att;
+#endif
 	first = true;
 	for (i = 0; i < tupdesc->natts; i++)
 	{
@@ -328,7 +340,11 @@ elog(DEBUG2, "%s(%u) called", __FUNCTION__, __LINE__);
 	 * PREPARE/EXECUTE work properly.
 	 */
 #if OPTIMIZE_WHERE_CLAUSE > EVAL_QUAL_LOCAL
+#ifdef XCP
+	if (scanstate->combiner.ss.ps.plan->qual)
+#else
 	if (scanstate->ss.ps.plan->qual)
+#endif /* XCP */
 	{
 		List	   *local_qual = NIL;
 		List	   *foreign_qual = NIL;
@@ -339,7 +355,11 @@ elog(DEBUG2, "%s(%u) called", __FUNCTION__, __LINE__);
 		 * Divide qual of PlanState into two lists, one for local evaluation
 		 * and one for foreign evaluation.
 		 */
+#ifdef XCP
+		foreach (lc, scanstate->combiner.ss.ps.qual)
+#else
 		foreach (lc, scanstate->ss.ps.qual)
+#endif /* XCP */
 		{
 			ExprState	   *state = lfirst(lc);
 
@@ -361,7 +381,11 @@ elog(DEBUG2, "%s(%u) called", __FUNCTION__, __LINE__);
 		 * qual with the list of ExprStates which should be evaluated in the
 		 * local server.
 		 */
+#ifdef XCP
+		scanstate->combiner.ss.ps.qual = local_qual;
+#else
 		scanstate->ss.ps.qual = local_qual;
+#endif /* XCP */
 #endif
 
 		/*

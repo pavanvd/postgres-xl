@@ -429,6 +429,16 @@ typedef struct StdRdOptions
 	((relation)->rd_backend == MyBackendId || \
 	 (relation)->rd_createSubid != InvalidSubTransactionId)
 
+#ifdef XCP
+/*
+ * RelationGetLocatorType
+ *		Returns the rel's locator type.
+ */
+#define RelationGetLocatorType(relation) \
+	((relation)->rd_locator_info->locatorType)
+
+#endif
+
 /*
  * RELATION_IS_OTHER_TEMP
  *		Test for a temporary relation that belongs to some other session.
@@ -438,6 +448,7 @@ typedef struct StdRdOptions
 #define RELATION_IS_OTHER_TEMP(relation) \
 	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP \
 	&& (relation)->rd_backend != MyBackendId)
+
 
 /* routines in utils/cache/relcache.c */
 extern void RelationIncrementReferenceCount(Relation rel);

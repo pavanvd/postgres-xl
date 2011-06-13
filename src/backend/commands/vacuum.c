@@ -50,7 +50,12 @@
 
 #ifdef PGXC
 #include "pgxc/pgxc.h"
-#endif
+#ifdef XCP
+#include "nodes/makefuncs.h"
+#include "pgxc/execRemote.h"
+#include "pgxc/planner.h"
+#endif /* XCP */
+#endif /* PGXC */
 
 /*
  * GUC parameters
@@ -69,6 +74,9 @@ static List *get_rel_oids(Oid relid, const RangeVar *vacrel);
 static void vac_truncate_clog(TransactionId frozenXID);
 static bool vacuum_rel(Oid relid, VacuumStmt *vacstmt, bool do_toast,
 		   bool for_wraparound);
+#ifdef XCP
+static void vacuum_rel_coordinator(Relation onerel);
+#endif
 
 
 /*
@@ -1057,6 +1065,19 @@ vacuum_rel(Oid relid, VacuumStmt *vacstmt, bool do_toast, bool for_wraparound)
 						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 	save_nestlevel = NewGUCNestLevel();
 
+#ifdef XCP
+	/*
+	 * If we are on coordinator and target relation is distributed read
+	 * statistics from the data node instead of vacuuming local relation.
+	 */
+	if (IS_PGXC_COORDINATOR && onerel->rd_locator_info)
+	{
+		/* always skip TOAST distributed relation on coordinator */
+		toast_relid = InvalidOid;
+		vacuum_rel_coordinator(onerel);
+	}
+	else
+#endif
 	/*
 	 * Do the actual work --- either FULL or "lazy" vacuum
 	 */
@@ -1197,3 +1218,210 @@ vacuum_delay_point(void)
 		CHECK_FOR_INTERRUPTS();
 	}
 }
+
+#ifdef XCP
+/*
+ * For the data node query make up TargetEntry representing specified column
+ * of pg_class catalog table
+ */
+TargetEntry *
+make_relation_tle(Oid reloid, const char *relname, const char *column)
+{
+	HeapTuple	tuple;
+	Var		   *var;
+	Form_pg_attribute att_tup;
+	TargetEntry *tle;
+
+	tuple = SearchSysCacheAttName(reloid, column);
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_COLUMN),
+				 errmsg("column \"%s\" of relation \"%s\" does not exist",
+						column, relname)));
+	att_tup = (Form_pg_attribute) GETSTRUCT(tuple);
+
+	var = makeVar(1,
+				  att_tup->attnum,
+				  att_tup->atttypid,
+				  att_tup->atttypmod,
+				  0);
+
+	tle = makeTargetEntry((Expr *) var, att_tup->attnum, NULL, false);
+	ReleaseSysCache(tuple);
+	return tle;
+}
+
+
+/*
+ * Get relation statistics from remote data nodes
+ * Returns true if statistics is found on any nodes
+ */
+static bool
+get_remote_relstat(char *nspname, char *relname, bool replicated,
+				   int32 *num_pages, float4 *num_tuples)
+{
+	StringInfoData query;
+	EState 	   *estate;
+	MemoryContext oldcontext;
+	RemoteQuery *step;
+	RemoteQueryState *node;
+	TupleTableSlot *result;
+	int			validpages,
+				validtuples;
+
+	/* Make up query string */
+	initStringInfo(&query);
+	appendStringInfo(&query, "SELECT c.relpages, "
+									"c.reltuples "
+							 "FROM pg_class c JOIN pg_namespace n "
+							 "ON c.relnamespace = n.oid "
+							 "WHERE n.nspname = '%s' "
+							 "AND c.relname = '%s'",
+					 nspname, relname);
+
+	/* Build up RemoteQuery */
+	step = makeNode(RemoteQuery);
+
+	step->combine_type = COMBINE_TYPE_NONE;
+	step->exec_nodes = NULL;
+	step->sql_statement = query.data;
+	step->force_autocommit = false;
+	step->exec_type = EXEC_ON_DATANODES;
+
+	/* Add targetlist entries */
+	step->scan.plan.targetlist = lappend(step->scan.plan.targetlist,
+										 make_relation_tle(RelationRelationId,
+														   "pg_class",
+														   "relpages"));
+	step->scan.plan.targetlist = lappend(step->scan.plan.targetlist,
+										 make_relation_tle(RelationRelationId,
+														   "pg_class",
+														   "reltuples"));
+
+	/* Execute query on the data nodes */
+	estate = CreateExecutorState();
+
+	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+
+	estate->es_snapshot = GetActiveSnapshot();
+
+	node = ExecInitRemoteQuery(step, estate, 0);
+	MemoryContextSwitchTo(oldcontext);
+	/* get ready to combine results */
+	*num_pages = 0;
+	*num_tuples = 0.0;
+	validpages = 0;
+	validtuples = 0;
+	result = ExecRemoteQuery(node);
+	while (result != NULL && !TupIsNull(result))
+	{
+		Datum 	value;
+		bool	isnull;
+		/* Process statistics from the data node */
+		value = slot_getattr(result, 1, &isnull); /* relpages */
+		if (!isnull)
+		{
+			validpages++;
+			*num_pages += DatumGetInt32(value);
+		}
+		value = slot_getattr(result, 2, &isnull); /* reltuples */
+		if (!isnull)
+		{
+			validtuples++;
+			*num_tuples += DatumGetFloat4(value);
+		}
+		/* fetch next */
+		result = ExecRemoteQuery(node);
+	}
+	ExecEndRemoteQuery(node);
+
+	if (replicated)
+	{
+		/*
+		 * Normally numbers should be the same on the nodes, but relations
+		 * are autovacuum'ed independedly, so they may differ.
+		 * Average is good enough approximation in this case.
+		 */
+		if (validpages > 0)
+			*num_pages /= validpages;
+
+		if (validtuples > 0)
+			*num_tuples /= validtuples;
+	}
+
+	return validpages > 0 || validtuples > 0;
+}
+
+
+/*
+ * Coordinator does not contain any data, so we never need to vacuum relations.
+ * This function only updates optimizer statistics based on info from the
+ * data nodes.
+ */
+static void
+vacuum_rel_coordinator(Relation onerel)
+{
+	char 	   *nspname;
+	char 	   *relname;
+	/* fields to combine relation statistics */
+	int32		num_pages;
+	float4		num_tuples;
+	bool		hasindex;
+	bool 		replicated;
+
+	/* Get the relation identifier */
+	relname = RelationGetRelationName(onerel);
+	nspname = get_namespace_name(RelationGetNamespace(onerel));
+
+	elog(LOG, "Getting relation statistics for %s.%s", nspname, relname);
+
+	replicated = IsReplicated(RelationGetLocatorType(onerel));
+	/* Update local statistics */
+	if (get_remote_relstat(nspname, relname, replicated,
+						   &num_pages, &num_tuples))
+	{
+		int			nindexes;
+		Relation   *Irel;
+
+		vac_open_indexes(onerel, ShareUpdateExclusiveLock, &nindexes, &Irel);
+		hasindex = (nindexes > 0);
+
+		if (hasindex)
+		{
+			int 	i;
+
+			/* Fetch index stats */
+			for (i = 0; i < nindexes; i++)
+			{
+				int32	idx_pages;
+				float4	idx_tuples;
+
+				/* Get the index identifier */
+				relname = RelationGetRelationName(Irel[i]);
+				nspname = get_namespace_name(RelationGetNamespace(Irel[i]));
+				/* Index is replicated if parent relation is replicated */
+				if (get_remote_relstat(nspname, relname, replicated,
+									   &idx_pages, &idx_tuples))
+				{
+					/* save changes */
+					vac_update_relstats(Irel[i],
+										(BlockNumber) idx_pages,
+										(double) idx_tuples,
+										false,
+										InvalidTransactionId);
+				}
+			}
+		}
+
+		/* Done with indexes */
+		vac_close_indexes(nindexes, Irel, NoLock);
+
+		/* save changes */
+		vac_update_relstats(onerel,
+							(BlockNumber) num_pages,
+							(double) num_tuples,
+							hasindex,
+							InvalidTransactionId);
+	}
+}
+#endif

@@ -2525,7 +2525,17 @@ static struct config_int ConfigureNamesInt[] =
 		1, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
-#endif
+#ifdef XCP
+	{
+		{"parentnode", PGC_BACKEND, CONN_AUTH,
+			gettext_noop("Sets the number of Postgres-XC remote data node"),
+			NULL
+		},
+		&parentPGXCNode,
+		0, 0, INT_MAX, NULL, NULL
+	},
+#endif /* XCP */
+#endif /* PGXC */
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL

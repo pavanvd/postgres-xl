@@ -103,7 +103,8 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptKind reloptkind)
 			/* Table --- retrieve statistics from the system catalogs */
 			get_relation_info(root, rte->relid, rte->inh, rel);
 #ifdef PGXC
-			/* 
+#ifndef XCP /* XCP maintains valid statistics on coordinator */
+			/*
 			 * This is a remote table... we have no idea how many pages/rows
 			 * we may get from a scan of this table. However, we should set the
 			 * costs in such a manner that cheapest paths should pick up the
@@ -121,7 +122,8 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptKind reloptkind)
 				rel->tuples  = 1;
 				rel->rows    = 1;
 			}
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 			break;
 		case RTE_SUBQUERY:
 		case RTE_FUNCTION:

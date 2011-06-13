@@ -131,6 +131,7 @@ planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		result = (*planner_hook) (parse, cursorOptions, boundParams);
 	else
 #ifdef PGXC
+#ifndef XCP
 		/*
 		 * A coordinator receiving a query from another Coordinator
 		 * is not allowed to go into PGXC planner.
@@ -138,7 +139,8 @@ planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 			result = pgxc_planner(parse, cursorOptions, boundParams);
 		else
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 			result = standard_planner(parse, cursorOptions, boundParams);
 	return result;
 }
@@ -258,6 +260,10 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	if (IS_PGXC_COORDINATOR)
 		switch (parse->commandType)
 		{
+#ifdef XCP
+			case CMD_SELECT:
+				break;
+#endif /* XCP */
 			case CMD_INSERT:
 				top_plan = create_remoteinsert_plan(root, top_plan);
 				break;
@@ -291,6 +297,11 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	result->relationOids = glob->relationOids;
 	result->invalItems = glob->invalItems;
 	result->nParamExec = list_length(glob->paramlist);
+#ifdef XCP
+	result->distributionType = LOCATOR_TYPE_SINGLE;
+	result->distributionKey = InvalidAttrNumber;
+	result->distributionNodes = NULL;
+#endif
 
 	return result;
 }
@@ -351,8 +362,10 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->hasInheritedTarget = false;
 
 #ifdef PGXC
+#ifndef XCP
 	root->rs_alias_index = 1;
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 	root->hasRecursion = hasRecursion;
 	if (hasRecursion)
 		root->wt_param_id = SS_assign_special_param(root);
@@ -1278,6 +1291,16 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 
 			result_plan = create_plan(root, best_path);
 			current_pathkeys = best_path->pathkeys;
+#ifdef XCP
+			if (best_path->distribution)
+			{
+				result_plan = (Plan *) make_remotesubplan(root,
+														  result_plan,
+														  NULL,
+													  best_path->distribution,
+														  current_pathkeys);
+			}
+#endif
 
 			/* Detect if we'll need an explicit sort for grouping */
 			if (parse->groupClause && !use_hashed_grouping &&
@@ -1376,6 +1399,18 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 									extract_grouping_ops(parse->groupClause),
 												numGroups,
 												result_plan);
+#ifdef PGXC
+#ifndef XCP
+				/*
+				 * Grouping will certainly not increase the number of rows
+				 * coordinator fetches from datanode, in fact it's expected to
+				 * reduce the number drastically. Hence, try pushing GROUP BY
+				 * clauses and aggregates to the datanode, thus saving bandwidth.
+				 */
+				if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+					result_plan = create_remoteagg_plan(root, result_plan);
+#endif /* XCP */
+#endif /* PGXC */
 				/* Hashed aggregation produces randomly-ordered results */
 				current_pathkeys = NIL;
 			}
@@ -1447,6 +1482,18 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 									extract_grouping_ops(parse->groupClause),
 												  dNumGroups,
 												  result_plan);
+#ifdef PGXC
+#ifndef XCP
+				/*
+				 * Grouping will certainly not increase the number of rows
+				 * coordinator fetches from datanode, in fact it's expected to
+				 * reduce the number drastically. Hence, try pushing GROUP BY
+				 * clauses and aggregates to the datanode, thus saving bandwidth.
+				 */
+				if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+					result_plan = create_remotegroup_plan(root, result_plan);
+#endif /* XCP */
+#endif /* PGXC */
 			}
 			else if (root->hasHavingQual)
 			{

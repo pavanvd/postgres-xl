@@ -25,9 +25,7 @@
 #include "nodes/pg_list.h"
 #include "tcop/dest.h"
 #include "utils/snapshot.h"
-#ifdef PGXC
 #include "tcop/pquery.h"
-#endif
 
 /* Outputs of handle_response() */
 #define RESPONSE_EOF EOF
@@ -67,7 +65,16 @@ typedef struct RemoteDataRowData
 } 	RemoteDataRowData;
 typedef RemoteDataRowData *RemoteDataRow;
 
+#ifdef XCP
+/*
+ * Common part for all plan state nodes needed to access remote datanodes
+ * ResponseCombiner must be the first field of the plan state node so we can
+ * typecast
+ */
+typedef struct ResponseCombiner
+#else
 typedef struct RemoteQueryState
+#endif
 {
 	ScanState	ss;						/* its first field is NodeTag */
 	int			node_count;				/* total count of participating nodes */
@@ -81,10 +88,11 @@ typedef struct RemoteQueryState
 	int			description_count;		/* count of received RowDescription messages */
 	int			copy_in_count;			/* count of received CopyIn messages */
 	int			copy_out_count;			/* count of received CopyOut messages */
+	FILE	   *copy_file;      		/* used if copy_dest == COPY_FILE */
+	uint64		processed;				/* count of data rows handled */
 	char		errorCode[5];			/* error code to send back to client */
 	char	   *errorMessage;			/* error message to send back to client */
 	char	   *errorDetail;			/* error detail to send back to client */
-	bool		query_Done;				/* query has been sent down to data nodes */
 	RemoteDataRowData currentRow;		/* next data ro to be wrapped into a tuple */
 	/* TODO use a tuplestore as a rowbuffer */
 	List 	   *rowBuffer;				/* buffer where rows are stored when connection
@@ -97,6 +105,20 @@ typedef struct RemoteQueryState
 	 * when buffering
 	 */
 	int 	   *tapenodes;
+	void	   *tuplesortstate;			/* for merge sort */
+	/* cursor support */
+	char	   *cursor;					/* cursor name */
+	char	   *update_cursor;			/* throw this cursor current tuple can be updated */
+	int			cursor_count;			/* total count of participating nodes */
+	PGXCNodeHandle **cursor_connections;/* data node connections being combined */
+#ifdef XCP
+}	ResponseCombiner;
+
+typedef struct RemoteQueryState
+{
+	ResponseCombiner combiner;			/* see ResponseCombiner struct */
+#endif
+	bool		query_Done;				/* query has been sent down to data nodes */
 	/*
 	 * While we are not supporting grouping use this flag to indicate we need
 	 * to initialize collecting of aggregates from the DNs
@@ -106,14 +128,38 @@ typedef struct RemoteQueryState
 	/* Simple DISTINCT support */
 	FmgrInfo   *eqfunctions; 			/* functions to compare tuples */
 	MemoryContext tmp_ctx;				/* separate context is needed to compare tuples */
-	FILE	   *copy_file;      		/* used if copy_dest == COPY_FILE */
-	uint64		processed;				/* count of data rows when running CopyOut */
-	/* cursor support */
-	char	   *cursor;					/* cursor name */
-	char	   *update_cursor;			/* throw this cursor current tuple can be updated */
-	int			cursor_count;			/* total count of participating nodes */
-	PGXCNodeHandle **cursor_connections;/* data node connections being combined */
 }	RemoteQueryState;
+
+
+#ifdef XCP
+/*
+ * Execution state of a RemoteSubplan node
+ */
+typedef struct RemoteSubplanState
+{
+	ResponseCombiner combiner;			/* see ResponseCombiner struct */
+	char	   *subplanstr;				/* subplan encoded as a string */
+	bool		bound;					/* subplan is sent down to the nodes */
+} RemoteSubplanState;
+
+
+/*
+ * Data needed to set up a PreparedStatement on the remote node and other data
+ * for the remote executor
+ */
+typedef struct RemoteStmt
+{
+	NodeTag		type;
+
+	struct Plan *planTree;				/* tree of Plan nodes */
+
+	List	   *rtable;					/* list of RangeTblEntry nodes */
+	char		distributionType;
+	AttrNumber	distributionKey;
+	List	   *distributionNodes;
+} RemoteStmt;
+#endif
+
 
 /* Multinode Executor */
 extern void PGXCNodeBegin(void);
@@ -140,7 +186,11 @@ extern void PGXCNodeGetNodeList(PGXC_NodeId **datanodes,
 extern PGXCNodeHandle** DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_from);
 extern int DataNodeCopyIn(char *data_row, int len, ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections);
 extern uint64 DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* copy_file);
+#ifdef XCP
+extern void DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_data_node);
+#else
 extern void DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_data_node, CombineType combine_type);
+#endif
 extern bool DataNodeCopyEnd(PGXCNodeHandle *handle, bool is_error);
 extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_connections);
 
@@ -148,12 +198,32 @@ extern int ExecCountSlotsRemoteQuery(RemoteQuery *node);
 extern RemoteQueryState *ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags);
 extern TupleTableSlot* ExecRemoteQuery(RemoteQueryState *step);
 extern void ExecEndRemoteQuery(RemoteQueryState *step);
+#ifdef XCP
+extern RemoteSubplanState *ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags);
+extern TupleTableSlot* ExecRemoteSubplan(RemoteSubplanState *node);
+extern void ExecEndRemoteSubplan(RemoteSubplanState *node);
+#endif
 extern void ExecRemoteUtility(RemoteQuery *node);
 
-extern int handle_response(PGXCNodeHandle * conn, RemoteQueryState *combiner);
 extern bool	is_data_node_ready(PGXCNodeHandle * conn);
-extern void HandleCmdComplete(CmdType commandType, CombineTag *combine, const char *msg_body, size_t len);
+ 
+#ifdef XCP
+extern int handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner);
+#else
+extern int handle_response(PGXCNodeHandle *conn, RemoteQueryState *combiner);
+#endif
+extern void HandleCmdComplete(CmdType commandType, CombineTag *combine, const char *msg_body,
+									size_t len);
+
+#ifdef XCP
+extern bool FetchTuple(ResponseCombiner *combiner, TupleTableSlot *slot, bool merge_sort);
+
+#define CHECK_OWNERSHIP(conn, node) \
+       if ((conn)->combiner && (conn)->combiner != node) \
+               BufferConnection(conn)
+#else
 extern bool FetchTuple(RemoteQueryState *combiner, TupleTableSlot *slot);
+#endif
 extern void BufferConnection(PGXCNodeHandle *conn);
 
 extern void ExecRemoteQueryReScan(RemoteQueryState *node, ExprContext *exprCtxt);

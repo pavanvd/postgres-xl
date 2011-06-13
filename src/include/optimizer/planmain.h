@@ -16,6 +16,9 @@
 
 #include "nodes/plannodes.h"
 #include "nodes/relation.h"
+#ifdef XCP
+#include "pgxc/planner.h"
+#endif
 
 /* GUC parameters */
 #define DEFAULT_CURSOR_TUPLE_FRACTION 0.1
@@ -141,5 +144,16 @@ extern Plan *create_remoteupdate_plan(PlannerInfo *root, Plan *topplan);
 extern Plan *create_remotedelete_plan(PlannerInfo *root, Plan *topplan);
 extern Plan *create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan);
 #endif
+#ifdef XCP
+extern RemoteSubplan *make_remotesubplan(PlannerInfo *root,
+				   Plan *lefttree,
+				   Distribution *resultDistribution,
+				   Distribution *targetDistribution,
+				   List *pathkeys);
+#else
+extern Plan *create_remotegroup_plan(PlannerInfo *root, Plan *local_plan);
+extern Plan *create_remoteagg_plan(PlannerInfo *root, Plan *agg_plan);
+#endif /* XCP */
+#endif /* PGXC */
 
 #endif   /* PLANMAIN_H */

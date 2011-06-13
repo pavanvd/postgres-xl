@@ -31,7 +31,8 @@ esac
 fi
 
 # For PGXC, set -DPGXC by default. This can be overriden with -UPGXC if the user sets it.
-CFLAGS="$CFLAGS -DPGXC"
+# For XCPlus specify both PGXC and XCP
+CFLAGS="$CFLAGS -DPGXC -DXCP"
 
 
 # PATH needs CR

@@ -67,9 +67,17 @@
 #include "pgxc/locator.h"
 #include "pgxc/pgxc.h"
 #include "pgxc/planner.h"
-#include "pgxc/poolutils.h"
 #include "pgxc/poolmgr.h"
 #include "utils/lsyscache.h"
+#include "pgxc/poolutils.h"
+#ifdef XCP
+#include "access/transam.h"
+#include "pgxc/execRemote.h"
+#include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
+#include "utils/snapmgr.h"
+#include "utils/tqual.h"
+#endif
 
 static void ExecUtilityStmtOnNodes(const char *queryString, ExecNodes *nodes,
 								   bool force_autocommit, RemoteQueryExecType exec_type,
@@ -1700,15 +1708,40 @@ standard_ProcessUtility(Node *parsetree,
 			/* we choose to allow this during "read only" transactions */
 			PreventCommandDuringRecovery("VACUUM");
 #ifdef PGXC
+#ifdef XCP
+			/*
+			 * Send command down to data nodes
+			 */
+			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+				ExecUtilityStmtOnNodes(queryString, NULL, true,
+									   EXEC_ON_DATANODES, false);
+#else
 			/*
 			 * We have to run the command on nodes before coordinator because
 			 * vacuum() pops active snapshot and we can not send it to nodes
-			 */
+ 			 */
 			if (IS_PGXC_COORDINATOR)
 				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_DATANODES, false);
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 			vacuum((VacuumStmt *) parsetree, InvalidOid, true, NULL, false,
 				   isTopLevel);
+#ifdef XCP
+			/*
+			 * Get statistics from the data nodes, apply them locally and
+			 * propagate to other coordinators.
+			 */
+			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+			{
+				/*
+				 * New transaction is started before exiting from vacuum, get
+				 * a snapshot for the transaction.
+				 */
+				PushActiveSnapshot(GetTransactionSnapshot());
+				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_COORDS, false);
+				PopActiveSnapshot();
+			}
+#endif
 			break;
 
 		case T_ExplainStmt:

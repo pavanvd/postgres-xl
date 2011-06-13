@@ -129,6 +129,26 @@ typedef struct
 	char	  *join_condition;
 } RemoteQuery;
 
+
+#ifdef XCP
+/*
+ * Going to be a RemoteQuery replacement.
+ * Submit left subplan to the nodes defined by the Distribution and combine
+ * results.
+ */
+typedef struct
+{
+	Scan		scan;
+	char 		distributionType;
+	AttrNumber	distributionKey;
+	List 	   *distributionNodes;
+	List 	   *nodeList;
+	bool 		execOnAll;
+	SimpleSort *sort;
+} RemoteSubplan;
+#endif
+
+
 typedef struct
 {
 	bool partitioned_replicated;

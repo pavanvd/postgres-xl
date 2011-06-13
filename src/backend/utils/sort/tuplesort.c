@@ -223,8 +223,12 @@ struct Tuplesortstate
 	MemoryContext sortcontext;	/* memory context holding all sort data */
 	LogicalTapeSet *tapeset;	/* logtape.c object for tapes in a temp file */
 #ifdef PGXC
+#ifdef XCP
+	ResponseCombiner *combiner; /* tuple source, alternate to tapeset */
+#else
 	RemoteQueryState *combiner; /* tuple source, alternate to tapeset */
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 	/*
 	 * These function pointers decouple the routines that must know what kind
@@ -912,7 +916,11 @@ Tuplesortstate *
 tuplesort_begin_merge(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
 					 Oid *sortOperators, bool *nullsFirstFlags,
+#ifdef XCP
+					 ResponseCombiner *combiner,
+#else
 					 RemoteQueryState *combiner,
+#endif
 					 int workMem)
 {
 	Tuplesortstate *state = tuplesort_begin_common(workMem, false);
@@ -3013,7 +3021,11 @@ reversedirection_heap(Tuplesortstate *state)
 static unsigned int
 getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
 {
+#ifdef XCP
+	ResponseCombiner *combiner = state->combiner;
+#else
 	RemoteQueryState *combiner = state->combiner;
+#endif
 	PGXCNodeHandle *conn = combiner->connections[tapenum];
 	/*
 	 * If connection is active (potentially has data to read) we can get node
@@ -3122,6 +3134,20 @@ getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
 				break;
 			case RESPONSE_DATAROW:
 				Assert(len == 0);
+#ifdef XCP
+				if (combiner->cursor)
+				{
+					/*
+					 * We fetching one row at a time when running EQP
+					 * so read following PortalSuspended or ResponseComplete
+					 * to leave connection clean between the calls
+					 */
+					len = combiner->currentRow.msglen;
+					break;
+				}
+				else
+					return combiner->currentRow.msglen;
+#else
 				if (state->combiner->cursor)
 				{
 					/*
@@ -3134,6 +3160,7 @@ getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
 				}
 				else
 					return state->combiner->currentRow.msglen;
+#endif
 			default:
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
@@ -3150,7 +3177,11 @@ readtup_datanode(Tuplesortstate *state, SortTuple *stup,
 	MinimalTuple tuple;
 	HeapTupleData htup;
 
+#ifdef XCP
+	FetchTuple(state->combiner, slot, true);
+#else
 	FetchTuple(state->combiner, slot);
+#endif
 
 	/* copy the tuple into sort storage */
 	tuple = ExecCopySlotMinimalTuple(slot);

@@ -27,11 +27,20 @@ extern void parseCheckWindowFuncs(ParseState *pstate, Query *qry);
 extern void build_aggregate_fnexprs(Oid *agg_input_types,
 						int agg_num_inputs,
 						Oid agg_state_type,
+#ifdef XCP
+						Oid agg_collect_type,
+#endif
 						Oid agg_result_type,
 						Oid agg_input_collation,
 						Oid transfn_oid,
+#ifdef XCP
+						Oid collectfn_oid,
+#endif
 						Oid finalfn_oid,
 						Expr **transfnexpr,
+#ifdef XCP
+						Expr **collectfnexpr,
+#endif
 						Expr **finalfnexpr);
 
 #endif   /* PARSE_AGG_H */

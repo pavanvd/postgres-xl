@@ -2417,9 +2417,15 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 	{
 		GTM_Snapshot gtm_snapshot;
 		bool canbe_grouped = (!FirstSnapshotSet) || (!IsolationUsesXactSnapshot());
+#ifdef XCP
+		elog(DEBUG1, "Getting snapshot for autovacuum. Current XID = %d",
+			 GetCurrentGlobalTransactionId());
+		gtm_snapshot = GetSnapshotGTM(GetCurrentGlobalTransactionId(),
+									  canbe_grouped);
+#else
 		elog(DEBUG1, "Getting snapshot for autovacuum. Current XID = %d", GetCurrentTransactionId());
 		gtm_snapshot = GetSnapshotGTM(GetCurrentTransactionId(), canbe_grouped);
-
+#endif
 		if (!gtm_snapshot)
 			ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),

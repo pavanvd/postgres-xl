@@ -416,6 +416,9 @@ SocketBackend(StringInfo inBuf)
 			break;
 
 		case 'B':				/* bind */
+#ifdef XCP /* PGXC_DATANODE */
+		case 'b':				/* bind plan */
+#endif
 		case 'C':				/* close */
 		case 'D':				/* describe */
 		case 'E':				/* execute */
@@ -1470,6 +1473,353 @@ exec_parse_message(const char *query_string,	/* string to execute */
 
 	debug_query_string = NULL;
 }
+
+#ifdef XCP
+/*
+ * exec_bindplan_message
+ *
+ * Process a "BindPlan" message to create a portal from encoded plan
+ */
+static void
+exec_bindplan_message(StringInfo input_message)
+{
+	const char *portal_name;
+	const char *plannodestr;
+	RemoteStmt *rstmt;
+	int			numPFormats;
+	int16	   *pformats = NULL;
+	int			numParams;
+	int			numRFormats;
+	int16	   *rformats = NULL;
+	Portal		portal;
+	ParamListInfo params;
+	PlannedStmt *stmt;
+	List	   *plan_list;
+	MemoryContext oldContext;
+	bool		save_log_statement_stats = log_statement_stats;
+	bool		snapshot_set = false;
+	char		msec_str[32];
+
+	/* Get the fixed part of the message */
+	portal_name = pq_getmsgstring(input_message);
+	plannodestr = pq_getmsgstring(input_message);
+
+	ereport(DEBUG2,
+			(errmsg("bind plan %s",
+					*portal_name ? portal_name : "<unnamed>")));
+
+	set_ps_display("BIND PLAN", false);
+
+	if (save_log_statement_stats)
+		ResetUsage();
+
+	/*
+	 * Start up a transaction command so we can call functions etc. (Note that
+	 * this will normally change current memory context.) Nothing happens if
+	 * we are already in one.
+	 */
+	start_xact_command();
+
+	/* Switch back to message context */
+	MemoryContextSwitchTo(MessageContext);
+
+	/* Get the parameter format codes */
+	numPFormats = pq_getmsgint(input_message, 2);
+	if (numPFormats > 0)
+	{
+		int			i;
+
+		pformats = (int16 *) palloc(numPFormats * sizeof(int16));
+		for (i = 0; i < numPFormats; i++)
+			pformats[i] = pq_getmsgint(input_message, 2);
+	}
+
+	/* Get the parameter value count */
+	numParams = pq_getmsgint(input_message, 2);
+
+	if (numPFormats > 1 && numPFormats != numParams)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+			errmsg("bind message has %d parameter formats but %d parameters",
+				   numPFormats, numParams)));
+
+	/*
+	 * If we are in aborted transaction state, the only portals we can
+	 * actually run are those containing COMMIT or ROLLBACK commands. We
+	 * disallow binding anything else to avoid problems with infrastructure
+	 * that expects to run inside a valid transaction.	We also disallow
+	 * binding any parameters, since we can't risk calling user-defined I/O
+	 * functions.
+	 */
+	if (IsAbortedTransactionBlockState())
+		ereport(ERROR,
+				(errcode(ERRCODE_IN_FAILED_SQL_TRANSACTION),
+				 errmsg("current transaction is aborted, "
+						"commands ignored until end of transaction block")));
+
+	/*
+	 * Create the portal.  Allow silent replacement of an existing portal only
+	 * if the unnamed portal is specified.
+	 */
+	if (portal_name[0] == '\0')
+		portal = CreatePortal(portal_name, true, true);
+	else
+		portal = CreatePortal(portal_name, false, false);
+
+	/*
+	 * Prepare to copy stuff into the portal's memory context.  We do all this
+	 * copying first, because it could possibly fail (out-of-memory) and we
+	 * don't want a failure to occur between RevalidateCachedPlan and
+	 * PortalDefineQuery; that would result in leaking our plancache refcount.
+	 */
+	oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(portal));
+
+	/* Decode info passed from remote node */
+	set_portable_input(true);
+	rstmt = (RemoteStmt *) stringToNode(plannodestr);
+	set_portable_input(false);
+
+	/*
+	 * Fetch parameters, if any, and store in the portal's memory context.
+	 */
+	if (numParams > 0)
+	{
+		int			paramno;
+
+		/*
+		 * Set a snapshot if we have parameters to fetch (since the input
+		 * functions might need it)
+		 */
+		PushActiveSnapshot(GetTransactionSnapshot());
+		snapshot_set = true;
+
+		/* sizeof(ParamListInfoData) includes the first array element */
+		params = (ParamListInfo) palloc(sizeof(ParamListInfoData) +
+								   (numParams - 1) *sizeof(ParamExternData));
+		params->numParams = numParams;
+
+		for (paramno = 0; paramno < numParams; paramno++)
+		{
+			// XXX decode plan earlier and try to find params there
+			Oid			ptype = InvalidOid; //  psrc->param_types[paramno];
+			int32		plength;
+			Datum		pval;
+			bool		isNull;
+			StringInfoData pbuf;
+			char		csave;
+			int16		pformat;
+
+			plength = pq_getmsgint(input_message, 4);
+			isNull = (plength == -1);
+
+			if (!isNull)
+			{
+				const char *pvalue = pq_getmsgbytes(input_message, plength);
+
+				/*
+				 * Rather than copying data around, we just set up a phony
+				 * StringInfo pointing to the correct portion of the message
+				 * buffer.	We assume we can scribble on the message buffer so
+				 * as to maintain the convention that StringInfos have a
+				 * trailing null.  This is grotty but is a big win when
+				 * dealing with very large parameter strings.
+				 */
+				pbuf.data = (char *) pvalue;
+				pbuf.maxlen = plength + 1;
+				pbuf.len = plength;
+				pbuf.cursor = 0;
+
+				csave = pbuf.data[plength];
+				pbuf.data[plength] = '\0';
+			}
+			else
+			{
+				pbuf.data = NULL;		/* keep compiler quiet */
+				csave = 0;
+			}
+
+			if (numPFormats > 1)
+				pformat = pformats[paramno];
+			else if (numPFormats > 0)
+				pformat = pformats[0];
+			else
+				pformat = 0;	/* default = text */
+
+			if (pformat == 0)	/* text mode */
+			{
+				Oid			typinput;
+				Oid			typioparam;
+				char	   *pstring;
+
+				getTypeInputInfo(ptype, &typinput, &typioparam);
+
+				/*
+				 * We have to do encoding conversion before calling the
+				 * typinput routine.
+				 */
+				if (isNull)
+					pstring = NULL;
+				else
+					pstring = pg_client_to_server(pbuf.data, plength);
+
+				pval = OidInputFunctionCall(typinput, pstring, typioparam, -1);
+
+				/* Free result of encoding conversion, if any */
+				if (pstring && pstring != pbuf.data)
+					pfree(pstring);
+			}
+			else if (pformat == 1)		/* binary mode */
+			{
+				Oid			typreceive;
+				Oid			typioparam;
+				StringInfo	bufptr;
+
+				/*
+				 * Call the parameter type's binary input converter
+				 */
+				getTypeBinaryInputInfo(ptype, &typreceive, &typioparam);
+
+				if (isNull)
+					bufptr = NULL;
+				else
+					bufptr = &pbuf;
+
+				pval = OidReceiveFunctionCall(typreceive, bufptr, typioparam, -1);
+
+				/* Trouble if it didn't eat the whole buffer */
+				if (!isNull && pbuf.cursor != pbuf.len)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+							 errmsg("incorrect binary data format in bind parameter %d",
+									paramno + 1)));
+			}
+			else
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("unsupported format code: %d",
+								pformat)));
+				pval = 0;		/* keep compiler quiet */
+			}
+
+			/* Restore message buffer contents */
+			if (!isNull)
+				pbuf.data[plength] = csave;
+
+			params->params[paramno].value = pval;
+			params->params[paramno].isnull = isNull;
+
+			/*
+			 * We mark the params as CONST.  This has no effect if we already
+			 * did planning, but if we didn't, it licenses the planner to
+			 * substitute the parameters directly into the one-shot plan we
+			 * will generate below.
+			 */
+			params->params[paramno].pflags = PARAM_FLAG_CONST;
+			params->params[paramno].ptype = ptype;
+		}
+	}
+	else
+		params = NULL;
+
+	/* Done storing stuff in portal's context */
+	MemoryContextSwitchTo(oldContext);
+
+	/* Get the result format codes */
+	numRFormats = pq_getmsgint(input_message, 2);
+	if (numRFormats > 0)
+	{
+		int			i;
+
+		rformats = (int16 *) palloc(numRFormats * sizeof(int16));
+		for (i = 0; i < numRFormats; i++)
+			rformats[i] = pq_getmsgint(input_message, 2);
+	}
+
+	pq_getmsgend(input_message);
+
+	stmt = makeNode(PlannedStmt);
+
+	stmt->commandType = CMD_SELECT;
+	stmt->canSetTag = true;
+	stmt->transientPlan = false; // ???
+	stmt->planTree = rstmt->planTree;
+	stmt->rtable = rstmt->rtable;
+	stmt->resultRelations = NIL;
+	stmt->utilityStmt = NULL;
+	stmt->intoClause = NULL;
+	stmt->subplans = NIL;
+	stmt->rewindPlanIDs = NULL;
+	stmt->rowMarks = NIL;
+	stmt->relationOids = NIL;
+	stmt->invalItems = NIL;
+	stmt->nParamExec = numParams;
+	stmt->distributionType = rstmt->distributionType;
+	stmt->distributionKey = rstmt->distributionKey;
+	stmt->distributionNodes = rstmt->distributionNodes;
+
+	/* the container is not needed, release */
+	pfree(rstmt);
+
+	plan_list = lappend(NIL, stmt);
+
+	/*
+	 * Now we can define the portal.
+	 *
+	 * DO NOT put any code that could possibly throw an error between the
+	 * above "RevalidateCachedPlan(psrc, false)" call and here.
+	 */
+	PortalDefineQuery(portal,
+					  NULL,
+					  "(query not available)",
+					  "SELECT",
+					  plan_list,
+					  NULL);
+
+	/* Done with the snapshot used for parameter I/O and parsing/planning */
+	if (snapshot_set)
+		PopActiveSnapshot();
+
+	/*
+	 * And we're ready to start portal execution.
+	 */
+	PortalStart(portal, params, InvalidSnapshot);
+
+	/*
+	 * Apply the result format requests to the portal.
+	 */
+	PortalSetResultFormat(portal, numRFormats, rformats);
+
+	/*
+	 * Send BindComplete.
+	 */
+	if (whereToSendOutput == DestRemote)
+		pq_putemptymessage('2');
+
+	/*
+	 * Emit duration logging if appropriate.
+	 */
+	switch (check_log_duration(msec_str, false))
+	{
+		case 1:
+			ereport(LOG,
+					(errmsg("duration: %s ms", msec_str),
+					 errhidestmt(true)));
+			break;
+		case 2:
+			ereport(LOG,
+					(errmsg("duration: %s ms  bind plan %s",
+							msec_str,
+							*portal_name ? portal_name : "<unnamed>"),
+					 errhidestmt(true),
+					 errdetail_params(params)));
+			break;
+	}
+
+	if (save_log_statement_stats)
+		ShowUsage("BINDPLAN MESSAGE STATISTICS");
+}
+#endif
 
 /*
  * exec_bind_message
@@ -3586,7 +3936,10 @@ PostgresMain(int argc, char *argv[], const char *username)
 	TimestampTz		timestamp;
 
 	remoteConnType = REMOTE_CONN_APP;
-#endif
+#ifdef XCP
+	parentPGXCNode = 0;
+#endif /* XCP */
+#endif /* PGXC */
 
 	/*
 	 * Initialize globals (already done if under postmaster, but not if
@@ -3848,7 +4201,12 @@ PostgresMain(int argc, char *argv[], const char *username)
 	if (!IsUnderPostmaster)
 		PgStartTime = GetCurrentTimestamp();
 
-#ifdef PGXC /* PGXC_COORD */
+#ifdef PGXC
+#ifdef XCP
+	InitMultinodeExecutor();
+	/* If we exit, first try and clean connections and send to pool */
+	on_proc_exit (PGXCNodeCleanAndRelease, 0);
+#else
 	/* If this postmaster is launched from another Coord, do not initialize handles. skip it */
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
@@ -3856,6 +4214,7 @@ PostgresMain(int argc, char *argv[], const char *username)
 		/* If we exit, first try and clean connections and send to pool */
 		on_proc_exit (PGXCNodeCleanAndRelease, 0);
 	}
+#endif /* XCP */
 	if (IS_PGXC_DATANODE)
 	{
 		/* If we exit, first try and clean connection to GTM */
@@ -4122,6 +4481,19 @@ PostgresMain(int argc, char *argv[], const char *username)
 				 */
 				exec_bind_message(&input_message);
 				break;
+
+#ifdef XCP
+			case 'b':			/* bind plan */
+				/* Set statement_timestamp() */
+				SetCurrentStatementStartTimestamp();
+
+				/*
+				 * this message is complex enough that it seems best to put
+				 * the field extraction out-of-line
+				 */
+				exec_bindplan_message(&input_message);
+				break;
+#endif
 
 			case 'E':			/* execute */
 				{

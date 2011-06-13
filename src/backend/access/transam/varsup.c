@@ -73,6 +73,77 @@ GetForceXidFromGTM(void)
 }
 #endif /* PGXC */
 
+
+#ifdef XCP
+/*
+ * Get new GlobalTransactionId either from GTM or pick up value sent from
+ * Coordinator. GTM may send down updated date/time information, accept it.
+ */
+GlobalTransactionId
+GetNewGlobalTransactionId(bool *timestamp_received,
+						  GTM_Timestamp *timestamp)
+{
+	GlobalTransactionId gxid;
+
+	if (timestamp_received)
+		*timestamp_received = false;
+
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		if (IsAutoVacuumWorkerProcess() && (MyProc->vacuumFlags & PROC_IN_VACUUM))
+			gxid = (TransactionId) BeginTranAutovacuumGTM();
+		else
+		{
+			gxid = (TransactionId) BeginTranGTM(timestamp);
+			if (timestamp_received)
+				*timestamp_received = true;
+		}
+	}
+	else /* if(IS_PGXC_DATANODE || IsConnFromCoord()) */
+	{
+		if (IsAutoVacuumWorkerProcess())
+		{
+			if (MyProc->vacuumFlags & PROC_IN_VACUUM)
+				elog (DEBUG1, "Getting XID for autovacuum");
+			else
+			{
+				elog (DEBUG1, "Getting XID for autovacuum worker (analyze)");
+			}
+			/*
+			 * Get gxid directly from GTM.
+			 * We use a separate function so that GTM knows to exclude it from
+			 * other snapshots.
+			 */
+			gxid = (TransactionId) BeginTranAutovacuumGTM();
+		}
+		else if (GetForceXidFromGTM())
+		{
+			elog (DEBUG1, "Force get XID from GTM");
+			/* try and get gxid directly from GTM */
+			gxid = (TransactionId) BeginTranGTM(NULL);
+			elog(LOG, "Forcely Received GlobalTransactionId = %d", gxid);
+		}
+		else
+		{
+			gxid = next_xid;
+			elog(LOG, "GlobalTransactionId = %d", next_xid);
+			next_xid = InvalidTransactionId; /* reset */
+		}
+	}
+
+	if (!GlobalTransactionIdIsValid(gxid))
+		if (IS_PGXC_COORDINATOR)
+			/*
+			 * May be it is not a problem if GTM can not be reached from
+			 * a data node. Anyway, we do not want a lot of warning when
+			 * running initdb.
+			 */
+			ereport(WARNING, (errmsg("Xid is invalid.")));
+
+	return gxid;
+}
+#endif /* XCP */
+
 /*
  * Allocate the next XID for a new transaction or subtransaction.
  *
@@ -85,18 +156,22 @@ GetForceXidFromGTM(void)
  */
 TransactionId
 #ifdef PGXC
+#ifdef XCP
+GetNewTransactionId(GlobalTransactionId gxid, bool isSubXact)
+#else
 GetNewTransactionId(bool isSubXact, bool *timestamp_received, GTM_Timestamp *timestamp)
+#endif /* XCP */
 #else
 GetNewTransactionId(bool isSubXact)
-#endif
+#endif /* PGXC */
 {
 	TransactionId xid;
 #ifdef PGXC
 	bool increment_xid = true;
-
+#ifndef XCP
 	*timestamp_received = false;
-#endif
-
+#endif /* XCP */
+#endif /* PGXC */
 	/*
 	 * During bootstrap initialization, we return the special bootstrap
 	 * transaction id.
@@ -113,6 +188,7 @@ GetNewTransactionId(bool isSubXact)
 		elog(ERROR, "cannot assign TransactionIds during recovery");
 
 #ifdef PGXC
+#ifndef XCP
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
 		/*
@@ -129,15 +205,34 @@ GetNewTransactionId(bool isSubXact)
 			xid = (TransactionId) BeginTranGTM(timestamp);
 		*timestamp_received = true;
 	}
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
 
+#ifdef XCP
+	if (GlobalTransactionIdIsValid(gxid))
+	{
+		xid = (TransactionId) gxid;
+		if (!TransactionIdFollowsOrEquals(xid, ShmemVariableCache->nextXid))
+		{
+			increment_xid = false;
+			ereport(DEBUG1,
+			   (errmsg("gxid (%d) was less than ShmemVariableCache->nextXid (%d)",
+				   xid, ShmemVariableCache->nextXid)));
+		}
+		else
+			ShmemVariableCache->nextXid = xid;
+	}
+	/* fallback to default if gxid is invalid */
+	else
+		xid = ShmemVariableCache->nextXid;
+#else
 #ifdef PGXC
 	/* Only remote Coordinator can go a GXID */
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
-		if (TransactionIdIsValid(xid)) 
+		if (TransactionIdIsValid(xid))
 		{
 			if (!TransactionIdFollowsOrEquals(xid, ShmemVariableCache->nextXid))
 			{
@@ -150,17 +245,17 @@ GetNewTransactionId(bool isSubXact)
 				ShmemVariableCache->nextXid = xid;
 		}
 		else
-		{			
+		{
 			ereport(WARNING,
 			   (errmsg("Xid is invalid.")));
-	
+
 			/* Problem is already reported, so just remove lock and return */
 			LWLockRelease(XidGenLock);
 			return xid;
-		}	
+		}
 	}
 	else if(IS_PGXC_DATANODE || IsConnFromCoord())
-	{
+ 	{
 		if (IsAutoVacuumWorkerProcess())
 		{
 			if (MyProc->vacuumFlags & PROC_IN_VACUUM)
@@ -182,7 +277,7 @@ GetNewTransactionId(bool isSubXact)
 			next_xid = (TransactionId) BeginTranAutovacuumGTM();
 		}
 		else if (GetForceXidFromGTM())
-		{
+ 		{
 			elog (DEBUG1, "Force get XID from GTM");
 			/* try and get gxid directly from GTM */
 			next_xid = (TransactionId) BeginTranGTM(NULL);
@@ -194,32 +289,31 @@ GetNewTransactionId(bool isSubXact)
 			elog(DEBUG1, "TransactionId = %d", next_xid);
 			next_xid = InvalidTransactionId; /* reset */
 			if (!TransactionIdFollowsOrEquals(xid, ShmemVariableCache->nextXid))
-			{ 
+			{
 				/* This should be ok, due to concurrency from multiple coords
 				 * passing down the xids.
-				 * We later do not want to bother incrementing the value 
+				 * We later do not want to bother incrementing the value
 				 * in shared memory though.
 				 */
 				increment_xid = false;
-				elog(DEBUG1, "xid (%d) does not follow ShmemVariableCache->nextXid (%d)", 
+				elog(DEBUG1, "xid (%d) does not follow ShmemVariableCache->nextXid (%d)",
 					xid, ShmemVariableCache->nextXid);
 			}
 			else
 				ShmemVariableCache->nextXid = xid;
-		}
-		else
+ 		}
+ 		else
 		{
 			/* Fallback to default */
-			elog(LOG, "Falling back to local Xid. Was = %d, now is = %d", 
+			elog(LOG, "Falling back to local Xid. Was = %d, now is = %d",
 					next_xid, ShmemVariableCache->nextXid);
 			xid = ShmemVariableCache->nextXid;
-	
 		}
-	}
-#else 
-	xid = ShmemVariableCache->nextXid;
+ 	}
+#else
+ 	xid = ShmemVariableCache->nextXid;
 #endif /* PGXC */
-
+#endif /* XCP */
 
 	/*----------
 	 * Check to see if it's safe to assign another XID.  This protects against
@@ -389,10 +483,13 @@ GetNewTransactionId(bool isSubXact)
 	/* If it is auto-analyze, we need to add it to the array and unlock */
 	if(IS_PGXC_DATANODE && IsAutoVacuumAnalyzeWorker())
 	{
+#ifdef XCP
+		LWLockAcquire(AnalyzeProcArrayLock, LW_EXCLUSIVE);
+#endif /* XCP */
 		AnalyzeProcArrayAdd(MyProc);
 		LWLockRelease(AnalyzeProcArrayLock);
 	}
-#endif
+#endif /* PGXC */
 
 	LWLockRelease(XidGenLock);
 	return xid;

@@ -401,6 +401,12 @@ typedef struct EState
 	HeapTuple  *es_epqTuple;	/* array of EPQ substitute tuples */
 	bool	   *es_epqTupleSet; /* true if EPQ tuple is provided */
 	bool	   *es_epqScanDone; /* true if EPQ tuple has been fetched */
+#ifdef XCP
+	/* Parameters to filter out result rows */
+	AttrNumber  es_distributionKey;
+	Locator    *es_locator;
+	int		   *es_distributionNodes;
+#endif
 } EState;
 
 
@@ -1644,7 +1650,9 @@ typedef struct AggState
 	bool		table_filled;	/* hash table filled yet? */
 	TupleHashIterator hashiter; /* for iterating through hash table */
 #ifdef PGXC
+#ifndef XCP
 	bool		skip_trans;		/* skip the transition step for aggregates */
+#endif /* XCP */
 #endif /* PGXC */
 } AggState;
 

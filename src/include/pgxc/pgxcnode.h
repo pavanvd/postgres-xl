@@ -63,7 +63,11 @@ struct pgxc_node_handle
 	/* Connection state */
 	char		transaction_status;
 	DNConnectionState state;
+#ifdef XCP
+	struct ResponseCombiner *combiner;
+#else
 	struct RemoteQueryState *combiner;
+#endif
 #ifdef DN_CONNECTION_DEBUG
 	bool		have_row_desc;
 #endif
@@ -95,8 +99,13 @@ typedef struct
 extern void InitMultinodeExecutor(void);
 
 /* Open/close connection routines (invoked from Pool Manager) */
+#ifdef XCP
+extern char *PGXCNodeConnStr(char *host, char *port, char *dbname, char *user,
+							 char *remote_type, int parent_node);
+#else
 extern char *PGXCNodeConnStr(char *host, char *port, char *dbname, char *user,
 							 char *remote_type);
+#endif
 extern NODE_CONNECTION *PGXCNodeConnect(char *connstr);
 extern int PGXCNodeSendSetQuery(NODE_CONNECTION *conn, const char *sql_command);
 extern void PGXCNodeClose(NODE_CONNECTION * conn);
@@ -104,6 +113,9 @@ extern int	PGXCNodeConnected(NODE_CONNECTION * conn);
 extern int	PGXCNodeConnClean(NODE_CONNECTION * conn);
 extern void PGXCNodeCleanAndRelease(int code, Datum arg);
 
+#ifdef XCP
+extern PGXCNodeHandle *get_any_handle(List *datanodelist);
+#endif
 extern PGXCNodeAllHandles *get_handles(List *datanodelist, List *coordlist, bool is_query_coord_only);
 extern void release_handles(void);
 extern void cancel_query(void);
@@ -136,6 +148,11 @@ extern int	pgxc_node_send_query_extended(PGXCNodeHandle *handle, const char *que
 							  int num_params, Oid *param_types,
 							  int paramlen, char *params,
 							  bool send_describe, int fetch_size);
+#ifdef XCP
+extern int  pgxc_node_send_datanode_query(PGXCNodeHandle *handle, const char *query,
+							  const char *portal, int paramlen, char *params,
+							  int fetch_size);
+#endif
 extern int	pgxc_node_send_gxid(PGXCNodeHandle * handle, GlobalTransactionId gxid);
 extern int	pgxc_node_send_snapshot(PGXCNodeHandle * handle, Snapshot snapshot);
 extern int	pgxc_node_send_timestamp(PGXCNodeHandle * handle, TimestampTz timestamp);

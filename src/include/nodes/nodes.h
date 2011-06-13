@@ -81,10 +81,16 @@ typedef enum NodeTag
 	/*
 	 * TAGS FOR PGXC NODES (planner.h, locator.h)
 	 */
+#ifdef XCP
+	T_Distribution,
+#endif
 	T_ExecNodes,
 	T_SimpleSort,
 	T_SimpleDistinct,
 	T_RemoteQuery,
+#ifdef XCP
+	T_RemoteSubplan,
+#endif
 #endif
 	/* these aren't subclasses of Plan: */
 	T_NestLoopParam,
@@ -132,6 +138,9 @@ typedef enum NodeTag
 	T_LimitState,
 #ifdef PGXC
 	T_RemoteQueryState,
+#ifdef XCP
+	T_RemoteSubplanState,
+#endif
 #endif
 
 	/*
@@ -253,7 +262,9 @@ typedef enum NodeTag
 	T_PlaceHolderInfo,
 	T_MinMaxAggInfo,
 	T_PlannerParamItem,
-
+#ifdef XCP
+	T_RemoteSubPath,
+#endif
 	/*
 	 * TAGS FOR MEMORY NODES (memnodes.h)
 	 */
@@ -377,6 +388,9 @@ typedef enum NodeTag
 	T_DropUserMappingStmt,
 	T_ExecDirectStmt,
 	T_CleanConnStmt,
+#ifdef XCP
+	T_RemoteStmt,
+#endif
 	T_AlterTableSpaceOptionsStmt,
 	T_SecLabelStmt,
 	T_CreateForeignTableStmt,
@@ -506,11 +520,17 @@ extern PGDLLIMPORT Node *newNodeMacroHolder;
 /*
  * nodes/{outfuncs.c,print.c}
  */
+#ifdef XCP
+extern void set_portable_output(bool value);
+#endif
 extern char *nodeToString(void *obj);
 
 /*
  * nodes/{readfuncs.c,read.c}
  */
+#ifdef XCP
+extern void set_portable_input(bool value);
+#endif
 extern void *stringToNode(char *str);
 
 /*

@@ -696,6 +696,7 @@ advance_aggregates(AggState *aggstate, AggStatePerGroup pergroup)
 			}
 
 #ifdef PGXC
+#ifndef XCP
 			if (aggstate->skip_trans)
 			{
 				Assert(IS_PGXC_COORDINATOR);
@@ -707,6 +708,7 @@ advance_aggregates(AggState *aggstate, AggStatePerGroup pergroup)
 											pergroupstate, &fcinfo);
 			}
 			else
+#endif /* XCP */
 #endif /* PGXC */
 			advance_transition_function(aggstate, peraggstate, pergroupstate,
 											&fcinfo);
@@ -906,8 +908,51 @@ finalize_aggregate(AggState *aggstate,
 				   Datum *resultVal, bool *resultIsNull)
 {
 	MemoryContext oldContext;
+#ifdef XCP
+	Datum value;
+	bool  isnull;
+#endif
 
 	oldContext = MemoryContextSwitchTo(aggstate->ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
+#ifdef XCP
+	if (OidIsValid(peraggstate->collectfn_oid))
+	{
+		FunctionCallInfoData fcinfo;
+		InitFunctionCallInfoData(fcinfo, &(peraggstate->collectfn), 2,
+									(void *) aggstate, NULL);
+		fcinfo.arg[1] = pergroupstate->transValue;
+		fcinfo.argnull[1] = pergroupstate->transValueIsNull;
+		if (fcinfo.flinfo->fn_strict &&
+				(peraggstate->initCollectValueIsNull || pergroupstate->transValueIsNull))
+		{
+			/*
+			 * We have already checked the collection and transition types are
+			 * binary compatible, so we can just copy the value.
+			 */
+			value = pergroupstate->transValue;
+			isnull = pergroupstate->transValueIsNull;
+		}
+		else
+		{
+			/*
+			 * copy the initial datum since it might get changed inside the
+			 * collection function
+			 */
+			fcinfo.arg[0] = datumCopy(peraggstate->initCollectValue,
+			                                     peraggstate->collecttypeByVal,
+			                                     peraggstate->collecttypeLen);
+			fcinfo.argnull[0] = peraggstate->initCollectValueIsNull;
+			value = FunctionCallInvoke(&fcinfo);
+			isnull = fcinfo.isnull;
+		}
+	}
+	else
+	{
+		/* No collect function, just use transition values to finalize */
+		value = pergroupstate->transValue;
+		isnull = pergroupstate->transValueIsNull;
+	}
+#else
 #ifdef PGXC
 	/*
 	 * if we skipped the transition phase, we have the collection result in the
@@ -919,6 +964,7 @@ finalize_aggregate(AggState *aggstate,
 		pergroupstate->transValueIsNull = pergroupstate->collectValueIsNull;
 	}
 #endif /* PGXC */
+#endif /* XCP */
 
 	/*
 	 * Apply the agg's finalfn if one is provided, else return transValue.
@@ -930,9 +976,15 @@ finalize_aggregate(AggState *aggstate,
 		InitFunctionCallInfoData(fcinfo, &(peraggstate->finalfn), 1,
 								 peraggstate->aggCollation,
 								 (void *) aggstate, NULL);
+#ifdef XCP
+		fcinfo.arg[0] = value;
+		fcinfo.argnull[0] = isnull;
+		if (fcinfo.flinfo->fn_strict && isnull)
+#else
 		fcinfo.arg[0] = pergroupstate->transValue;
 		fcinfo.argnull[0] = pergroupstate->transValueIsNull;
 		if (fcinfo.flinfo->fn_strict && pergroupstate->transValueIsNull)
+#endif /* XCP */
 		{
 			/* don't call a strict function with NULL inputs */
 			*resultVal = (Datum) 0;
@@ -946,8 +998,13 @@ finalize_aggregate(AggState *aggstate,
 	}
 	else
 	{
+#ifdef XCP
+		*resultVal = value;
+		*resultIsNull = isnull;
+#else
 		*resultVal = pergroupstate->transValue;
 		*resultIsNull = pergroupstate->transValueIsNull;
+#endif /* XCP */
 	}
 
 	/*
@@ -1545,6 +1602,7 @@ agg_retrieve_hash_table(AggState *aggstate)
 	return NULL;
 }
 
+
 /* -----------------
  * ExecInitAgg
  *
@@ -1582,7 +1640,9 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 	aggstate->pergroup = NULL;
 	aggstate->grp_firstTuple = NULL;
 	aggstate->hashtable = NULL;
+#ifndef XCP
 	aggstate->skip_trans = node->skip_trans;
+#endif
 
 	/*
 	 * Create expression contexts.	We need two, one for per-input-tuple
@@ -1739,6 +1799,9 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		HeapTuple	aggTuple;
 		Form_pg_aggregate aggform;
 		Oid			aggtranstype;
+#ifdef XCP
+		Oid			aggcollecttype;
+#endif /* XCP */
 		AclResult	aclresult;
 		Oid			transfn_oid,
 					finalfn_oid;
@@ -1815,6 +1878,26 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		peraggstate->finalfn_oid = finalfn_oid = aggform->aggfinalfn;
 #ifdef PGXC
 		peraggstate->collectfn_oid = collectfn_oid = aggform->aggcollectfn;
+#ifdef XCP
+		/*
+		 * If preparing PHASE1 skip finalization step and return transmission
+		 * value to be collected and finalized on master node.
+		 * If preparing PHASE2 move collection function into transition slot,
+		 * so master node collected transition values and finalithed them.
+		 * Otherwise (one-node aggregation) do all steps locally, the collection
+		 * function will just convert transient value for finalization function.
+		 */
+		if (node->aggdistribution == AGG_SLAVE)
+		{
+			peraggstate->collectfn_oid = collectfn_oid = InvalidOid;
+			peraggstate->finalfn_oid = finalfn_oid = InvalidOid;
+		}
+		else if (node->aggdistribution == AGG_MASTER)
+		{
+			peraggstate->transfn_oid = transfn_oid = collectfn_oid;
+			peraggstate->collectfn_oid = collectfn_oid = InvalidOid;
+		}
+#else
 		/*
 		 * For PGXC final and collection functions are used to combine results at coordinator,
 		 * disable those for data node
@@ -1824,6 +1907,7 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 			peraggstate->finalfn_oid = finalfn_oid = InvalidOid;
 			peraggstate->collectfn_oid = collectfn_oid = InvalidOid;
 		}
+#endif /* XCP */
 #endif /* PGXC */
 		/* Check that aggregate owner has permission to call component fns */
 		{
@@ -1865,6 +1949,15 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		}
 
 		/* resolve actual type of transition state, if polymorphic */
+#ifdef XCP
+		/*
+		 * We substitute function for PHASE2 and should take collection type
+		 * as transient
+		 */
+		if (node->aggdistribution == AGG_MASTER)
+			aggtranstype = aggform->aggcollecttype;
+		else
+#endif /* XCP */
 		aggtranstype = aggform->aggtranstype;
 		if (IsPolymorphicType(aggtranstype))
 		{
@@ -1882,18 +1975,34 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 															false);
 			pfree(declaredArgTypes);
 		}
-
+#ifdef XCP
+		/* get type of collection state, if defined */
+		if (OidIsValid(collectfn_oid))
+			aggcollecttype = aggform->aggcollecttype;
+		else
+			aggcollecttype = InvalidOid;
+#endif
 		/* build expression trees using actual argument & result types */
 		build_aggregate_fnexprs(inputTypes,
 								numArguments,
 								aggtranstype,
+#ifdef XCP
+								aggcollecttype,
+#endif
 								aggref->aggtype,
 								aggref->inputcollid,
 								transfn_oid,
+#ifdef XCP
+								collectfn_oid,
+#endif
 								finalfn_oid,
 								&transfnexpr,
+#ifdef XCP
+								&collectfnexpr,
+#endif
 								&finalfnexpr);
 #ifdef PGXC
+#ifndef XCP
 		if (OidIsValid(collectfn_oid))
 		{
 			/* we expect final function expression to be NULL in call to
@@ -1919,6 +2028,7 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 									&dummyexpr);
 			Assert(!dummyexpr);
 		}
+#endif /* XCP */
 #endif /* PGXC */
 
 		fmgr_info(transfn_oid, &peraggstate->transfn);
@@ -1945,11 +2055,30 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		get_typlenbyval(aggtranstype,
 						&peraggstate->transtypeLen,
 						&peraggstate->transtypeByVal);
+#ifdef PGXC
+#ifdef XCP
+		if (OidIsValid(aggcollecttype))
+#endif /* XCP */
+		get_typlenbyval(aggcollecttype,
+						&peraggstate->collecttypeLen,
+						&peraggstate->collecttypeByVal);
+#endif /* PGXC */
+
 
 		/*
 		 * initval is potentially null, so don't try to access it as a struct
 		 * field. Must do it the hard way with SysCacheGetAttr.
 		 */
+#ifdef XCP
+		/*
+		 * If this is Phase2 get collect initial value instead
+		 */
+		if (node->aggdistribution == AGG_MASTER)
+			textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
+										  Anum_pg_aggregate_agginitcollect,
+										  &peraggstate->initValueIsNull);
+		else
+#endif /* XCP */
 		textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
 									  Anum_pg_aggregate_agginitval,
 									  &peraggstate->initValueIsNull);
@@ -1966,15 +2095,43 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		 * access it as a struct field. Must do it the hard way with
 		 * SysCacheGetAttr.
 		 */
+#ifdef XCP
+		if (OidIsValid(aggcollecttype))
+		{
+#endif /* XCP */
 		textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
 									  Anum_pg_aggregate_agginitcollect,
 									  &peraggstate->initCollectValueIsNull);
 
+#ifdef XCP
+			if (peraggstate->initCollectValueIsNull)
+				peraggstate->initCollectValue = (Datum) 0;
+			else
+				peraggstate->initCollectValue = GetAggInitVal(textInitVal,
+														  aggcollecttype);
+			/*
+			 * If the collectfn is strict and the initval is NULL, make sure
+			 * transtype and collecttype are the same (or at least
+			 * binary-compatible), so that it's OK to use the transition value
+			 * as the initial collectValue.	This should have been checked at agg
+			 * definition time, but just in case...
+			 */
+			if (peraggstate->collectfn.fn_strict && peraggstate->initValueIsNull)
+			{
+				if (!IsBinaryCoercible(aggtranstype, aggcollecttype))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+							 errmsg("aggregate %u needs to have compatible transition type and collection type",
+									aggref->aggfnoid)));
+			}
+		}
+#else
 		if (peraggstate->initCollectValueIsNull)
 			peraggstate->initCollectValue = (Datum) 0;
 		else
 			peraggstate->initCollectValue = GetAggInitVal(textInitVal,
 												   aggtranstype);
+#endif /* XCP */
 #endif /* PGXC */
 
 		/*

@@ -99,7 +99,11 @@ _copyPlannedStmt(PlannedStmt *from)
 	COPY_NODE_FIELD(relationOids);
 	COPY_NODE_FIELD(invalItems);
 	COPY_SCALAR_FIELD(nParamExec);
-
+#ifdef XCP
+	COPY_SCALAR_FIELD(distributionType);
+	COPY_SCALAR_FIELD(distributionKey);
+	COPY_NODE_FIELD(distributionNodes);
+#endif
 	return newnode;
 }
 
@@ -767,6 +771,9 @@ _copyAgg(Agg *from)
 	CopyPlanFields((Plan *) from, (Plan *) newnode);
 
 	COPY_SCALAR_FIELD(aggstrategy);
+#ifdef XCP
+	COPY_SCALAR_FIELD(aggdistribution);
+#endif
 	COPY_SCALAR_FIELD(numCols);
 	if (from->numCols > 0)
 	{
@@ -1233,8 +1240,10 @@ _copyAggref(Aggref *from)
 	COPY_SCALAR_FIELD(aggfnoid);
 	COPY_SCALAR_FIELD(aggtype);
 #ifdef PGXC
+#ifndef XCP
 	COPY_SCALAR_FIELD(aggtrantype);
 	COPY_SCALAR_FIELD(agghas_collectfn);
+#endif /* XCP */
 #endif /* PGXC */
 	COPY_SCALAR_FIELD(aggcollid);
 	COPY_SCALAR_FIELD(inputcollid);

@@ -16,6 +16,9 @@
 
 extern bool isPGXCCoordinator;
 extern bool isPGXCDataNode;
+#ifdef XCP
+extern int parentPGXCNode;
+#endif
 
 typedef enum
 {
@@ -31,6 +34,9 @@ extern int remoteConnType;
 
 #define IS_PGXC_COORDINATOR isPGXCCoordinator
 #define IS_PGXC_DATANODE isPGXCDataNode
+#ifdef XCP
+#define PGXC_PARENT_NODE parentPGXCNode
+#endif
 #define REMOTE_CONN_TYPE remoteConnType
 
 #define IsConnFromApp() (remoteConnType == REMOTE_CONN_APP)

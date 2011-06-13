@@ -63,7 +63,9 @@ extern Path *create_ctescan_path(PlannerInfo *root, RelOptInfo *rel);
 extern Path *create_worktablescan_path(PlannerInfo *root, RelOptInfo *rel);
 extern ForeignPath *create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel);
 #ifdef PGXC
+#ifndef XCP
 extern Path *create_remotequery_path(PlannerInfo *root, RelOptInfo *rel);
+#endif
 #endif
 
 extern NestPath *create_nestloop_path(PlannerInfo *root,

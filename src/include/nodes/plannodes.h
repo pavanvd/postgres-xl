@@ -68,6 +68,12 @@ typedef struct PlannedStmt
 	List	   *invalItems;		/* other dependencies, as PlanInvalItems */
 
 	int			nParamExec;		/* number of PARAM_EXEC Params used */
+#ifdef XCP
+	/* Parameters to filter out result rows */
+	char		distributionType;
+	AttrNumber  distributionKey;
+	List	   *distributionNodes;
+#endif
 } PlannedStmt;
 
 /* macro for fetching the Plan associated with a SubPlan node */
@@ -594,18 +600,33 @@ typedef enum AggStrategy
 	AGG_HASHED					/* grouped agg, use internal hashtable */
 } AggStrategy;
 
+#ifdef XCP
+typedef enum AggDistribution
+{
+	AGG_ONENODE,				/* not distributed aggregation */
+	AGG_SLAVE,					/* execute only transient function */
+	AGG_MASTER					/* execute collection function as transient
+								 * and final finction */
+} AggDistribution;
+#endif
+
 typedef struct Agg
 {
 	Plan		plan;
 	AggStrategy aggstrategy;
+#ifdef XCP
+	AggDistribution aggdistribution;
+#endif
 	int			numCols;		/* number of grouping columns */
 	AttrNumber *grpColIdx;		/* their indexes in the target list */
 	Oid		   *grpOperators;	/* equality operators to compare with */
 	long		numGroups;		/* estimated number of groups in input */
 #ifdef PGXC
+#ifndef XCP
 	bool		skip_trans;		/* apply collection directly on the data received
 								 * from remote data nodes
 								 */
+#endif /* XCP */
 #endif /* PGXC */
 } Agg;
 

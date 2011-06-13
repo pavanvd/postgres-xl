@@ -26,7 +26,11 @@
 #define HASH_SIZE 4096
 #define HASH_MASK 0x00000FFF;
 
+#ifdef XCP
+#define IsReplicated(x) ((x) == LOCATOR_TYPE_REPLICATED)
+#else
 #define IsReplicated(x) (x->locatorType == LOCATOR_TYPE_REPLICATED)
+#endif
 
 #define PGXC_COORDINATOR_SCHEMA	"__pgxc_coordinator_schema__"
 #define PGXC_DATA_NODE_SCHEMA	"__pgxc_datanode_schema__"
@@ -91,6 +95,25 @@ typedef struct
 } ExecNodes;
 
 
+#ifdef XCP
+typedef struct _Locator Locator;
+struct _Locator
+{
+	int			(*locateNodes) (Locator *self, Datum value, bool isnull,
+						int *nodes, int *primarynode);
+	Oid			dataType;
+	int			roundRobinNode;
+	int			nodeCount;
+	int			nodeMap[1];
+};
+
+
+extern Locator *createLocator(char locatorType, RelationAccessType accessType,
+			  Oid dataType, List *nodeList);
+#define GET_NODES(locator, value, isnull, nodes, primarynode) \
+	(*locator->locateNodes) (locator, value, isnull, nodes, primarynode)
+#endif
+
 extern char *PreferredDataNodes;
 
 extern void InitRelationLocInfo(void);
@@ -118,5 +141,8 @@ extern bool IsModuloColumn(RelationLocInfo *rel_loc_info, char *part_col_name);
 extern bool IsModuloColumnForRelId(Oid relid, char *part_col_name);
 extern char *GetRelationDistColumn(RelationLocInfo * rel_loc_info);
 extern bool IsDistColumnForRelId(Oid relid, char *part_col_name);
+#ifdef XCP
+extern List *GetPreferredDataNodes(void);
+#endif
 
 #endif   /* LOCATOR_H */
