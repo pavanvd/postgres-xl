@@ -103,6 +103,10 @@ double		random_page_cost = DEFAULT_RANDOM_PAGE_COST;
 double		cpu_tuple_cost = DEFAULT_CPU_TUPLE_COST;
 double		cpu_index_tuple_cost = DEFAULT_CPU_INDEX_TUPLE_COST;
 double		cpu_operator_cost = DEFAULT_CPU_OPERATOR_COST;
+#ifdef XCP
+double		network_byte_cost = DEFAULT_NETWORK_BYTE_COST;
+double		remote_query_cost = DEFAULT_REMOTE_QUERY_COST;
+#endif
 
 int			effective_cache_size = DEFAULT_EFFECTIVE_CACHE_SIZE;
 
@@ -3570,3 +3574,28 @@ page_size(double tuples, int width)
 {
 	return ceil(relation_byte_size(tuples, width) / BLCKSZ);
 }
+
+
+#ifdef XCP
+void
+cost_remote_subplan(Path *path,
+			  Cost input_startup_cost, Cost input_total_cost,
+			  double tuples, int width)
+{
+	Cost		startup_cost = input_startup_cost + remote_query_cost;
+	Cost		run_cost = input_total_cost - input_startup_cost;
+
+	/*
+	 * Charge 2x cpu_operator_cost per tuple to reflect bookkeeping overhead.
+	 */
+	run_cost += 2 * cpu_operator_cost * tuples;
+
+	/*
+	 * Estimate cost of sending data over network
+	 */
+	run_cost += network_byte_cost * tuples * width;
+
+	path->startup_cost = startup_cost;
+	path->total_cost = startup_cost + run_cost;
+}
+#endif

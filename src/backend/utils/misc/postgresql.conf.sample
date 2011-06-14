@@ -236,6 +236,8 @@
 #cpu_tuple_cost = 0.01			# same scale as above
 #cpu_index_tuple_cost = 0.005		# same scale as above
 #cpu_operator_cost = 0.0025		# same scale as above
+#network_byte_cost = 0.001		# same scale as above
+#remote_query_cost = 100.0		# same scale as above
 #effective_cache_size = 128MB
 
 # - Genetic Query Optimizer -

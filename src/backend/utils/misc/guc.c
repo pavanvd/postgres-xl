@@ -2611,6 +2611,28 @@ static struct config_real ConfigureNamesReal[] =
 		NULL, NULL, NULL
 	},
 
+#ifdef XCP
+	{
+		{"network_byte_cost", PGC_USERSET, QUERY_TUNING_COST,
+			gettext_noop("Sets the planner's estimate of the cost of "
+						 "sending data from remote node."),
+			NULL
+		},
+		&network_byte_cost,
+		DEFAULT_NETWORK_BYTE_COST, 0, DBL_MAX, NULL, NULL
+	},
+
+	{
+		{"remote_query_cost", PGC_USERSET, QUERY_TUNING_COST,
+			gettext_noop("Sets the planner's estimate of the cost of "
+						 "setting up remote subquery."),
+			NULL
+		},
+		&remote_query_cost,
+		DEFAULT_REMOTE_QUERY_COST, 0, DBL_MAX, NULL, NULL
+	},
+#endif
+
 	{
 		{"geqo_selection_bias", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("GEQO: selective pressure within the population."),

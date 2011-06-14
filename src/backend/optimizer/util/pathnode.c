@@ -536,8 +536,9 @@ redistribute_path(Path *subpath, char distributionType,
 	}
 	pathnode->path.distribution = distribution;
 	pathnode->subpath = subpath;
-	pathnode->path.startup_cost = subpath->startup_cost;
-	pathnode->path.total_cost = subpath->total_cost;
+	cost_remote_subplan((Path *) pathnode, subpath->startup_cost,
+						subpath->total_cost, subpath->parent->tuples,
+						subpath->parent->width);
 	return pathnode;
 }
 

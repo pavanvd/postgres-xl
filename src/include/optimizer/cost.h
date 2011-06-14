@@ -26,6 +26,10 @@
 #define DEFAULT_CPU_TUPLE_COST	0.01
 #define DEFAULT_CPU_INDEX_TUPLE_COST 0.005
 #define DEFAULT_CPU_OPERATOR_COST  0.0025
+#ifdef XCP
+#define DEFAULT_NETWORK_BYTE_COST  0.001
+#define DEFAULT_REMOTE_QUERY_COST  100.0
+#endif
 
 #define DEFAULT_EFFECTIVE_CACHE_SIZE  16384		/* measured in pages */
 
@@ -48,6 +52,10 @@ extern PGDLLIMPORT double random_page_cost;
 extern PGDLLIMPORT double cpu_tuple_cost;
 extern PGDLLIMPORT double cpu_index_tuple_cost;
 extern PGDLLIMPORT double cpu_operator_cost;
+#ifdef XCP
+extern PGDLLIMPORT double network_byte_cost;
+extern PGDLLIMPORT double remote_query_cost;
+#endif
 extern PGDLLIMPORT int effective_cache_size;
 extern Cost disable_cost;
 extern bool enable_seqscan;
@@ -121,6 +129,11 @@ extern void cost_hashjoin(HashPath *path, PlannerInfo *root,
 extern void cost_subplan(PlannerInfo *root, SubPlan *subplan, Plan *plan);
 extern void cost_qual_eval(QualCost *cost, List *quals, PlannerInfo *root);
 extern void cost_qual_eval_node(QualCost *cost, Node *qual, PlannerInfo *root);
+#ifdef XCP
+extern void cost_remote_subplan(Path *path,
+			  Cost input_startup_cost, Cost input_total_cost,
+			  double tuples, int width);
+#endif
 extern void set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel);
 extern void set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
 						   RelOptInfo *outer_rel,
