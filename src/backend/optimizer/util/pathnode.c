@@ -528,12 +528,6 @@ redistribute_path(Path *subpath, char distributionType,
 		}
 		i++;
 	}
-	if (distribution->distributionKey == InvalidAttrNumber)
-	{
-		/* No such expression, append */
-		rel->reltargetlist = lappend(rel->reltargetlist, distributionExpr);
-		distribution->distributionKey = list_length(rel->reltargetlist);
-	}
 	pathnode->path.distribution = distribution;
 	pathnode->subpath = subpath;
 	cost_remote_subplan((Path *) pathnode, subpath->startup_cost,
