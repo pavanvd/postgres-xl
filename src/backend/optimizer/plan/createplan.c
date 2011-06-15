@@ -5156,9 +5156,9 @@ materialize_finished_plan(Plan *subplan)
 #ifdef XCP
 typedef struct
 {
-	List *subtlist;
-	List *aggrefs;
-	Bitmapset *colnos;
+	List	   *subtlist;
+	List	   *aggrefs;
+	Bitmapset  *colnos;
 } find_referenced_cols_context;
 
 static bool
@@ -5177,6 +5177,11 @@ find_referenced_cols_walker(Node *node, find_referenced_cols_context *context)
 	if (IsA(node, Aggref))
 	{
 		context->aggrefs = lappend(context->aggrefs, node);
+		/*
+		 * We do not support pushing down DISTINCT aggregates.
+		 */
+		if (((Aggref *) node)->aggdistinct)
+			return true;
 		return false;
 	}
 	return expression_tree_walker(node, find_referenced_cols_walker,
@@ -5214,141 +5219,153 @@ make_agg(PlannerInfo *root, List *tlist, List *qual,
 	pushdown = find_push_down_plan(lefttree);
 	if (pushdown)
 	{
-		Agg		   *phase1 = makeNode(Agg);
-		Plan	   *plan1 = &phase1->plan;
-		List	   *newtlist;
-		ListCell   *lc;
-		int			i;
 		find_referenced_cols_context context;
-		Plan 	   *tmp;
 
 		context.subtlist = pushdown->scan.plan.targetlist;
 		context.aggrefs = NIL;
 		context.colnos = NULL;
-		find_referenced_cols_walker((Node *) tlist, &context);
-		find_referenced_cols_walker((Node *) qual, &context);
-
-		phase1->aggdistribution = AGG_SLAVE;
-		phase1->aggstrategy = aggstrategy;
-		phase1->grpOperators = grpOperators;
-		phase1->numGroups = numGroups;
-		/*
-		 * Phase1 aggregate is referencing columns as they are listed in the
-		 * subtree of the RemoteSubplan. The RemoteSubplan should return them,
-		 * but ther positions will be probably changed, as they seen to phase2
-		 * aggregate. So we should copy specified group column indexes to the
-		 * phase1 aggregate node and then update supplied numbers in-place so
-		 * they are used later for phase2.
-		 */
-		phase1->numCols = numGroupCols;
-		phase1->grpColIdx = (AttrNumber *) palloc(sizeof(AttrNumber) * numGroupCols);
-		for (i = 0; i < numGroupCols; i++)
+		if (find_referenced_cols_walker((Node *) tlist, &context) ||
+				find_referenced_cols_walker((Node *) qual, &context))
 		{
-			phase1->grpColIdx[i] = grpColIdx[i];
-			context.colnos = bms_add_member(context.colnos, grpColIdx[i]);
+			/*
+			 * We found we can not push down this aggregate, clean up and
+			 * fallback to default procedure
+			 */
+			bms_free(context.colnos);
+			node->aggdistribution = AGG_ONENODE;
 		}
-
-		newtlist = NIL;
-		foreach (lc, context.subtlist)
+		else
 		{
-			TargetEntry *tle = (TargetEntry *) lfirst(lc);
-			if (bms_is_member(tle->resno, context.colnos))
+			Agg		   *phase1 = makeNode(Agg);
+			Plan	   *plan1 = &phase1->plan;
+			List	   *newtlist;
+			ListCell   *lc;
+			int			i;
+			Plan 	   *tmp;
+
+			phase1->aggdistribution = AGG_SLAVE;
+			phase1->aggstrategy = aggstrategy;
+			phase1->grpOperators = grpOperators;
+			phase1->numGroups = numGroups;
+			/*
+			 * Phase1 aggregate is referencing columns as they are listed in the
+			 * subtree of the RemoteSubplan. The RemoteSubplan should return
+			 * them, but ther positions will be probably changed, as they seen
+			 * to phase2 aggregate. So we should copy specified group column
+			 * indexes to the phase1 aggregate node and then update supplied
+			 * numbers in-place so they are used later for phase2.
+			 */
+			phase1->numCols = numGroupCols;
+			phase1->grpColIdx = (AttrNumber *) palloc(sizeof(AttrNumber)
+														  * numGroupCols);
+			for (i = 0; i < numGroupCols; i++)
 			{
-				TargetEntry *newtle = makeTargetEntry(tle->expr,
-													  list_length(newtlist) + 1,
-													  tle->resname,
-													  tle->resjunk);
-				newtlist = lappend(newtlist, newtle);
-				if (newtle->resno != tle->resno)
+				phase1->grpColIdx[i] = grpColIdx[i];
+				context.colnos = bms_add_member(context.colnos, grpColIdx[i]);
+			}
+
+			newtlist = NIL;
+			foreach (lc, context.subtlist)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+				if (bms_is_member(tle->resno, context.colnos))
 				{
-					/*
-					 * Update group column indexes.
-					 * New tle can not be greater then old tle, so we do not
-					 * risk to update index twice.
-					 */
-					for (i = 0; i < numGroupCols; i++)
-						if (grpColIdx[i] == tle->resno)
-							grpColIdx[i] = newtle->resno;
+					TargetEntry *newtle = makeTargetEntry(tle->expr,
+														  list_length(newtlist) + 1,
+														  tle->resname,
+														  tle->resjunk);
+					newtlist = lappend(newtlist, newtle);
+					if (newtle->resno != tle->resno)
+					{
+						/*
+						 * Update group column indexes.
+						 * New tle can not be greater then old tle, so we do not
+						 * risk to update index twice.
+						 */
+						for (i = 0; i < numGroupCols; i++)
+							if (grpColIdx[i] == tle->resno)
+								grpColIdx[i] = newtle->resno;
+					}
 				}
 			}
-		}
-		bms_free(context.colnos);
-		/*
-		 * Aggregate reference handling.
-		 * Phase 1 aggregate actually returns value of transition type.
-		 * Respective targent entry of the distributed subplan node should have
-		 * a Var here, to avoid the respective aggregate reference of Phase 2
-		 * was replaced by a Var.
-		 * All aggregate functions of Phase 2 will be of one argument.
-		 */
-		foreach (lc, context.aggrefs)
-		{
-			Aggref *aggref = (Aggref *) lfirst(lc);
-			Aggref *newagg;
-			TargetEntry *newtle;
-			HeapTuple	aggTuple;
-			Form_pg_aggregate aggform;
-			Oid 	aggtranstype;
-
-			aggTuple = SearchSysCache1(AGGFNOID,
-									   ObjectIdGetDatum(aggref->aggfnoid));
-			if (!HeapTupleIsValid(aggTuple))
-				elog(ERROR, "cache lookup failed for aggregate %u",
-					 aggref->aggfnoid);
-			aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
-			aggtranstype = aggform->aggtranstype;
-			ReleaseSysCache(aggTuple);
+			bms_free(context.colnos);
 			/*
-			 * Make a copy for Phase 1. We are going to modify origin in-place.
-			 * XXX This may be not coorect, and we should use mutator instead
-			 * of walker.
+			 * Aggregate reference handling.
+			 * Phase 1 aggregate actually returns value of transition type.
+			 * Respective targent entry of the distributed subplan node should
+			 * have a Var here, to avoid the respective aggregate reference of
+			 * Phase 2 was replaced by a Var.
+			 * All aggregate functions of Phase 2 will be of one argument.
 			 */
-			newagg = copyObject(aggref);
-			newagg->aggtype = aggform->aggtranstype;
-			newtle = makeTargetEntry((Expr *) newagg,
-									 list_length(newtlist) + 1,
-									 NULL,
-									 false);
-			newtlist = lappend(newtlist, newtle);
+			foreach (lc, context.aggrefs)
+			{
+				Aggref *aggref = (Aggref *) lfirst(lc);
+				Aggref *newagg;
+				TargetEntry *newtle;
+				HeapTuple	aggTuple;
+				Form_pg_aggregate aggform;
+				Oid 	aggtranstype;
+
+				aggTuple = SearchSysCache1(AGGFNOID,
+										   ObjectIdGetDatum(aggref->aggfnoid));
+				if (!HeapTupleIsValid(aggTuple))
+					elog(ERROR, "cache lookup failed for aggregate %u",
+						 aggref->aggfnoid);
+				aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
+				aggtranstype = aggform->aggtranstype;
+				ReleaseSysCache(aggTuple);
+				/*
+				 * Make a copy for Phase 1. We are going to modify origin
+				 * in-place. XXX This may be not coorect, and we should use
+				 * mutator instead of walker.
+				 */
+				newagg = copyObject(aggref);
+				newagg->aggtype = aggform->aggtranstype;
+				newtle = makeTargetEntry((Expr *) newagg,
+										 list_length(newtlist) + 1,
+										 NULL,
+										 false);
+				newtlist = lappend(newtlist, newtle);
+				/*
+				 * The set_plan_refs() will replace this by a Var
+				 */
+				aggref->args = list_make1(makeTargetEntry((Expr *) newagg,
+														  1,
+														  NULL,
+														  false));
+			}
+
+			copy_plan_costsize(plan1, (Plan *) pushdown); // ???
+
 			/*
-			 * The set_plan_refs() will replace this by a Var
+			 * We will produce a single output tuple if not grouping, and a tuple per
+			 * group otherwise.
 			 */
-			aggref->args = list_make1(makeTargetEntry((Expr *) newagg,
-													  1,
-													  NULL,
-													  false));
+			if (aggstrategy == AGG_PLAIN)
+				plan1->plan_rows = 1;
+			else
+				plan1->plan_rows = numGroups;
+
+			plan1->targetlist = newtlist;
+			plan1->qual = NIL;
+			plan1->lefttree = pushdown->scan.plan.lefttree;
+			pushdown->scan.plan.lefttree = plan1;
+			plan1->righttree = NULL;
+
+			/*
+			 * Update target lists of all plans from lefttree till phase1.
+			 * All they should be the same if the tree is transparent for push
+			 * down modification
+			 */
+			tmp = lefttree;
+			while (tmp != plan1)
+			{
+				tmp->targetlist = newtlist;
+				tmp = tmp->lefttree;
+			}
+
+			node->aggdistribution = AGG_MASTER;
 		}
-
-		copy_plan_costsize(plan1, (Plan *) pushdown); // ???
-
-		/*
-		 * We will produce a single output tuple if not grouping, and a tuple per
-		 * group otherwise.
-		 */
-		if (aggstrategy == AGG_PLAIN)
-			plan1->plan_rows = 1;
-		else
-			plan1->plan_rows = numGroups;
-
-		plan1->targetlist = newtlist;
-		plan1->qual = NIL;
-		plan1->lefttree = pushdown->scan.plan.lefttree;
-		pushdown->scan.plan.lefttree = plan1;
-		plan1->righttree = NULL;
-
-		/*
-		 * Update target lists of all plans from lefttree till phase1.
-		 * All they should be the same if the tree is transparent for push
-		 * down modification
-		 */
-		tmp = lefttree;
-		while (tmp != plan1)
-		{
-			tmp->targetlist = newtlist;
-			tmp = tmp->lefttree;
-		}
-
-		node->aggdistribution = AGG_MASTER;
 	}
 	else
 		node->aggdistribution = AGG_ONENODE;
