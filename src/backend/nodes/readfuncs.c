@@ -1245,6 +1245,11 @@ _readCaseExpr(void)
 {
 	READ_LOCALS(CaseExpr);
 
+#ifdef XCP
+	if (portable_input)
+		READ_TYPID_FIELD(casetype);
+	else
+#endif
 	READ_OID_FIELD(casetype);
 	READ_OID_FIELD(casecollid);
 	READ_NODE_FIELD(arg);

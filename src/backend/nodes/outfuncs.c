@@ -1784,6 +1784,11 @@ _outCaseExpr(StringInfo str, CaseExpr *node)
 {
 	WRITE_NODE_TYPE("CASE");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(casetype);
+	else
+#endif
 	WRITE_OID_FIELD(casetype);
 	WRITE_OID_FIELD(casecollid);
 	WRITE_NODE_FIELD(arg);
