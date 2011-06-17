@@ -32,6 +32,8 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #ifdef XCP
+#include "nodes/nodeFuncs.h"
+#include "pgxc/locator.h"
 #include "pgxc/poolmgr.h"
 #endif
 
@@ -39,6 +41,8 @@ static List *translate_sub_tlist(List *tlist, int relid);
 static bool query_is_distinct_for(Query *query, List *colnos, List *opids);
 static Oid	distinct_col_search(int colno, List *colnos, List *opids);
 #ifdef XCP
+static void restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
+								  Path *pathnode);
 static Path *redistribute_path(Path *subpath, char distributionType,
 				  Bitmapset *nodes, Expr* distributionExpr);
 static void set_scanpath_distribution(PlannerInfo *root, RelOptInfo *rel, Path *pathnode);
@@ -399,6 +403,123 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
  *****************************************************************************/
 #ifdef XCP
 /*
+ * restrict_distribution
+ *    Analyze the RestrictInfo and decide if it is possible to restrict
+ *    distribution nodes
+ */
+static void
+restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
+								  Path *pathnode)
+{
+	Distribution   *distribution = pathnode->distribution;
+	RelOptInfo	   *rel = pathnode->parent;
+	Expr		   *distributionExpr;
+	Oid				keytype;
+	Const		   *constExpr = NULL;
+	bool			found_key = false;
+
+	if (ri->orclause)
+		return;
+
+	if (distribution->distributionKey == InvalidAttrNumber)
+		return;
+	distributionExpr = (Expr *) list_nth(rel->reltargetlist,
+										 distribution->distributionKey - 1);
+	keytype = exprType((Node *) distributionExpr);
+	if (ri->left_ec)
+	{
+		EquivalenceClass *ec = ri->left_ec;
+		ListCell *lc;
+		foreach(lc, ec->ec_members)
+		{
+			EquivalenceMember *em = (EquivalenceMember *) lfirst(lc);
+			if (equal(em->em_expr, distributionExpr))
+				found_key = true;
+			else if (bms_is_empty(em->em_relids))
+			{
+				Expr *cexpr = (Expr *) eval_const_expressions(root,
+													   (Node *) em->em_expr);
+				if (IsA(cexpr, Const) &&
+						((Const *) cexpr)->consttype == keytype)
+					constExpr = (Const *) cexpr;
+			}
+		}
+	}
+	if (ri->right_ec)
+	{
+		EquivalenceClass *ec = ri->right_ec;
+		ListCell *lc;
+		foreach(lc, ec->ec_members)
+		{
+			EquivalenceMember *em = (EquivalenceMember *) lfirst(lc);
+			if (equal(em->em_expr, distributionExpr))
+				found_key = true;
+			else if (bms_is_empty(em->em_relids))
+			{
+				Expr *cexpr = (Expr *) eval_const_expressions(root,
+													   (Node *) em->em_expr);
+				if (IsA(cexpr, Const) &&
+						((Const *) cexpr)->consttype == keytype)
+					constExpr = (Const *) cexpr;
+			}
+		}
+	}
+	if (IsA(ri->clause, OpExpr))
+	{
+		OpExpr *opexpr = (OpExpr *) ri->clause;
+		if (op_mergejoinable(opexpr->opno) && opexpr->args->length == 2)
+		{
+			Expr *arg1 = (Expr *) linitial(opexpr->args);
+			Expr *arg2 = (Expr *) lsecond(opexpr->args);
+			Expr *other = NULL;
+			if (equal(arg1, distributionExpr))
+				other = arg2;
+			else if (equal(arg2, distributionExpr))
+				other = arg1;
+			if (other)
+			{
+				found_key = true;
+				other = (Expr *) eval_const_expressions(root, (Node *) other);
+				if (IsA(other, Const) &&
+						((Const *) other)->consttype == keytype)
+					constExpr = (Const *) other;
+			}
+		}
+	}
+	if (found_key && constExpr)
+	{
+		List 	   *nodeList = NIL;
+		Bitmapset  *tmpset = bms_copy(distribution->nodes);
+		Bitmapset  *restrict = NULL;
+		Locator    *locator;
+		int      	nodenums[NumDataNodes];
+		int 		i, count;
+
+		while((i = bms_first_member(tmpset)) >= 0)
+			nodeList = lappend_int(nodeList, i);
+		bms_free(tmpset);
+
+		locator = createLocator(distribution->distributionType,
+								RELATION_ACCESS_READ,
+								keytype,
+								nodeList);
+		count = GET_NODES(locator, constExpr->constvalue,
+						  constExpr->constisnull, nodenums, NULL);
+
+		for (i = 0; i < count; i++)
+		{
+			elog(LOG, "Restrict distribution to node %d", nodenums[i]);
+			restrict = bms_add_member(restrict, nodenums[i]);
+		}
+		if (distribution->restrictNodes)
+			distribution->restrictNodes = bms_intersect(distribution->restrictNodes,
+														restrict);
+		else
+			distribution->restrictNodes = restrict;
+	}
+}
+
+/*
  * set_scanpath_distribution
  *	  Assign distribution to the path which is a base relation scan.
  */
@@ -418,6 +539,7 @@ set_scanpath_distribution(PlannerInfo *root, RelOptInfo *rel, Path *pathnode)
 		foreach(lc, rel_loc_info->nodeList)
 			distribution->nodes = bms_add_member(distribution->nodes,
 												 lfirst_int(lc));
+		distribution->restrictNodes = NULL;
 		/*
 		 * Distribution key should point to the column emitted by the relation.
 		 * It is possible the relation does not return distribution column.
@@ -463,6 +585,7 @@ copy_subpath_distribution(Path *pathnode, Path *subpath)
 	distribution = makeNode(Distribution);
 	distribution->distributionType = subdistr->distributionType;
 	distribution->nodes = bms_copy(subdistr->nodes);
+	distribution->restrictNodes = bms_copy(subdistr->restrictNodes);
 	/*
 	 * If another path to build the same relation is build the distribution key
 	 * will be the same
@@ -499,41 +622,57 @@ copy_subpath_distribution(Path *pathnode, Path *subpath)
 }
 
 
+/*
+ * Set a RemoteSubPath on top of the specified node and set specified
+ * distribution to it
+ */
 static Path *
 redistribute_path(Path *subpath, char distributionType,
 				  Bitmapset *nodes, Expr* distributionExpr)
 {
 	RelOptInfo	   *rel = subpath->parent;
 	RemoteSubPath  *pathnode;
-	Distribution   *distribution;
-	int 			i;
-	ListCell	   *lc;
 
 	pathnode = makeNode(RemoteSubPath);
 	pathnode->path.pathtype = T_RemoteSubplan;
 	pathnode->path.parent = rel;
 	pathnode->path.pathkeys = subpath->pathkeys;
-	distribution = makeNode(Distribution);
-	distribution->distributionType = distributionType;
-	distribution->nodes = nodes;
-	distribution->distributionKey = InvalidAttrNumber;
-	i = 1;
-	foreach(lc, rel->reltargetlist)
+    /*
+	 * If distributionType has special value LOCATOR_TYPE_COORDINATOR ('\0')
+	 * Distribution will be NULL representing any node of the cluster either
+     * a Coordinator or a DataNode.
+	 */
+	if (distributionType)
 	{
-		Expr* expr = (Expr *) lfirst(lc);
-		if (equal(expr, distributionExpr))
+		Distribution   *distribution;
+		int 			i;
+		ListCell	   *lc;
+
+		distribution = makeNode(Distribution);
+		distribution->distributionType = distributionType;
+		distribution->nodes = nodes;
+		distribution->restrictNodes = NULL;
+		distribution->distributionKey = InvalidAttrNumber;
+		i = 1;
+		foreach(lc, rel->reltargetlist)
 		{
-			distribution->distributionKey = i;
-			break;
+			Expr* expr = (Expr *) lfirst(lc);
+			if (equal(expr, distributionExpr))
+			{
+				distribution->distributionKey = i;
+				break;
+			}
+			i++;
 		}
-		i++;
+		pathnode->path.distribution = distribution;
 	}
-	pathnode->path.distribution = distribution;
+	else
+		pathnode->path.distribution = NULL;
 	pathnode->subpath = subpath;
 	cost_remote_subplan((Path *) pathnode, subpath->startup_cost,
 						subpath->total_cost, subpath->parent->tuples,
 						subpath->parent->width);
-	return pathnode;
+	return (Path *) pathnode;
 }
 
 
@@ -579,6 +718,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 		targetd = makeNode(Distribution);
 		targetd->distributionType = LOCATOR_TYPE_REPLICATED;
 		targetd->nodes = common;
+		targetd->restrictNodes = NULL;
 		pathnode->path.distribution = targetd;
 		return;
 	}
@@ -604,6 +744,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 		targetd = makeNode(Distribution);
 		targetd->distributionType = outerd->distributionType;
 		targetd->nodes = bms_copy(outerd->nodes);
+		targetd->restrictNodes = bms_copy(outerd->restrictNodes);
 		targetd->distributionKey = InvalidAttrNumber;
 		if (outerd->distributionKey != InvalidAttrNumber)
 		{
@@ -649,6 +790,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 		targetd = makeNode(Distribution);
 		targetd->distributionType = innerd->distributionType;
 		targetd->nodes = bms_copy(innerd->nodes);
+		targetd->restrictNodes = bms_copy(innerd->restrictNodes);
 		if (outerd->distributionKey != InvalidAttrNumber)
 		{
 			ListCell   *lc;
@@ -757,6 +899,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 					targetd = makeNode(Distribution);
 					targetd->distributionType = innerd->distributionType;
 					targetd->nodes = bms_copy(innerd->nodes);
+					targetd->restrictNodes = bms_copy(innerd->restrictNodes);
 					targetd->distributionKey = InvalidAttrNumber;
 					pathnode->path.distribution = targetd;
 					idx = 1;
@@ -815,6 +958,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 					targetd = makeNode(Distribution);
 					targetd->distributionType = innerd->distributionType;
 					targetd->nodes = bms_copy(innerd->nodes);
+					targetd->restrictNodes = bms_copy(innerd->restrictNodes);
 					targetd->distributionKey = InvalidAttrNumber;
 					pathnode->path.distribution = targetd;
 					idx = 1;
@@ -1072,6 +1216,7 @@ not_allowed_join:
 			targetd = makeNode(Distribution);
 			targetd->distributionType = innerd->distributionType;
 			targetd->nodes = nodes;
+			targetd->restrictNodes = NULL;
 			targetd->distributionKey = InvalidAttrNumber;
 			pathnode->path.distribution = targetd;
 			idx = 1;
@@ -1102,12 +1247,20 @@ not_allowed_join:
 	}
 
 	/*
-	 * XCPTODO: cartesian product, not hasheable restrictions.
-	 * Perform coordinator join in such cases.
+	 * Build cartesian product, not hasheable restrictions.
+	 * Perform coordinator join in such cases. If this join would be a part of
+     * larger join it will be handled as replicated.
+	 * To do that leave join distribution NULL and place a RemoteSubPath node on
+	 * top of each subpath to provide access to joined result sets.
 	 */
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("Can not handle this distributed join")));
+	pathnode->innerjoinpath = redistribute_path(pathnode->innerjoinpath,
+												LOCATOR_TYPE_COORDINATOR,
+												NULL,
+												NULL);
+	pathnode->outerjoinpath = redistribute_path(pathnode->outerjoinpath,
+												LOCATOR_TYPE_COORDINATOR,
+												NULL,
+												NULL);
 }
 #endif
 
@@ -1128,6 +1281,15 @@ create_seqscan_path(PlannerInfo *root, RelOptInfo *rel)
 
 #ifdef XCP
 	set_scanpath_distribution(root, rel, pathnode);
+	if (rel->baserestrictinfo)
+	{
+		ListCell *lc;
+		foreach (lc, rel->baserestrictinfo)
+		{
+			RestrictInfo *ri = (RestrictInfo *) lfirst(lc);
+			restrict_distribution(root, ri, pathnode);
+		}
+	}
 #endif
 
 	cost_seqscan(pathnode, root, rel);
@@ -1239,6 +1401,15 @@ create_index_path(PlannerInfo *root,
 	cost_index(pathnode, root, index, indexquals, indexorderbys, outer_rel);
 #ifdef XCP
 	set_scanpath_distribution(root, rel, (Path *) pathnode);
+	if (allclauses)
+	{
+		ListCell *lc;
+		foreach (lc, allclauses)
+		{
+			RestrictInfo *ri = (RestrictInfo *) lfirst(lc);
+			restrict_distribution(root, ri, (Path *) pathnode);
+		}
+	}
 #endif
 
 	return pathnode;
@@ -1299,6 +1470,15 @@ create_bitmap_heap_path(PlannerInfo *root,
 
 #ifdef XCP
 	set_scanpath_distribution(root, rel, (Path *) pathnode);
+	if (rel->baserestrictinfo)
+	{
+		ListCell *lc;
+		foreach (lc, rel->baserestrictinfo)
+		{
+			RestrictInfo *ri = (RestrictInfo *) lfirst(lc);
+			restrict_distribution(root, ri, (Path *) pathnode);
+		}
+	}
 #endif
 
 	cost_bitmap_heap_scan(&pathnode->path, root, rel, bitmapqual, outer_rel);

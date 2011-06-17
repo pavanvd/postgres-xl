@@ -15,6 +15,9 @@
 #ifndef LOCATOR_H
 #define LOCATOR_H
 
+#ifdef XCP
+#define LOCATOR_TYPE_COORDINATOR '\0'
+#endif
 #define LOCATOR_TYPE_REPLICATED 'R'
 #define LOCATOR_TYPE_HASH 'H'
 #define LOCATOR_TYPE_RANGE 'G'

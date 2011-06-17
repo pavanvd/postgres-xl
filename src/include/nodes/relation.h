@@ -35,6 +35,7 @@ typedef struct Distribution
 	char		distributionType;
 	AttrNumber	distributionKey;
 	Bitmapset  *nodes;
+	Bitmapset  *restrictNodes;
 } Distribution;
 #endif
 

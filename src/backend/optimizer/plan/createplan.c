@@ -4103,7 +4103,10 @@ make_remotesubplan(PlannerInfo *root,
 		node->distributionNodes = NULL;
 	}
 	/* determine where subplan will be executed */
-	tmpset = bms_copy(targetDistribution->nodes);
+	if (targetDistribution->restrictNodes)
+		tmpset = bms_copy(targetDistribution->restrictNodes);
+	else
+		tmpset = bms_copy(targetDistribution->nodes);
 	while ((nodenum = bms_first_member(tmpset)) >= 0)
 		node->nodeList = lappend_int(node->nodeList, nodenum);
 	bms_free(tmpset);
