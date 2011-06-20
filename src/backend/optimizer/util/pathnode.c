@@ -418,11 +418,19 @@ restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
 	Const		   *constExpr = NULL;
 	bool			found_key = false;
 
+	/*
+	 * Can not restrict - not distributed or key is not defined
+	 */
+	if (distribution == NULL ||
+			distribution->distributionKey == InvalidAttrNumber)
+		return;
+
+	/*
+	 * We do not support OR'ed conditions yet
+	 */
 	if (ri->orclause)
 		return;
 
-	if (distribution->distributionKey == InvalidAttrNumber)
-		return;
 	distributionExpr = (Expr *) list_nth(rel->reltargetlist,
 										 distribution->distributionKey - 1);
 	keytype = exprType((Node *) distributionExpr);
