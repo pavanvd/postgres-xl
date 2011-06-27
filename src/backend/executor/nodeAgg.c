@@ -2058,10 +2058,14 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 #ifdef PGXC
 #ifdef XCP
 		if (OidIsValid(aggcollecttype))
-#endif /* XCP */
 		get_typlenbyval(aggcollecttype,
 						&peraggstate->collecttypeLen,
 						&peraggstate->collecttypeByVal);
+#else
+		get_typlenbyval(aggform->aggcollecttype,
+						&peraggstate->collecttypeLen,
+						&peraggstate->collecttypeByVal);
+#endif /* XCP */
 #endif /* PGXC */
 
 
@@ -2099,11 +2103,16 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		if (OidIsValid(aggcollecttype))
 		{
 #endif /* XCP */
-		textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
-									  Anum_pg_aggregate_agginitcollect,
-									  &peraggstate->initCollectValueIsNull);
+			textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
+										  Anum_pg_aggregate_agginitcollect,
+										  &peraggstate->initCollectValueIsNull);
 
 #ifdef XCP
+			if (peraggstate->initCollectValueIsNull)
+				peraggstate->initCollectValue = (Datum) 0;
+			else
+				peraggstate->initCollectValue = GetAggInitVal(textInitVal,
+															  aggcollecttype);
 			if (peraggstate->initCollectValueIsNull)
 				peraggstate->initCollectValue = (Datum) 0;
 			else
@@ -2125,12 +2134,6 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 									aggref->aggfnoid)));
 			}
 		}
-#else
-		if (peraggstate->initCollectValueIsNull)
-			peraggstate->initCollectValue = (Datum) 0;
-		else
-			peraggstate->initCollectValue = GetAggInitVal(textInitVal,
-												   aggtranstype);
 #endif /* XCP */
 #endif /* PGXC */
 

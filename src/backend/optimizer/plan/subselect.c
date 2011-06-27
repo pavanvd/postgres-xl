@@ -2116,6 +2116,12 @@ finalize_plan(PlannerInfo *root, Plan *plan, Bitmapset *valid_params,
 			break;
 #endif
 
+#ifdef XCP
+		case T_RemoteSubplan:
+			//XCPTODO
+			break;
+#endif
+
 		case T_Append:
 			{
 				ListCell   *l;

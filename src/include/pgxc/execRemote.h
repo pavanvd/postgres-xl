@@ -140,6 +140,27 @@ typedef struct RemoteSubplanState
 	ResponseCombiner combiner;			/* see ResponseCombiner struct */
 	char	   *subplanstr;				/* subplan encoded as a string */
 	bool		bound;					/* subplan is sent down to the nodes */
+	bool		local_exec; 			/* execute subplan on this datanode */
+	Locator    *locator;				/* determine destination of tuples of
+										 * locally executed plan */
+	int 	   *dest_nodes;				/* allocate once */
+	/*
+	 * Nodes where it is known the subplan is already running, or will be
+	 * running soon. Connect to these nodes and pull tuples from there.
+	 * TODO: implement, for now query is executed there anyway.
+	 */
+	List	   *pullNodes;
+	List	   *execNodes;				/* where to execute subplan */
+	/* should query be executed on all (true) or any (false) node specified
+	 * in the execNodes list */
+	bool 		execOnAll;
+	/*
+	 * If the destinations array is NULL return results to the parent plan only,
+	 * if locator is set filter out results which need to be sent to other nodes.
+	 * Also filter out results for destinations that are NULL.
+	 * TODO: implement, for now it is always NULL
+	 */
+    void	  **destinations;
 } RemoteSubplanState;
 
 
@@ -151,11 +172,21 @@ typedef struct RemoteStmt
 {
 	NodeTag		type;
 
+	CmdType		commandType;	/* select|insert|update|delete */
+
+	bool		hasReturning;	/* is it insert|update|delete RETURNING? */
+
 	struct Plan *planTree;				/* tree of Plan nodes */
 
 	List	   *rtable;					/* list of RangeTblEntry nodes */
+
+	/* rtable indexes of target relations for INSERT/UPDATE/DELETE */
+	List	   *resultRelations;	/* integer list of RT indexes, or NIL */
+
 	char		distributionType;
+
 	AttrNumber	distributionKey;
+
 	List	   *distributionNodes;
 } RemoteStmt;
 #endif
@@ -194,7 +225,6 @@ extern void DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_da
 extern bool DataNodeCopyEnd(PGXCNodeHandle *handle, bool is_error);
 extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_connections);
 
-extern int ExecCountSlotsRemoteQuery(RemoteQuery *node);
 extern RemoteQueryState *ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags);
 extern TupleTableSlot* ExecRemoteQuery(RemoteQueryState *step);
 extern void ExecEndRemoteQuery(RemoteQueryState *step);
@@ -216,11 +246,13 @@ extern void HandleCmdComplete(CmdType commandType, CombineTag *combine, const ch
 									size_t len);
 
 #ifdef XCP
-extern bool FetchTuple(ResponseCombiner *combiner, TupleTableSlot *slot, bool merge_sort);
-
 #define CHECK_OWNERSHIP(conn, node) \
-       if ((conn)->combiner && (conn)->combiner != node) \
-               BufferConnection(conn)
+	if ((conn)->state == DN_CONNECTION_STATE_QUERY && \
+			(conn)->combiner && \
+			(conn)->combiner != (ResponseCombiner *) (node)) \
+		BufferConnection(conn)
+
+extern TupleTableSlot *FetchTuple(ResponseCombiner *combiner, bool merge_sort);
 #else
 extern bool FetchTuple(RemoteQueryState *combiner, TupleTableSlot *slot);
 #endif

@@ -252,6 +252,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	}
 
 #ifdef PGXC
+#ifndef XCP
 	/*
 	 * PGXC should apply INSERT/UPDATE/DELETE to a datanode. We are overriding
 	 * normal Postgres behavior by modifying final plan or by adding a node on
@@ -260,10 +261,6 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	if (IS_PGXC_COORDINATOR)
 		switch (parse->commandType)
 		{
-#ifdef XCP
-			case CMD_SELECT:
-				break;
-#endif /* XCP */
 			case CMD_INSERT:
 				top_plan = create_remoteinsert_plan(root, top_plan);
 				break;
@@ -276,6 +273,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 			default:
 				break;
 		}
+#endif /* XCP */
 #endif
 
 	/* build the PlannedStmt result */
@@ -632,6 +630,16 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 											 returningLists,
 											 rowMarks,
 											 SS_assign_special_param(root));
+#ifdef XCP
+			if (root->distribution)
+			{
+				plan = (Plan *) make_remotesubplan(root,
+												   plan,
+												   NULL,
+												   root->distribution,
+												   NIL);
+			}
+#endif
 		}
 	}
 
@@ -942,6 +950,9 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	double		dNumGroups = 0;
 	bool		use_hashed_distinct = false;
 	bool		tested_hashed_distinct = false;
+#ifdef XCP
+	Distribution *distribution = NULL;
+#endif
 
 	/* Tweak caller-supplied tuple_fraction if have LIMIT/OFFSET */
 	if (parse->limitCount || parse->limitOffset)
@@ -960,6 +971,9 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	if (parse->setOperations)
 	{
 		List	   *set_sortclauses;
+#ifdef XCP
+		elog(ERROR, "Set operations are not supported yet");
+#endif
 
 		/*
 		 * If there's a top-level ORDER BY, assume we have to fetch all the
@@ -1060,6 +1074,9 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		 */
 		if (parse->hasWindowFuncs)
 		{
+#ifdef XCP
+			elog(ERROR, "Window functions are not supported yet");
+#endif
 			wflists = find_window_functions((Node *) tlist,
 											list_length(parse->windowClause));
 			if (wflists->numWindowFuncs > 0)
@@ -1299,6 +1316,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 														  NULL,
 													  best_path->distribution,
 														  current_pathkeys);
+				distribution = best_path->distribution;
 			}
 #endif
 
@@ -1324,6 +1342,34 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			 */
 			if (need_tlist_eval)
 			{
+#ifdef XCP
+				/*
+				 * Result may change tuple values so distribution key may move
+				 * to different field or disappear at all
+				 */
+				if (distribution &&
+						distribution->distributionKey != InvalidAttrNumber)
+				{
+					TargetEntry	   *keyTle;
+					Expr		   *keyExpr;
+					ListCell	   *lc;
+
+					keyTle = (TargetEntry *) list_nth(result_plan->targetlist,
+										  distribution->distributionKey - 1);
+					keyExpr = keyTle->expr;
+
+					distribution->distributionKey = InvalidAttrNumber;
+					foreach(lc, sub_tlist)
+					{
+						TargetEntry	   *tle = (TargetEntry *) lfirst(lc);
+						if (equal(tle->expr, keyExpr))
+						{
+							distribution->distributionKey = tle->resno;
+							break;
+						}
+					}
+				}
+#endif
 				/*
 				 * If the top-level plan node is one that cannot do expression
 				 * evaluation, we must insert a Result node to project the
@@ -1344,6 +1390,14 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 					 */
 					result_plan->targetlist = sub_tlist;
 				}
+#ifdef XCP
+				/*
+				 * RemoteSubplan is conditionally projection capable - it is
+				 * pushing projection to the data nodes
+				 */
+				if (IsA(result_plan, RemoteSubplan))
+					result_plan->lefttree->targetlist = sub_tlist;
+#endif
 
 				/*
 				 * Also, account for the cost of evaluation of the sub_tlist.
@@ -1388,6 +1442,12 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			 */
 			if (use_hashed_grouping)
 			{
+#ifdef XCP
+				/*
+				 * Aggregation is finalized on Coordinador
+				 */
+				distribution = NULL;
+#endif
 				/* Hashed aggregate plan --- no sort needed */
 				result_plan = (Plan *) make_agg(root,
 												tlist,
@@ -1418,6 +1478,13 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			{
 				/* Plain aggregate plan --- sort if needed */
 				AggStrategy aggstrategy;
+
+#ifdef XCP
+				/*
+				 * Aggregation is finalized on Coordinador
+				 */
+				distribution = NULL;
+#endif
 
 				if (parse->groupClause)
 				{
@@ -1509,6 +1576,12 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 				 * this routine to avoid having to generate the plan in the
 				 * first place.
 				 */
+#ifdef XCP
+				/*
+				 * The Coordinator-only plan node
+				 */
+				distribution = NULL;
+#endif
 				result_plan = (Plan *) make_result(root,
 												   tlist,
 												   parse->havingQual,
@@ -1577,6 +1650,14 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			window_tlist = add_volatile_sort_exprs(window_tlist, tlist,
 												   activeWindows);
 			result_plan->targetlist = (List *) copyObject(window_tlist);
+#ifdef XCP
+			/*
+			 * RemoteSubplan is conditionally projection capable - it is
+			 * pushing projection to the data nodes
+			 */
+			if (IsA(result_plan, RemoteSubplan))
+				result_plan->lefttree->targetlist = result_plan->targetlist;
+#endif
 
 			foreach(l, activeWindows)
 			{
@@ -1679,6 +1760,13 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	{
 		double		dNumDistinctRows;
 		long		numDistinctRows;
+
+#ifdef XCP
+		/*
+		 * Distinct is performed on Coordinador
+		 */
+		distribution = NULL;
+#endif
 
 		/*
 		 * If there was grouping or aggregation, use the current number of
@@ -1832,6 +1920,95 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	 * an outer query level.
 	 */
 	root->query_pathkeys = current_pathkeys;
+
+#ifdef XCP
+	/*
+	 * Adjust query distribution if requested
+	 */
+	if (root->distribution)
+	{
+		if (equal(root->distribution, distribution))
+		{
+			Plan *remotesubplan;
+			Plan *parentplan;
+			/*
+			 * Source tuple will be needed on the same node where it is
+			 * produced, so if it is known some node does not yield tuples
+			 * we do not want to run modify table on these nodes at all.
+			 * So just copy the restriction. Also, we need to remove topmost
+			 * RemoteSubplan node - upper level plan is already distributed
+			 * properly.
+			 */
+			root->distribution->restrictNodes =
+					bms_copy(distribution->restrictNodes);
+
+			parentplan = NULL;
+			remotesubplan = result_plan;
+			/*
+			 * Some nodes like Sort or Material may be above the
+			 * RemoteSubplan node, we need to lookup.
+			 */
+			while (!IsA(remotesubplan, RemoteSubplan))
+			{
+				parentplan = remotesubplan;
+				remotesubplan = remotesubplan->lefttree;
+				Assert(remotesubplan);
+			}
+
+			if (parentplan)
+				/* Not topmost node, just throw it  off of the chain */
+				parentplan->lefttree = remotesubplan->lefttree;
+			else
+				/* Topmost node, just point result_plan on the next plan */
+				result_plan = result_plan->lefttree;
+		}
+		else
+		{
+			RemoteSubplan *distributePlan;
+			/*
+			 * We could not allow TIDs travel to other data nodes.
+			 * I am not sure if the fact the resulting distribution matches
+			 * to requested the TIDs will be on proper node, but if they
+			 * are not equal they definitely won't.
+			 * TODO change planner in order to increase chance of building
+			 * proper plan. I believe there are cases when it is impossible
+			 * to build such plan, but we should do our best to find out the
+			 * path. At least if we fail to do that we should surely detect
+			 * the case and report it
+			 */
+			if (parse->commandType == CMD_UPDATE ||
+					parse->commandType == CMD_DELETE)
+				ereport(ERROR,
+						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+						 errmsg("could not plan this distributed statement"),
+						 errdetail("The plan suggests moving data of the target table between data nodes, possible data corruption.")));
+
+			/*
+			 * Redistribute result according to requested distribution.
+			 */
+			if ((distributePlan = find_push_down_plan(result_plan, true)))
+			{
+				Bitmapset  *tmpset;
+				int			nodenum;
+
+				distributePlan->distributionType = root->distribution->distributionType;
+				distributePlan->distributionKey = root->distribution->distributionKey;
+				tmpset = bms_copy(root->distribution->nodes);
+				distributePlan->distributionNodes = NIL;
+				while ((nodenum = bms_first_member(tmpset)) >= 0)
+					distributePlan->distributionNodes = lappend_int(
+							distributePlan->distributionNodes, nodenum);
+				bms_free(tmpset);
+			}
+			else
+				result_plan = (Plan *) make_remotesubplan(root,
+														  result_plan,
+														  root->distribution,
+														  distribution,
+														  NULL);
+		}
+	}
+#endif
 
 	return result_plan;
 }

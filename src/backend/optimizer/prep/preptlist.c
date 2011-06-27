@@ -77,6 +77,80 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 		tlist = expand_targetlist(tlist, command_type,
 								  result_relation, range_table);
 
+#ifdef XCP
+	/*
+	 * If target relation is specified set distribution of the plan
+	 */
+	if (result_relation)
+	{
+		Relation rel = heap_open(getrelid(result_relation, range_table),
+								 NoLock);
+		RelationLocInfo *rel_loc_info = rel->rd_locator_info;
+
+		/* Is target table distributed ? */
+		if (rel_loc_info)
+		{
+			Distribution *distribution = makeNode(Distribution);
+			ListCell *lc;
+
+			distribution->distributionType = rel_loc_info->locatorType;
+			foreach(lc, rel_loc_info->nodeList)
+				distribution->nodes = bms_add_member(distribution->nodes,
+													 lfirst_int(lc));
+			distribution->restrictNodes = NULL;
+
+			/*
+			 * For INSERT and UPDATE plan tlist is matching the target table
+			 * layout
+			 */
+			if (command_type == CMD_INSERT || command_type == CMD_UPDATE)
+				distribution->distributionKey = rel_loc_info->partAttrNum;
+
+			/*
+			 * We do not support update of distribution key yet
+			 */
+			if (command_type == CMD_UPDATE && rel_loc_info->partAttrNum)
+			{
+				TargetEntry *keyTle = (TargetEntry *) list_nth(tlist,
+											   rel_loc_info->partAttrNum - 1);
+				if (!IsA(keyTle->expr, Var))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+							(errmsg("Partition column can't be updated in current version"))));
+			}
+
+			/*
+			 * For delete we need to add the partitioning key of the target
+			 * table to the tlist, so distribution can be correctly handled
+			 * trough all the planning process.
+			 */
+			if (command_type == CMD_DELETE && rel_loc_info->partAttrNum)
+			{
+				Form_pg_attribute att_tup;
+				TargetEntry *tle;
+				Var		   *var;
+
+				att_tup = rel->rd_att->attrs[rel_loc_info->partAttrNum - 1];
+				var = makeVar(result_relation, rel_loc_info->partAttrNum,
+							  att_tup->atttypid, att_tup->atttypmod, 0);
+
+				tle = makeTargetEntry((Expr *) var,
+									  list_length(tlist) + 1,
+									  pstrdup(NameStr(att_tup->attname)),
+									  true);
+				tlist = lappend(tlist, tle);
+				distribution->distributionKey = tle->resno;
+			}
+
+			root->distribution = distribution;
+		}
+		else
+			root->distribution = NULL;
+
+		heap_close(rel, NoLock);
+	}
+#endif
+
 	/*
 	 * Add necessary junk columns for rowmarked rels.  These values are needed
 	 * for locking of rels selected FOR UPDATE/SHARE, and to do EvalPlanQual

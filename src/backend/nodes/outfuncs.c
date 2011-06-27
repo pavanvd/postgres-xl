@@ -1173,8 +1173,11 @@ _outRemoteStmt(StringInfo str, RemoteStmt *node)
 {
 	WRITE_NODE_TYPE("REMOTESTMT");
 
+	WRITE_ENUM_FIELD(commandType, CmdType);
+	WRITE_BOOL_FIELD(hasReturning);
 	WRITE_NODE_FIELD(planTree);
 	WRITE_NODE_FIELD(rtable);
+	WRITE_NODE_FIELD(resultRelations);
 	WRITE_CHAR_FIELD(distributionType);
 	WRITE_INT_FIELD(distributionKey);
 	WRITE_NODE_FIELD(distributionNodes);
@@ -1851,6 +1854,11 @@ _outRowExpr(StringInfo str, RowExpr *node)
 	WRITE_NODE_TYPE("ROW");
 
 	WRITE_NODE_FIELD(args);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(row_typeid);
+	else
+#endif
 	WRITE_OID_FIELD(row_typeid);
 	WRITE_ENUM_FIELD(row_format, CoercionForm);
 	WRITE_NODE_FIELD(colnames);

@@ -260,6 +260,14 @@ typedef struct PlannerInfo
 
 	/* optional private data for join_search_hook, e.g., GEQO */
 	void	   *join_search_private;
+#ifdef XCP
+	/*
+	 * This is NULL for a SELECT query (NULL distribution means "Coordinator"
+	 * everywhere in the planner. For INSERT, UPDATE or DELETE it should match
+	 * to the target table distribution.
+	 */
+	Distribution *distribution; /* Query result distribution */
+#endif
 } PlannerInfo;
 
 

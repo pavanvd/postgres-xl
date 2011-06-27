@@ -3018,14 +3018,57 @@ reversedirection_heap(Tuplesortstate *state)
 }
 
 #ifdef PGXC
+#ifdef XCP
 static unsigned int
 getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
 {
-#ifdef XCP
 	ResponseCombiner *combiner = state->combiner;
+	TupleTableSlot   *dstslot = combiner->ss.ps.ps_ResultTupleSlot;
+	TupleTableSlot   *slot;
+
+	combiner->current_conn = tapenum;
+	slot = FetchTuple(combiner, true);
+	if (TupIsNull(slot))
+	{
+		if (eofOK)
+			return 0;
+		else
+			elog(ERROR, "unexpected end of data");
+	}
+
+	if (slot != dstslot)
+		ExecCopySlot(dstslot, slot);
+
+	return 1;
+}
+
+static void
+readtup_datanode(Tuplesortstate *state, SortTuple *stup,
+				 int tapenum, unsigned int len)
+{
+	TupleTableSlot *slot = state->combiner->ss.ps.ps_ResultTupleSlot;
+	MinimalTuple tuple;
+	HeapTupleData htup;
+
+	Assert(!TupIsNull(slot));
+
+	/* copy the tuple into sort storage */
+	tuple = ExecCopySlotMinimalTuple(slot);
+	stup->tuple = (void *) tuple;
+	USEMEM(state, GetMemoryChunkSpace(tuple));
+	/* set up first-column key value */
+	htup.t_len = tuple->t_len + MINIMAL_TUPLE_OFFSET;
+	htup.t_data = (HeapTupleHeader) ((char *) tuple - MINIMAL_TUPLE_OFFSET);
+	stup->datum1 = heap_getattr(&htup,
+								state->scanKeys[0].sk_attno,
+								state->tupDesc,
+								&stup->isnull1);
+}
 #else
+static unsigned int
+getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
+{
 	RemoteQueryState *combiner = state->combiner;
-#endif
 	PGXCNodeHandle *conn = combiner->connections[tapenum];
 	/*
 	 * If connection is active (potentially has data to read) we can get node
@@ -3134,20 +3177,6 @@ getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
 				break;
 			case RESPONSE_DATAROW:
 				Assert(len == 0);
-#ifdef XCP
-				if (combiner->cursor)
-				{
-					/*
-					 * We fetching one row at a time when running EQP
-					 * so read following PortalSuspended or ResponseComplete
-					 * to leave connection clean between the calls
-					 */
-					len = combiner->currentRow.msglen;
-					break;
-				}
-				else
-					return combiner->currentRow.msglen;
-#else
 				if (state->combiner->cursor)
 				{
 					/*
@@ -3160,7 +3189,6 @@ getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
 				}
 				else
 					return state->combiner->currentRow.msglen;
-#endif
 			default:
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
@@ -3177,11 +3205,7 @@ readtup_datanode(Tuplesortstate *state, SortTuple *stup,
 	MinimalTuple tuple;
 	HeapTupleData htup;
 
-#ifdef XCP
-	FetchTuple(state->combiner, slot, true);
-#else
 	FetchTuple(state->combiner, slot);
-#endif
 
 	/* copy the tuple into sort storage */
 	tuple = ExecCopySlotMinimalTuple(slot);
@@ -3195,7 +3219,8 @@ readtup_datanode(Tuplesortstate *state, SortTuple *stup,
 								state->tupDesc,
 								&stup->isnull1);
 }
-#endif
+#endif /* XCP */
+#endif /* PGXC */
 
 /*
  * Routines specialized for the CLUSTER case (HeapTuple data, with

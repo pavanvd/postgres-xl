@@ -1738,14 +1738,21 @@ exec_bindplan_message(StringInfo input_message)
 
 	pq_getmsgend(input_message);
 
+	/*
+	 * Make up a PreparedStatement from data sent from the coordinator or
+	 * parent datanodes. It have to be available for all the portal's lifetime
+	 */
+	oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(portal));
+
 	stmt = makeNode(PlannedStmt);
 
-	stmt->commandType = CMD_SELECT;
+	stmt->commandType = rstmt->commandType;
+	stmt->hasReturning = rstmt->hasReturning;
 	stmt->canSetTag = true;
 	stmt->transientPlan = false; // ???
 	stmt->planTree = rstmt->planTree;
 	stmt->rtable = rstmt->rtable;
-	stmt->resultRelations = NIL;
+	stmt->resultRelations = rstmt->resultRelations;
 	stmt->utilityStmt = NULL;
 	stmt->intoClause = NULL;
 	stmt->subplans = NIL;
@@ -1762,6 +1769,9 @@ exec_bindplan_message(StringInfo input_message)
 	pfree(rstmt);
 
 	plan_list = lappend(NIL, stmt);
+
+	/* Done storing stuff in portal's context */
+	MemoryContextSwitchTo(oldContext);
 
 	/*
 	 * Now we can define the portal.

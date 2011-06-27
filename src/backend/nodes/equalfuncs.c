@@ -2416,6 +2416,18 @@ _equalXmlSerialize(XmlSerialize *a, XmlSerialize *b)
 	return true;
 }
 
+#ifdef XCP
+static bool
+_equalDistribution(Distribution *a, Distribution *b)
+{
+	COMPARE_SCALAR_FIELD(distributionType);
+	COMPARE_SCALAR_FIELD(distributionKey);
+	COMPARE_BITMAPSET_FIELD(nodes);
+
+	return true;
+}
+#endif
+
 /*
  * Stuff from pg_list.h
  */
@@ -3124,6 +3136,11 @@ equal(void *a, void *b)
 		case T_XmlSerialize:
 			retval = _equalXmlSerialize(a, b);
 			break;
+#ifdef XCP
+		case T_Distribution:
+			retval = _equalDistribution(a, b);
+			break;
+#endif
 
 		default:
 			elog(ERROR, "unrecognized node type: %d",

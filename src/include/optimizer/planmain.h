@@ -138,21 +138,21 @@ extern void extract_query_dependencies(Node *query,
 						   List **invalItems);
 
 #ifdef PGXC
+#ifdef XCP
+extern RemoteSubplan *find_push_down_plan(Plan *plan, bool force);
+extern RemoteSubplan *make_remotesubplan(PlannerInfo *root,
+				   Plan *lefttree,
+				   Distribution *resultDistribution,
+				   Distribution *execDistribution,
+				   List *pathkeys);
+#else
 extern Var *search_tlist_for_var(Var *var, List *jtlist);
 extern Plan *create_remoteinsert_plan(PlannerInfo *root, Plan *topplan);
 extern Plan *create_remoteupdate_plan(PlannerInfo *root, Plan *topplan);
 extern Plan *create_remotedelete_plan(PlannerInfo *root, Plan *topplan);
-extern Plan *create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan);
-#endif
-#ifdef XCP
-extern RemoteSubplan *make_remotesubplan(PlannerInfo *root,
-				   Plan *lefttree,
-				   Distribution *resultDistribution,
-				   Distribution *targetDistribution,
-				   List *pathkeys);
-#else
 extern Plan *create_remotegroup_plan(PlannerInfo *root, Plan *local_plan);
 extern Plan *create_remoteagg_plan(PlannerInfo *root, Plan *agg_plan);
+extern Plan *create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan);
 #endif /* XCP */
 #endif /* PGXC */
 

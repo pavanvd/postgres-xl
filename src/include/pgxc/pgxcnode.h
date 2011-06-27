@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #define NO_SOCKET -1
+#define LOCAL_CONN -2
 
 
 /* Connection to data node maintained by Pool Manager */

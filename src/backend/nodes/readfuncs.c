@@ -1332,6 +1332,11 @@ _readRowExpr(void)
 	READ_LOCALS(RowExpr);
 
 	READ_NODE_FIELD(args);
+#ifdef XCP
+	if (portable_input)
+		READ_TYPID_FIELD(row_typeid);
+	else
+#endif
 	READ_OID_FIELD(row_typeid);
 	READ_ENUM_FIELD(row_format, CoercionForm);
 	READ_NODE_FIELD(colnames);
@@ -1758,6 +1763,26 @@ _readResult(void)
 
 	READ_PLAN_FIELDS();
 	READ_NODE_FIELD(resconstantqual);
+
+	READ_DONE();
+}
+
+
+/*
+ * _readModifyTable
+ */
+static ModifyTable *
+_readModifyTable(void)
+{
+	READ_LOCALS(ModifyTable);
+
+	READ_PLAN_FIELDS();
+	READ_ENUM_FIELD(operation, CmdType);
+	READ_NODE_FIELD(resultRelations);
+	READ_NODE_FIELD(plans);
+	READ_NODE_FIELD(returningLists);
+	READ_NODE_FIELD(rowMarks);
+	READ_INT_FIELD(epqParam);
 
 	READ_DONE();
 }
@@ -2672,8 +2697,11 @@ _readRemoteStmt(void)
 {
 	READ_LOCALS(RemoteStmt);
 
+	READ_ENUM_FIELD(commandType, CmdType);
+	READ_BOOL_FIELD(hasReturning);
 	READ_NODE_FIELD(planTree);
 	READ_NODE_FIELD(rtable);
+	READ_NODE_FIELD(resultRelations);
 	READ_CHAR_FIELD(distributionType);
 	READ_INT_FIELD(distributionKey);
 	READ_NODE_FIELD(distributionNodes);
@@ -2893,6 +2921,8 @@ parseNodeString(void)
 		return_value = _readPlan();
 	else if (MATCH("RESULT", 6))
 		return_value = _readResult();
+	else if (MATCH("MODIFYTABLE", 11))
+		return_value = _readModifyTable();
 	else if (MATCH("APPEND", 6))
 		return_value = _readAppend();
 	else if (MATCH("RECURSIVEUNION", 14))

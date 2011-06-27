@@ -71,7 +71,6 @@ static Plan *create_unique_plan(PlannerInfo *root, UniquePath *best_path);
 #ifdef XCP
 static RemoteSubplan *create_remotescan_plan(PlannerInfo *root,
 					   RemoteSubPath *best_path);
-static RemoteSubplan *find_push_down_plan(Plan *plan);
 #endif
 static SeqScan *create_seqscan_plan(PlannerInfo *root, Path *best_path,
 					List *tlist, List *scan_clauses);
@@ -1599,6 +1598,14 @@ create_unique_plan(PlannerInfo *root, UniquePath *best_path)
 			subplan = (Plan *) make_result(root, newtlist, NULL, subplan);
 		else
 			subplan->targetlist = newtlist;
+#ifdef XCP
+		/*
+		 * RemoteSubplan is conditionally projection capable - it is pushing
+		 * projection to the data nodes
+		 */
+		if (IsA(subplan, RemoteSubplan))
+			subplan->lefttree->targetlist = newtlist;
+#endif
 	}
 
 	/*
@@ -1751,18 +1758,18 @@ create_remotescan_plan(PlannerInfo *root,
 }
 
 
-static RemoteSubplan *
-find_push_down_plan(Plan *plan)
+RemoteSubplan *
+find_push_down_plan(Plan *plan, bool force)
 {
 	if (IsA(plan, RemoteSubplan) &&
-			list_length(((RemoteSubplan *) plan)->nodeList) > 1 &&
-			((RemoteSubplan *) plan)->execOnAll)
+			(force || (list_length(((RemoteSubplan *) plan)->nodeList) > 1 &&
+					   ((RemoteSubplan *) plan)->execOnAll)))
 		return (RemoteSubplan *) plan;
 	if (IsA(plan, Hash) ||
 			IsA(plan, Material) ||
 			IsA(plan, Unique) ||
 			IsA(plan, Limit))
-		return find_push_down_plan(plan->lefttree);
+		return find_push_down_plan(plan->lefttree, force);
 	return NULL;
 }
 #endif
@@ -4056,6 +4063,7 @@ make_remotequery(List *qptlist,
 
 	return node;
 }
+#endif /* PGXC */
 
 
 #ifdef XCP
@@ -4065,7 +4073,7 @@ make_remotequery(List *qptlist,
  *  leftree - the subplan which we want to push down to remote node.
  *  resultDistribution - the distribution of the remote result. May be NULL -
  * results are coming to the invoking node
- *  targetDistribution - determines how source data of the subplan are
+ *  execDistribution - determines how source data of the subplan are
  * distributed, where we should send the subplan and how combine results.
  *	pathkeys - the remote subplan is sorted according to these keys, executor
  * 		should perform merge sort of incoming tuples
@@ -4074,13 +4082,17 @@ RemoteSubplan *
 make_remotesubplan(PlannerInfo *root,
 				   Plan *lefttree,
 				   Distribution *resultDistribution,
-				   Distribution *targetDistribution,
+				   Distribution *execDistribution,
 				   List *pathkeys)
 {
 	RemoteSubplan *node = makeNode(RemoteSubplan);
 	Plan	   *plan = &node->scan.plan;
 	Bitmapset  *tmpset;
 	int			nodenum;
+
+	/* Sanity checks */
+	Assert(!equal(resultDistribution, execDistribution));
+	Assert(!IsA(lefttree, RemoteSubplan));
 
 	plan->qual = NIL;
 	plan->lefttree = lefttree;
@@ -4091,6 +4103,7 @@ make_remotesubplan(PlannerInfo *root,
 		node->distributionType = resultDistribution->distributionType;
 		node->distributionKey = resultDistribution->distributionKey;
 		tmpset = bms_copy(resultDistribution->nodes);
+		node->distributionNodes = NIL;
 		while ((nodenum = bms_first_member(tmpset)) >= 0)
 			node->distributionNodes = lappend_int(node->distributionNodes,
 												  nodenum);
@@ -4098,19 +4111,35 @@ make_remotesubplan(PlannerInfo *root,
 	}
 	else
 	{
+		/*
+		 * Return results to the caller only
+		 * NB: we do not use LOCATOR_TYPE_COORDINATOR here since the value \0
+		 * causes problem when plan is decoded on remote data node. Reader treat
+		 * is as the end of the input.
+		 */
 		node->distributionType = LOCATOR_TYPE_SINGLE;
 		node->distributionKey = InvalidAttrNumber;
-		node->distributionNodes = NULL;
+		node->distributionNodes = NIL;
 	}
 	/* determine where subplan will be executed */
-	if (targetDistribution->restrictNodes)
-		tmpset = bms_copy(targetDistribution->restrictNodes);
+	if (execDistribution)
+	{
+		if (execDistribution->restrictNodes)
+			tmpset = bms_copy(execDistribution->restrictNodes);
+		else
+			tmpset = bms_copy(execDistribution->nodes);
+		node->nodeList = NIL;
+		while ((nodenum = bms_first_member(tmpset)) >= 0)
+			node->nodeList = lappend_int(node->nodeList, nodenum);
+		bms_free(tmpset);
+		node->execOnAll = !IsReplicated(execDistribution->distributionType);
+	}
 	else
-		tmpset = bms_copy(targetDistribution->nodes);
-	while ((nodenum = bms_first_member(tmpset)) >= 0)
-		node->nodeList = lappend_int(node->nodeList, nodenum);
-	bms_free(tmpset);
-	node->execOnAll = !IsReplicated(targetDistribution->distributionType);
+	{
+		/* execute on local datanode only */
+		node->nodeList = NIL;
+		node->execOnAll = false;
+	}
 	plan->targetlist = lefttree->targetlist;
 	/* We do not need to merge sort if only one node is yielding tuples */
 	if (pathkeys && node->execOnAll && list_length(node->nodeList) > 1)
@@ -4292,7 +4321,6 @@ make_remotesubplan(PlannerInfo *root,
 	return node;
 }
 #endif /* XCP */
-#endif /* PGXC */
 
 
 static ForeignScan *
@@ -4605,7 +4633,12 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	node->nullsFirst = nullsFirst;
 
 #ifdef XCP
-	pushdown = find_push_down_plan(lefttree);
+	/*
+	 * It does not makes sence to sort on one data node and then perform
+	 * one-tape merge sort. So do not push sort down if there is single
+	 * remote data node
+	 */
+	pushdown = find_push_down_plan(lefttree, false);
 	if (pushdown)
 	{
 		/*
@@ -4908,6 +4941,14 @@ prepare_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
 									  true);
 				tlist = lappend(tlist, tle);
 				lefttree->targetlist = tlist;	/* just in case NIL before */
+#ifdef XCP
+				/*
+				 * RemoteSubplan is conditionally projection capable - it is
+				 * pushing projection to the data nodes
+				 */
+				if (IsA(lefttree, RemoteSubplan))
+					lefttree->lefttree->targetlist = tlist;
+#endif
 			}
 		}
 
@@ -5219,7 +5260,7 @@ make_agg(PlannerInfo *root, List *tlist, List *qual,
 	 * distributed subplan - it should be matching to the subquery.
 	 * Set node's aggdistribution to AGG_MASTER and continue node initialization
 	 */
-	pushdown = find_push_down_plan(lefttree);
+	pushdown = find_push_down_plan(lefttree, true);
 	if (pushdown)
 	{
 		find_referenced_cols_context context;
@@ -5610,7 +5651,7 @@ make_unique(Plan *lefttree, List *distinctList)
 	 * We want to filter out duplicates on nodes to reduce amount of data sent
 	 * over network and reduce coordinator load.
 	 */
-	pushdown = find_push_down_plan(lefttree);
+	pushdown = find_push_down_plan(lefttree, true);
 	if (pushdown)
 	{
 		Unique	   *node1 = makeNode(Unique);
@@ -5803,7 +5844,7 @@ make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
 		 * We may reduce amount of rows sent over the network and do not send more
 		 * rows then necessary
 		 */
-		pushdown = find_push_down_plan(lefttree);
+		pushdown = find_push_down_plan(lefttree, true);
 		if (pushdown)
 		{
 			Limit	   *node1 = makeNode(Limit);
@@ -5878,7 +5919,7 @@ make_result(PlannerInfo *root,
 		 * top of RemoteSubplan would not allow to push down other plan nodes
 		 */
 		RemoteSubplan *pushdown;
-		pushdown = find_push_down_plan(subplan);
+		pushdown = find_push_down_plan(subplan, true);
 		if (pushdown)
 		{
 			/* This will be set as lefttree of the Result plan */
@@ -5987,11 +6028,12 @@ is_projection_capable_plan(Plan *plan)
 		case T_Append:
 		case T_MergeAppend:
 		case T_RecursiveUnion:
-#ifdef XCP
-		/* XXX consider making it projection capable */
-		case T_RemoteSubplan:
-#endif
 			return false;
+#ifdef XCP
+		/* Remote subplan may push down projection to the data nodes */
+		case T_RemoteSubplan:
+			return is_projection_capable_plan(plan->lefttree);
+#endif
 		default:
 			break;
 	}
@@ -6051,7 +6093,6 @@ findReferencedVars(List *parent_vars, Plan *plan, List **out_tlist, Relids *out_
 	*out_tlist	= tlist;
 	*out_relids = relids;
 }
-#endif /* XCP */
 
 /*
  * create_remoteinsert_plan()
@@ -6179,13 +6220,8 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 		pfree(fstep->sql_statement);
 		fstep->sql_statement = pstrdup(buf->data);
 		/* set combine_type, it is COMBINE_TYPE_NONE for SELECT */
-#ifdef XCP
-		fstep->combine_type = IsReplicated(rel_loc_info->locatorType) ?
-								  COMBINE_TYPE_SAME : COMBINE_TYPE_SUM;
-#else
 		fstep->combine_type = rel_loc_info->locatorType == LOCATOR_TYPE_REPLICATED ?
 								  COMBINE_TYPE_SAME : COMBINE_TYPE_SUM;
-#endif
 		fstep->read_only = false;
 
 		pfree(buf->data);
@@ -6200,11 +6236,7 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 	 */
 	fstep = make_remotequery(NIL, ttab, NIL, ttab->relid);
 
-#ifdef XCP
-	if (IsReplicated(rel_loc_info->locatorType))
-#else
 	if (rel_loc_info->locatorType == LOCATOR_TYPE_REPLICATED)
-#endif
 	{
 		/*
 		 * For replicated case we need two extra steps. One is to determine
@@ -6319,7 +6351,6 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 }
 
 
-#ifndef XCP
 /*
  * create_remotegrouping_plan
  * Check if the grouping and aggregates can be pushed down to the
