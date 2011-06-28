@@ -1211,7 +1211,7 @@ pgxc_node_send_bindplan(PGXCNodeHandle * handle, const char *portal,
 		return EOF;
 	}
 
-	handle->outBuffer[handle->outEnd++] = 'b';
+	handle->outBuffer[handle->outEnd++] = 'p';
 	/* size */
 	msgLen = htonl(msgLen);
 	memcpy(handle->outBuffer + handle->outEnd, &msgLen, 4);

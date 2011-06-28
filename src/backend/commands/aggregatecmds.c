@@ -126,6 +126,17 @@ DefineAggregate(List *name, List *args, bool oldstyle, List *parameters)
 				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 				 errmsg("aggregate sfunc must be specified")));
 
+#ifdef PGXC
+	if (collectType == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+				 errmsg("aggregate ctype must be specified")));
+	if (collectfuncName == NIL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+				 errmsg("aggregate cfunc must be specified")));
+
+#endif
 	/*
 	 * look up the aggregate's input datatype(s).
 	 */
@@ -216,6 +227,9 @@ DefineAggregate(List *name, List *args, bool oldstyle, List *parameters)
 					finalfuncName,		/* final function name */
 					sortoperatorName,	/* sort operator name */
 					transTypeId,	/* transition data type */
+#ifdef XCP
+					collectTypeId,	/* collection data type */
+#endif
 #ifdef PGXC
 					initval,	/* initial condition */
 					initcollect);	/* initial condition for collection function */

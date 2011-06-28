@@ -179,9 +179,15 @@ typedef struct AggStatePerAggData
 	 */
 	int16		inputtypeLen,
 				resulttypeLen,
+#ifdef XCP
+				collecttypeLen,
+#endif
 				transtypeLen;
 	bool		inputtypeByVal,
 				resulttypeByVal,
+#ifdef XCP
+				collecttypeByVal,
+#endif
 				transtypeByVal;
 
 	/*

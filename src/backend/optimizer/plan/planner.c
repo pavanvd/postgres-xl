@@ -1588,6 +1588,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 												   NULL);
 			}
 #ifdef PGXC
+#ifndef XCP
 			/*
 			 * Grouping will certainly not increase the number of rows
 			 * coordinator fetches from datanode, in fact it's expected to
@@ -1596,6 +1597,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			 */
 			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 				result_plan = create_remotegrouping_plan(root, result_plan);
+#endif /* XCP */
 #endif /* PGXC */
 
 		}						/* end of non-minmax-aggregate case */

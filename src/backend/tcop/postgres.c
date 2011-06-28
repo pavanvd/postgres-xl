@@ -417,7 +417,7 @@ SocketBackend(StringInfo inBuf)
 
 		case 'B':				/* bind */
 #ifdef XCP /* PGXC_DATANODE */
-		case 'b':				/* bind plan */
+		case 'p':				/* bind plan */
 #endif
 		case 'C':				/* close */
 		case 'D':				/* describe */
@@ -4493,7 +4493,7 @@ PostgresMain(int argc, char *argv[], const char *username)
 				break;
 
 #ifdef XCP
-			case 'b':			/* bind plan */
+			case 'p':			/* bind plan */
 				/* Set statement_timestamp() */
 				SetCurrentStatementStartTimestamp();
 

@@ -53,6 +53,9 @@ AggregateCreate(const char *aggName,
 				List *aggfinalfnName,
 				List *aggsortopName,
 				Oid aggTransType,
+#ifdef XCP
+				Oid aggCollectType,
+#endif
 #ifdef PGXC
 				const char *agginitval,
 				const char *agginitcollect)
@@ -188,12 +191,44 @@ AggregateCreate(const char *aggName,
 							NameListToString(aggcollectfnName),
 							format_type_be(aggTransType))));
 	}
+	/*
+	 * Collection function must be of two arguments
+	 * First must be of aggCollectType, second must be of aggTransType
+	 * Return value must be of aggCollectType
+	 */
+#ifdef XCP
+	fnArgs[0] = aggCollectType;
+#else
+	fnArgs[0] = aggTransType;
+#endif
+	fnArgs[1] = aggTransType;
+	collectfn = lookup_agg_function(aggcollectfnName, 2, fnArgs,
+									  &rettype);
+#ifdef XCP
+	if (rettype != aggCollectType)
+#else
+	if (rettype != aggTransType)
+#endif
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("return type of collection function %s is not %s",
+						NameListToString(aggcollectfnName),
+#ifdef XCP
+						format_type_be(aggCollectType)
+#else
+						format_type_be(aggTransType)
+#endif
+					   )));
 
 #endif
 	/* handle finalfn, if supplied */
 	if (aggfinalfnName)
 	{
+#ifdef XCP
+		fnArgs[0] = aggCollectType;
+#else
 		fnArgs[0] = aggTransType;
+#endif
 		finalfn = lookup_agg_function(aggfinalfnName, 1, fnArgs,
 									  &finaltype);
 	}
@@ -202,7 +237,11 @@ AggregateCreate(const char *aggName,
 		/*
 		 * If no finalfn, aggregate result type is type of the state value
 		 */
+#ifdef XCP
+		finaltype = aggCollectType;
+#else
 		finaltype = aggTransType;
+#endif
 	}
 	Assert(OidIsValid(finaltype));
 
@@ -293,6 +332,9 @@ AggregateCreate(const char *aggName,
 	values[Anum_pg_aggregate_aggtranstype - 1] = ObjectIdGetDatum(aggTransType);
 #ifdef PGXC
 	values[Anum_pg_aggregate_aggcollectfn - 1] = ObjectIdGetDatum(collectfn);
+#endif
+#ifdef XCP
+	values[Anum_pg_aggregate_aggcollecttype - 1] = ObjectIdGetDatum(aggCollectType);
 #endif
 	if (agginitval)
 		values[Anum_pg_aggregate_agginitval - 1] = CStringGetTextDatum(agginitval);
