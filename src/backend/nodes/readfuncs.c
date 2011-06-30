@@ -2717,7 +2717,7 @@ static SimpleSort *
 _readSimpleSort(void)
 {
 	int i;
-	READ_LOCALS(Sort);
+	READ_LOCALS(SimpleSort);
 
 	READ_INT_FIELD(numCols);
 
