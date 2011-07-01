@@ -199,6 +199,11 @@ ExecReScan(PlanState *node)
 			ExecRemoteQueryReScan((RemoteQueryState *) node, node->ps_ExprContext);
 			break;
 #endif
+#ifdef XCP
+		case T_RemoteSubplanState:
+			ExecReScanRemoteSubplan((RemoteSubplanState *) node, exprCtxt);
+			break;
+#endif
 		case T_NestLoopState:
 			ExecReScanNestLoop((NestLoopState *) node);
 			break;

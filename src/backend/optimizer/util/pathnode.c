@@ -799,7 +799,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 		targetd->distributionType = innerd->distributionType;
 		targetd->nodes = bms_copy(innerd->nodes);
 		targetd->restrictNodes = bms_copy(innerd->restrictNodes);
-		if (outerd->distributionKey != InvalidAttrNumber)
+		if (innerd->distributionKey != InvalidAttrNumber)
 		{
 			ListCell   *lc;
 			Expr	   *key;

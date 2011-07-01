@@ -3027,7 +3027,7 @@ getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
 	TupleTableSlot   *slot;
 
 	combiner->current_conn = tapenum;
-	slot = FetchTuple(combiner, true);
+	slot = FetchTuple(combiner);
 	if (TupIsNull(slot))
 	{
 		if (eofOK)

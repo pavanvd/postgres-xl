@@ -1755,12 +1755,12 @@ exec_bindplan_message(StringInfo input_message)
 	stmt->resultRelations = rstmt->resultRelations;
 	stmt->utilityStmt = NULL;
 	stmt->intoClause = NULL;
-	stmt->subplans = NIL;
+	stmt->subplans = rstmt->subplans;
 	stmt->rewindPlanIDs = NULL;
 	stmt->rowMarks = NIL;
 	stmt->relationOids = NIL;
 	stmt->invalItems = NIL;
-	stmt->nParamExec = numParams;
+	stmt->nParamExec = rstmt->nParamExec;
 	stmt->distributionType = rstmt->distributionType;
 	stmt->distributionKey = rstmt->distributionKey;
 	stmt->distributionNodes = rstmt->distributionNodes;

@@ -240,6 +240,8 @@ CreateResponseCombiner(int node_count, CombineType combine_type)
 	combiner->rowBuffer = NIL;
 	combiner->tapenodes = NULL;
 #ifdef XCP
+	combiner->merge_sort = false;
+	combiner->tapemarks = NULL;
 	combiner->tuplesortstate = NULL;
 	combiner->cursor = NULL;
 	combiner->update_cursor = NULL;
@@ -836,6 +838,8 @@ CloseCombiner(ResponseCombiner *combiner)
 		pfree(combiner->cursor_connections);
 	if (combiner->tapenodes)
 		pfree(combiner->tapenodes);
+	if (combiner->tapemarks)
+		pfree(combiner->tapemarks);
 }
 #else
 CloseCombiner(RemoteQueryState *combiner)
@@ -877,20 +881,25 @@ ValidateAndCloseCombiner(RemoteQueryState *combiner)
 }
 
 
-#ifndef XCP
  /*
  * Validate combiner and reset storage
  */
 static bool
+#ifdef XCP
+ValidateAndResetCombiner(ResponseCombiner *combiner)
+#else
 ValidateAndResetCombiner(RemoteQueryState *combiner)
+#endif
 {
 	bool		valid = validate_combiner(combiner);
 	ListCell   *lc;
 
 	if (combiner->connections)
 		pfree(combiner->connections);
+#ifndef XCP
 	if (combiner->tuple_desc)
 		FreeTupleDesc(combiner->tuple_desc);
+#endif
 	if (combiner->currentRow.msg)
 		pfree(combiner->currentRow.msg);
 	foreach(lc, combiner->rowBuffer)
@@ -905,6 +914,10 @@ ValidateAndResetCombiner(RemoteQueryState *combiner)
 		pfree(combiner->errorDetail);
 	if (combiner->tapenodes)
 		pfree(combiner->tapenodes);
+#ifndef XCP
+	if (combiner->tapemarks)
+		pfree(combiner->tapemarks);
+#endif
 
 	combiner->command_complete_count = 0;
 	combiner->connections = NULL;
@@ -916,7 +929,9 @@ ValidateAndResetCombiner(RemoteQueryState *combiner)
 	combiner->copy_out_count = 0;
 	combiner->errorMessage = NULL;
 	combiner->errorDetail = NULL;
+#ifndef XCP
 	combiner->query_Done = false;
+#endif
 	combiner->currentRow.msg = NULL;
 	combiner->currentRow.msglen = 0;
 	combiner->currentRow.msgnode = 0;
@@ -926,7 +941,6 @@ ValidateAndResetCombiner(RemoteQueryState *combiner)
 
 	return valid;
 }
-#endif
 
 
 /*
@@ -980,6 +994,25 @@ BufferConnection(PGXCNodeHandle *conn)
 	}
 	Assert(combiner->current_conn < combiner->conn_count);
 
+#ifdef XCP
+	if (combiner->tapemarks == NULL)
+		combiner->tapemarks = (ListCell**) palloc0(combiner->conn_count * sizeof(ListCell*));
+
+	/*
+	 * If current bookmark for the current tape is not set it means either
+	 * first row in the buffer is from the current tape or no rows from
+	 * the tape in the buffer, so if first row is not from current
+	 * connection bookmark the last cell in the list.
+	 */
+	if (combiner->tapemarks[combiner->current_conn] == NULL &&
+			list_length(combiner->rowBuffer) > 0)
+	{
+		RemoteDataRow dataRow = (RemoteDataRow) linitial(combiner->rowBuffer);
+		if (dataRow->msgnode != conn->nodenum)
+			combiner->tapemarks[combiner->current_conn] = list_tail(combiner->rowBuffer);
+	}
+#endif
+
 	/*
 	 * Buffer data rows until data node return number of rows specified by the
 	 * fetch_size parameter of last Execute message (PortalSuspended message)
@@ -994,6 +1027,7 @@ BufferConnection(PGXCNodeHandle *conn)
 		{
 			RemoteDataRow dataRow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData));
 			*dataRow = combiner->currentRow;
+			/* clear buffer to accept next row */
 			combiner->currentRow.msg = NULL;
 			combiner->currentRow.msglen = 0;
 			combiner->currentRow.msgnode = 0;
@@ -1009,35 +1043,62 @@ BufferConnection(PGXCNodeHandle *conn)
 		 * remove connection from the list of active connections.
 		 * We may need to add handling error response
 		 */
+#ifdef XCP
+		/* Most often result check first */
+		if (res == RESPONSE_DATAROW)
+		{
+			/*
+			 * The row is in the combiner->currentRow, on next iteration it will
+			 * be moved to the buffer
+			 */
+			continue;
+		}
+#endif
+		/* incomplete message, read more */
 		if (res == RESPONSE_EOF)
 		{
-			/* incomplete message, read more */
 			if (pgxc_node_receive(1, &conn, NULL))
 			{
 				conn->state = DN_CONNECTION_STATE_ERROR_FATAL;
 				add_error_message(conn, "Failed to fetch from data node");
 			}
 		}
+		/*
+		 * End of result set is reached, so either set the pointer to the
+		 * connection to NULL (step with sort) or remove it from the list
+		 * (step without sort)
+		 */
 		else if (res == RESPONSE_COMPLETE)
 		{
 			/*
-			 * End of result set is reached, so either set the pointer to the
-			 * connection to NULL (step with sort) or remove it from the list
-			 * (step without sort)
+			 * If combiner is doing merge sort we should set reference to the
+			 * current connection to NULL in the array, indicating the end
+			 * of the tape is reached. FetchTuple will try to access the buffer
+			 * first anyway.
+			 * Since we remove that reference we can not determine what node
+			 * number was this connection, but we need this info to find proper
+			 * tuple in the buffer if we are doing merge sort. So store node
+			 * number in special array.
+			 * NB: We can not test combiner->tuplesortstate here, connection
+			 * may require buffering inside tuplesort_begin_merge - while
+			 * pre-read rows from the tapes, one of with may be a local
+			 * connection with RemoteSubplan in the tree.
 			 */
-			if (combiner->tuplesortstate)
+			if (combiner->merge_sort)
 			{
 				combiner->connections[combiner->current_conn] = NULL;
 				if (combiner->tapenodes == NULL)
-					combiner->tapenodes = (int*) palloc0(NumDataNodes * sizeof(int));
+					combiner->tapenodes = (int*) palloc0(combiner->conn_count * sizeof(int));
 				combiner->tapenodes[combiner->current_conn] = conn->nodenum;
 			}
 			else
+			{
 				/* Remove current connection, move last in-place, adjust current_conn */
 				if (combiner->current_conn < --combiner->conn_count)
 					combiner->connections[combiner->current_conn] = combiner->connections[combiner->conn_count];
 				else
 					combiner->current_conn = 0;
+			}
 		}
 		/*
 		 * Before output RESPONSE_COMPLETE or PORTAL_SUSPENDED handle_response()
@@ -1077,16 +1138,19 @@ CopyDataRowTupleToSlot(RemoteQueryState *combiner, TupleTableSlot *slot)
 
 #ifdef XCP
 TupleTableSlot *
-FetchTuple(ResponseCombiner *combiner, bool merge_sort)
+FetchTuple(ResponseCombiner *combiner)
 {
 	PGXCNodeHandle *conn;
 	TupleTableSlot *slot;
 	int 			nodenum;
 
-	if (combiner->conn_count > 0)
+	/*
+	 * Get current connection
+	 */
+	if (combiner->conn_count > combiner->current_conn)
 		conn = combiner->connections[combiner->current_conn];
 	else
-		conn = 0;
+		conn = NULL;
 
 fetch_local_conn:
 	/* If requested connection is specified and it is a "local" handle get
@@ -1099,10 +1163,11 @@ fetch_local_conn:
 			pfree(conn);
 			conn = NULL;
 			/*
-			 * If merge sort return NULL, otherwise continue with next
-			 * connection. Exit if no more connections.
+			 * If doing merge sort return NULL immediately to indicate end of
+			 * the tape, otherwise continue with next connection or exit
+			 * if no more connections.
 			 */
-			if (merge_sort)
+			if (combiner->merge_sort)
 			{
 				combiner->connections[combiner->current_conn] = NULL;
 				return NULL;
@@ -1115,7 +1180,14 @@ fetch_local_conn:
 				else
 					combiner->current_conn = 0;
 				if (combiner->conn_count > 0)
+				{
 					conn = combiner->connections[combiner->current_conn];
+					/*
+					 * There can only be one local connection, so break the loop
+					 * and move to handling of remote connections.
+					 */
+					break;
+				}
 				else
 					return NULL;
 			}
@@ -1146,23 +1218,16 @@ fetch_local_conn:
 			/* does not match, get another tuple */
 			continue;
 		}
-		// for debug
-		/* no locator, always return node */
+		/* if no locator, always return node */
 		return slot;
 	}
 
-	if (merge_sort)
+	if (combiner->merge_sort)
+	{
+		Assert(conn || combiner->tapenodes);
 		nodenum = conn ? conn->nodenum :
 				combiner->tapenodes[combiner->current_conn];
-
-	/* If we have node message in the currentRow slot, and it is from a proper
-	 * node, consume it.  */
-	if (combiner->currentRow.msg)
-	{
-		Assert(!merge_sort || combiner->currentRow.msgnode == nodenum);
-		slot = combiner->ss.ps.ps_ResultTupleSlot;
-		CopyDataRowTupleToSlot(combiner, slot);
-		return slot;
+		Assert(nodenum > 0 && nodenum <= NumDataNodes);
 	}
 
 	/*
@@ -1171,25 +1236,92 @@ fetch_local_conn:
 	 */
 	if (list_length(combiner->rowBuffer) > 0)
 	{
-		ListCell *lc;
-		ListCell *prev;
+		RemoteDataRow dataRow;
 
-		prev = NULL;
-		foreach(lc, combiner->rowBuffer)
+		Assert(combiner->currentRow.msg == NULL);
+
+		if (combiner->merge_sort)
 		{
-			RemoteDataRow dataRow = (RemoteDataRow) lfirst(lc);
-			if (!merge_sort || dataRow->msgnode == nodenum)
+			ListCell *lc;
+			ListCell *prev;
+
+			prev = combiner->tapemarks[combiner->current_conn];
+			if (prev)
 			{
+				/*
+				 * Start looking through the list from the bookmark.
+				 * Probably the first cell we check contains row from the needed
+				 * node. Otherwise continue scanning until we encounter one,
+				 * advancing prev pointer as well.
+				 */
+				while((lc = lnext(prev)) != NULL)
+				{
+					dataRow = (RemoteDataRow) lfirst(lc);
+					if (dataRow->msgnode == nodenum)
+					{
+						combiner->currentRow = *dataRow;
+						pfree(dataRow);
+						break;
+					}
+					prev = lc;
+				}
+			}
+			else
+			{
+				/*
+				 * Either needed row is the first in the buffer or no such row
+				 */
+				lc = list_head(combiner->rowBuffer);
+				dataRow = (RemoteDataRow) lfirst(lc);
+				if (dataRow->msgnode == nodenum)
+				{
+					combiner->currentRow = *dataRow;
+					pfree(dataRow);
+				}
+				else
+				{
+					lc = NULL;
+				}
+			}
+			if (lc)
+			{
+				/*
+				 * Delete cell from the buffer. Before we delete we must check
+				 * the bookmarks, if the cell is a bookmark for any tape.
+				 * If it is the case we are deleting last row of the current
+				 * block from the current tape. That tape should have bookmark
+				 * like current, and current bookmark will be advanced when we
+				 * read the tape once again.
+				 */
+				int i;
+				for (i = 0; i < combiner->conn_count; i++)
+				{
+					if (combiner->tapemarks[i] == lc)
+						combiner->tapemarks[i] = prev;
+				}
 				combiner->rowBuffer = list_delete_cell(combiner->rowBuffer,
 													   lc, prev);
-				combiner->currentRow = *dataRow;
-				slot = combiner->ss.ps.ps_ResultTupleSlot;
-				CopyDataRowTupleToSlot(combiner, slot);
-				pfree(dataRow);
-				return slot;
 			}
-			prev = lc;
+			combiner->tapemarks[combiner->current_conn] = prev;
 		}
+		else
+		{
+			dataRow = (RemoteDataRow) linitial(combiner->rowBuffer);
+			combiner->currentRow = *dataRow;
+			pfree(dataRow);
+			combiner->rowBuffer = list_delete_first(combiner->rowBuffer);
+		}
+	}
+
+	/* If we have node message in the currentRow slot, and it is from a proper
+	 * node, consume it.  */
+	if (combiner->currentRow.msg)
+	{
+		Assert(!combiner->merge_sort ||
+			   combiner->currentRow.msgnode == nodenum);
+		slot = combiner->ss.ps.ps_ResultTupleSlot;
+		CopyDataRowTupleToSlot(combiner, slot);
+		return slot;
 	}
 
 	while (conn)
@@ -1247,9 +1379,12 @@ fetch_local_conn:
 		}
 		else if (res == RESPONSE_SUSPENDED)
 		{
-			/* If we are doing merge sort continue with current connection,
-			 * otherwise make next connection current */
-			if (merge_sort)
+			/*
+			 * If we are doing merge sort continue with current connection and
+			 * send request for more rows from it, otherwise make next
+			 * connection current
+			 */
+			if (combiner->merge_sort)
 				continue;
 			if (++combiner->current_conn >= combiner->conn_count)
 				combiner->current_conn = 0;
@@ -1260,7 +1395,7 @@ fetch_local_conn:
 			/* If we are doing merge sort clean current connection and return
 			 * NULL, otherwise remove current connection, move last in-place,
 			 * adjust current_conn and continue if it is not last connection */
-			if (merge_sort)
+			if (combiner->merge_sort)
 			{
 				combiner->connections[combiner->current_conn] = NULL;
 				return NULL;
@@ -1613,7 +1748,6 @@ handle_response(PGXCNodeHandle *conn, RemoteQueryState *combiner)
 				 * another EXECUTE to fetch more rows, otherwise it is done
 				 * with the connection
 				 */
-				int result = suspended ? RESPONSE_SUSPENDED : RESPONSE_COMPLETE;
 				conn->transaction_status = msg[0];
 				conn->state = DN_CONNECTION_STATE_IDLE;
 				conn->combiner = NULL;
@@ -3178,7 +3312,6 @@ DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_data_node,
 #endif
 {
 	int 		i;
-	int 		nLen = htonl(4);
 #ifdef XCP
 	ResponseCombiner combiner;
 #else
@@ -4607,7 +4740,7 @@ ExecRemoteQuery(RemoteQueryState *node)
 	}
 	else
 	{
-		TupleTableSlot *slot = FetchTuple(combiner, false);
+		TupleTableSlot *slot = FetchTuple(combiner);
 		if (!TupIsNull(slot))
 			return slot;
 	}
@@ -6042,6 +6175,8 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 			rstmt.resultRelations = NIL;
 		}
 		rstmt.rtable = estate->es_range_table;
+		rstmt.subplans = estate->es_plannedstmt->subplans;
+		rstmt.nParamExec = estate->es_plannedstmt->nParamExec;
 		rstmt.distributionKey = node->distributionKey;
 		rstmt.distributionType = node->distributionType;
 		rstmt.distributionNodes = node->distributionNodes;
@@ -6051,6 +6186,8 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 		set_portable_output(false);
 	}
 	remotestate->bound = false;
+	if (node->sort)
+		combiner->merge_sort = true;
 
 	return remotestate;
 }
@@ -6228,7 +6365,7 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 			 */
 		}
 
-		if (plan->sort)
+		if (combiner->merge_sort)
 		{
 			/*
 			 * Requests are already made and sorter can fetsh tuples to populate
@@ -6254,7 +6391,7 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 	}
 	else
 	{
-		TupleTableSlot *slot = FetchTuple(combiner, false);
+		TupleTableSlot *slot = FetchTuple(combiner);
 		if (!TupIsNull(slot))
 			return slot;
 	}
@@ -6271,6 +6408,88 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 					 errmsg("%s", combiner->errorMessage)));
 	}
 	return NULL;
+}
+
+
+void
+ExecReScanRemoteSubplan(RemoteSubplanState *node,
+									ExprContext *exprCtxt)
+{
+	ResponseCombiner *combiner = (ResponseCombiner *)node;
+
+	/*
+	 * If we haven't queried remote nodes yet, just return. If outerplan'
+	 * chgParam is not NULL then it will be re-scanned by ExecProcNode,
+	 * else - no reason to re-scan it at all.
+	 */
+	if (!node->bound)
+		return;
+
+	/*
+	 * If we execute locally rescan local copy of the plan
+	 */
+	if (outerPlanState(node))
+		ExecReScan(outerPlanState(node), exprCtxt);
+
+
+	combiner->current_conn = 0;
+	while (combiner->conn_count > 0)
+	{
+		int res;
+		PGXCNodeHandle *conn = combiner->connections[combiner->current_conn];
+
+		/* throw away message */
+		if (combiner->currentRow.msg)
+		{
+			pfree(combiner->currentRow.msg);
+			combiner->currentRow.msg = NULL;
+		}
+
+		if (conn == NULL)
+		{
+			combiner->conn_count--;
+			continue;
+		}
+
+		/* no data is expected */
+		if (conn->state == DN_CONNECTION_STATE_IDLE ||
+				conn->state == DN_CONNECTION_STATE_ERROR_FATAL)
+		{
+			if (combiner->current_conn < --combiner->conn_count)
+				combiner->connections[combiner->current_conn] = combiner->connections[combiner->conn_count];
+			continue;
+		}
+		res = handle_response(conn, combiner);
+		if (res == RESPONSE_EOF)
+		{
+			struct timeval timeout;
+			timeout.tv_sec = END_QUERY_TIMEOUT;
+			timeout.tv_usec = 0;
+
+			if (pgxc_node_receive(1, &conn, &timeout))
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Failed to read response from data nodes when ending query")));
+		}
+	}
+	node->bound = false;
+
+	/*
+	 * Release tuplesort resources
+	 */
+	if (combiner->tuplesortstate)
+	{
+		/*
+		 * tuplesort_end invalidates minimal tuple if it is in the slot because
+		 * deletes the TupleSort memory context, causing seg fault later when
+		 * releasing tuple table
+		 */
+		ExecClearTuple(combiner->ss.ps.ps_ResultTupleSlot);
+		tuplesort_end((Tuplesortstate *) combiner->tuplesortstate);
+		combiner->tuplesortstate = NULL;
+	}
+
+	ValidateAndResetCombiner(combiner);
 }
 
 
@@ -6344,8 +6563,8 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 		 */
 		ExecClearTuple(combiner->ss.ps.ps_ResultTupleSlot);
 		tuplesort_end((Tuplesortstate *) combiner->tuplesortstate);
+		combiner->tuplesortstate = NULL;
 	}
-	combiner->tuplesortstate = NULL;
 
 	CloseCombiner(combiner);
 	pfree(node);

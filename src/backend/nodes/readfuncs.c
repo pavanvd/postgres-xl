@@ -2702,6 +2702,8 @@ _readRemoteStmt(void)
 	READ_NODE_FIELD(planTree);
 	READ_NODE_FIELD(rtable);
 	READ_NODE_FIELD(resultRelations);
+	READ_NODE_FIELD(subplans);
+	READ_INT_FIELD(nParamExec);
 	READ_CHAR_FIELD(distributionType);
 	READ_INT_FIELD(distributionKey);
 	READ_NODE_FIELD(distributionNodes);

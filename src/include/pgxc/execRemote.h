@@ -97,6 +97,7 @@ typedef struct RemoteQueryState
 	/* TODO use a tuplestore as a rowbuffer */
 	List 	   *rowBuffer;				/* buffer where rows are stored when connection
 										 * should be cleaned for reuse by other RemoteQuery */
+	bool		merge_sort;             /* perform mergesort of node tuples */
 	/*
 	 * To handle special case - if there is a simple sort and sort connection
 	 * is buffered. If EOF is reached on a connection it should be removed from
@@ -105,6 +106,12 @@ typedef struct RemoteQueryState
 	 * when buffering
 	 */
 	int 	   *tapenodes;
+	/*
+	 * If some tape (connection) is buffered, contains a reference on the cell
+	 * right before first row buffered from this tape, needed to speed up
+	 * access to the data
+	 */
+	ListCell  **tapemarks;
 	void	   *tuplesortstate;			/* for merge sort */
 	/* cursor support */
 	char	   *cursor;					/* cursor name */
@@ -183,6 +190,10 @@ typedef struct RemoteStmt
 	/* rtable indexes of target relations for INSERT/UPDATE/DELETE */
 	List	   *resultRelations;	/* integer list of RT indexes, or NIL */
 
+	List	   *subplans;		/* Plan trees for SubPlan expressions */
+
+	int			nParamExec;		/* number of PARAM_EXEC Params used */
+
 	char		distributionType;
 
 	AttrNumber	distributionKey;
@@ -227,6 +238,8 @@ extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** c
 
 extern RemoteQueryState *ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags);
 extern TupleTableSlot* ExecRemoteQuery(RemoteQueryState *step);
+extern void ExecReScanRemoteSubplan(RemoteSubplanState *node,
+									ExprContext *exprCtxt);
 extern void ExecEndRemoteQuery(RemoteQueryState *step);
 #ifdef XCP
 extern RemoteSubplanState *ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags);
@@ -252,7 +265,7 @@ extern void HandleCmdComplete(CmdType commandType, CombineTag *combine, const ch
 			(conn)->combiner != (ResponseCombiner *) (node)) \
 		BufferConnection(conn)
 
-extern TupleTableSlot *FetchTuple(ResponseCombiner *combiner, bool merge_sort);
+extern TupleTableSlot *FetchTuple(ResponseCombiner *combiner);
 #else
 extern bool FetchTuple(RemoteQueryState *combiner, TupleTableSlot *slot);
 #endif

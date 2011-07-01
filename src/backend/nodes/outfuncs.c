@@ -1178,6 +1178,8 @@ _outRemoteStmt(StringInfo str, RemoteStmt *node)
 	WRITE_NODE_FIELD(planTree);
 	WRITE_NODE_FIELD(rtable);
 	WRITE_NODE_FIELD(resultRelations);
+	WRITE_NODE_FIELD(subplans);
+	WRITE_INT_FIELD(nParamExec);
 	WRITE_CHAR_FIELD(distributionType);
 	WRITE_INT_FIELD(distributionKey);
 	WRITE_NODE_FIELD(distributionNodes);
