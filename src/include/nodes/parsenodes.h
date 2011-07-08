@@ -706,8 +706,10 @@ typedef struct RangeTblEntry
 	 */
 
 #ifdef PGXC
+#ifndef XCP
 	char		*relname;
 	TupleDesc	reltupdesc;
+#endif
 #endif
 
 	/*

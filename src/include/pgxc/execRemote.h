@@ -139,6 +139,14 @@ typedef struct RemoteQueryState
 
 
 #ifdef XCP
+typedef struct RemoteParam
+{
+	ParamKind 	paramkind;		/* kind of parameter */
+	int			paramid;		/* numeric ID for parameter */
+	Oid			paramtype;		/* pg_type OID of parameter's datatype */
+} RemoteParam;
+
+
 /*
  * Execution state of a RemoteSubplan node
  */
@@ -168,6 +176,8 @@ typedef struct RemoteSubplanState
 	 * TODO: implement, for now it is always NULL
 	 */
     void	  **destinations;
+	int			nParamRemote;	/* number of params sent from the master node */
+	RemoteParam *remoteparams;  /* parameter descriptors */
 } RemoteSubplanState;
 
 
@@ -193,6 +203,10 @@ typedef struct RemoteStmt
 	List	   *subplans;		/* Plan trees for SubPlan expressions */
 
 	int			nParamExec;		/* number of PARAM_EXEC Params used */
+
+	int			nParamRemote;	/* number of params sent from the master node */
+
+	RemoteParam *remoteparams;  /* parameter descriptors */
 
 	char		distributionType;
 

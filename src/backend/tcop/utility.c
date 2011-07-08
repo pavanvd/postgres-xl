@@ -1432,7 +1432,11 @@ standard_ProcessUtility(Node *parsetree,
 				ViewStmt *stmt = (ViewStmt *) parsetree;
 
 				if (stmt->view->relpersistence != RELPERSISTENCE_TEMP)
-					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_COORDS, false);
+#ifdef XCP
+					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES);
+#else
+					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_COORDS);
+#endif
 			}
 #endif
 			break;
@@ -1526,7 +1530,6 @@ standard_ProcessUtility(Node *parsetree,
 				remoteExecType = ExecUtilityFindNodesRelkind(relid, &is_temp);
 				ExecUtilityStmtOnNodes(queryString, NULL, false, remoteExecType, is_temp);
 			}
-#endif
 			break;
 
 		case T_CreateSeqStmt:

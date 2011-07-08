@@ -1166,11 +1166,14 @@ _outRemoteSubplan(StringInfo str, RemoteSubplan *node)
 	WRITE_NODE_FIELD(nodeList);
 	WRITE_BOOL_FIELD(execOnAll);
 	WRITE_NODE_FIELD(sort);
+	WRITE_STRING_FIELD(cursor);
 }
 
 static void
 _outRemoteStmt(StringInfo str, RemoteStmt *node)
 {
+	int i;
+
 	WRITE_NODE_TYPE("REMOTESTMT");
 
 	WRITE_ENUM_FIELD(commandType, CmdType);
@@ -1180,6 +1183,30 @@ _outRemoteStmt(StringInfo str, RemoteStmt *node)
 	WRITE_NODE_FIELD(resultRelations);
 	WRITE_NODE_FIELD(subplans);
 	WRITE_INT_FIELD(nParamExec);
+	WRITE_INT_FIELD(nParamRemote);
+
+	for (i = 0; i < node->nParamRemote; i++)
+	{
+		RemoteParam *rparam = &(node->remoteparams[i]);
+		appendStringInfo(str, " :paramkind");
+		appendStringInfo(str, " %d", (int) rparam->paramkind);
+
+		appendStringInfo(str, " :paramid");
+		appendStringInfo(str, " %d", rparam->paramid);
+
+		appendStringInfo(str, " :paramtype");
+		if (portable_output)
+		{
+			Oid ptype = rparam->paramtype;
+			Assert(OidIsValid(ptype));
+			appendStringInfoChar(str, ' ');
+			_outToken(str, get_namespace_name(get_typ_namespace(ptype)));
+			appendStringInfoChar(str, ' ');
+			_outToken(str, get_typ_name(ptype));
+		}
+		else
+			appendStringInfo(str, " %u", rparam->paramtype);
+	}
 	WRITE_CHAR_FIELD(distributionType);
 	WRITE_INT_FIELD(distributionKey);
 	WRITE_NODE_FIELD(distributionNodes);
@@ -2923,7 +2950,9 @@ static void
 _outRangeTblEntry(StringInfo str, RangeTblEntry *node)
 {
 #ifdef PGXC
+#ifndef XCP
 	int i;
+#endif
 #endif
 
 	WRITE_NODE_TYPE("RTE");
@@ -2933,13 +2962,16 @@ _outRangeTblEntry(StringInfo str, RangeTblEntry *node)
 	WRITE_NODE_FIELD(eref);
 	WRITE_ENUM_FIELD(rtekind, RTEKind);
 #ifdef PGXC
+#ifndef XCP
 	WRITE_STRING_FIELD(relname);
+#endif
 #endif
 
 	switch (node->rtekind)
 	{
 		case RTE_RELATION:
 #ifdef PGXC
+#ifndef XCP
 			/* write tuple descriptor */
 			appendStringInfo(str, " :tupdesc_natts %d (", node->reltupdesc->natts);
 
@@ -2955,6 +2987,8 @@ _outRangeTblEntry(StringInfo str, RangeTblEntry *node)
 
 			appendStringInfo(str, ") ");
 #endif
+#endif
+		case RTE_SPECIAL:
 #ifdef XCP
 			if (portable_output)
 				WRITE_RELID_FIELD(relid);

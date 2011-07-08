@@ -1615,9 +1615,11 @@ static RangeTblEntry *
 _readRangeTblEntry(void)
 {
 #ifdef PGXC
+#ifndef XCP
 	int natts, i;
 	char    *colname;
 	Oid     typid, typmod;
+#endif
 #endif
 
 	READ_LOCALS(RangeTblEntry);
@@ -1627,13 +1629,16 @@ _readRangeTblEntry(void)
 	READ_NODE_FIELD(eref);
 	READ_ENUM_FIELD(rtekind, RTEKind);
 #ifdef PGXC
+#ifndef XCP
 	READ_STRING_FIELD(relname);
+#endif
 #endif
 
 	switch (local_node->rtekind)
 	{
 		case RTE_RELATION:
 #ifdef PGXC
+#ifndef XCP
 			/* read tuple descriptor */
 			token = pg_strtok(&length); 	/* skip :tupdesc_natts */
 			token = pg_strtok(&length);		/* get field value */
@@ -1678,6 +1683,9 @@ _readRangeTblEntry(void)
 			if (!(length == 1 && pg_strncasecmp(token, ")", length) == 0))
 				elog(ERROR, "invalid node field to read");
 #endif
+#endif
+
+		case RTE_SPECIAL:
 #ifdef XCP
 			if (portable_input)
 				READ_RELID_FIELD(relid);
@@ -1723,6 +1731,7 @@ _readRangeTblEntry(void)
 #ifdef XCP
 	if (portable_input)
 	{
+		local_node->requiredPerms = 0; /* no permission checks on data node */
 		token = pg_strtok(&length);	/* skip :fldname */ \
 		token = pg_strtok(&length);	/* skip field value */ \
 		local_node->checkAsUser = InvalidOid;
@@ -1983,6 +1992,7 @@ _readSubqueryScan(void)
 
 	READ_NODE_FIELD(subplan);
 	READ_NODE_FIELD(subrtable);
+	READ_NODE_FIELD(subrowmark);
 
 	READ_DONE();
 }
@@ -2684,6 +2694,7 @@ _readRemoteSubplan(void)
 	READ_NODE_FIELD(nodeList);
 	READ_BOOL_FIELD(execOnAll);
 	READ_NODE_FIELD(sort);
+	READ_STRING_FIELD(cursor);
 
 	READ_DONE();
 }
@@ -2695,6 +2706,7 @@ _readRemoteSubplan(void)
 static RemoteStmt *
 _readRemoteStmt(void)
 {
+	int i;
 	READ_LOCALS(RemoteStmt);
 
 	READ_ENUM_FIELD(commandType, CmdType);
@@ -2704,6 +2716,47 @@ _readRemoteStmt(void)
 	READ_NODE_FIELD(resultRelations);
 	READ_NODE_FIELD(subplans);
 	READ_INT_FIELD(nParamExec);
+	READ_INT_FIELD(nParamRemote);
+	if (local_node->nParamRemote > 0)
+	{
+		local_node->remoteparams = (RemoteParam *) palloc(
+				local_node->nParamRemote * sizeof(RemoteParam));
+		for (i = 0; i < local_node->nParamRemote; i++)
+		{
+			RemoteParam *rparam = &(local_node->remoteparams[i]);
+			token = pg_strtok(&length); /* skip  :paramkind */
+			token = pg_strtok(&length);
+			rparam->paramkind = (ParamKind) atoi(token);
+
+			token = pg_strtok(&length); /* skip  :paramid */
+			token = pg_strtok(&length);
+			rparam->paramid = atoi(token);
+
+			token = pg_strtok(&length); /* skip  :paramtype */
+			if (portable_input)
+			{
+				char	   *nspname; /* namespace name */
+				char	   *typname; /* data type name */
+				token = pg_strtok(&length); /* get nspname */
+				nspname = nullable_string(token, length);
+				token = pg_strtok(&length); /* get typname */
+				typname = nullable_string(token, length);
+				if (typname)
+					rparam->paramtype = get_typname_typid(typname,
+													  get_namespaceid(nspname));
+				else
+					rparam->paramtype = InvalidOid;
+			}
+			else
+			{
+				token = pg_strtok(&length);
+				rparam->paramtype = atooid(token);
+			}
+		}
+	}
+	else
+		local_node->remoteparams = NULL;
+
 	READ_CHAR_FIELD(distributionType);
 	READ_INT_FIELD(distributionKey);
 	READ_NODE_FIELD(distributionNodes);

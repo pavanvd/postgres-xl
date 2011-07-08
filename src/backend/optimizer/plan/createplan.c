@@ -4318,6 +4318,7 @@ make_remotesubplan(PlannerInfo *root,
 		node->sort->sortOperators = sortOperators;
 		node->sort->nullsFirst = nullsFirst;
 	}
+	node->cursor = NULL;
 	return node;
 }
 #endif /* XCP */
@@ -5329,6 +5330,39 @@ make_agg(PlannerInfo *root, List *tlist, List *qual,
 						for (i = 0; i < numGroupCols; i++)
 							if (grpColIdx[i] == tle->resno)
 								grpColIdx[i] = newtle->resno;
+
+						/* Update simple sort indexes */
+						if (pushdown->sort)
+						{
+							SimpleSort *ssort = pushdown->sort;
+							for (i = 0; i < ssort->numCols; i++)
+								if (ssort->sortColIdx[i] == tle->resno)
+									ssort->sortColIdx[i] = newtle->resno;
+						}
+					}
+					/*
+					 * The plan does not return this column, so if it is in the
+					 * sort list we should remove it
+					 * XXX may this ever happen ?
+					 */
+					else if (pushdown->sort)
+					{
+						SimpleSort *ssort = pushdown->sort;
+						for (i = 0; i < ssort->numCols; i++)
+						{
+							if (ssort->sortColIdx[i] == tle->resno)
+							{
+								int j;
+
+								(ssort->numCols)--;
+								for (j = i; j < ssort->numCols; j++)
+								{
+									ssort->sortColIdx[j] = ssort->sortColIdx[j + 1];
+									ssort->sortOperators[j] = ssort->sortOperators[j + 1];
+									ssort->nullsFirst[j] = ssort->nullsFirst[j + 1];
+								}
+							}
+						}
 					}
 				}
 			}
@@ -6039,6 +6073,26 @@ is_projection_capable_plan(Plan *plan)
 	}
 	return true;
 }
+
+
+#ifdef XCP
+#define CNAME_MAXLEN 32
+static int cursor_id = 0;
+
+
+char *
+get_internal_cursor(void)
+{
+	char *cursor;
+
+	cursor = (char *) palloc(CNAME_MAXLEN);
+	if (cursor_id++ == INT_MAX)
+		cursor_id = 0;
+
+	snprintf(cursor, CNAME_MAXLEN - 1, "p_%x", cursor_id);
+	return cursor;
+}
+#endif
 
 
 #ifdef PGXC

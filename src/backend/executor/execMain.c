@@ -65,6 +65,9 @@
 #include "pgxc/pgxc.h"
 #include "commands/copy.h"
 #endif
+#ifdef XCP
+#include "pgxc/execRemote.h"
+#endif
 
 /* Hooks for plugins to get control in ExecutorStart/Run/Finish/End */
 ExecutorStart_hook_type ExecutorStart_hook = NULL;
@@ -163,8 +166,39 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	estate->es_param_list_info = queryDesc->params;
 
 	if (queryDesc->plannedstmt->nParamExec > 0)
+#ifdef XCP
+	{
 		estate->es_param_exec_vals = (ParamExecData *)
 			palloc0(queryDesc->plannedstmt->nParamExec * sizeof(ParamExecData));
+		if (queryDesc->plannedstmt->nParamRemote > 0)
+		{
+			ParamListInfo extparams = estate->es_param_list_info;
+			int i = queryDesc->plannedstmt->nParamRemote;
+			while (--i >= 0 &&
+				queryDesc->plannedstmt->remoteparams[i].paramkind == PARAM_EXEC)
+			{
+				int paramno = queryDesc->plannedstmt->remoteparams[i].paramid;
+				ParamExecData *prmdata;
+
+				Assert(paramno >= 0 &&
+					   paramno < queryDesc->plannedstmt->nParamExec);
+				prmdata = &(estate->es_param_exec_vals[paramno]);
+				prmdata->value = extparams->params[i].value;
+				prmdata->isnull = extparams->params[i].isnull;
+				prmdata->ptype = extparams->params[i].ptype;
+			}
+			/*
+			 * Truncate exec parameters from the list of received parameters
+			 * to avoid sending down duplicates if there are multiple levels
+			 * of RemoteSubplan statements
+			 */
+			extparams->numParams = i + 1;
+		}
+	}
+#else
+		estate->es_param_exec_vals = (ParamExecData *)
+			palloc0(queryDesc->plannedstmt->nParamExec * sizeof(ParamExecData));
+#endif
 
 	/*
 	 * If non-read-only query, set the command ID to mark output tuples with

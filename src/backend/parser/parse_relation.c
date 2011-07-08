@@ -897,8 +897,10 @@ addRangeTableEntry(ParseState *pstate,
 	rte->relkind = rel->rd_rel->relkind;
 
 #ifdef PGXC
+#ifndef XCP
 	rte->reltupdesc = CreateTupleDescCopyConstr(rel->rd_att);
 	rte->relname = RelationGetRelationName(rel);
+#endif
 #endif
 
 	/*
@@ -965,8 +967,10 @@ addRangeTableEntryForRelation(ParseState *pstate,
 	rte->relkind = rel->rd_rel->relkind;
 
 #ifdef PGXC
+#ifndef XCP
 	rte->reltupdesc = CreateTupleDescCopyConstr(rel->rd_att);
 	rte->relname = RelationGetRelationName(rel);
+#endif
 #endif
 
 	/*

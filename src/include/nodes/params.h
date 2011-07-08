@@ -97,6 +97,9 @@ typedef struct ParamExecData
 	void	   *execPlan;		/* should be "SubPlanState *" */
 	Datum		value;
 	bool		isnull;
+#ifdef XCP
+	Oid			ptype;
+#endif
 } ParamExecData;
 
 

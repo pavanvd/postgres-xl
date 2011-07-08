@@ -145,6 +145,7 @@ extern RemoteSubplan *make_remotesubplan(PlannerInfo *root,
 				   Distribution *resultDistribution,
 				   Distribution *execDistribution,
 				   List *pathkeys);
+extern char *get_internal_cursor(void);
 #else
 extern Var *search_tlist_for_var(Var *var, List *jtlist);
 extern Plan *create_remoteinsert_plan(PlannerInfo *root, Plan *topplan);

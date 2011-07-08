@@ -1558,13 +1558,90 @@ exec_bindplan_message(StringInfo input_message)
 						"commands ignored until end of transaction block")));
 
 	/*
-	 * Create the portal.  Allow silent replacement of an existing portal only
-	 * if the unnamed portal is specified.
+	 * If remote statement is passed in create the portal, if it is empty
+	 * reset existing portal with new parameters.
 	 */
-	if (portal_name[0] == '\0')
-		portal = CreatePortal(portal_name, true, true);
+	if (*plannodestr)
+	{
+		if (portal_name[0] == '\0')
+			portal = CreatePortal(portal_name, true, true);
+		else
+			portal = CreatePortal(portal_name, false, false);
+
+		/* Decode info passed from remote node */
+		set_portable_input(true);
+		rstmt = (RemoteStmt *) stringToNode(plannodestr);
+		set_portable_input(false);
+
+		/*
+		 * Make up a PreparedStatement from data sent from the coordinator or
+		 * parent datanodes. It have to be available for all the portal's
+		 * lifetime
+		 */
+		oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(portal));
+
+		stmt = makeNode(PlannedStmt);
+
+		stmt->commandType = rstmt->commandType;
+		stmt->hasReturning = rstmt->hasReturning;
+		stmt->canSetTag = true;
+		stmt->transientPlan = false; // ???
+		stmt->planTree = (Plan *) copyObject(rstmt->planTree);
+		stmt->rtable = (List *) copyObject(rstmt->rtable);
+		stmt->resultRelations = (List *) copyObject(rstmt->resultRelations);
+		stmt->utilityStmt = NULL;
+		stmt->intoClause = NULL;
+		stmt->subplans = (List *) copyObject(rstmt->subplans);
+		stmt->rewindPlanIDs = NULL;
+		stmt->rowMarks = NIL;
+		stmt->relationOids = NIL;
+		stmt->invalItems = NIL;
+		stmt->nParamExec = rstmt->nParamExec;
+		stmt->nParamRemote = rstmt->nParamRemote;
+		stmt->remoteparams = (RemoteParam *) palloc(rstmt->nParamRemote *
+													sizeof(RemoteParam));
+		memcpy(stmt->remoteparams, rstmt->remoteparams,
+			   rstmt->nParamRemote * sizeof(RemoteParam));
+		stmt->distributionType = rstmt->distributionType;
+		stmt->distributionKey = rstmt->distributionKey;
+		stmt->distributionNodes = (List *) copyObject(rstmt->distributionNodes);
+
+		plan_list = lappend(NIL, stmt);
+
+		/* Done storing stuff in portal's context */
+		MemoryContextSwitchTo(oldContext);
+	}
 	else
+	{
+		Portal 		oldportal = GetPortalByName(portal_name);
+		void	   *oldplan;
+		if (!PortalIsValid(oldportal))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_CURSOR),
+					 errmsg("portal \"%s\" does not exist", portal_name)));
+		/*
+		 * Copy the planned statement from old portal. We have to make copy
+		 * twice - we finally want to have in in the new portal's heap memory,
+		 * but it created only when new portal is created but by the creation
+		 * time we should destroy old portal already.
+		 */
+		oldplan = copyObject(oldportal->stmts);
+		PortalDrop(oldportal, false);
 		portal = CreatePortal(portal_name, false, false);
+		/* get a copy of the planned statement in proper context */
+		oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(portal));
+		plan_list = (List *) copyObject(oldplan);
+		Assert(list_length(plan_list) == 1);
+		stmt = (PlannedStmt *) linitial(plan_list);
+		/* Done storing stuff in portal's context */
+		MemoryContextSwitchTo(oldContext);
+	}
+
+	if (numParams != stmt->nParamRemote)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("bind plan message supplies %d parameters, but remote statement requires %d",
+						numParams, stmt->nParamRemote)));
 
 	/*
 	 * Prepare to copy stuff into the portal's memory context.  We do all this
@@ -1573,11 +1650,6 @@ exec_bindplan_message(StringInfo input_message)
 	 * PortalDefineQuery; that would result in leaking our plancache refcount.
 	 */
 	oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(portal));
-
-	/* Decode info passed from remote node */
-	set_portable_input(true);
-	rstmt = (RemoteStmt *) stringToNode(plannodestr);
-	set_portable_input(false);
 
 	/*
 	 * Fetch parameters, if any, and store in the portal's memory context.
@@ -1601,7 +1673,7 @@ exec_bindplan_message(StringInfo input_message)
 		for (paramno = 0; paramno < numParams; paramno++)
 		{
 			// XXX decode plan earlier and try to find params there
-			Oid			ptype = InvalidOid; //  psrc->param_types[paramno];
+			Oid			ptype = stmt->remoteparams[paramno].paramtype;
 			int32		plength;
 			Datum		pval;
 			bool		isNull;
@@ -1737,41 +1809,6 @@ exec_bindplan_message(StringInfo input_message)
 	}
 
 	pq_getmsgend(input_message);
-
-	/*
-	 * Make up a PreparedStatement from data sent from the coordinator or
-	 * parent datanodes. It have to be available for all the portal's lifetime
-	 */
-	oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(portal));
-
-	stmt = makeNode(PlannedStmt);
-
-	stmt->commandType = rstmt->commandType;
-	stmt->hasReturning = rstmt->hasReturning;
-	stmt->canSetTag = true;
-	stmt->transientPlan = false; // ???
-	stmt->planTree = rstmt->planTree;
-	stmt->rtable = rstmt->rtable;
-	stmt->resultRelations = rstmt->resultRelations;
-	stmt->utilityStmt = NULL;
-	stmt->intoClause = NULL;
-	stmt->subplans = rstmt->subplans;
-	stmt->rewindPlanIDs = NULL;
-	stmt->rowMarks = NIL;
-	stmt->relationOids = NIL;
-	stmt->invalItems = NIL;
-	stmt->nParamExec = rstmt->nParamExec;
-	stmt->distributionType = rstmt->distributionType;
-	stmt->distributionKey = rstmt->distributionKey;
-	stmt->distributionNodes = rstmt->distributionNodes;
-
-	/* the container is not needed, release */
-	pfree(rstmt);
-
-	plan_list = lappend(NIL, stmt);
-
-	/* Done storing stuff in portal's context */
-	MemoryContextSwitchTo(oldContext);
 
 	/*
 	 * Now we can define the portal.

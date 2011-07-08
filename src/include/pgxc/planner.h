@@ -145,6 +145,7 @@ typedef struct
 	List 	   *nodeList;
 	bool 		execOnAll;
 	SimpleSort *sort;
+	char	   *cursor;
 } RemoteSubplan;
 #endif
 

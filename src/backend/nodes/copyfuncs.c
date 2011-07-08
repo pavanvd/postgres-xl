@@ -31,6 +31,9 @@
 #include "pgxc/locator.h"
 #include "pgxc/planner.h"
 #endif
+#ifdef XCP
+#include "pgxc/execRemote.h"
+#endif
 #include "utils/datum.h"
 
 
@@ -100,6 +103,9 @@ _copyPlannedStmt(PlannedStmt *from)
 	COPY_NODE_FIELD(invalItems);
 	COPY_SCALAR_FIELD(nParamExec);
 #ifdef XCP
+	COPY_SCALAR_FIELD(nParamRemote);
+	COPY_POINTER_FIELD(remoteparams,
+					   newnode->nParamRemote * sizeof(RemoteParam));
 	COPY_SCALAR_FIELD(distributionType);
 	COPY_SCALAR_FIELD(distributionKey);
 	COPY_NODE_FIELD(distributionNodes);
@@ -1090,6 +1096,37 @@ _copySimpleDistinct(SimpleDistinct *from)
 }
 #endif
 
+
+#ifdef XCP
+/*
+ * _copyRemoteSubplan
+ */
+static RemoteSubplan *
+_copyRemoteSubplan(RemoteSubplan *from)
+{
+	RemoteSubplan *newnode = makeNode(RemoteSubplan);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyScanFields((Scan *) from, (Scan *) newnode);
+
+	/*
+	 * copy remainder of node
+	 */
+	COPY_SCALAR_FIELD(distributionType);
+	COPY_SCALAR_FIELD(distributionKey);
+	COPY_NODE_FIELD(distributionNodes);
+	COPY_NODE_FIELD(nodeList);
+	COPY_SCALAR_FIELD(execOnAll);
+	COPY_NODE_FIELD(sort);
+	COPY_STRING_FIELD(cursor);
+
+	return newnode;
+}
+#endif
+
+
 /* ****************************************************************
  *					   primnodes.h copy functions
  * ****************************************************************
@@ -2069,9 +2106,11 @@ _copyRangeTblEntry(RangeTblEntry *from)
 	COPY_SCALAR_FIELD(rtekind);
 
 #ifdef PGXC
+#ifndef XCP
 	COPY_STRING_FIELD(relname);
 	if (from->reltupdesc)
 		newnode->reltupdesc = CreateTupleDescCopy(from->reltupdesc);
+#endif
 #endif
 
 	COPY_SCALAR_FIELD(relid);
@@ -4133,6 +4172,11 @@ copyObject(void *from)
 			break;
 		case T_SimpleDistinct:
 			retval = _copySimpleDistinct(from);
+			break;
+#endif
+#ifdef XCP
+		case T_RemoteSubplan:
+			retval = _copyRemoteSubplan(from);
 			break;
 #endif
 			/*

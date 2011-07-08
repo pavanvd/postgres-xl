@@ -69,6 +69,10 @@ typedef struct PlannedStmt
 
 	int			nParamExec;		/* number of PARAM_EXEC Params used */
 #ifdef XCP
+	int			nParamRemote;	/* number of params sent from the master mode */
+
+	struct RemoteParam *remoteparams;/* parameter descriptors */
+
 	/* Parameters to filter out result rows */
 	char		distributionType;
 	AttrNumber  distributionKey;

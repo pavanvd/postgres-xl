@@ -27,6 +27,10 @@
 #include "libpq/libpq.h"
 #include "miscadmin.h"
 #include "pgxc/execRemote.h"
+#ifdef XCP
+#include "executor/nodeSubplan.h"
+#include "nodes/nodeFuncs.h"
+#endif
 #include "pgxc/poolmgr.h"
 #include "storage/ipc.h"
 #include "utils/datum.h"
@@ -914,7 +918,7 @@ ValidateAndResetCombiner(RemoteQueryState *combiner)
 		pfree(combiner->errorDetail);
 	if (combiner->tapenodes)
 		pfree(combiner->tapenodes);
-#ifndef XCP
+#ifdef XCP
 	if (combiner->tapemarks)
 		pfree(combiner->tapemarks);
 #endif
@@ -922,8 +926,10 @@ ValidateAndResetCombiner(RemoteQueryState *combiner)
 	combiner->command_complete_count = 0;
 	combiner->connections = NULL;
 	combiner->conn_count = 0;
+#ifndef XCP
 	combiner->request_type = REQUEST_TYPE_NOT_DEFINED;
 	combiner->tuple_desc = NULL;
+#endif
 	combiner->description_count = 0;
 	combiner->copy_in_count = 0;
 	combiner->copy_out_count = 0;
@@ -937,6 +943,9 @@ ValidateAndResetCombiner(RemoteQueryState *combiner)
 	combiner->currentRow.msgnode = 0;
 	combiner->rowBuffer = NIL;
 	combiner->tapenodes = NULL;
+#ifdef XCP
+	combiner->tapemarks = NULL;
+#endif
 	combiner->copy_file = NULL;
 
 	return valid;
@@ -6010,7 +6019,252 @@ PGXCNodeGetNodeList(PGXC_NodeId **datanodes,
 	pfree_pgxc_all_handles(pgxc_connections);
 }
 
+
 #ifdef XCP
+struct find_params_context
+{
+	RemoteParam *rparams;
+	Bitmapset *defineParams;
+};
+
+static bool
+determine_param_types_walker(Node *node, struct find_params_context *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, Param))
+	{
+		Param *param = (Param *) node;
+		int paramno = param->paramid;
+
+		if (param->paramkind == PARAM_EXEC &&
+				bms_is_member(paramno, context->defineParams))
+		{
+			RemoteParam *cur = context->rparams;
+			while (cur->paramkind != PARAM_EXEC || cur->paramid != paramno)
+				cur++;
+			cur->paramtype = param->paramtype;
+			context->defineParams = bms_del_member(context->defineParams,
+												   paramno);
+			return bms_is_empty(context->defineParams);
+		}
+	}
+	return expression_tree_walker(node, determine_param_types_walker,
+								  (void *) context);
+
+}
+
+/*
+ * Scan expressions in the plan tree to find Param nodes and get data types
+ * from them
+ */
+static bool
+determine_param_types(Plan *plan,  struct find_params_context *context)
+{
+	Bitmapset *intersect;
+
+	if (plan == NULL)
+		return false;
+
+	intersect = bms_intersect(plan->allParam, context->defineParams);
+	if (bms_is_empty(intersect))
+	{
+		/* the subplan does not depend on params we are interested in */
+		bms_free(intersect);
+		return false;
+	}
+	bms_free(intersect);
+
+	/* scan target list */
+	if (expression_tree_walker((Node *) plan->targetlist, 
+							   determine_param_types_walker,
+							   (void *) context))
+		return true;
+	/* scan qual */
+	if (expression_tree_walker((Node *) plan->qual,
+							   determine_param_types_walker,
+							   (void *) context))
+		return true;
+
+	/* Check additional node-type-specific fields */
+	switch (nodeTag(plan))
+	{
+		case T_Result:
+			if (expression_tree_walker((Node *) ((Result *) plan)->resconstantqual,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_SeqScan:
+			break;
+
+		case T_IndexScan:
+			if (expression_tree_walker((Node *) ((IndexScan *) plan)->indexqual,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_BitmapIndexScan:
+			if (expression_tree_walker((Node *) ((BitmapIndexScan *) plan)->indexqual,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_BitmapHeapScan:
+			if (expression_tree_walker((Node *) ((BitmapHeapScan *) plan)->bitmapqualorig,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_TidScan:
+			if (expression_tree_walker((Node *) ((TidScan *) plan)->tidquals,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_SubqueryScan:
+			if (determine_param_types(((SubqueryScan *) plan)->subplan, context))
+				return true;
+			break;
+
+		case T_FunctionScan:
+			if (expression_tree_walker((Node *) ((FunctionScan *) plan)->funcexpr,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_ValuesScan:
+			if (expression_tree_walker((Node *) ((ValuesScan *) plan)->values_lists,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_ModifyTable:
+			break;
+
+		case T_RemoteSubplan:
+			break;
+
+		case T_Append:
+			{
+				ListCell   *l;
+
+				foreach(l, ((Append *) plan)->appendplans)
+				{
+					if (determine_param_types((Plan *) lfirst(l), context))
+						return true;
+				}
+			}
+			break;
+
+		case T_BitmapAnd:
+			{
+				ListCell   *l;
+
+				foreach(l, ((BitmapAnd *) plan)->bitmapplans)
+				{
+					if (determine_param_types((Plan *) lfirst(l), context))
+						return true;
+				}
+			}
+			break;
+
+		case T_BitmapOr:
+			{
+				ListCell   *l;
+
+				foreach(l, ((BitmapOr *) plan)->bitmapplans)
+				{
+					if (determine_param_types((Plan *) lfirst(l), context))
+						return true;
+				}
+			}
+			break;
+
+		case T_NestLoop:
+			if (expression_tree_walker((Node *) ((Join *) plan)->joinqual,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_MergeJoin:
+			if (expression_tree_walker((Node *) ((Join *) plan)->joinqual,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			if (expression_tree_walker((Node *) ((MergeJoin *) plan)->mergeclauses,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_HashJoin:
+			if (expression_tree_walker((Node *) ((Join *) plan)->joinqual,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			if (expression_tree_walker((Node *) ((HashJoin *) plan)->hashclauses,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_Limit:
+			if (expression_tree_walker((Node *) ((Limit *) plan)->limitOffset,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			if (expression_tree_walker((Node *) ((Limit *) plan)->limitCount,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
+		case T_RecursiveUnion:
+			break;
+
+		case T_LockRows:
+			break;
+
+		case T_WindowAgg:
+			if (expression_tree_walker((Node *) ((WindowAgg *) plan)->startOffset,
+									   determine_param_types_walker,
+									   (void *) context))
+			if (expression_tree_walker((Node *) ((WindowAgg *) plan)->endOffset,
+									   determine_param_types_walker,
+									   (void *) context))
+			break;
+
+		case T_Hash:
+		case T_Agg:
+		case T_Material:
+		case T_Sort:
+		case T_Unique:
+		case T_SetOp:
+		case T_Group:
+			break;
+
+		default:
+			elog(ERROR, "unrecognized node type: %d",
+				 (int) nodeTag(plan));
+	}
+
+
+	/* recurse into subplans */
+	return determine_param_types(plan->lefttree, context) ||
+			determine_param_types(plan->righttree, context);
+}
+
+
 RemoteSubplanState *
 ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 {
@@ -6154,6 +6408,8 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 	 */
 	if (node->nodeList && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 	{
+		ParamListInfo ext_params;
+
 		/* Encode plan if we are going to execute it on other nodes */
 		rstmt.type = T_RemoteStmt;
 		rstmt.planTree = outerPlan(node);
@@ -6177,6 +6433,67 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 		rstmt.rtable = estate->es_range_table;
 		rstmt.subplans = estate->es_plannedstmt->subplans;
 		rstmt.nParamExec = estate->es_plannedstmt->nParamExec;
+		ext_params = estate->es_param_list_info;
+		rstmt.nParamRemote = (ext_params ? ext_params->numParams : 0) +
+				bms_num_members(node->scan.plan.allParam);
+		if (rstmt.nParamRemote > 0)
+		{
+			Bitmapset *tmpset;
+			int i;
+			int paramno;
+
+			rstmt.remoteparams = (RemoteParam *) palloc(rstmt.nParamRemote *
+														sizeof(RemoteParam));
+			if (ext_params)
+			{
+				for (i = 0; i < ext_params->numParams; i++)
+				{
+					rstmt.remoteparams[i].paramkind = PARAM_EXTERN;
+					rstmt.remoteparams[i].paramid = i + 1;
+					rstmt.remoteparams[i].paramtype =
+							ext_params->params[i].ptype;
+				}
+			}
+			else
+				i = 0;
+
+			if (!bms_is_empty(node->scan.plan.allParam))
+			{
+				Bitmapset *defineParams = NULL;
+				tmpset = bms_copy(node->scan.plan.allParam);
+				while ((paramno = bms_first_member(tmpset)) >= 0)
+				{
+					ParamExecData *prmdata;
+
+					prmdata = &(estate->es_param_exec_vals[paramno]);
+					rstmt.remoteparams[i].paramkind = PARAM_EXEC;
+					rstmt.remoteparams[i].paramid = paramno;
+					rstmt.remoteparams[i].paramtype = prmdata->ptype;
+					if (prmdata->ptype == InvalidOid)
+						defineParams = bms_add_member(defineParams, paramno);
+				}
+				bms_free(tmpset);
+				if (!bms_is_empty(defineParams))
+				{
+					struct find_params_context context;
+					bool all_found;
+
+					context.rparams = rstmt.remoteparams;
+					context.defineParams = defineParams;
+
+					all_found = determine_param_types(node->scan.plan.lefttree,
+													  &context);
+
+					bms_free(context.defineParams);
+					if (!all_found)
+						elog(ERROR, "Failed to determine internal parameter data type");
+				}
+			}
+			remotestate->nParamRemote = rstmt.nParamRemote;
+			remotestate->remoteparams = rstmt.remoteparams;
+		}
+		else
+			rstmt.remoteparams = NULL;
 		rstmt.distributionKey = node->distributionKey;
 		rstmt.distributionType = node->distributionType;
 		rstmt.distributionNodes = node->distributionNodes;
@@ -6193,6 +6510,99 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 }
 
 
+static void
+append_param_data(StringInfo buf, Oid ptype, Datum value, bool isnull)
+{
+	uint32 n32;
+
+	if (isnull)
+	{
+		n32 = htonl(-1);
+		appendBinaryStringInfo(buf, (char *) &n32, 4);
+	}
+	else
+	{
+		Oid		typOutput;
+		bool	typIsVarlena;
+		Datum	pval;
+		char   *pstring;
+		int		len;
+
+		/* Get info needed to output the value */
+		getTypeOutputInfo(ptype, &typOutput, &typIsVarlena);
+
+		/*
+		 * If we have a toasted datum, forcibly detoast it here to avoid
+		 * memory leakage inside the type's output routine.
+		 */
+		if (typIsVarlena)
+			pval = PointerGetDatum(PG_DETOAST_DATUM(value));
+		else
+			pval = value;
+
+		/* Convert Datum to string */
+		pstring = OidOutputFunctionCall(typOutput, pval);
+
+		/* copy data to the buffer */
+		len = strlen(pstring);
+		n32 = htonl(len);
+		appendBinaryStringInfo(buf, (char *) &n32, 4);
+		appendBinaryStringInfo(buf, pstring, len);
+	}
+}
+
+static int encode_parameters(int nparams, RemoteParam *remoteparams,
+							 PlanState *planstate, char** result)
+{
+	EState 		   *estate = planstate->state;
+	StringInfoData	buf;
+	uint16 			n16;
+	int 			i;
+
+	initStringInfo(&buf);
+
+	/* Number of parameter values */
+	n16 = htons(nparams);
+	appendBinaryStringInfo(&buf, (char *) &n16, 2);
+
+	/* Parameter values */
+	for (i = 0; i < nparams; i++)
+	{
+		RemoteParam *rparam = &remoteparams[i];
+		int ptype = rparam->paramtype;
+		if (rparam->paramkind == PARAM_EXTERN)
+		{
+			ParamExternData *param;
+			param = &(estate->es_param_list_info->params[rparam->paramid - 1]);
+			append_param_data(&buf, ptype, param->value, param->isnull);
+		}
+		else
+		{
+			ParamExecData *param;
+			param = &(estate->es_param_exec_vals[rparam->paramid]);
+			if (param->execPlan)
+			{
+				if (planstate->ps_ExprContext == NULL)
+					ExecAssignExprContext(estate, planstate);
+
+				/* Parameter not evaluated yet, so go do it */
+				ExecSetParamPlan((SubPlanState *) param->execPlan,
+								 planstate->ps_ExprContext);
+				/* ExecSetParamPlan should have processed this param... */
+				Assert(param->execPlan == NULL);
+			}
+			append_param_data(&buf, ptype, param->value, param->isnull);
+		}
+	}
+
+	/* Take data from the buffer */
+	*result = palloc(buf.len);
+	memcpy(*result, buf.data, buf.len);
+	pfree(buf.data);
+	return buf.len;
+}
+
+
 TupleTableSlot *
 ExecRemoteSubplan(RemoteSubplanState *node)
 {
@@ -6204,12 +6614,56 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 	if (!node->bound)
 	{
 		int fetch = 0;
+		int paramlen = 0;
+		char *paramdata = NULL;
 
-		if (combiner->cursor)
+		if (plan->cursor)
 			fetch = 100;
 
-		/* Initialize remote connections if needed */
-		if (node->execNodes)
+		/*
+		 * Send down all available parameters, if any is used by the plan
+		 */
+		if (estate->es_param_list_info ||
+				!bms_is_empty(plan->scan.plan.allParam))
+			paramlen = encode_parameters(node->nParamRemote,
+										 node->remoteparams,
+										 &combiner->ss.ps,
+										 &paramdata);
+
+		/*
+		 * May be query is already prepared on the data nodes, in this case
+		 * just re-bind it, otherwise get connections, prepare them and send
+		 * down subplan
+		 */
+		if (combiner->cursor)
+		{
+			int i;
+
+			combiner->conn_count = combiner->cursor_count;
+			memcpy(combiner->connections, combiner->cursor_connections,
+						combiner->cursor_count * sizeof(PGXCNodeHandle *));
+
+			for (i = 0; i < combiner->conn_count; i++)
+			{
+				PGXCNodeHandle *conn = combiner->connections[i];
+
+				CHECK_OWNERSHIP(conn, combiner);
+				if (pgxc_node_send_datanode_query(conn,
+												  NULL, /* query is already sent */
+												  combiner->cursor,
+												  paramlen,
+												  paramdata,
+												  fetch) != 0)
+				{
+					combiner->conn_count = 0;
+					pfree(combiner->connections);
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("Failed to send command to data nodes")));
+				}
+			}
+		}
+		else if (node->execNodes)
 		{
 			GlobalTransactionId gxid = InvalidGlobalTransactionId;
 			Snapshot		snapshot = GetActiveSnapshot();
@@ -6315,9 +6769,9 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 				/* Use Datanode Query Protocol */
 				if (pgxc_node_send_datanode_query(combiner->connections[i],
 												  node->subplanstr,
-												  combiner->cursor,	// portal
-												  0, 	// length of paramdata
-												  NULL,  // param data
+												  plan->cursor,
+												  paramlen,
+												  paramdata,
 												  fetch	// fetch size
 												 ) != 0)
 				{
@@ -6329,6 +6783,16 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 				}
 
 				combiner->connections[i]->combiner = combiner;
+			}
+
+			if (plan->cursor)
+			{
+				combiner->cursor = plan->cursor;
+				combiner->cursor_count = combiner->conn_count;
+				combiner->cursor_connections = (PGXCNodeHandle **) palloc(
+							combiner->conn_count * sizeof(PGXCNodeHandle *));
+				memcpy(combiner->cursor_connections, combiner->connections,
+							combiner->conn_count * sizeof(PGXCNodeHandle *));
 			}
 		}
 
@@ -6432,6 +6896,9 @@ ExecReScanRemoteSubplan(RemoteSubplanState *node,
 		ExecReScan(outerPlanState(node), exprCtxt);
 
 
+	/*
+	 * Read in remaining data from the connections, if any
+	 */
 	combiner->current_conn = 0;
 	while (combiner->conn_count > 0)
 	{
@@ -6472,6 +6939,9 @@ ExecReScanRemoteSubplan(RemoteSubplanState *node,
 						 errmsg("Failed to read response from data nodes when ending query")));
 		}
 	}
+	/*
+	 * Force query is re-executed with new parameters
+	 */
 	node->bound = false;
 
 	/*
@@ -6564,6 +7034,14 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 		ExecClearTuple(combiner->ss.ps.ps_ResultTupleSlot);
 		tuplesort_end((Tuplesortstate *) combiner->tuplesortstate);
 		combiner->tuplesortstate = NULL;
+	}
+
+	if (combiner->cursor)
+	{
+		close_node_cursors(combiner->cursor_connections,
+						   combiner->cursor_count,
+						   combiner->cursor);
+		combiner->cursor = NULL;
 	}
 
 	CloseCombiner(combiner);
