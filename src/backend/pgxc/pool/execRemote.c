@@ -1173,8 +1173,7 @@ fetch_local_conn:
 			conn = NULL;
 			/*
 			 * If doing merge sort return NULL immediately to indicate end of
-			 * the tape, otherwise continue with next connection or exit
-			 * if no more connections.
+			 * the tape, otherwise continue with ремоте connections.
 			 */
 			if (combiner->merge_sort)
 			{
@@ -1189,16 +1188,14 @@ fetch_local_conn:
 				else
 					combiner->current_conn = 0;
 				if (combiner->conn_count > 0)
-				{
 					conn = combiner->connections[combiner->current_conn];
-					/*
-					 * There can only be one local connection, so break the loop
-					 * and move to handling of remote connections.
-					 */
-					break;
-				}
-				else
-					return NULL;
+				/*
+				 * There can only be one local connection, so break the loop
+				 * and move to handling of remote connections.
+				 * The function will later return NULL if no more connections
+				 * and row buffer is empty
+				 */
+				break;
 			}
 		}
 		// Revisit: now local connections are only when running remote subquery
@@ -1220,14 +1217,11 @@ fetch_local_conn:
 			// the returned node equal to local node id
 			for (i = 0; i < numnodes; i++)
 				if (planstate->dest_nodes[i] == PGXCNodeId)
-				{
-					// for debug
 					return slot;
-				}
 			/* does not match, get another tuple */
 			continue;
 		}
-		/* if no locator, always return node */
+		/* if no locator, always return the tuple */
 		return slot;
 	}
 
