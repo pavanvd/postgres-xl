@@ -6465,6 +6465,7 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 					rstmt.remoteparams[i].paramtype = prmdata->ptype;
 					if (prmdata->ptype == InvalidOid)
 						defineParams = bms_add_member(defineParams, paramno);
+					i++;
 				}
 				bms_free(tmpset);
 				if (!bms_is_empty(defineParams))
