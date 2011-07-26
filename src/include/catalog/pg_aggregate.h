@@ -126,14 +126,14 @@ DATA(insert ( 2106	interval_accum	interval_collect	interval_avg	0	1187	1187	"{0 
 
 /* sum */
 #ifdef PGXC
-DATA(insert ( 2107	int8_sum		numeric_add		-				0	1700	1700	_null_ "0" ));
+DATA(insert ( 2107	int8_sum		numeric_add		-				0	1700	1700	_null_ _null_ ));
 DATA(insert ( 2108	int4_sum		int8_sum_to_int8 -				0	20		20		_null_ _null_ ));
 DATA(insert ( 2109	int2_sum		int8_sum_to_int8 -				0	20		20		_null_ _null_ ));
-DATA(insert ( 2110	float4pl		float4pl		-				0	700		700		_null_ "0" ));
-DATA(insert ( 2111	float8pl		float8pl		-				0	701		701		_null_ "0" ));
+DATA(insert ( 2110	float4pl		float4pl		-				0	700		700		_null_ _null_ ));
+DATA(insert ( 2111	float8pl		float8pl		-				0	701		701		_null_ _null_ ));
 DATA(insert ( 2112	cash_pl			cash_pl			-				0	790		790		_null_ _null_ ));
 DATA(insert ( 2113	interval_pl		interval_pl		-				0	1186	1186	_null_ _null_ ));
-DATA(insert ( 2114	numeric_add		numeric_add		-				0	1700	1700	_null_ "0" ));
+DATA(insert ( 2114	numeric_add		numeric_add		-				0	1700	1700	_null_ _null_ ));
 #endif
 #ifdef PGXC
 //DATA(insert ( 2107	int8_sum		-				0	1700	_null_ ));
