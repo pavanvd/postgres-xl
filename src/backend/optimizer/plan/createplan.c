@@ -4689,11 +4689,34 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 		}
 		else
 		{
+			AttrNumber *newSortColIdx;
+			Oid 	   *newSortOperators;
+			bool 	   *newNullsFirst;
+			int 		i;
+
+			/*
+			 * It is not safe to share colum information.
+			 * If another node will be pushed down the same RemoteSubplan column
+			 * indexes may be modified and this would affect the Sort node
+			 */
+
+			newSortColIdx = (AttrNumber *) palloc(numCols * sizeof(AttrNumber));
+			newSortOperators = (Oid *) palloc(numCols * sizeof(Oid));
+			newNullsFirst = (bool *) palloc(numCols * sizeof(bool));
+
+			/* Copy sort columns */
+			for (i = 0; i < numCols; i++)
+			{
+				newSortColIdx[i] = sortColIdx[i];
+				newSortOperators[i] = sortOperators[i];
+				newNullsFirst[i] = nullsFirst[i];
+			}
+
 			pushdown->sort = makeNode(SimpleSort);
 			pushdown->sort->numCols = numCols;
-			pushdown->sort->sortColIdx = sortColIdx;
-			pushdown->sort->sortOperators = sortOperators;
-			pushdown->sort->nullsFirst = nullsFirst;
+			pushdown->sort->sortColIdx = newSortColIdx;
+			pushdown->sort->sortOperators = newSortOperators;
+			pushdown->sort->nullsFirst = newNullsFirst;
 		}
 		/*
 		 * lefttree is not actually a Sort, but we hope it is not important and
