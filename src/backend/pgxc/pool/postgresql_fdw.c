@@ -168,12 +168,19 @@ foreign_qual_walker(Node *node, foreign_qual_context *context)
 				 * correctly interpret the transition results from data nodes.
 				 * For now compute such aggregates at coordinator.
 				 */
+#ifdef XCP
+				if (aggref->aggorder ||
+					aggref->aggdistinct ||
+					aggref->agglevelsup)
+					return true;
+#else
 				if (aggref->aggorder ||
 					aggref->aggdistinct ||
 					aggref->agglevelsup ||
 					!aggref->agghas_collectfn ||
 					IsPolymorphicType(aggref->aggtrantype))
 					return true;
+#endif
 				/*
 				 * data node can compute transition results, so, add the
 				 * aggregate to the context if context is present

@@ -835,6 +835,8 @@ build_aggregate_fnexprs(Oid *agg_input_types,
 		*collectfnexpr = (Expr *) makeFuncExpr(collectfn_oid,
 											 agg_collect_type,
 											 args,
+											 InvalidOid,
+											 agg_input_collation,
 											 COERCE_DONTCARE);
 	}
 	else

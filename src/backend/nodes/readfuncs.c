@@ -331,6 +331,27 @@ set_portable_input(bool value)
 		else \
 			local_node->fldname = InvalidOid; \
 	} while (0)
+
+/* Read collation identifier and lookup the OID */
+#define READ_COLLID_FIELD(fldname) \
+	do { \
+		char       *nspname; /* namespace name */ \
+		char       *collname; /* collation name */ \
+		int 		collencoding; /* collation encoding */ \
+		token = pg_strtok(&length);		/* skip :fldname */ \
+		token = pg_strtok(&length); /* get nspname */ \
+		nspname = nullable_string(token, length); \
+		token = pg_strtok(&length); /* get collname */ \
+		collname = nullable_string(token, length); \
+		token = pg_strtok(&length); /* get collencoding */ \
+		collencoding = atoi(token); \
+		if (collname) \
+			local_node->fldname = get_collid(collname, \
+											 collencoding, \
+											 get_namespaceid(nspname)); \
+		else \
+			local_node->fldname = InvalidOid; \
+	} while (0)
 #endif
 
 /* Routine exit */
@@ -638,6 +659,11 @@ _readVar(void)
 #endif
 	READ_OID_FIELD(vartype);
 	READ_INT_FIELD(vartypmod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(varcollid);
+	else
+#endif
 	READ_OID_FIELD(varcollid);
 	READ_UINT_FIELD(varlevelsup);
 	READ_UINT_FIELD(varnoold);
@@ -662,6 +688,11 @@ _readConst(void)
 #endif
 	READ_OID_FIELD(consttype);
 	READ_INT_FIELD(consttypmod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(constcollid);
+	else
+#endif
 	READ_OID_FIELD(constcollid);
 	READ_INT_FIELD(constlen);
 	READ_BOOL_FIELD(constbyval);
@@ -694,6 +725,11 @@ _readParam(void)
 #endif
 	READ_OID_FIELD(paramtype);
 	READ_INT_FIELD(paramtypmod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(paramcollid);
+	else
+#endif
 	READ_OID_FIELD(paramcollid);
 	READ_LOCATION_FIELD(location);
 
@@ -726,7 +762,17 @@ _readAggref(void)
 	READ_BOOL_FIELD(agghas_collectfn);
 #endif /* XCP */
 #endif /* PGXC */
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(aggcollid);
+	else
+#endif
 	READ_OID_FIELD(aggcollid);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(inputcollid);
+	else
+#endif
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(args);
 	READ_NODE_FIELD(aggorder);
@@ -758,7 +804,17 @@ _readWindowFunc(void)
 	else
 #endif
 	READ_OID_FIELD(wintype);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(wincollid);
+	else
+#endif
 	READ_OID_FIELD(wincollid);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(inputcollid);
+	else
+#endif
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(args);
 	READ_UINT_FIELD(winref);
@@ -790,6 +846,11 @@ _readArrayRef(void)
 #endif
 	READ_OID_FIELD(refelemtype);
 	READ_INT_FIELD(reftypmod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(refcollid);
+	else
+#endif
 	READ_OID_FIELD(refcollid);
 	READ_NODE_FIELD(refupperindexpr);
 	READ_NODE_FIELD(reflowerindexpr);
@@ -821,7 +882,17 @@ _readFuncExpr(void)
 	READ_OID_FIELD(funcresulttype);
 	READ_BOOL_FIELD(funcretset);
 	READ_ENUM_FIELD(funcformat, CoercionForm);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(funccollid);
+	else
+#endif
 	READ_OID_FIELD(funccollid);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(inputcollid);
+	else
+#endif
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(args);
 	READ_LOCATION_FIELD(location);
@@ -885,7 +956,17 @@ _readOpExpr(void)
 #endif
 	READ_OID_FIELD(opresulttype);
 	READ_BOOL_FIELD(opretset);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(opcollid);
+	else
+#endif
 	READ_OID_FIELD(opcollid);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(inputcollid);
+	else
+#endif
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(args);
 	READ_LOCATION_FIELD(location);
@@ -933,7 +1014,17 @@ _readDistinctExpr(void)
 #endif
 	READ_OID_FIELD(opresulttype);
 	READ_BOOL_FIELD(opretset);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(opcollid);
+	else
+#endif
 	READ_OID_FIELD(opcollid);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(inputcollid);
+	else
+#endif
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(args);
 	READ_LOCATION_FIELD(location);
@@ -964,7 +1055,17 @@ _readNullIfExpr(void)
 
 	READ_OID_FIELD(opresulttype);
 	READ_BOOL_FIELD(opretset);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(opcollid);
+	else
+#endif
 	READ_OID_FIELD(opcollid);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(inputcollid);
+	else
+#endif
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(args);
 	READ_LOCATION_FIELD(location);
@@ -1005,6 +1106,11 @@ _readScalarArrayOpExpr(void)
 #endif
 
 	READ_BOOL_FIELD(useOr);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(inputcollid);
+	else
+#endif
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(args);
 	READ_LOCATION_FIELD(location);
@@ -1069,8 +1175,15 @@ _readSubPlan(void)
 	READ_NODE_FIELD(paramIds);
 	READ_INT_FIELD(plan_id);
 	READ_STRING_FIELD(plan_name);
-	READ_TYPID_FIELD(firstColType);
+	if (portable_input)
+		READ_TYPID_FIELD(firstColType);
+	else
+		READ_OID_FIELD(firstColType);
 	READ_INT_FIELD(firstColTypmod);
+	if (portable_input)
+		READ_COLLID_FIELD(firstColCollation);
+	else
+		READ_OID_FIELD(firstColCollation);
 	READ_BOOL_FIELD(useHashTable);
 	READ_BOOL_FIELD(unknownEqFalse);
 	READ_NODE_FIELD(setParam);
@@ -1100,6 +1213,11 @@ _readFieldSelect(void)
 #endif
 	READ_OID_FIELD(resulttype);
 	READ_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(resultcollid);
+	else
+#endif
 	READ_OID_FIELD(resultcollid);
 
 	READ_DONE();
@@ -1142,6 +1260,11 @@ _readRelabelType(void)
 #endif
 	READ_OID_FIELD(resulttype);
 	READ_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(resultcollid);
+	else
+#endif
 	READ_OID_FIELD(resultcollid);
 	READ_ENUM_FIELD(relabelformat, CoercionForm);
 	READ_LOCATION_FIELD(location);
@@ -1164,6 +1287,11 @@ _readCoerceViaIO(void)
 	else
 #endif
 	READ_OID_FIELD(resulttype);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(resultcollid);
+	else
+#endif
 	READ_OID_FIELD(resultcollid);
 	READ_ENUM_FIELD(coerceformat, CoercionForm);
 	READ_LOCATION_FIELD(location);
@@ -1193,6 +1321,11 @@ _readArrayCoerceExpr(void)
 #endif
 	READ_OID_FIELD(resulttype);
 	READ_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(resultcollid);
+	else
+#endif
 	READ_OID_FIELD(resultcollid);
 	READ_BOOL_FIELD(isExplicit);
 	READ_ENUM_FIELD(coerceformat, CoercionForm);
@@ -1251,6 +1384,11 @@ _readCaseExpr(void)
 	else
 #endif
 	READ_OID_FIELD(casetype);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(casecollid);
+	else
+#endif
 	READ_OID_FIELD(casecollid);
 	READ_NODE_FIELD(arg);
 	READ_NODE_FIELD(args);
@@ -1290,6 +1428,11 @@ _readCaseTestExpr(void)
 #endif
 	READ_OID_FIELD(typeId);
 	READ_INT_FIELD(typeMod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(collation);
+	else
+#endif
 	READ_OID_FIELD(collation);
 
 	READ_DONE();
@@ -1309,6 +1452,11 @@ _readArrayExpr(void)
 	else
 #endif
 	READ_OID_FIELD(array_typeid);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(array_collid);
+	else
+#endif
 	READ_OID_FIELD(array_collid);
 #ifdef XCP
 	if (portable_input)
@@ -1372,6 +1520,11 @@ _readCoalesceExpr(void)
 	READ_LOCALS(CoalesceExpr);
 
 	READ_OID_FIELD(coalescetype);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(coalescecollid);
+	else
+#endif
 	READ_OID_FIELD(coalescecollid);
 	READ_NODE_FIELD(args);
 	READ_LOCATION_FIELD(location);
@@ -1388,7 +1541,17 @@ _readMinMaxExpr(void)
 	READ_LOCALS(MinMaxExpr);
 
 	READ_OID_FIELD(minmaxtype);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(minmaxcollid);
+	else
+#endif
 	READ_OID_FIELD(minmaxcollid);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(inputcollid);
+	else
+#endif
 	READ_OID_FIELD(inputcollid);
 	READ_ENUM_FIELD(op, MinMaxOp);
 	READ_NODE_FIELD(args);
@@ -1468,6 +1631,11 @@ _readCoerceToDomain(void)
 #endif
 	READ_OID_FIELD(resulttype);
 	READ_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(resultcollid);
+	else
+#endif
 	READ_OID_FIELD(resultcollid);
 	READ_ENUM_FIELD(coercionformat, CoercionForm);
 	READ_LOCATION_FIELD(location);
@@ -1490,6 +1658,11 @@ _readCoerceToDomainValue(void)
 #endif
 	READ_OID_FIELD(typeId);
 	READ_INT_FIELD(typeMod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(collation);
+	else
+#endif
 	READ_OID_FIELD(collation);
 	READ_LOCATION_FIELD(location);
 
@@ -1511,6 +1684,11 @@ _readSetToDefault(void)
 #endif
 	READ_OID_FIELD(typeId);
 	READ_INT_FIELD(typeMod);
+#ifdef XCP
+	if (portable_input)
+		READ_COLLID_FIELD(collation);
+	else
+#endif
 	READ_OID_FIELD(collation);
 	READ_LOCATION_FIELD(location);
 
@@ -1684,8 +1862,6 @@ _readRangeTblEntry(void)
 				elog(ERROR, "invalid node field to read");
 #endif
 #endif
-
-		case RTE_SPECIAL:
 #ifdef XCP
 			if (portable_input)
 				READ_RELID_FIELD(relid);
@@ -1921,6 +2097,8 @@ _readIndexScan(void)
 		READ_OID_FIELD(indexid);
 	READ_NODE_FIELD(indexqual);
 	READ_NODE_FIELD(indexqualorig);
+	READ_NODE_FIELD(indexorderby);
+	READ_NODE_FIELD(indexorderbyorig);
 	READ_ENUM_FIELD(indexorderdir, ScanDirection);
 
 	READ_DONE();
@@ -2090,6 +2268,8 @@ _readNestLoop(void)
 
 	READ_JOIN_FIELDS();
 
+	READ_NODE_FIELD(nestParams);
+
 	READ_DONE();
 }
 
@@ -2116,6 +2296,35 @@ _readMergeJoin(void)
 	{
 		token = pg_strtok(&length);
 		local_node->mergeFamilies[i] = atooid(token);
+	}
+
+	token = pg_strtok(&length);		/* skip :mergeCollations */
+	local_node->mergeCollations = (Oid *) palloc(numCols * sizeof(Oid));
+	for (i = 0; i < numCols; i++)
+	{
+		token = pg_strtok(&length);
+#ifdef XCP
+		if (portable_input)
+		{
+			char       *nspname; /* namespace name */
+			char       *collname; /* collation name */
+			int 		collencoding; /* collation encoding */
+			/* the token is already read */
+			nspname = nullable_string(token, length);
+			token = pg_strtok(&length); /* get collname */
+			collname = nullable_string(token, length);
+			token = pg_strtok(&length); /* get nargs */
+			collencoding = atoi(token);
+			if (collname)
+				local_node->mergeCollations[i] = get_collid(collname,
+															collencoding,
+													get_namespaceid(nspname));
+			else
+				local_node->mergeCollations[i] = InvalidOid;
+		}
+		else
+#endif
+		local_node->mergeCollations[i] = atooid(token);
 	}
 
 	token = pg_strtok(&length);		/* skip :mergeStrategies */
@@ -2194,6 +2403,7 @@ _readSort(void)
 	for (i = 0; i < local_node->numCols; i++)
 	{
 		token = pg_strtok(&length);
+#ifdef XCP
 		if (portable_input)
 		{
 			char       *nspname; /* namespace name */
@@ -2232,7 +2442,37 @@ _readSort(void)
 													  get_namespaceid(nspname));
 		}
 		else
-			local_node->sortOperators[i] = atooid(token);
+#endif
+		local_node->sortOperators[i] = atooid(token);
+	}
+
+	token = pg_strtok(&length);		/* skip :collations */
+	local_node->collations = (Oid *) palloc(local_node->numCols * sizeof(Oid));
+	for (i = 0; i < local_node->numCols; i++)
+	{
+		token = pg_strtok(&length);
+#ifdef XCP
+		if (portable_input)
+		{
+			char       *nspname; /* namespace name */
+			char       *collname; /* collation name */
+			int 		collencoding; /* collation encoding */
+			/* the token is already read */
+			nspname = nullable_string(token, length);
+			token = pg_strtok(&length); /* get collname */
+			collname = nullable_string(token, length);
+			token = pg_strtok(&length); /* get nargs */
+			collencoding = atoi(token);
+			if (collname)
+				local_node->collations[i] = get_collid(collname,
+													   collencoding,
+												   get_namespaceid(nspname));
+			else
+				local_node->collations[i] = InvalidOid;
+		}
+		else
+#endif
+		local_node->collations[i] = atooid(token);
 	}
 
 	token = pg_strtok(&length);		/* skip :nullsFirst */
@@ -2766,7 +3006,7 @@ _readRemoteStmt(void)
 
 
 /*
- * _readSort
+ * _readSimpleSort
  */
 static SimpleSort *
 _readSimpleSort(void)
@@ -2830,6 +3070,33 @@ _readSimpleSort(void)
 			local_node->sortOperators[i] = atooid(token);
 	}
 
+	token = pg_strtok(&length);		/* skip :collations */
+	local_node->collations = (Oid *) palloc(local_node->numCols * sizeof(Oid));
+	for (i = 0; i < local_node->numCols; i++)
+	{
+		token = pg_strtok(&length);
+		if (portable_input)
+		{
+			char       *nspname; /* namespace name */
+			char       *collname; /* collation name */
+			int 		collencoding; /* collation encoding */
+			/* the token is already read */
+			nspname = nullable_string(token, length);
+			token = pg_strtok(&length); /* get collname */
+			collname = nullable_string(token, length);
+			token = pg_strtok(&length); /* get nargs */
+			collencoding = atoi(token);
+			if (collname)
+				local_node->collations[i] = get_collid(collname,
+													   collencoding,
+												   get_namespaceid(nspname));
+			else
+				local_node->collations[i] = InvalidOid;
+		}
+		else
+			local_node->collations[i] = atooid(token);
+	}
+
 	token = pg_strtok(&length);		/* skip :nullsFirst */
 	local_node->nullsFirst = (bool *) palloc(local_node->numCols * sizeof(bool));
 	for (i = 0; i < local_node->numCols; i++)
@@ -2837,6 +3104,21 @@ _readSimpleSort(void)
 		token = pg_strtok(&length);
 		local_node->nullsFirst[i] = strtobool(token);
 	}
+
+	READ_DONE();
+}
+
+
+/*
+ * _readNestLoopParam
+ */
+static NestLoopParam *
+_readNestLoopParam(void)
+{
+	READ_LOCALS(NestLoopParam);
+
+	READ_INT_FIELD(paramno);
+	READ_NODE_FIELD(paramval);
 
 	READ_DONE();
 }
@@ -3040,6 +3322,8 @@ parseNodeString(void)
 		return_value = _readRemoteStmt();
 	else if (MATCH("SIMPLESORT", 10))
 		return_value = _readSimpleSort();
+	else if (MATCH("NESTLOOPPARAM", 13))
+		return_value = _readNestLoopParam();
 #endif
 	else
 	{

@@ -252,13 +252,12 @@ extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** c
 
 extern RemoteQueryState *ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags);
 extern TupleTableSlot* ExecRemoteQuery(RemoteQueryState *step);
-extern void ExecReScanRemoteSubplan(RemoteSubplanState *node,
-									ExprContext *exprCtxt);
 extern void ExecEndRemoteQuery(RemoteQueryState *step);
 #ifdef XCP
 extern RemoteSubplanState *ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags);
 extern TupleTableSlot* ExecRemoteSubplan(RemoteSubplanState *node);
 extern void ExecEndRemoteSubplan(RemoteSubplanState *node);
+extern void ExecReScanRemoteSubplan(RemoteSubplanState *node);
 #endif
 extern void ExecRemoteUtility(RemoteQuery *node);
 

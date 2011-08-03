@@ -1115,10 +1115,6 @@ ExplainNode(PlanState *planstate, List *ancestors,
 #ifdef PGXC
 		case T_RemoteQuery:
 #endif
-#ifdef XCP
-		case T_RemoteSubplan:
-#endif /* XCP */
-		case T_SubqueryScan:
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
 			break;
 		case T_FunctionScan:

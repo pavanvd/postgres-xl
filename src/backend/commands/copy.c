@@ -2876,10 +2876,16 @@ EndCopyFrom(CopyState cstate)
 	if (IS_PGXC_COORDINATOR && cstate->rel_loc)
 	{
 		bool replicated = cstate->rel_loc->locatorType == LOCATOR_TYPE_REPLICATED;
+#ifdef XCP
+		DataNodeCopyFinish(
+				cstate->connections,
+				replicated ? primary_data_node : 0);
+#else
 		DataNodeCopyFinish(
 				cstate->connections,
 				replicated ? primary_data_node : 0,
 				replicated ? COMBINE_TYPE_SAME : COMBINE_TYPE_SUM);
+#endif
 		pfree(cstate->connections);
 		pfree(cstate->query_buf.data);
 		FreeRelationLocInfo(cstate->rel_loc);

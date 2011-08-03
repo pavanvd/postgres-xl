@@ -475,7 +475,8 @@ restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
 	if (IsA(ri->clause, OpExpr))
 	{
 		OpExpr *opexpr = (OpExpr *) ri->clause;
-		if (op_mergejoinable(opexpr->opno) && opexpr->args->length == 2)
+		if (opexpr->args->length == 2 &&
+				op_mergejoinable(opexpr->opno, exprType(linitial(opexpr->args))))
 		{
 			Expr *arg1 = (Expr *) linitial(opexpr->args);
 			Expr *arg2 = (Expr *) lsecond(opexpr->args);
@@ -960,7 +961,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 
 				if (found_outer && found_inner)
 				{
-					ListCell *tlc, *emc;
+					ListCell *tlc;
 					Expr *key;
 					int idx;
 					targetd = makeNode(Distribution);
@@ -984,7 +985,6 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 
 					foreach(tlc, pathnode->path.parent->reltargetlist)
 					{
-						Expr *var = (Expr *) lfirst(tlc);
 						if (equal(key, lfirst(tlc)))
 						{
 							targetd->distributionKey = idx;
@@ -1043,7 +1043,8 @@ not_allowed_join:
 			if (IsA(ri->clause, OpExpr))
 			{
 				OpExpr *expr = (OpExpr *) ri->clause;
-				if (op_hashjoinable(expr->opno) && list_length(expr->args) == 2)
+				if (list_length(expr->args) == 2 &&
+						op_hashjoinable(expr->opno, exprType(linitial(expr->args))))
 				{
 					Expr *left = (Expr *) linitial(expr->args);
 					Expr *right = (Expr *) lsecond(expr->args);
@@ -1178,7 +1179,7 @@ not_allowed_join:
 		/* If we have suitable restriction we can repartition accordingly */
 		if (preferred)
 		{
-			ListCell *tlc, *emc;
+			ListCell *tlc;
 			Expr *key;
 			int idx;
 			Bitmapset *nodes = NULL;
@@ -1242,7 +1243,6 @@ not_allowed_join:
 
 			foreach(tlc, pathnode->path.parent->reltargetlist)
 			{
-				Expr *var = (Expr *) lfirst(tlc);
 				if (equal(key, lfirst(tlc)))
 				{
 					targetd->distributionKey = idx;

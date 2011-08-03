@@ -915,7 +915,8 @@ tuplesort_begin_datum(Oid datumType, Oid sortOperator, Oid sortCollation,
 Tuplesortstate *
 tuplesort_begin_merge(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
-					 Oid *sortOperators, bool *nullsFirstFlags,
+					 Oid *sortOperators, Oid *sortCollations,
+					 bool *nullsFirstFlags,
 #ifdef XCP
 					 ResponseCombiner *combiner,
 #else
@@ -974,11 +975,14 @@ tuplesort_begin_merge(TupleDesc tupDesc,
 		 * We needn't fill in sk_strategy or sk_subtype since these scankeys
 		 * will never be passed to an index.
 		 */
-		ScanKeyInit(&state->scanKeys[i],
-					attNums[i],
-					InvalidStrategy,
-					sortFunction,
-					(Datum) 0);
+		ScanKeyEntryInitialize(&state->scanKeys[i],
+							   0,
+							   attNums[i],
+							   InvalidStrategy,
+							   InvalidOid,
+							   sortCollations[i],
+							   sortFunction,
+							   (Datum) 0);
 
 		/* However, we use btree's conventions for encoding directionality */
 		if (reverse)

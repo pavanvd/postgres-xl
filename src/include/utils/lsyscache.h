@@ -63,6 +63,11 @@ extern int32 get_atttypmod(Oid relid, AttrNumber attnum);
 extern void get_atttypetypmodcoll(Oid relid, AttrNumber attnum,
 					  Oid *typid, int32 *typmod, Oid *collid);
 extern char *get_collation_name(Oid colloid);
+#ifdef XCP
+extern Oid 	get_collation_namespace(Oid colloid);
+extern int32 get_collation_encoding(Oid colloid);
+extern Oid 	get_collid(const char *collname, int32 collencoding, Oid collnsp);
+#endif
 extern char *get_constraint_name(Oid conoid);
 extern Oid	get_opclass_family(Oid opclass);
 extern Oid	get_opclass_input_type(Oid opclass);

@@ -112,10 +112,10 @@ static List *pgxc_process_grouping_targetlist(PlannerInfo *root,
 static List *pgxc_process_having_clause(PlannerInfo *root, List *remote_tlist,
 												Node *havingQual, List **local_qual,
 												List **remote_qual, bool *reduce_plan);
-static ForeignScan *create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
-						List *tlist, List *scan_clauses);
 #endif /* PGXC */
 #endif /* XCP */
+static ForeignScan *create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
+						List *tlist, List *scan_clauses);
 static NestLoop *create_nestloop_plan(PlannerInfo *root, NestPath *best_path,
 					 Plan *outer_plan, Plan *inner_plan);
 static MergeJoin *create_mergejoin_plan(PlannerInfo *root, MergePath *best_path,
@@ -203,9 +203,6 @@ static Plan *prepare_sort_from_pathkeys(PlannerInfo *root,
 						   Oid **p_collations,
 						   bool **p_nullsFirst);
 static Material *make_material(Plan *lefttree);
-static int add_sort_column(AttrNumber colIdx, Oid sortOp, bool nulls_first,
-				int numCols, AttrNumber *sortColIdx,
-				Oid *sortOperators, bool *nullsFirst);
 
 #ifdef PGXC
 #ifndef XCP
@@ -433,6 +430,7 @@ create_scan_plan(PlannerInfo *root, Path *best_path)
 													  scan_clauses);
 			break;
 #endif /* XCP */
+#endif /* PGXC */
 
 		case T_ForeignScan:
 			plan = (Plan *) create_foreignscan_plan(root,
@@ -440,7 +438,6 @@ create_scan_plan(PlannerInfo *root, Path *best_path)
 													tlist,
 													scan_clauses);
 			break;
-#endif /* PGXC */
 
 		default:
 			elog(ERROR, "unrecognized node type: %d",
@@ -4066,6 +4063,55 @@ make_remotequery(List *qptlist,
 #endif /* PGXC */
 
 
+/*
+ * add_sort_column --- utility subroutine for building sort info arrays
+ *
+ * We need this routine because the same column might be selected more than
+ * once as a sort key column; if so, the extra mentions are redundant.
+ *
+ * Caller is assumed to have allocated the arrays large enough for the
+ * max possible number of columns.	Return value is the new column count.
+ */
+static int
+add_sort_column(AttrNumber colIdx, Oid sortOp, Oid coll, bool nulls_first,
+				int numCols, AttrNumber *sortColIdx,
+				Oid *sortOperators, Oid *collations, bool *nullsFirst)
+{
+	int			i;
+
+	Assert(OidIsValid(sortOp));
+
+	for (i = 0; i < numCols; i++)
+	{
+		/*
+		 * Note: we check sortOp because it's conceivable that "ORDER BY foo
+		 * USING <, foo USING <<<" is not redundant, if <<< distinguishes
+		 * values that < considers equal.  We need not check nulls_first
+		 * however because a lower-order column with the same sortop but
+		 * opposite nulls direction is redundant.
+		 *
+		 * We could probably consider sort keys with the same sortop and
+		 * different collations to be redundant too, but for the moment treat
+		 * them as not redundant.  This will be needed if we ever support
+		 * collations with different notions of equality.
+		 */
+		if (sortColIdx[i] == colIdx &&
+			sortOperators[numCols] == sortOp &&
+			collations[numCols] == coll)
+		{
+			/* Already sorting by this col, so extra sort key is useless */
+			return numCols;
+		}
+	}
+
+	/* Add the column */
+	sortColIdx[numCols] = colIdx;
+	sortOperators[numCols] = sortOp;
+	collations[numCols] = coll;
+	nullsFirst[numCols] = nulls_first;
+	return numCols + 1;
+}
+
 #ifdef XCP
 /*
  * make_remotesubplan
@@ -4149,6 +4195,7 @@ make_remotesubplan(PlannerInfo *root,
 		int			numsortkeys;
 		AttrNumber *sortColIdx;
 		Oid		   *sortOperators;
+		Oid		   *collations;
 		bool	   *nullsFirst;
 
 		/*
@@ -4157,6 +4204,7 @@ make_remotesubplan(PlannerInfo *root,
 		numsortkeys = list_length(pathkeys);
 		sortColIdx = (AttrNumber *) palloc(numsortkeys * sizeof(AttrNumber));
 		sortOperators = (Oid *) palloc(numsortkeys * sizeof(Oid));
+		collations = (Oid *) palloc(numsortkeys * sizeof(Oid));
 		nullsFirst = (bool *) palloc(numsortkeys * sizeof(bool));
 
 		numsortkeys = 0;
@@ -4306,9 +4354,11 @@ make_remotesubplan(PlannerInfo *root,
 			 */
 			numsortkeys = add_sort_column(tle->resno,
 										  sortop,
+										  pathkey->pk_eclass->ec_collation,
 										  pathkey->pk_nulls_first,
 										  numsortkeys,
-										  sortColIdx, sortOperators, nullsFirst);
+										  sortColIdx, sortOperators,
+										  collations, nullsFirst);
 		}
 		Assert(numsortkeys > 0);
 
@@ -4316,6 +4366,7 @@ make_remotesubplan(PlannerInfo *root,
 		node->sort->numCols = numsortkeys;
 		node->sort->sortColIdx = sortColIdx;
 		node->sort->sortOperators = sortOperators;
+		node->sort->collations = collations;
 		node->sort->nullsFirst = nullsFirst;
 	}
 	node->cursor = NULL;
@@ -4642,82 +4693,68 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	pushdown = find_push_down_plan(lefttree, false);
 	if (pushdown)
 	{
+		/* If we already sort results, need to prepend new keys to existing */
+		/*
+		 * It is not safe to share colum information.
+		 * If another node will be pushed down the same RemoteSubplan column
+		 * indexes may be modified and this would affect the Sort node
+		 */
+		AttrNumber *newSortColIdx;
+		Oid 	   *newSortOperators;
+		Oid 	   *newCollations;
+		bool 	   *newNullsFirst;
+		int 		newNumCols;
+		int 		i, j;
+
 		/*
 		 * Insert new sort node immediately below the pushdown plan
 		 */
 		plan->lefttree = pushdown->scan.plan.lefttree;
 		pushdown->scan.plan.lefttree = plan;
 
+		newNumCols = numCols + (pushdown->sort ? pushdown->sort->numCols : 0);
+		newSortColIdx = (AttrNumber *) palloc(newNumCols * sizeof(AttrNumber));
+		newSortOperators = (Oid *) palloc(newNumCols * sizeof(Oid));
+		newCollations = (Oid *) palloc(newNumCols * sizeof(Oid));
+		newNullsFirst = (bool *) palloc(newNumCols * sizeof(bool));
+
+		/* Copy sort columns */
+		for (i = 0; i < numCols; i++)
+		{
+			newSortColIdx[i] = sortColIdx[i];
+			newSortOperators[i] = sortOperators[i];
+			newCollations[i] = collations[i];
+			newNullsFirst[i] = nullsFirst[i];
+		}
+
+		newNumCols = numCols;
 		if (pushdown->sort)
 		{
-			/* We already sort results, need to prepend new keys to existing */
-			AttrNumber *newSortColIdx;
-			Oid 	   *newSortOperators;
-			bool 	   *newNullsFirst;
-			int 		newNumCols;
-			int 		i, j;
-
-			newNumCols = pushdown->sort->numCols + numCols;
-			newSortColIdx = (AttrNumber *) palloc(newNumCols * sizeof(AttrNumber));
-			newSortOperators = (Oid *) palloc(newNumCols * sizeof(Oid));
-			newNullsFirst = (bool *) palloc(newNumCols * sizeof(bool));
-
-			/* Copy sort columns */
-			for (i = 0; i < numCols; i++)
-			{
-				newSortColIdx[i] = sortColIdx[i];
-				newSortOperators[i] = sortOperators[i];
-				newNullsFirst[i] = nullsFirst[i];
-			}
-
-			newNumCols = numCols;
 			/* Continue and copy old keys of the subplan which is now under the
 			 * sort */
 			for (j = 0; j < pushdown->sort->numCols; j++)
 				newNumCols = add_sort_column(pushdown->sort->sortColIdx[j],
 											 pushdown->sort->sortOperators[j],
+											 pushdown->sort->collations[j],
 											 pushdown->sort->nullsFirst[j],
 											 newNumCols,
 											 newSortColIdx,
 											 newSortOperators,
+											 newCollations,
 											 newNullsFirst);
-
-			pushdown->sort->numCols = newNumCols;
-			pushdown->sort->sortColIdx = newSortColIdx;
-			pushdown->sort->sortOperators = newSortOperators;
-			pushdown->sort->nullsFirst = newNullsFirst;
 		}
 		else
 		{
-			AttrNumber *newSortColIdx;
-			Oid 	   *newSortOperators;
-			bool 	   *newNullsFirst;
-			int 		i;
-
-			/*
-			 * It is not safe to share colum information.
-			 * If another node will be pushed down the same RemoteSubplan column
-			 * indexes may be modified and this would affect the Sort node
-			 */
-
-			newSortColIdx = (AttrNumber *) palloc(numCols * sizeof(AttrNumber));
-			newSortOperators = (Oid *) palloc(numCols * sizeof(Oid));
-			newNullsFirst = (bool *) palloc(numCols * sizeof(bool));
-
-			/* Copy sort columns */
-			for (i = 0; i < numCols; i++)
-			{
-				newSortColIdx[i] = sortColIdx[i];
-				newSortOperators[i] = sortOperators[i];
-				newNullsFirst[i] = nullsFirst[i];
-			}
-
+			/* Create simple sort object if does not exist */
 			pushdown->sort = makeNode(SimpleSort);
-			pushdown->sort->numCols = numCols;
-			pushdown->sort->sortColIdx = newSortColIdx;
-			pushdown->sort->sortOperators = newSortOperators;
-			pushdown->sort->nullsFirst = newNullsFirst;
 		}
+
+		pushdown->sort->numCols = newNumCols;
+		pushdown->sort->sortColIdx = newSortColIdx;
+		pushdown->sort->sortOperators = newSortOperators;
+		pushdown->sort->collations = newCollations;
+		pushdown->sort->nullsFirst = newNullsFirst;
+
 		/*
 		 * lefttree is not actually a Sort, but we hope it is not important and
 		 * the result will be used as a generic Plan node.
@@ -4726,55 +4763,6 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	}
 #endif
 	return node;
-}
-
-/*
- * add_sort_column --- utility subroutine for building sort info arrays
- *
- * We need this routine because the same column might be selected more than
- * once as a sort key column; if so, the extra mentions are redundant.
- *
- * Caller is assumed to have allocated the arrays large enough for the
- * max possible number of columns.	Return value is the new column count.
- */
-static int
-add_sort_column(AttrNumber colIdx, Oid sortOp, Oid coll, bool nulls_first,
-				int numCols, AttrNumber *sortColIdx,
-				Oid *sortOperators, Oid *collations, bool *nullsFirst)
-{
-	int			i;
-
-	Assert(OidIsValid(sortOp));
-
-	for (i = 0; i < numCols; i++)
-	{
-		/*
-		 * Note: we check sortOp because it's conceivable that "ORDER BY foo
-		 * USING <, foo USING <<<" is not redundant, if <<< distinguishes
-		 * values that < considers equal.  We need not check nulls_first
-		 * however because a lower-order column with the same sortop but
-		 * opposite nulls direction is redundant.
-		 *
-		 * We could probably consider sort keys with the same sortop and
-		 * different collations to be redundant too, but for the moment treat
-		 * them as not redundant.  This will be needed if we ever support
-		 * collations with different notions of equality.
-		 */
-		if (sortColIdx[i] == colIdx &&
-			sortOperators[numCols] == sortOp &&
-			collations[numCols] == coll)
-		{
-			/* Already sorting by this col, so extra sort key is useless */
-			return numCols;
-		}
-	}
-
-	/* Add the column */
-	sortColIdx[numCols] = colIdx;
-	sortOperators[numCols] = sortOp;
-	collations[numCols] = coll;
-	nullsFirst[numCols] = nulls_first;
-	return numCols + 1;
 }
 
 /*
@@ -5915,7 +5903,9 @@ make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
 			plan1->righttree = NULL;
 
 			node1->limitOffset = NULL;
-			node1->limitCount = (Node *) makeConst(INT8OID, -1, sizeof(int64),
+			node1->limitCount = (Node *) makeConst(INT8OID, -1,
+												   InvalidOid,
+												   sizeof(int64),
 									   Int64GetDatum(offset_est + count_est),
 												   false, FLOAT8PASSBYVAL);
 		}

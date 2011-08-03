@@ -42,6 +42,9 @@
 #include "catalog/pgxc_class.h"
 #include "catalog/namespace.h"
 #include "access/hash.h"
+#ifdef XCP
+#include "utils/memutils.h"
+#endif
 
 /*
  * PGXCTODO For prototype, relations use the same hash mapping table.
@@ -139,6 +142,8 @@ get_preferred_node_list(void)
 
 
 #ifdef XCP
+static List *globalPreferredNodes = NIL;
+
 /*
  * Returns preferred data nodes as a list of integers from 1 to NumDataNodes
  * or NIL if none is defined
@@ -151,6 +156,7 @@ GetPreferredDataNodes(void)
 		char	   *rawstring;
 		List	   *elemlist;
 		ListCell   *l;
+		MemoryContext oldcontext;
 
 		/* Get writeable copy */
 		rawstring = pstrdup(PreferredDataNodes);
@@ -164,6 +170,8 @@ GetPreferredDataNodes(void)
 					 errmsg("invalid list syntax for \"data_node_ports\"")));
 		}
 
+		/* Make sure the cached list never disappear */
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 		/* Store entries */
 		foreach(l, elemlist)
 		{
@@ -174,6 +182,8 @@ GetPreferredDataNodes(void)
 			if (nnode > 0 && nnode <= NumDataNodes)
 				globalPreferredNodes = lappend_int(globalPreferredNodes, nnode);
 		}
+		MemoryContextSwitchTo(oldcontext);
+		/* clean up temporary data */
 		list_free_deep(elemlist);
 		pfree(rawstring);
 	}

@@ -925,6 +925,7 @@ finalize_aggregate(AggState *aggstate,
 	{
 		FunctionCallInfoData fcinfo;
 		InitFunctionCallInfoData(fcinfo, &(peraggstate->collectfn), 2,
+									peraggstate->aggCollation,
 									(void *) aggstate, NULL);
 		fcinfo.arg[1] = pergroupstate->transValue;
 		fcinfo.argnull[1] = pergroupstate->transValueIsNull;

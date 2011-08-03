@@ -1244,6 +1244,7 @@ make_relation_tle(Oid reloid, const char *relname, const char *column)
 				  att_tup->attnum,
 				  att_tup->atttypid,
 				  att_tup->atttypmod,
+				  InvalidOid,
 				  0);
 
 	tle = makeTargetEntry((Expr *) var, att_tup->attnum, NULL, false);

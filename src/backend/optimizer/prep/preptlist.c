@@ -132,7 +132,8 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 
 				att_tup = rel->rd_att->attrs[rel_loc_info->partAttrNum - 1];
 				var = makeVar(result_relation, rel_loc_info->partAttrNum,
-							  att_tup->atttypid, att_tup->atttypmod, 0);
+							  att_tup->atttypid, att_tup->atttypmod,
+							  att_tup->attcollation, 0);
 
 				tle = makeTargetEntry((Expr *) var,
 									  list_length(tlist) + 1,

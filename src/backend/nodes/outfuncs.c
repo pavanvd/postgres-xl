@@ -197,6 +197,22 @@ set_portable_output(bool value)
 		else \
 			appendStringInfo(str, "<> <> <> <> <> <>"); \
 	} while (0)
+
+/* write an OID which is a collation OID */
+#define WRITE_COLLID_FIELD(fldname) \
+	do { \
+		appendStringInfo(str, " :" CppAsString(fldname) " "); \
+		if (OidIsValid(node->fldname)) \
+		{ \
+			_outToken(str, get_namespace_name(get_collation_namespace(node->fldname))); \
+			appendStringInfoChar(str, ' '); \
+			_outToken(str, get_collation_name(node->fldname)); \
+			appendStringInfo(str, " %d", get_collation_encoding(node->fldname)); \
+		} \
+		else \
+			appendStringInfo(str, "<> <> -1"); \
+	} while (0)
+
 #endif
 
 #define booltostr(x)  ((x) ? "true" : "false")
@@ -740,6 +756,23 @@ _outMergeJoin(StringInfo str, MergeJoin *node)
 
 	appendStringInfo(str, " :mergeCollations");
 	for (i = 0; i < numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid coll = node->mergeCollations[i];
+			if (OidIsValid(coll))
+			{
+				appendStringInfoChar(str, ' ');
+				_outToken(str, get_namespace_name(get_collation_namespace(coll)));
+				appendStringInfoChar(str, ' ');
+				_outToken(str, get_collation_name(coll));
+				appendStringInfo(str, " %d", get_collation_encoding(coll));
+			}
+			else
+				appendStringInfo(str, " <> <> -1");
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->mergeCollations[i]);
 
 	appendStringInfo(str, " :mergeStrategies");
@@ -993,7 +1026,6 @@ _outSort(StringInfo str, Sort *node)
 					get_namespace_name(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
-			appendStringInfoChar(str, ' ');
 		}
 		else
 #endif
@@ -1001,6 +1033,23 @@ _outSort(StringInfo str, Sort *node)
 
 	appendStringInfo(str, " :collations");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid coll = node->collations[i];
+			if (OidIsValid(coll))
+			{
+				appendStringInfoChar(str, ' ');
+				_outToken(str, get_namespace_name(get_collation_namespace(coll)));
+				appendStringInfoChar(str, ' ');
+				_outToken(str, get_collation_name(coll));
+				appendStringInfo(str, " %d", get_collation_encoding(coll));
+			}
+			else
+				appendStringInfo(str, " <> <> -1");
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->collations[i]);
 
 	appendStringInfo(str, " :nullsFirst");
@@ -1248,10 +1297,28 @@ _outSimpleSort(StringInfo str, SimpleSort *node)
 					get_namespace_name(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
-			appendStringInfoChar(str, ' ');
 		}
 		else
 			appendStringInfo(str, " %u", node->sortOperators[i]);
+
+	appendStringInfo(str, " :collations");
+	for (i = 0; i < node->numCols; i++)
+		if (portable_output)
+		{
+			Oid coll = node->collations[i];
+			if (OidIsValid(coll))
+			{
+				appendStringInfoChar(str, ' ');
+				_outToken(str, get_namespace_name(get_collation_namespace(coll)));
+				appendStringInfoChar(str, ' ');
+				_outToken(str, get_collation_name(coll));
+				appendStringInfo(str, " %d", get_collation_encoding(coll));
+			}
+			else
+				appendStringInfo(str, " <> <> -1");
+		}
+		else
+			appendStringInfo(str, " %u", node->collations[i]);
 
 	appendStringInfo(str, " :nullsFirst");
 	for (i = 0; i < node->numCols; i++)
@@ -1350,6 +1417,11 @@ _outVar(StringInfo str, Var *node)
 #endif
 	WRITE_OID_FIELD(vartype);
 	WRITE_INT_FIELD(vartypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(varcollid);
+	else
+#endif
 	WRITE_OID_FIELD(varcollid);
 	WRITE_UINT_FIELD(varlevelsup);
 	WRITE_UINT_FIELD(varnoold);
@@ -1369,6 +1441,11 @@ _outConst(StringInfo str, Const *node)
 #endif
 	WRITE_OID_FIELD(consttype);
 	WRITE_INT_FIELD(consttypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(constcollid);
+	else
+#endif
 	WRITE_OID_FIELD(constcollid);
 	WRITE_INT_FIELD(constlen);
 	WRITE_BOOL_FIELD(constbyval);
@@ -1396,6 +1473,11 @@ _outParam(StringInfo str, Param *node)
 #endif
 	WRITE_OID_FIELD(paramtype);
 	WRITE_INT_FIELD(paramtypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(paramcollid);
+	else
+#endif
 	WRITE_OID_FIELD(paramcollid);
 	WRITE_LOCATION_FIELD(location);
 }
@@ -1423,7 +1505,17 @@ _outAggref(StringInfo str, Aggref *node)
 	WRITE_BOOL_FIELD(agghas_collectfn);
 #endif /* XCP */
 #endif /* PGXC */
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(aggcollid);
+	else
+#endif
 	WRITE_OID_FIELD(aggcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_NODE_FIELD(aggorder);
@@ -1450,7 +1542,17 @@ _outWindowFunc(StringInfo str, WindowFunc *node)
 	else
 #endif
 	WRITE_OID_FIELD(wintype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(wincollid);
+	else
+#endif
 	WRITE_OID_FIELD(wincollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_UINT_FIELD(winref);
@@ -1477,6 +1579,11 @@ _outArrayRef(StringInfo str, ArrayRef *node)
 #endif
 	WRITE_OID_FIELD(refelemtype);
 	WRITE_INT_FIELD(reftypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(refcollid);
+	else
+#endif
 	WRITE_OID_FIELD(refcollid);
 	WRITE_NODE_FIELD(refupperindexpr);
 	WRITE_NODE_FIELD(reflowerindexpr);
@@ -1503,7 +1610,17 @@ _outFuncExpr(StringInfo str, FuncExpr *node)
 	WRITE_OID_FIELD(funcresulttype);
 	WRITE_BOOL_FIELD(funcretset);
 	WRITE_ENUM_FIELD(funcformat, CoercionForm);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(funccollid);
+	else
+#endif
 	WRITE_OID_FIELD(funccollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1544,7 +1661,17 @@ _outOpExpr(StringInfo str, OpExpr *node)
 #endif
 	WRITE_OID_FIELD(opresulttype);
 	WRITE_BOOL_FIELD(opretset);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(opcollid);
+	else
+#endif
 	WRITE_OID_FIELD(opcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1574,7 +1701,17 @@ _outDistinctExpr(StringInfo str, DistinctExpr *node)
 #endif
 	WRITE_OID_FIELD(opresulttype);
 	WRITE_BOOL_FIELD(opretset);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(opcollid);
+	else
+#endif
 	WRITE_OID_FIELD(opcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1589,7 +1726,17 @@ _outNullIfExpr(StringInfo str, NullIfExpr *node)
 	WRITE_OID_FIELD(opfuncid);
 	WRITE_OID_FIELD(opresulttype);
 	WRITE_BOOL_FIELD(opretset);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(opcollid);
+	else
+#endif
 	WRITE_OID_FIELD(opcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1613,6 +1760,11 @@ _outScalarArrayOpExpr(StringInfo str, ScalarArrayOpExpr *node)
 #endif
 	WRITE_OID_FIELD(opfuncid);
 	WRITE_BOOL_FIELD(useOr);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1674,6 +1826,11 @@ _outSubPlan(StringInfo str, SubPlan *node)
 #endif
 	WRITE_OID_FIELD(firstColType);
 	WRITE_INT_FIELD(firstColTypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(firstColCollation);
+	else
+#endif
 	WRITE_OID_FIELD(firstColCollation);
 	WRITE_BOOL_FIELD(useHashTable);
 	WRITE_BOOL_FIELD(unknownEqFalse);
@@ -1706,6 +1863,11 @@ _outFieldSelect(StringInfo str, FieldSelect *node)
 #endif
 	WRITE_OID_FIELD(resulttype);
 	WRITE_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(resultcollid);
+	else
+#endif
 	WRITE_OID_FIELD(resultcollid);
 }
 
@@ -1738,6 +1900,11 @@ _outRelabelType(StringInfo str, RelabelType *node)
 #endif
 	WRITE_OID_FIELD(resulttype);
 	WRITE_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(resultcollid);
+	else
+#endif
 	WRITE_OID_FIELD(resultcollid);
 	WRITE_ENUM_FIELD(relabelformat, CoercionForm);
 	WRITE_LOCATION_FIELD(location);
@@ -1755,6 +1922,11 @@ _outCoerceViaIO(StringInfo str, CoerceViaIO *node)
 	else
 #endif
 	WRITE_OID_FIELD(resulttype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(resultcollid);
+	else
+#endif
 	WRITE_OID_FIELD(resultcollid);
 	WRITE_ENUM_FIELD(coerceformat, CoercionForm);
 	WRITE_LOCATION_FIELD(location);
@@ -1779,6 +1951,11 @@ _outArrayCoerceExpr(StringInfo str, ArrayCoerceExpr *node)
 #endif
 	WRITE_OID_FIELD(resulttype);
 	WRITE_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(resultcollid);
+	else
+#endif
 	WRITE_OID_FIELD(resultcollid);
 	WRITE_BOOL_FIELD(isExplicit);
 	WRITE_ENUM_FIELD(coerceformat, CoercionForm);
@@ -1822,6 +1999,11 @@ _outCaseExpr(StringInfo str, CaseExpr *node)
 	else
 #endif
 	WRITE_OID_FIELD(casetype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(casecollid);
+	else
+#endif
 	WRITE_OID_FIELD(casecollid);
 	WRITE_NODE_FIELD(arg);
 	WRITE_NODE_FIELD(args);
@@ -1851,6 +2033,11 @@ _outCaseTestExpr(StringInfo str, CaseTestExpr *node)
 #endif
 	WRITE_OID_FIELD(typeId);
 	WRITE_INT_FIELD(typeMod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(collation);
+	else
+#endif
 	WRITE_OID_FIELD(collation);
 }
 
@@ -1865,6 +2052,11 @@ _outArrayExpr(StringInfo str, ArrayExpr *node)
 	else
 #endif
 	WRITE_OID_FIELD(array_typeid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(array_collid);
+	else
+#endif
 	WRITE_OID_FIELD(array_collid);
 #ifdef XCP
 	if (portable_output)
@@ -1913,6 +2105,11 @@ _outCoalesceExpr(StringInfo str, CoalesceExpr *node)
 	WRITE_NODE_TYPE("COALESCE");
 
 	WRITE_OID_FIELD(coalescetype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(coalescecollid);
+	else
+#endif
 	WRITE_OID_FIELD(coalescecollid);
 	WRITE_NODE_FIELD(args);
 	WRITE_LOCATION_FIELD(location);
@@ -1924,7 +2121,17 @@ _outMinMaxExpr(StringInfo str, MinMaxExpr *node)
 	WRITE_NODE_TYPE("MINMAX");
 
 	WRITE_OID_FIELD(minmaxtype);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(minmaxcollid);
+	else
+#endif
 	WRITE_OID_FIELD(minmaxcollid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(inputcollid);
+	else
+#endif
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_ENUM_FIELD(op, MinMaxOp);
 	WRITE_NODE_FIELD(args);
@@ -1984,6 +2191,11 @@ _outCoerceToDomain(StringInfo str, CoerceToDomain *node)
 #endif
 	WRITE_OID_FIELD(resulttype);
 	WRITE_INT_FIELD(resulttypmod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(resultcollid);
+	else
+#endif
 	WRITE_OID_FIELD(resultcollid);
 	WRITE_ENUM_FIELD(coercionformat, CoercionForm);
 	WRITE_LOCATION_FIELD(location);
@@ -2001,6 +2213,11 @@ _outCoerceToDomainValue(StringInfo str, CoerceToDomainValue *node)
 #endif
 	WRITE_OID_FIELD(typeId);
 	WRITE_INT_FIELD(typeMod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(collation);
+	else
+#endif
 	WRITE_OID_FIELD(collation);
 	WRITE_LOCATION_FIELD(location);
 }
@@ -2017,6 +2234,11 @@ _outSetToDefault(StringInfo str, SetToDefault *node)
 #endif
 	WRITE_OID_FIELD(typeId);
 	WRITE_INT_FIELD(typeMod);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(collation);
+	else
+#endif
 	WRITE_OID_FIELD(collation);
 	WRITE_LOCATION_FIELD(location);
 }
@@ -2418,6 +2640,11 @@ _outEquivalenceClass(StringInfo str, EquivalenceClass *node)
 	WRITE_NODE_TYPE("EQUIVALENCECLASS");
 
 	WRITE_NODE_FIELD(ec_opfamilies);
+#ifdef XCP
+	if (portable_output)
+		WRITE_COLLID_FIELD(ec_collation);
+	else
+#endif
 	WRITE_OID_FIELD(ec_collation);
 	WRITE_NODE_FIELD(ec_members);
 	WRITE_NODE_FIELD(ec_sources);
@@ -2988,7 +3215,6 @@ _outRangeTblEntry(StringInfo str, RangeTblEntry *node)
 			appendStringInfo(str, ") ");
 #endif
 #endif
-		case RTE_SPECIAL:
 #ifdef XCP
 			if (portable_output)
 				WRITE_RELID_FIELD(relid);

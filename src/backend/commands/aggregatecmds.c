@@ -56,6 +56,9 @@ DefineAggregate(List *name, List *args, bool oldstyle, List *parameters)
 	List	   *sortoperatorName = NIL;
 	TypeName   *baseType = NULL;
 	TypeName   *transType = NULL;
+#ifdef XCP
+	TypeName   *collectType = NULL;
+#endif
 	char	   *initval = NULL;
 #ifdef PGXC
 	List	   *collectfuncName = NIL;
@@ -64,6 +67,9 @@ DefineAggregate(List *name, List *args, bool oldstyle, List *parameters)
 	Oid		   *aggArgTypes;
 	int			numArgs;
 	Oid			transTypeId;
+#ifdef XCP
+	Oid			collectTypeId;
+#endif
 	ListCell   *pl;
 
 	/* Convert list of names to a name and namespace */
@@ -97,6 +103,10 @@ DefineAggregate(List *name, List *args, bool oldstyle, List *parameters)
 			transType = defGetTypeName(defel);
 		else if (pg_strcasecmp(defel->defname, "stype1") == 0)
 			transType = defGetTypeName(defel);
+#ifdef XCP
+		else if (pg_strcasecmp(defel->defname, "ctype") == 0)
+			collectType = defGetTypeName(defel);
+#endif
 		else if (pg_strcasecmp(defel->defname, "initcond") == 0)
 			initval = defGetString(defel);
 		else if (pg_strcasecmp(defel->defname, "initcond1") == 0)
@@ -126,7 +136,7 @@ DefineAggregate(List *name, List *args, bool oldstyle, List *parameters)
 				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 				 errmsg("aggregate sfunc must be specified")));
 
-#ifdef PGXC
+#ifdef XCP
 	if (collectType == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
@@ -135,8 +145,8 @@ DefineAggregate(List *name, List *args, bool oldstyle, List *parameters)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 				 errmsg("aggregate cfunc must be specified")));
-
 #endif
+
 	/*
 	 * look up the aggregate's input datatype(s).
 	 */
@@ -212,6 +222,26 @@ DefineAggregate(List *name, List *args, bool oldstyle, List *parameters)
 					 errmsg("aggregate transition data type cannot be %s",
 							format_type_be(transTypeId))));
 	}
+
+#ifdef XCP
+	/*
+	 * look up the aggregate's collecttype.
+	 *
+	 * to the collecttype applied all the limitations as to the transtype.
+	 */
+	collectTypeId = typenameTypeId(NULL, collectType);
+	if (get_typtype(collectTypeId) == TYPTYPE_PSEUDO &&
+		!IsPolymorphicType(collectTypeId))
+	{
+		if (collectTypeId == INTERNALOID && superuser())
+			 /* okay */ ;
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+					 errmsg("aggregate collection data type cannot be %s",
+							format_type_be(collectTypeId))));
+	}
+#endif
 
 	/*
 	 * Most of the argument-checking is done inside of AggregateCreate

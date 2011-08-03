@@ -41,7 +41,6 @@
 #include "utils/snapmgr.h"
 #include "../interfaces/libpq/libpq-fe.h"
 
-
 static int	datanode_count = 0;
 static int	coord_count = 0;
 /*

@@ -201,7 +201,7 @@ ExecReScan(PlanState *node)
 #endif
 #ifdef XCP
 		case T_RemoteSubplanState:
-			ExecReScanRemoteSubplan((RemoteSubplanState *) node, exprCtxt);
+			ExecReScanRemoteSubplan((RemoteSubplanState *) node);
 			break;
 #endif
 		case T_NestLoopState:

@@ -98,7 +98,9 @@ static PGXCNodeAllHandles *pgxc_get_all_transaction_nodes(PGXCNode_HandleRequest
 static bool pgxc_start_command_on_connection(PGXCNodeHandle *connection,
 					bool need_tran, GlobalTransactionId gxid, TimestampTz timestamp,
 					RemoteQuery *step, int total_conn_count, Snapshot snapshot);
+#ifndef XCP
 static bool ExecRemoteQueryInnerPlan(RemoteQueryState *node);
+#endif
 
 #define MAX_STATEMENTS_PER_TRAN 10
 
@@ -3450,9 +3452,9 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 												&node->paramval_data);
 
 	/* We need expression context to evaluate */
-	if (node->exec_nodes && node->exec_nodes->expr)
+	if (node->exec_nodes && node->exec_nodes->en_expr)
 	{
-		Expr *expr = node->exec_nodes->expr;
+		Expr *expr = node->exec_nodes->en_expr;
 
 		if (IsA(expr, Var) && ((Var *) expr)->vartype == TIDOID)
 		{
@@ -4001,51 +4003,6 @@ do_query(RemoteQueryState *node)
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Failed to send command to data nodes")));
 		}
-		if (step->statement || step->cursor || step->paramval_data)
-		{
-			/* need to use Extended Query Protocol */
-			int 	fetch = 0;
-			bool 	prepared = false;
-
-			/* if prepared statement is referenced see if it is already exist */
-			if (step->statement)
-				prepared = ActivateDatanodeStatementOnNode(step->statement,
-														   primaryconnection->nodenum);
-			/*
-			 * execute and fetch rows only if they will be consumed
-			 * immediately by the sorter
-			 */
-			if (step->cursor)
-				fetch = 1;
-
-			if (pgxc_node_send_query_extended(primaryconnection,
-											  prepared ? NULL : step->sql_statement,
-											  step->statement,
-											  step->cursor,
-											  step->paramval_len,
-											  step->paramval_data,
-											  step->read_only,
-											  fetch) != 0)
-			{
-				pfree(connections);
-				if (primaryconnection)
-					pfree(primaryconnection);
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
-			}
-		}
-		else
-		{
-			if (pgxc_node_send_query(primaryconnection, step->sql_statement) != 0)
-			{
-				pfree(connections);
-				pfree(primaryconnection);
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
-			}
-		}
 		Assert(node->combine_type == COMBINE_TYPE_SAME);
 
 		/* Make sure the command is completed on the primary node */
@@ -4071,11 +4028,11 @@ do_query(RemoteQueryState *node)
 			if (node->errorDetail != NULL)
  				ereport(ERROR,
  						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
-						errmsg("%s", node->errorMessage), errdetail("%s", node->errorDetail) ));
+						 errmsg("%s", node->errorMessage), errdetail("%s", node->errorDetail) ));
  			else
  				ereport(ERROR,
  						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
-						errmsg("%s", node->errorMessage)));
+						 errmsg("%s", node->errorMessage)));
  		}
 	}
 
@@ -4090,61 +4047,6 @@ do_query(RemoteQueryState *node)
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Failed to send command to data nodes")));
-		}
-		if (snapshot && pgxc_node_send_snapshot(connections[i], snapshot))
-		{
-			pfree(connections);
-			if (primaryconnection)
-				pfree(primaryconnection);
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Failed to send command to data nodes")));
-		}
-		if (step->statement || step->cursor || step->paramval_data)
-		{
-			/* need to use Extended Query Protocol */
-			int fetch = 0;
-			bool 	prepared = false;
-
-			/* if prepared statement is referenced see if it is already exist */
-			if (step->statement)
-				prepared = ActivateDatanodeStatementOnNode(step->statement,
-														   connections[i]->nodenum);
-			/*
-			 * execute and fetch rows only if they will be consumed
-			 * immediately by the sorter
-			 */
-			if (step->cursor)
-				fetch = 1;
-
-			if (pgxc_node_send_query_extended(connections[i],
-											  prepared ? NULL : step->sql_statement,
-											  step->statement,
-											  step->cursor,
-											  step->paramval_len,
-											  step->paramval_data,
-											  step->read_only,
-											  fetch) != 0)
-			{
-				pfree(connections);
-				if (primaryconnection)
-					pfree(primaryconnection);
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
-			}
-		}
-		else
-		{
-			if (pgxc_node_send_query(connections[i], step->sql_statement) != 0)
-			{
-				pfree(connections);
-				if (primaryconnection)
-					pfree(primaryconnection);
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
-			}
 		}
 		connections[i]->combiner = node;
 	}
@@ -4225,6 +4127,7 @@ do_query(RemoteQueryState *node)
 										   sort->numCols,
 										   sort->sortColIdx,
 										   sort->sortOperators,
+										   sort->collations,
 										   sort->nullsFirst,
 										   node,
 										   work_mem);
@@ -4259,6 +4162,8 @@ do_query(RemoteQueryState *node)
 }
 #endif
 
+
+#ifndef XCP
 /*
  * ExecRemoteQueryInnerPlan
  * Executes the inner plan of a RemoteQuery. It returns false if the inner plan
@@ -4296,6 +4201,8 @@ ExecRemoteQueryInnerPlan(RemoteQueryState *node)
 	}
 	return false;
 }
+#endif
+
 
 /*
  * Execute step of PGXC plan.
@@ -4428,80 +4335,14 @@ ExecRemoteQuery(RemoteQueryState *node)
 				BufferConnection(primaryconnection);
 
 			/* If explicit transaction is needed gxid is already sent */
-			if (!need_tran && pgxc_node_send_gxid(primaryconnection, gxid))
+			if (!pgxc_start_command_on_connection(primaryconnection, need_tran, gxid,
+												timestamp, step, total_conn_count, snapshot))
 			{
 				pfree(connections);
 				pfree(primaryconnection);
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to send command to data nodes")));
-			}
-			if (total_conn_count == 1 && pgxc_node_send_timestamp(primaryconnection, timestamp))
-			{
-				/*
-				 * If a transaction involves multiple connections timestamp is
-				 * always sent down to Datanodes with pgxc_node_begin.
-				 * An autocommit transaction needs the global timestamp also,
-				 * so handle this case here.
-				 */
-				pfree(connections);
-				pfree(primaryconnection);
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
-			}
-			if (snapshot && pgxc_node_send_snapshot(primaryconnection, snapshot))
-			{
-				pfree(connections);
-				pfree(primaryconnection);
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
-			}
-			if (step->statement || step->cursor || step->paramval_data)
-			{
-				/* need to use Extended Query Protocol */
-				int 	fetch = 0;
-				bool 	prepared = false;
-
-				/* if prepared statement is referenced see if it is already exist */
-				if (step->statement)
-					prepared = ActivateDatanodeStatementOnNode(step->statement,
-															   primaryconnection->nodenum);
-				/*
-				 * execute and fetch rows only if they will be consumed
-				 * immediately by the sorter
-				 */
-				if (step->cursor)
-					fetch = 100;
-
-				if (pgxc_node_send_query_extended(primaryconnection,
-												  prepared ? NULL : step->sql_statement,
-												  step->statement,
-												  step->cursor,
-												  step->paramval_len,
-												  step->paramval_data,
-												  step->read_only,
-												  fetch) != 0)
-				{
-					pfree(connections);
-					if (primaryconnection)
-						pfree(primaryconnection);
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to send command to data nodes")));
-				}
-			}
-			else
-			{
-				if (pgxc_node_send_query(primaryconnection, step->sql_statement) != 0)
-				{
-					pfree(connections);
-					pfree(primaryconnection);
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to send command to data nodes")));
-				}
 			}
 			Assert(combiner->combine_type == COMBINE_TYPE_SAME);
 
@@ -4539,7 +4380,8 @@ ExecRemoteQuery(RemoteQueryState *node)
 			if (connections[i]->state == DN_CONNECTION_STATE_QUERY)
 				BufferConnection(connections[i]);
 			/* If explicit transaction is needed gxid is already sent */
-			if (!need_tran && pgxc_node_send_gxid(connections[i], gxid))
+			if (!pgxc_start_command_on_connection(connections[i], need_tran, gxid,
+												timestamp, step, total_conn_count, snapshot))
 			{
 				pfree(connections);
 				if (primaryconnection)
@@ -4547,76 +4389,6 @@ ExecRemoteQuery(RemoteQueryState *node)
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to send command to data nodes")));
-			}
-			if (total_conn_count == 1 && pgxc_node_send_timestamp(connections[i], timestamp))
-			{
-				/*
-				 * If a transaction involves multiple connections timestamp is
-				 * always sent down to Datanodes with pgxc_node_begin.
-				 * An autocommit transaction needs the global timestamp also,
-				 * so handle this case here.
-				 */
-				pfree(connections);
-				if (primaryconnection)
-					pfree(primaryconnection);
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
-			}
-			if (snapshot && pgxc_node_send_snapshot(connections[i], snapshot))
-			{
-				pfree(connections);
-				if (primaryconnection)
-					pfree(primaryconnection);
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
-			}
-			if (step->statement || step->cursor || step->paramval_data)
-			{
-				/* need to use Extended Query Protocol */
-				int fetch = 0;
-				bool 	prepared = false;
-
-				/* if prepared statement is referenced see if it is already exist */
-				if (step->statement)
-					prepared = ActivateDatanodeStatementOnNode(step->statement,
-															   connections[i]->nodenum);
-				/*
-				 * execute and fetch rows only if they will be consumed
-				 * immediately by the sorter
-				 */
-				if (step->cursor)
-					fetch = 100;
-
-				if (pgxc_node_send_query_extended(connections[i],
-												  prepared ? NULL : step->sql_statement,
-												  step->statement,
-												  step->cursor,
-												  step->paramval_len,
-												  step->paramval_data,
-												  step->read_only,
-												  fetch) != 0)
-				{
-					pfree(connections);
-					if (primaryconnection)
-						pfree(primaryconnection);
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to send command to data nodes")));
-				}
-			}
-			else
-			{
-				if (pgxc_node_send_query(connections[i], step->sql_statement) != 0)
-				{
-					pfree(connections);
-					if (primaryconnection)
-						pfree(primaryconnection);
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to send command to data nodes")));
-				}
 			}
 			connections[i]->combiner = combiner;
 		}
@@ -4697,6 +4469,7 @@ ExecRemoteQuery(RemoteQueryState *node)
 											   sort->numCols,
 											   sort->sortColIdx,
 											   sort->sortOperators,
+											   sort->collations,
 											   sort->nullsFirst,
 											   combiner,
 											   work_mem);
@@ -6835,6 +6608,7 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 									   plan->sort->numCols,
 									   plan->sort->sortColIdx,
 									   plan->sort->sortOperators,
+									   plan->sort->collations,
 									   plan->sort->nullsFirst,
 									   combiner,
 									   work_mem);
@@ -6871,8 +6645,7 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 
 
 void
-ExecReScanRemoteSubplan(RemoteSubplanState *node,
-									ExprContext *exprCtxt)
+ExecReScanRemoteSubplan(RemoteSubplanState *node)
 {
 	ResponseCombiner *combiner = (ResponseCombiner *)node;
 
@@ -6888,7 +6661,7 @@ ExecReScanRemoteSubplan(RemoteSubplanState *node,
 	 * If we execute locally rescan local copy of the plan
 	 */
 	if (outerPlanState(node))
-		ExecReScan(outerPlanState(node), exprCtxt);
+		ExecReScan(outerPlanState(node));
 
 
 	/*
