@@ -1071,6 +1071,7 @@ _copySimpleSort(SimpleSort *from)
 	{
 		COPY_POINTER_FIELD(sortColIdx, from->numCols * sizeof(AttrNumber));
 		COPY_POINTER_FIELD(sortOperators, from->numCols * sizeof(Oid));
+		COPY_POINTER_FIELD(collations, from->numCols * sizeof(Oid));
 		COPY_POINTER_FIELD(nullsFirst, from->numCols * sizeof(bool));
 	}
 

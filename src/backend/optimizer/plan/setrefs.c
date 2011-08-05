@@ -67,6 +67,9 @@ typedef struct
 	PlannerGlobal *glob;
 	indexed_tlist *subplan_itlist;
 	int			rtoffset;
+#ifdef XCP
+	bool		agg_master;
+#endif
 } fix_upper_expr_context;
 
 /*
@@ -113,10 +116,18 @@ static List *fix_join_expr(PlannerGlobal *glob,
 			  Index acceptable_rel, int rtoffset);
 static Node *fix_join_expr_mutator(Node *node,
 					  fix_join_expr_context *context);
+#ifdef XCP
+static Node *fix_upper_expr(PlannerGlobal *glob,
+			   Node *node,
+			   indexed_tlist *subplan_itlist,
+			   int rtoffset,
+			   bool agg_master);
+#else
 static Node *fix_upper_expr(PlannerGlobal *glob,
 			   Node *node,
 			   indexed_tlist *subplan_itlist,
 			   int rtoffset);
+#endif
 static Node *fix_upper_expr_mutator(Node *node,
 					   fix_upper_expr_context *context);
 static bool fix_opfuncids_walker(Node *node, void *context);
@@ -1042,10 +1053,18 @@ set_join_references(PlannerGlobal *glob, Join *join, int rtoffset)
 		{
 			NestLoopParam *nlp = (NestLoopParam *) lfirst(lc);
 
+#ifdef XCP
+			nlp->paramval = (Var *) fix_upper_expr(glob,
+												   (Node *) nlp->paramval,
+												   outer_itlist,
+												   rtoffset,
+												   false);
+#else
 			nlp->paramval = (Var *) fix_upper_expr(glob,
 												   (Node *) nlp->paramval,
 												   outer_itlist,
 												   rtoffset);
+#endif
 		}
 	}
 	else if (IsA(join, MergeJoin))
@@ -1100,6 +1119,12 @@ set_upper_references(PlannerGlobal *glob, Plan *plan, int rtoffset)
 	indexed_tlist *subplan_itlist;
 	List	   *output_targetlist;
 	ListCell   *l;
+#ifdef XCP
+	bool 		agg_master;
+
+	agg_master = (IsA(plan, Agg) &&
+					  ((Agg *) plan)->aggdistribution == AGG_MASTER);
+#endif
 
 	subplan_itlist = build_tlist_index(subplan->targetlist);
 
@@ -1118,16 +1143,32 @@ set_upper_references(PlannerGlobal *glob, Plan *plan, int rtoffset)
 													  subplan_itlist,
 													  OUTER);
 			if (!newexpr)
+#ifdef XCP
+				newexpr = fix_upper_expr(glob,
+										 (Node *) tle->expr,
+										 subplan_itlist,
+										 rtoffset,
+										 agg_master);
+#else
 				newexpr = fix_upper_expr(glob,
 										 (Node *) tle->expr,
 										 subplan_itlist,
 										 rtoffset);
+#endif
 		}
 		else
+#ifdef XCP
+			newexpr = fix_upper_expr(glob,
+									 (Node *) tle->expr,
+									 subplan_itlist,
+									 rtoffset,
+									 agg_master);
+#else
 			newexpr = fix_upper_expr(glob,
 									 (Node *) tle->expr,
 									 subplan_itlist,
 									 rtoffset);
+#endif
 		tle = flatCopyTargetEntry(tle);
 		tle->expr = (Expr *) newexpr;
 		output_targetlist = lappend(output_targetlist, tle);
@@ -1135,11 +1176,18 @@ set_upper_references(PlannerGlobal *glob, Plan *plan, int rtoffset)
 	plan->targetlist = output_targetlist;
 
 	plan->qual = (List *)
+#ifdef XCP
+		fix_upper_expr(glob,
+					   (Node *) plan->qual,
+					   subplan_itlist,
+					   rtoffset,
+					   agg_master);
+#else
 		fix_upper_expr(glob,
 					   (Node *) plan->qual,
 					   subplan_itlist,
 					   rtoffset);
-
+#endif
 	pfree(subplan_itlist);
 }
 
@@ -1369,6 +1417,7 @@ search_indexed_tlist_for_non_var(Node *node,
 }
 
 #ifdef PGXC
+#ifndef XCP
 /*  
  * search_tlist_for_var --- find a Var in the provided tlist. This does a
  * basic scan through the list. So not very efficient...
@@ -1391,7 +1440,8 @@ search_tlist_for_var(Var *var, List *jtlist)
 			return var;
 	}   
 	return NULL;                /* no match */
-}       
+}
+#endif
 #endif
 
 /*
@@ -1595,17 +1645,29 @@ fix_join_expr_mutator(Node *node, fix_join_expr_context *context)
  * varno = OUTER, varattno = resno of corresponding subplan target.
  * The original tree is not modified.
  */
+#ifdef XCP
+static Node *
+fix_upper_expr(PlannerGlobal *glob,
+			   Node *node,
+			   indexed_tlist *subplan_itlist,
+			   int rtoffset,
+			   bool agg_master)
+#else
 static Node *
 fix_upper_expr(PlannerGlobal *glob,
 			   Node *node,
 			   indexed_tlist *subplan_itlist,
 			   int rtoffset)
+#endif
 {
 	fix_upper_expr_context context;
 
 	context.glob = glob;
 	context.subplan_itlist = subplan_itlist;
 	context.rtoffset = rtoffset;
+#ifdef XCP
+	context.agg_master = agg_master;
+#endif
 	return fix_upper_expr_mutator(node, &context);
 }
 
@@ -1650,6 +1712,16 @@ fix_upper_expr_mutator(Node *node, fix_upper_expr_context *context)
 		newvar = search_indexed_tlist_for_non_var(node,
 												  context->subplan_itlist,
 												  OUTER);
+#ifdef XCP
+		if (newvar && context->agg_master && IsA(node, Aggref))
+		{
+			TargetEntry *newtle;
+			Aggref *newnode = copyObject(node);
+			newtle = makeTargetEntry((Expr *) newvar, 1, NULL, false);
+			newnode->args = list_make1(newtle);
+			return (Node *) newnode;
+		}
+#endif
 		if (newvar)
 			return (Node *) newvar;
 	}

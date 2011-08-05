@@ -185,13 +185,17 @@ static bool
 _equalAggref(Aggref *a, Aggref *b)
 {
 	COMPARE_SCALAR_FIELD(aggfnoid);
+#ifndef XCP
+	/*
+	 * In XCP ignore aggtype difference because Phase 1 of aggregate have
+	 * aggtype set to aggtrantype
+	 */
 	COMPARE_SCALAR_FIELD(aggtype);
 #ifdef PGXC
-#ifndef XCP
 	COMPARE_SCALAR_FIELD(aggtrantype);
 	COMPARE_SCALAR_FIELD(agghas_collectfn);
-#endif /* XCP */
 #endif /* PGXC */
+#endif /* XCP */
 	COMPARE_SCALAR_FIELD(aggcollid);
 	COMPARE_SCALAR_FIELD(inputcollid);
 	COMPARE_NODE_FIELD(args);
