@@ -1549,18 +1549,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 									extract_grouping_ops(parse->groupClause),
 												  dNumGroups,
 												  result_plan);
-#ifdef PGXC
-#ifndef XCP
-				/*
-				 * Grouping will certainly not increase the number of rows
-				 * coordinator fetches from datanode, in fact it's expected to
-				 * reduce the number drastically. Hence, try pushing GROUP BY
-				 * clauses and aggregates to the datanode, thus saving bandwidth.
-				 */
-				if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-					result_plan = create_remotegroup_plan(root, result_plan);
-#endif /* XCP */
-#endif /* PGXC */
 			}
 			else if (root->hasHavingQual)
 			{

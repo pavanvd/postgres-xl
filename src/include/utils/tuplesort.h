@@ -82,7 +82,10 @@ extern Tuplesortstate *tuplesort_begin_datum(Oid datumType,
 #ifdef PGXC
 extern Tuplesortstate *tuplesort_begin_merge(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
-					 Oid *sortOperators, Oid *sortCollations,
+					 Oid *sortOperators,
+#ifdef XCP
+					 Oid *sortCollations,
+#endif
 					 bool *nullsFirstFlags,
 #ifdef XCP
 					 ResponseCombiner *combiner,

@@ -4862,10 +4862,12 @@ PushTransaction(void)
 	 * failure.
 	 */
 #ifdef PGXC  /* PGXC_COORD */
-#ifndef XCP
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-#endif
+#ifdef XCP
 	s->globalTransactionId = InvalidGlobalTransactionId;
+#else
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+		s->globalTransactionId = InvalidGlobalTransactionId;
+#endif
 #endif
 	s->transactionId = InvalidTransactionId;	/* until assigned */
 	s->subTransactionId = currentSubTransactionId;

@@ -97,7 +97,6 @@ typedef struct RemoteQueryState
 	/* TODO use a tuplestore as a rowbuffer */
 	List 	   *rowBuffer;				/* buffer where rows are stored when connection
 										 * should be cleaned for reuse by other RemoteQuery */
-	bool		merge_sort;             /* perform mergesort of node tuples */
 	/*
 	 * To handle special case - if there is a simple sort and sort connection
 	 * is buffered. If EOF is reached on a connection it should be removed from
@@ -106,12 +105,15 @@ typedef struct RemoteQueryState
 	 * when buffering
 	 */
 	int 	   *tapenodes;
+#ifdef XCP
 	/*
 	 * If some tape (connection) is buffered, contains a reference on the cell
 	 * right before first row buffered from this tape, needed to speed up
 	 * access to the data
 	 */
 	ListCell  **tapemarks;
+	bool		merge_sort;             /* perform mergesort of node tuples */
+#endif
 	void	   *tuplesortstate;			/* for merge sort */
 	/* cursor support */
 	char	   *cursor;					/* cursor name */
@@ -131,7 +133,6 @@ typedef struct RemoteQueryState
 	 * to initialize collecting of aggregates from the DNs
 	 */
 	bool		initAggregates;
-	void	   *tuplesortstate;			/* for merge sort */
 	/* Simple DISTINCT support */
 	FmgrInfo   *eqfunctions; 			/* functions to compare tuples */
 	MemoryContext tmp_ctx;				/* separate context is needed to compare tuples */
@@ -250,6 +251,9 @@ extern void DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_da
 extern bool DataNodeCopyEnd(PGXCNodeHandle *handle, bool is_error);
 extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_connections);
 
+#ifndef XCP
+extern int ExecCountSlotsRemoteQuery(RemoteQuery *node);
+#endif
 extern RemoteQueryState *ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags);
 extern TupleTableSlot* ExecRemoteQuery(RemoteQueryState *step);
 extern void ExecEndRemoteQuery(RemoteQueryState *step);

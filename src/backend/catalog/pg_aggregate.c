@@ -191,35 +191,24 @@ AggregateCreate(const char *aggName,
 							NameListToString(aggcollectfnName),
 							format_type_be(aggTransType))));
 	}
+#endif
+#ifdef XCP
 	/*
 	 * Collection function must be of two arguments
 	 * First must be of aggCollectType, second must be of aggTransType
 	 * Return value must be of aggCollectType
 	 */
-#ifdef XCP
 	fnArgs[0] = aggCollectType;
-#else
-	fnArgs[0] = aggTransType;
-#endif
 	fnArgs[1] = aggTransType;
 	collectfn = lookup_agg_function(aggcollectfnName, 2, fnArgs,
 									  &rettype);
-#ifdef XCP
 	if (rettype != aggCollectType)
-#else
-	if (rettype != aggTransType)
-#endif
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("return type of collection function %s is not %s",
 						NameListToString(aggcollectfnName),
-#ifdef XCP
 						format_type_be(aggCollectType)
-#else
-						format_type_be(aggTransType)
-#endif
 					   )));
-
 #endif
 	/* handle finalfn, if supplied */
 	if (aggfinalfnName)

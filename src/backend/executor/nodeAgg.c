@@ -2062,19 +2062,12 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		get_typlenbyval(aggtranstype,
 						&peraggstate->transtypeLen,
 						&peraggstate->transtypeByVal);
-#ifdef PGXC
 #ifdef XCP
 		if (OidIsValid(aggcollecttype))
-		get_typlenbyval(aggcollecttype,
-						&peraggstate->collecttypeLen,
-						&peraggstate->collecttypeByVal);
-#else
-		get_typlenbyval(aggform->aggcollecttype,
-						&peraggstate->collecttypeLen,
-						&peraggstate->collecttypeByVal);
+			get_typlenbyval(aggcollecttype,
+							&peraggstate->collecttypeLen,
+							&peraggstate->collecttypeByVal);
 #endif /* XCP */
-#endif /* PGXC */
-
 
 		/*
 		 * initval is potentially null, so don't try to access it as a struct
@@ -2109,22 +2102,14 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 #ifdef XCP
 		if (OidIsValid(aggcollecttype))
 		{
-#endif /* XCP */
 			textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
 										  Anum_pg_aggregate_agginitcollect,
 										  &peraggstate->initCollectValueIsNull);
-
-#ifdef XCP
 			if (peraggstate->initCollectValueIsNull)
 				peraggstate->initCollectValue = (Datum) 0;
 			else
 				peraggstate->initCollectValue = GetAggInitVal(textInitVal,
 															  aggcollecttype);
-			if (peraggstate->initCollectValueIsNull)
-				peraggstate->initCollectValue = (Datum) 0;
-			else
-				peraggstate->initCollectValue = GetAggInitVal(textInitVal,
-														  aggcollecttype);
 			/*
 			 * If the collectfn is strict and the initval is NULL, make sure
 			 * transtype and collecttype are the same (or at least
@@ -2141,6 +2126,16 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 									aggref->aggfnoid)));
 			}
 		}
+#else
+		textInitVal = SysCacheGetAttr(AGGFNOID, aggTuple,
+									  Anum_pg_aggregate_agginitcollect,
+									  &peraggstate->initCollectValueIsNull);
+
+		if (peraggstate->initCollectValueIsNull)
+			peraggstate->initCollectValue = (Datum) 0;
+		else
+			peraggstate->initCollectValue = GetAggInitVal(textInitVal,
+												   aggtranstype);
 #endif /* XCP */
 #endif /* PGXC */
 

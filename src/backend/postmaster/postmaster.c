@@ -3539,15 +3539,13 @@ BackendStartup(Port *port)
 		/* User is authenticated and dbname is known at this point */
 #ifdef XCP
 		PoolManagerConnect(pool_handle, port->database_name, port->user_name);
-#endif
+#else
 		if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 		{
-#ifndef XCP
 			PoolManagerConnect(pool_handle, port->database_name, port->user_name);
-#endif
-			InitGTM();
 		}
-#endif 
+#endif
+#endif
 
 		/* And run the backend */
 		proc_exit(BackendRun(port));

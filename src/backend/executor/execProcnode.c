@@ -316,13 +316,13 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 			result = (PlanState *) ExecInitRemoteQuery((RemoteQuery *) node,
 													    estate, eflags);
 			break;
+#endif
 #ifdef XCP
 		case T_RemoteSubplan:
 			result = (PlanState *) ExecInitRemoteSubplan((RemoteSubplan *) node,
 													     estate, eflags);
 			break;
 #endif /* XCP */
-#endif /* PGXC */
 
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
@@ -509,12 +509,12 @@ ExecProcNode(PlanState *node)
 		case T_RemoteQueryState:
 			result = ExecRemoteQuery((RemoteQueryState *) node);
 			break;
+#endif
 #ifdef XCP
 		case T_RemoteSubplanState:
 			result = ExecRemoteSubplan((RemoteSubplanState *) node);
 			break;
 #endif /* XCP */
-#endif /* PGXC */
 
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
@@ -752,12 +752,12 @@ ExecEndNode(PlanState *node)
 		case T_RemoteQueryState:
 			ExecEndRemoteQuery((RemoteQueryState *) node);
 			break;
+#endif
 #ifdef XCP
 		case T_RemoteSubplanState:
 			ExecEndRemoteSubplan((RemoteSubplanState *) node);
 			break;
 #endif /* XCP */
-#endif /* PGXC */
 
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));

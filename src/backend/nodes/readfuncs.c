@@ -33,6 +33,7 @@
 #include "nodes/readfuncs.h"
 #ifdef PGXC
 #include "access/htup.h"
+#endif
 #ifdef XCP
 #include "nodes/plannodes.h"
 #include "pgxc/execRemote.h"
@@ -57,7 +58,6 @@ set_portable_input(bool value)
 	portable_input = value;
 }
 #endif /* XCP */
-#endif /* PGXC */
 
 /*
  * Macros to simplify reading of different kinds of fields.  Use these
@@ -2303,7 +2303,6 @@ _readMergeJoin(void)
 	for (i = 0; i < numCols; i++)
 	{
 		token = pg_strtok(&length);
-#ifdef XCP
 		if (portable_input)
 		{
 			char       *nspname; /* namespace name */
@@ -2323,7 +2322,6 @@ _readMergeJoin(void)
 				local_node->mergeCollations[i] = InvalidOid;
 		}
 		else
-#endif
 		local_node->mergeCollations[i] = atooid(token);
 	}
 
@@ -2403,7 +2401,6 @@ _readSort(void)
 	for (i = 0; i < local_node->numCols; i++)
 	{
 		token = pg_strtok(&length);
-#ifdef XCP
 		if (portable_input)
 		{
 			char       *nspname; /* namespace name */
@@ -2442,7 +2439,6 @@ _readSort(void)
 													  get_namespaceid(nspname));
 		}
 		else
-#endif
 		local_node->sortOperators[i] = atooid(token);
 	}
 
@@ -2451,7 +2447,6 @@ _readSort(void)
 	for (i = 0; i < local_node->numCols; i++)
 	{
 		token = pg_strtok(&length);
-#ifdef XCP
 		if (portable_input)
 		{
 			char       *nspname; /* namespace name */
@@ -2471,7 +2466,6 @@ _readSort(void)
 				local_node->collations[i] = InvalidOid;
 		}
 		else
-#endif
 		local_node->collations[i] = atooid(token);
 	}
 
@@ -2570,9 +2564,7 @@ _readAgg(void)
 	READ_PLAN_FIELDS();
 
 	READ_ENUM_FIELD(aggstrategy, AggStrategy);
-#ifdef XCP
 	READ_ENUM_FIELD(aggdistribution, AggDistribution);
-#endif
 	READ_INT_FIELD(numCols);
 
 	token = pg_strtok(&length);		/* skip :grpColIdx */
@@ -3183,6 +3175,8 @@ parseNodeString(void)
 		return_value = _readOpExpr();
 	else if (MATCH("DISTINCTEXPR", 12))
 		return_value = _readDistinctExpr();
+	else if (MATCH("NULLIFEXPR", 10))
+		return_value = _readNullIfExpr();
 	else if (MATCH("SCALARARRAYOPEXPR", 17))
 		return_value = _readScalarArrayOpExpr();
 	else if (MATCH("BOOLEXPR", 8))
@@ -3225,8 +3219,6 @@ parseNodeString(void)
 		return_value = _readMinMaxExpr();
 	else if (MATCH("XMLEXPR", 7))
 		return_value = _readXmlExpr();
-	else if (MATCH("NULLIFEXPR", 10))
-		return_value = _readNullIfExpr();
 	else if (MATCH("NULLTEST", 8))
 		return_value = _readNullTest();
 	else if (MATCH("BOOLEANTEST", 11))

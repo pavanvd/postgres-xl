@@ -1171,6 +1171,9 @@ slot_deform_datarow(TupleTableSlot *slot)
 	buffer = makeStringInfo();
 	for (i = 0; i < attnum; i++)
 	{
+#ifndef XCP
+		Form_pg_attribute attr = slot->tts_tupleDescriptor->attrs[i];
+#endif
 		int len;
 
 		/* get size */

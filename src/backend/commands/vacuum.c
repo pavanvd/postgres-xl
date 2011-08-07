@@ -50,12 +50,12 @@
 
 #ifdef PGXC
 #include "pgxc/pgxc.h"
+#endif
 #ifdef XCP
 #include "nodes/makefuncs.h"
 #include "pgxc/execRemote.h"
 #include "pgxc/planner.h"
 #endif /* XCP */
-#endif /* PGXC */
 
 /*
  * GUC parameters

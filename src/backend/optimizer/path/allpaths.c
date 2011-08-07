@@ -35,7 +35,6 @@
 #include "optimizer/var.h"
 #include "parser/parse_clause.h"
 #include "parser/parsetree.h"
-#include "rewrite/rewriteManip.h"
 #ifdef PGXC
 #ifndef XCP
 #include "catalog/pg_namespace.h"
@@ -43,6 +42,7 @@
 #include "pgxc/pgxc.h"
 #endif /* XCP */
 #endif /* PGXC */
+#include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 
 

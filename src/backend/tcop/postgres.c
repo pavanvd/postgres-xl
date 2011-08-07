@@ -3983,10 +3983,10 @@ PostgresMain(int argc, char *argv[], const char *username)
 	TimestampTz		timestamp;
 
 	remoteConnType = REMOTE_CONN_APP;
+#endif
 #ifdef XCP
 	parentPGXCNode = 0;
 #endif /* XCP */
-#endif /* PGXC */
 
 	/*
 	 * Initialize globals (already done if under postmaster, but not if

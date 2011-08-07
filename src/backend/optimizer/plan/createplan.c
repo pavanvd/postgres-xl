@@ -208,7 +208,6 @@ static Material *make_material(Plan *lefttree);
 
 #ifdef PGXC
 #ifndef XCP
-extern bool is_foreign_qual(Node *clause);
 static void findReferencedVars(List *parent_vars, Plan *plan, List **out_tlist, Relids *out_relids);
 static void create_remote_clause_expr(PlannerInfo *root, Plan *parent, StringInfo clauses,
 	  List *qual, RemoteQuery *scan);
@@ -216,6 +215,12 @@ static void create_remote_expr(PlannerInfo *root, Plan *parent, StringInfo expr,
 	  Node *node, RemoteQuery *scan);
 #endif /* XCP */
 #endif /* PGXC */
+
+#ifdef XCP
+static int add_sort_column(AttrNumber colIdx, Oid sortOp, Oid coll,
+				bool nulls_first,int numCols, AttrNumber *sortColIdx,
+				Oid *sortOperators, Oid *collations, bool *nullsFirst);
+#endif
 
 /*
  * create_plan
@@ -4067,55 +4072,6 @@ make_remotequery(List *qptlist,
 #endif /* PGXC */
 
 
-/*
- * add_sort_column --- utility subroutine for building sort info arrays
- *
- * We need this routine because the same column might be selected more than
- * once as a sort key column; if so, the extra mentions are redundant.
- *
- * Caller is assumed to have allocated the arrays large enough for the
- * max possible number of columns.	Return value is the new column count.
- */
-static int
-add_sort_column(AttrNumber colIdx, Oid sortOp, Oid coll, bool nulls_first,
-				int numCols, AttrNumber *sortColIdx,
-				Oid *sortOperators, Oid *collations, bool *nullsFirst)
-{
-	int			i;
-
-	Assert(OidIsValid(sortOp));
-
-	for (i = 0; i < numCols; i++)
-	{
-		/*
-		 * Note: we check sortOp because it's conceivable that "ORDER BY foo
-		 * USING <, foo USING <<<" is not redundant, if <<< distinguishes
-		 * values that < considers equal.  We need not check nulls_first
-		 * however because a lower-order column with the same sortop but
-		 * opposite nulls direction is redundant.
-		 *
-		 * We could probably consider sort keys with the same sortop and
-		 * different collations to be redundant too, but for the moment treat
-		 * them as not redundant.  This will be needed if we ever support
-		 * collations with different notions of equality.
-		 */
-		if (sortColIdx[i] == colIdx &&
-			sortOperators[numCols] == sortOp &&
-			collations[numCols] == coll)
-		{
-			/* Already sorting by this col, so extra sort key is useless */
-			return numCols;
-		}
-	}
-
-	/* Add the column */
-	sortColIdx[numCols] = colIdx;
-	sortOperators[numCols] = sortOp;
-	collations[numCols] = coll;
-	nullsFirst[numCols] = nulls_first;
-	return numCols + 1;
-}
-
 #ifdef XCP
 /*
  * make_remotesubplan
@@ -4768,6 +4724,56 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 #endif
 	return node;
 }
+
+/*
+ * add_sort_column --- utility subroutine for building sort info arrays
+ *
+ * We need this routine because the same column might be selected more than
+ * once as a sort key column; if so, the extra mentions are redundant.
+ *
+ * Caller is assumed to have allocated the arrays large enough for the
+ * max possible number of columns.	Return value is the new column count.
+ */
+static int
+add_sort_column(AttrNumber colIdx, Oid sortOp, Oid coll, bool nulls_first,
+				int numCols, AttrNumber *sortColIdx,
+				Oid *sortOperators, Oid *collations, bool *nullsFirst)
+{
+	int			i;
+
+	Assert(OidIsValid(sortOp));
+
+	for (i = 0; i < numCols; i++)
+	{
+		/*
+		 * Note: we check sortOp because it's conceivable that "ORDER BY foo
+		 * USING <, foo USING <<<" is not redundant, if <<< distinguishes
+		 * values that < considers equal.  We need not check nulls_first
+		 * however because a lower-order column with the same sortop but
+		 * opposite nulls direction is redundant.
+		 *
+		 * We could probably consider sort keys with the same sortop and
+		 * different collations to be redundant too, but for the moment treat
+		 * them as not redundant.  This will be needed if we ever support
+		 * collations with different notions of equality.
+		 */
+		if (sortColIdx[i] == colIdx &&
+			sortOperators[numCols] == sortOp &&
+			collations[numCols] == coll)
+		{
+			/* Already sorting by this col, so extra sort key is useless */
+			return numCols;
+		}
+	}
+
+	/* Add the column */
+	sortColIdx[numCols] = colIdx;
+	sortOperators[numCols] = sortOp;
+	collations[numCols] = coll;
+	nullsFirst[numCols] = nulls_first;
+	return numCols + 1;
+}
+
 
 /*
  * prepare_sort_from_pathkeys

@@ -1095,11 +1095,19 @@ BufferConnection(PGXCNodeHandle *conn)
 			 * pre-read rows from the tapes, one of with may be a local
 			 * connection with RemoteSubplan in the tree.
 			 */
+#ifdef XCP
 			if (combiner->merge_sort)
+#else
+			if (combiner->tuplesortstate)
+#endif
 			{
 				combiner->connections[combiner->current_conn] = NULL;
 				if (combiner->tapenodes == NULL)
+#ifdef XCP
 					combiner->tapenodes = (int*) palloc0(combiner->conn_count * sizeof(int));
+#else
+					combiner->tapenodes = (int*) palloc0(NumDataNodes * sizeof(int));
+#endif
 				combiner->tapenodes[combiner->current_conn] = conn->nodenum;
 			}
 			else
@@ -1830,6 +1838,7 @@ is_data_node_ready(PGXCNodeHandle * conn)
 				 * another EXECUTE to fetch more rows, otherwise it is done
 				 * with the connection
 				 */
+				int result = suspended ? RESPONSE_SUSPENDED : RESPONSE_COMPLETE;
 				conn->transaction_status = msg[0];
 				conn->state = DN_CONNECTION_STATE_IDLE;
 				conn->combiner = NULL;
@@ -1859,6 +1868,10 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle ** connections,
 	/* Send BEGIN */
 	for (i = 0; i < conn_count; i++)
 	{
+#ifndef XCP
+		if (connections[i]->state == DN_CONNECTION_STATE_QUERY)
+			BufferConnection(connections[i]);
+#endif
 		if (GlobalTransactionIdIsValid(gxid) && pgxc_node_send_gxid(connections[i], gxid))
 			return EOF;
 
@@ -3477,21 +3490,20 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 	remotestate = CreateResponseCombiner(0, node->combine_type);
 	remotestate->ss.ps.plan = (Plan *) node;
 	remotestate->ss.ps.state = estate;
-	remotestate->simple_aggregates = node->simple_aggregates;
 
 	remotestate->ss.ps.qual = (List *)
 		ExecInitExpr((Expr *) node->scan.plan.qual,
 					 (PlanState *) remotestate);
 
 	ExecInitResultTupleSlot(estate, &remotestate->ss.ps);
- 	if (node->scan.plan.targetlist)
- 	{
- 		TupleDesc typeInfo = ExecCleanTypeFromTL(node->scan.plan.targetlist, false);
+	if (node->scan.plan.targetlist)
+	{
+		TupleDesc typeInfo = ExecCleanTypeFromTL(node->scan.plan.targetlist, false);
 		ExecSetSlotDescriptor(remotestate->ss.ps.ps_ResultTupleSlot, typeInfo);
- 	}
- 	else
- 	{
- 		/* In case there is no target list, force its creation */
+	}
+	else
+	{
+		/* In case there is no target list, force its creation */
 		ExecAssignResultTypeFromTL(&remotestate->ss.ps);
  	}
 
@@ -4023,17 +4035,17 @@ do_query(RemoteQueryState *node)
 						 errmsg("Unexpected response from data node")));
 		}
 		if (node->errorMessage)
- 		{
+		{
 			char *code = node->errorCode;
 			if (node->errorDetail != NULL)
- 				ereport(ERROR,
- 						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
 						 errmsg("%s", node->errorMessage), errdetail("%s", node->errorDetail) ));
- 			else
- 				ereport(ERROR,
- 						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+			else
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
 						 errmsg("%s", node->errorMessage)));
- 		}
+		}
 	}
 
 	for (i = 0; i < regular_conn_count; i++)
@@ -4116,12 +4128,12 @@ do_query(RemoteQueryState *node)
 
 					node->connections = connections;
 					node->conn_count = regular_conn_count;
- 					/*
- 					 * First message is already in the buffer
- 					 * Further fetch will be under tuplesort control
- 					 * If query does not produce rows tuplesort will not
- 					 * be initialized
- 					 */
+					/*
+					 * First message is already in the buffer
+					 * Further fetch will be under tuplesort control
+					 * If query does not produce rows tuplesort will not
+					 * be initialized
+					 */
 					node->tuplesortstate = tuplesort_begin_merge(
 										   scanslot->tts_tupleDescriptor,
 										   sort->numCols,
@@ -4676,28 +4688,6 @@ handle_results:
 	{
 		if (ExecRemoteQueryInnerPlan(node))
 		{
-			/* reset the counter */
-			node->command_complete_count = 0;
-			/*
-			 * Use data row returned by the previus step as a parameters for
-			 * the main query.
-			 */
-			step->paramval_len = ExecCopySlotDatarow(innerSlot,
-													 &step->paramval_data);
-
-			/* Needed for expression evaluation */
-			if (estate->es_param_exec_vals)
-			{
-				int i;
-				int natts = innerSlot->tts_tupleDescriptor->natts;
-
-				slot_getallattrs(innerSlot);
-				for (i = 0; i < natts; i++)
-					estate->es_param_exec_vals[i].value = slot_getattr(
-							innerSlot,
-							i+1,
-							&estate->es_param_exec_vals[i].isnull);
-			}
 			do_query(node);
 			goto handle_results;
 		}
