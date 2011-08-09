@@ -1963,7 +1963,9 @@ _readModifyTable(void)
 
 	READ_PLAN_FIELDS();
 	READ_ENUM_FIELD(operation, CmdType);
+	READ_BOOL_FIELD(canSetTag);
 	READ_NODE_FIELD(resultRelations);
+	READ_INT_FIELD(resultRelIndex);
 	READ_NODE_FIELD(plans);
 	READ_NODE_FIELD(returningLists);
 	READ_NODE_FIELD(rowMarks);

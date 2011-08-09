@@ -357,6 +357,14 @@ DefineIndex(RangeVar *heapRelation,
 		{
 			IndexElem  *key = (IndexElem *) lfirst(elem);
 
+#ifdef XCP
+			if (rel->rd_locator_info == NULL)
+			{
+				isSafe = true;
+				break;
+			}
+#endif
+
 			if (CheckLocalIndexColumn(rel->rd_locator_info->locatorType, 
 				rel->rd_locator_info->partAttrName, key->name))
 			{

@@ -1193,7 +1193,7 @@ pgxc_node_send_bindplan(PGXCNodeHandle * handle, const char *portal,
 	/* portal name size (allow NULL) */
 	pnameLen = portal ? strlen(portal) + 1 : 1;
 	/* query plan size */
-	planLen = strlen(planstr) + 1;
+	planLen = planstr ? strlen(planstr) + 1 : 1;
 	/* size of parameter codes array (always empty for now) */
 	paramCodeLen = 2;
 	/* size of parameter values array, 2 if no params */
@@ -1224,8 +1224,13 @@ pgxc_node_send_bindplan(PGXCNodeHandle * handle, const char *portal,
 	else
 		handle->outBuffer[handle->outEnd++] = '\0';
 	/* query plan */
-	memcpy(handle->outBuffer + handle->outEnd, planstr, planLen);
-	handle->outEnd += planLen;
+	if (planstr)
+	{
+		memcpy(handle->outBuffer + handle->outEnd, planstr, planLen);
+		handle->outEnd += planLen;
+	}
+	else
+		handle->outBuffer[handle->outEnd++] = '\0';
 	/* parameter codes (none) */
 	handle->outBuffer[handle->outEnd++] = 0;
 	handle->outBuffer[handle->outEnd++] = 0;
