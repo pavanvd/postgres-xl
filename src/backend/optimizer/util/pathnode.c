@@ -829,7 +829,8 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 	 * This join is still allowed if inner and outer paths have
 	 * equivalent distribution and joined along the distribution keys.
 	 */
-	if (innerd->distributionType == outerd->distributionType &&
+	if (innerd && outerd &&
+			innerd->distributionType == outerd->distributionType &&
 			innerd->distributionKey != InvalidAttrNumber &&
 			outerd->distributionKey != InvalidAttrNumber &&
 			bms_equal(innerd->nodes, outerd->nodes))
@@ -1002,7 +1003,12 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 	 * If we could not determine the distribution redistribute the subpathes.
 	 */
 not_allowed_join:
-	/* Redistribute subplans to make them compatible */
+	/*
+	 * Redistribute subplans to make them compatible.
+	 * If any of the subplans is a coordinator subplan skip this stuff and do
+	 * coordinator join.
+	 */
+	if (innerd && outerd)
 	{
 		RestrictInfo   *preferred = NULL;
 		Expr		   *inner_key = NULL;
