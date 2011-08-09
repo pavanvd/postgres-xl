@@ -1778,6 +1778,7 @@ handle_response(PGXCNodeHandle *conn, RemoteQueryState *combiner)
 				 * another EXECUTE to fetch more rows, otherwise it is done
 				 * with the connection
 				 */
+				int result = suspended ? RESPONSE_SUSPENDED : RESPONSE_COMPLETE;
 				conn->transaction_status = msg[0];
 				conn->state = DN_CONNECTION_STATE_IDLE;
 				conn->combiner = NULL;
@@ -1855,7 +1856,6 @@ is_data_node_ready(PGXCNodeHandle * conn)
 				 * another EXECUTE to fetch more rows, otherwise it is done
 				 * with the connection
 				 */
-				int result = suspended ? RESPONSE_SUSPENDED : RESPONSE_COMPLETE;
 				conn->transaction_status = msg[0];
 				conn->state = DN_CONNECTION_STATE_IDLE;
 				conn->combiner = NULL;
