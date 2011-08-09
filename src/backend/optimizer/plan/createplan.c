@@ -4963,14 +4963,6 @@ prepare_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
 									  true);
 				tlist = lappend(tlist, tle);
 				lefttree->targetlist = tlist;	/* just in case NIL before */
-#ifdef XCP
-				/*
-				 * RemoteSubplan is conditionally projection capable - it is
-				 * pushing projection to the data nodes
-				 */
-				if (IsA(lefttree, RemoteSubplan))
-					lefttree->lefttree->targetlist = tlist;
-#endif
 			}
 		}
 
@@ -5953,26 +5945,6 @@ make_result(PlannerInfo *root,
 	plan->righttree = NULL;
 	node->resconstantqual = resconstantqual;
 
-#ifdef XCP
-	if (subplan)
-	{
-		/*
-		 * We do not gain performance when pushing down Result, but Result on
-		 * top of RemoteSubplan would not allow to push down other plan nodes
-		 */
-		RemoteSubplan *pushdown;
-		pushdown = find_push_down_plan(subplan, true);
-		if (pushdown)
-		{
-			/* This will be set as lefttree of the Result plan */
-			plan->lefttree = pushdown->scan.plan.lefttree;
-			pushdown->scan.plan.lefttree = plan;
-			/* Now RemoteSubplan returns different values */
-			pushdown->scan.plan.targetlist = tlist;
-			return (Result *) subplan;
-		}
-	}
-#endif /* XCP */
 	return node;
 }
 
@@ -6070,12 +6042,10 @@ is_projection_capable_plan(Plan *plan)
 		case T_Append:
 		case T_MergeAppend:
 		case T_RecursiveUnion:
-			return false;
 #ifdef XCP
-		/* Remote subplan may push down projection to the data nodes */
 		case T_RemoteSubplan:
-			return is_projection_capable_plan(plan->lefttree);
 #endif
+			return false;
 		default:
 			break;
 	}
