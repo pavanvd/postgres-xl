@@ -1907,6 +1907,10 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle ** connections,
 
 #ifdef XCP
 	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
+	/*
+	 * Make sure there are zeroes in unused fields
+	 */
+	memset(&combiner, 0, sizeof(ScanState));
 #else
 	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_NONE);
 #endif
@@ -3035,6 +3039,10 @@ DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_
 	 */
 #ifdef XCP
 	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
+	/*
+	 * Make sure there are zeroes in unused fields
+	 */
+	memset(&combiner, 0, sizeof(ScanState));
 
 	/* Receive responses */
 	if (pgxc_node_receive_responses(conn_count, connections, timeout, &combiner)
@@ -3108,6 +3116,10 @@ DataNodeCopyIn(char *data_row, int len, ExecNodes *exec_nodes, PGXCNodeHandle** 
 #ifdef XCP
 					ResponseCombiner combiner;
 					InitResponseCombiner(&combiner, 1, COMBINE_TYPE_NONE);
+					/*
+					 * Make sure there are zeroes in unused fields
+					 */
+					memset(&combiner, 0, sizeof(ScanState));
 					handle_response(primary_handle, &combiner);
 					if (!ValidateAndCloseCombiner(&combiner))
 #else
@@ -3176,6 +3188,10 @@ DataNodeCopyIn(char *data_row, int len, ExecNodes *exec_nodes, PGXCNodeHandle** 
 #ifdef XCP
 					ResponseCombiner combiner;
 					InitResponseCombiner(&combiner, 1, COMBINE_TYPE_NONE);
+					/*
+					 * Make sure there are zeroes in unused fields
+					 */
+					memset(&combiner, 0, sizeof(ScanState));
 					handle_response(handle, &combiner);
 					if (!ValidateAndCloseCombiner(&combiner))
 #else
@@ -3258,6 +3274,10 @@ DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* 
 
 #ifdef XCP
 	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_SUM);
+	/*
+	 * Make sure there are zeroes in unused fields
+	 */
+	memset(&combiner, 0, sizeof(ScanState));
 	combiner.processed = 0;
 	/* If there is an existing file where to copy data, pass it to combiner */
 	if (copy_file)
@@ -3378,6 +3398,10 @@ DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_data_node,
 
 #ifdef XCP
 		InitResponseCombiner(&combiner, 1, COMBINE_TYPE_NONE);
+		/*
+		 * Make sure there are zeroes in unused fields
+		 */
+		memset(&combiner, 0, sizeof(ScanState));
 		error = (pgxc_node_receive_responses(1, &primary_handle, timeout, &combiner) != 0) || error;
 		error = !ValidateAndCloseCombiner(&combiner) || error;
 #else
@@ -3397,6 +3421,10 @@ DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_data_node,
 
 #ifdef XCP
 	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
+	/*
+	 * Make sure there are zeroes in unused fields
+	 */
+	memset(&combiner, 0, sizeof(ScanState));
 	error = (pgxc_node_receive_responses(conn_count, connections, timeout, &combiner) != 0) || error;
 
 	if (!ValidateAndCloseCombiner(&combiner) || error)
@@ -5033,6 +5061,10 @@ close_node_cursors(PGXCNodeHandle **connections, int conn_count, char *cursor)
 
 #ifdef XCP
 	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
+	/*
+	 * Make sure there are zeroes in unused fields
+	 */
+	memset(&combiner, 0, sizeof(ScanState));
 #else
 	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_NONE);
 #endif
@@ -5567,6 +5599,10 @@ pgxc_node_receive_and_validate(const int conn_count, PGXCNodeHandle ** handles)
 		return result;
 
 	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
+	/*
+	 * Make sure there are zeroes in unused fields
+	 */
+	memset(&combiner, 0, sizeof(ScanState));
 
 	/* Receive responses */
 	result = pgxc_node_receive_responses(conn_count, handles, timeout, &combiner);
@@ -5716,6 +5752,10 @@ ExecCloseRemoteStatement(const char *stmt_name, List *nodelist)
 
 #ifdef XCP
 	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
+	/*
+	 * Make sure there are zeroes in unused fields
+	 */
+	memset(&combiner, 0, sizeof(ScanState));
 #else
 	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_NONE);
 #endif
