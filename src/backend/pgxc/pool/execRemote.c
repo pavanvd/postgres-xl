@@ -106,7 +106,9 @@ static bool ExecRemoteQueryInnerPlan(RemoteQueryState *node);
 #define REMOVE_CURR_CONN(combiner) \
 	if ((combiner)->current_conn < --((combiner)->conn_count)) \
 		(combiner)->connections[(combiner)->current_conn] = \
-				(combiner)->connections[(combiner)->conn_count]
+				(combiner)->connections[(combiner)->conn_count]; \
+	else \
+		(combiner)->current_conn = 0
 #endif
 
 #define MAX_STATEMENTS_PER_TRAN 10
