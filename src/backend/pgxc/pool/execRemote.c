@@ -6344,10 +6344,29 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 
 					all_found = determine_param_types(node->scan.plan.lefttree,
 													  &context);
-
-					bms_free(context.defineParams);
+					/*
+					 * Remove not defined params from the list of remote params.
+					 * If they are not referenced no need to send them down
+					 */
 					if (!all_found)
-						elog(ERROR, "Failed to determine internal parameter data type");
+					{
+						int j = 0;
+						for (i = 0; i < rstmt.nParamRemote; i++)
+						{
+							if (rstmt.remoteparams[i].paramkind != PARAM_EXEC ||
+									!bms_is_member(rstmt.remoteparams[i].paramid,
+												   context.defineParams))
+							{
+								if (i == j)
+									rstmt.remoteparams[j] = rstmt.remoteparams[i];
+								j++;
+							}
+						}
+					}
+					rstmt.nParamRemote -= bms_num_members(context.defineParams);
+					bms_free(context.defineParams);
+//					if (!all_found)
+//						elog(ERROR, "Failed to determine internal parameter data type");
 				}
 			}
 			remotestate->nParamRemote = rstmt.nParamRemote;
