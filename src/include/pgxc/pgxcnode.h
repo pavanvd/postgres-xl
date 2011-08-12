@@ -151,6 +151,8 @@ extern int	pgxc_node_send_query_extended(PGXCNodeHandle *handle, const char *que
 							  int paramlen, char *params,
 							  bool send_describe, int fetch_size);
 #ifdef XCP
+extern int	pgxc_node_send_bindplan(PGXCNodeHandle * handle, const char *portal,
+						const char *planstr, int paramlen, char *params);
 extern int  pgxc_node_send_datanode_query(PGXCNodeHandle *handle, const char *query,
 							  const char *portal, int paramlen, char *params,
 							  int fetch_size);

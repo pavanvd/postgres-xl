@@ -52,9 +52,11 @@
 #include "pgxc/pgxc.h"
 #endif
 #ifdef XCP
+#include "executor/executor.h"
 #include "nodes/makefuncs.h"
 #include "pgxc/execRemote.h"
 #include "pgxc/planner.h"
+#include "utils/lsyscache.h"
 #endif /* XCP */
 
 /*

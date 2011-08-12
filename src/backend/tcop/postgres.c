@@ -1570,7 +1570,7 @@ exec_bindplan_message(StringInfo input_message)
 
 		/* Decode info passed from remote node */
 		set_portable_input(true);
-		rstmt = (RemoteStmt *) stringToNode(plannodestr);
+		rstmt = (RemoteStmt *) stringToNode((char *) plannodestr);
 		set_portable_input(false);
 
 		/*

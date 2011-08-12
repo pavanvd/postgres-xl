@@ -5996,18 +5996,19 @@ make_result(PlannerInfo *root,
 				if (pushdown->distributionKey != InvalidAttrNumber)
 				{
 					/* Not found, adding */
-					TargetEntry    *tle;
+					TargetEntry    *newtle;
 					/*
 					 * The target entry is *NOT* junk to ensure it is not
 					 * filtered out before sending from the data node.
 					 */
-					tle = makeTargetEntry(copyObject(tle->expr),
-										  list_length(tlist) + 1,
-										  key->resname,
-										  false);
-					tlist = lappend(tlist, tle);
+					newtle = makeTargetEntry(copyObject(key->expr),
+											 list_length(tlist) + 1,
+											 key->resname,
+											 false);
+					tlist = lappend(tlist, newtle);
 					/* just in case if it was NIL */
 					plan->targetlist = tlist;
+					pushdown->distributionKey = newtle->resno;
 				}
 			}
 			/* This will be set as lefttree of the Result plan */

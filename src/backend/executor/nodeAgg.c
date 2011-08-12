@@ -526,6 +526,7 @@ advance_transition_function(AggState *aggstate,
 }
 
 #ifdef PGXC
+#ifndef XCP
 /*
  * Given new input value(s), advance the collection function of an aggregate.
  *
@@ -630,6 +631,7 @@ advance_collection_function(AggState *aggstate,
 
 	MemoryContextSwitchTo(oldContext);
 }
+#endif /* XCP */
 #endif /* PGXC */
 
 /*

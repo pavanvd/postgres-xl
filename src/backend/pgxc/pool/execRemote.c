@@ -6177,7 +6177,7 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 	combiner->request_type = REQUEST_TYPE_QUERY;
 
 	ExecInitResultTupleSlot(estate, &combiner->ss.ps);
-	ExecAssignResultTypeFromTL(remotestate);
+	ExecAssignResultTypeFromTL((PlanState *) remotestate);
 
 	/*
 	 * We optimize execution if we going to send down query to next level

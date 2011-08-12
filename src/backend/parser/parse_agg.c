@@ -80,8 +80,10 @@ transformAggregateCall(ParseState *pstate, Aggref *agg,
 	int			min_varlevel;
 	ListCell   *lc;
 #ifdef PGXC
+#ifndef XCP
 	HeapTuple	aggTuple;
 	Form_pg_aggregate aggform;
+#endif /* XCP */
 #endif /* PGXC */
 
 	/*

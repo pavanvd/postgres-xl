@@ -1178,7 +1178,6 @@ int
 pgxc_node_send_bindplan(PGXCNodeHandle * handle, const char *portal,
 						const char *planstr, int paramlen, char *params)
 {
-	uint16		n16;
 	int			pnameLen;
 	int			planLen;
 	int 		paramCodeLen;
