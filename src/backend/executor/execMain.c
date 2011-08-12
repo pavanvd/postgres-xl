@@ -978,6 +978,15 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 			}
 		}
 
+#ifdef XCP
+		/*
+		 * On data node do not filter out junk, they may be needed for the
+		 * RemoteSublan on the receiving side
+		 */
+		if (IS_PGXC_DATANODE)
+			junk_filter_needed = false;
+#endif
+
 		if (junk_filter_needed)
 		{
 			JunkFilter *j;

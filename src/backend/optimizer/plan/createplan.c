@@ -4963,6 +4963,14 @@ prepare_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
 									  true);
 				tlist = lappend(tlist, tle);
 				lefttree->targetlist = tlist;	/* just in case NIL before */
+#ifdef XCP
+				/*
+				 * RemoteSubplan is conditionally projection capable - it is
+				 * pushing projection to the data nodes
+				 */
+				if (IsA(lefttree, RemoteSubplan))
+					lefttree->lefttree->targetlist = tlist;
+#endif
 			}
 		}
 
@@ -5945,6 +5953,72 @@ make_result(PlannerInfo *root,
 	plan->righttree = NULL;
 	node->resconstantqual = resconstantqual;
 
+#ifdef XCP
+	if (subplan)
+	{
+		/*
+		 * We do not gain performance when pushing down Result, but Result on
+		 * top of RemoteSubplan would not allow to push down other plan nodes
+		 */
+		RemoteSubplan *pushdown;
+		pushdown = find_push_down_plan(subplan, true);
+		if (pushdown)
+		{
+			/*
+			 * Avoid pushing down results if the RemoteSubplan performs merge
+			 * sort.
+			 */
+			if (pushdown->sort)
+				return node;
+
+			/*
+			 * If remote subplan is generating distribution we should keep it
+			 * correct. Set valid expression as a distribution key.
+			 */
+			if (pushdown->distributionKey != InvalidAttrNumber)
+			{
+				ListCell	   *lc;
+				TargetEntry    *key;
+
+				key = list_nth(pushdown->scan.plan.targetlist,
+							   pushdown->distributionKey);
+				pushdown->distributionKey = InvalidAttrNumber;
+				foreach(lc, tlist)
+				{
+					TargetEntry    *tle = (TargetEntry *) lfirst(lc);
+					if (equal(tle->expr, key->expr))
+					{
+						pushdown->distributionKey = tle->resno;
+						break;
+					}
+				}
+
+				if (pushdown->distributionKey != InvalidAttrNumber)
+				{
+					/* Not found, adding */
+					TargetEntry    *tle;
+					/*
+					 * The target entry is *NOT* junk to ensure it is not
+					 * filtered out before sending from the data node.
+					 */
+					tle = makeTargetEntry(copyObject(tle->expr),
+										  list_length(tlist) + 1,
+										  key->resname,
+										  false);
+					tlist = lappend(tlist, tle);
+					/* just in case if it was NIL */
+					plan->targetlist = tlist;
+				}
+			}
+			/* This will be set as lefttree of the Result plan */
+			plan->lefttree = pushdown->scan.plan.lefttree;
+			pushdown->scan.plan.lefttree = plan;
+			/* Now RemoteSubplan returns different values */
+			pushdown->scan.plan.targetlist = tlist;
+			return (Result *) subplan;
+		}
+	}
+#endif /* XCP */
 	return node;
 }
 
@@ -6042,10 +6116,16 @@ is_projection_capable_plan(Plan *plan)
 		case T_Append:
 		case T_MergeAppend:
 		case T_RecursiveUnion:
-#ifdef XCP
-		case T_RemoteSubplan:
-#endif
 			return false;
+#ifdef XCP
+		/*
+		 * Remote subplan may push down projection to the data nodes if do not
+		 * performs merge sort
+		 */
+		case T_RemoteSubplan:
+			return ((RemoteSubplan *) plan)->sort == NULL &&
+					is_projection_capable_plan(plan->lefttree);
+#endif
 		default:
 			break;
 	}

@@ -3496,7 +3496,7 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 	ExecInitResultTupleSlot(estate, &combiner->ss.ps);
 	if (node->scan.plan.targetlist)
 	{
-		typeInfo = ExecCleanTypeFromTL(node->scan.plan.targetlist, false);
+		typeInfo = ExecTypeFromTL(node->scan.plan.targetlist, false);
 		ExecSetSlotDescriptor(combiner->ss.ps.ps_ResultTupleSlot, typeInfo);
 	}
 
@@ -6168,7 +6168,7 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 	combiner->request_type = REQUEST_TYPE_QUERY;
 
 	ExecInitResultTupleSlot(estate, &combiner->ss.ps);
-	typeInfo = ExecCleanTypeFromTL(node->scan.plan.targetlist, false);
+	typeInfo = ExecTypeFromTL(node->scan.plan.targetlist, false);
 	ExecSetSlotDescriptor(combiner->ss.ps.ps_ResultTupleSlot, typeInfo);
 
 	/*
