@@ -6136,7 +6136,6 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 	RemoteStmt			rstmt;
 	RemoteSubplanState *remotestate;
 	ResponseCombiner   *combiner;
-	TupleDesc 			typeInfo;
 	CombineType			combineType;
 
 	remotestate = makeNode(RemoteSubplanState);
@@ -6168,8 +6167,7 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 	combiner->request_type = REQUEST_TYPE_QUERY;
 
 	ExecInitResultTupleSlot(estate, &combiner->ss.ps);
-	typeInfo = ExecTypeFromTL(node->scan.plan.targetlist, false);
-	ExecSetSlotDescriptor(combiner->ss.ps.ps_ResultTupleSlot, typeInfo);
+	ExecAssignResultTypeFromTL(remotestate);
 
 	/*
 	 * We optimize execution if we going to send down query to next level
@@ -6244,7 +6242,10 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 												   eflags);
 		if (node->distributionNodes)
 		{
-			Oid distributionType = InvalidOid;
+			Oid 		distributionType = InvalidOid;
+			TupleDesc 	typeInfo;
+
+			typeInfo = combiner->ss.ps.ps_ResultTupleSlot->tts_tupleDescriptor;
 			if (node->distributionKey != InvalidAttrNumber)
 			{
 				Form_pg_attribute attr;
