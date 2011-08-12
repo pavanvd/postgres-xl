@@ -28,6 +28,7 @@
 #include "nodes/plannodes.h"
 #include "nodes/relation.h"
 #ifdef XCP
+#include "catalog/namespace.h"
 #include "pgxc/execRemote.h"
 #include "utils/lsyscache.h"
 #endif
@@ -125,6 +126,8 @@ set_portable_output(bool value)
 	 _outBitmapset(str, node->fldname))
 
 #ifdef XCP
+#define NSP_NAME(oid) \
+	isTempNamespace(oid) ? "pg_temp" : get_namespace_name(oid)
 /*
  * Macros to encode OIDs to send to other nodes. Objects on other nodes may have
  * different OIDs, so send instead an unique identifier allowing to lookup
@@ -134,14 +137,14 @@ set_portable_output(bool value)
 /* write an OID which is a relation OID */
 #define WRITE_RELID_FIELD(fldname) \
 	(appendStringInfo(str, " :" CppAsString(fldname) " "), \
-	 _outToken(str, OidIsValid(node->fldname) ? get_namespace_name(get_rel_namespace(node->fldname)) : NULL), \
+	 _outToken(str, OidIsValid(node->fldname) ? NSP_NAME(get_rel_namespace(node->fldname)) : NULL), \
 	 appendStringInfoChar(str, ' '), \
 	 _outToken(str, OidIsValid(node->fldname) ? get_rel_name(node->fldname) : NULL))
 
 /* write an OID which is a data type OID */
 #define WRITE_TYPID_FIELD(fldname) \
 	(appendStringInfo(str, " :" CppAsString(fldname) " "), \
-	 _outToken(str, OidIsValid(node->fldname) ? get_namespace_name(get_typ_namespace(node->fldname)) : NULL), \
+	 _outToken(str, OidIsValid(node->fldname) ? NSP_NAME(get_typ_namespace(node->fldname)) : NULL), \
 	 appendStringInfoChar(str, ' '), \
 	 _outToken(str, OidIsValid(node->fldname) ? get_typ_name(node->fldname) : NULL))
 
@@ -153,7 +156,7 @@ set_portable_output(bool value)
 		{ \
 			Oid *argtypes; \
 			int i, nargs; \
-			_outToken(str, get_namespace_name(get_func_namespace(node->fldname))); \
+			_outToken(str, NSP_NAME(get_func_namespace(node->fldname))); \
 			appendStringInfoChar(str, ' '); \
 			_outToken(str, get_func_name(node->fldname)); \
 			appendStringInfoChar(str, ' '); \
@@ -162,7 +165,7 @@ set_portable_output(bool value)
 			for (i = 0; i < nargs; i++) \
 			{ \
 				appendStringInfoChar(str, ' '); \
-				_outToken(str, get_namespace_name(get_typ_namespace(argtypes[i]))); \
+				_outToken(str, NSP_NAME(get_typ_namespace(argtypes[i]))); \
 				appendStringInfoChar(str, ' '); \
 				_outToken(str, get_typ_name(argtypes[i])); \
 			} \
@@ -178,18 +181,18 @@ set_portable_output(bool value)
 		if (OidIsValid(node->fldname)) \
 		{ \
 			Oid oprleft, oprright; \
-			_outToken(str, get_namespace_name(get_opnamespace(node->fldname))); \
+			_outToken(str, NSP_NAME(get_opnamespace(node->fldname))); \
 			appendStringInfoChar(str, ' '); \
 			_outToken(str, get_opname(node->fldname)); \
 			appendStringInfoChar(str, ' '); \
 			op_input_types(node->fldname, &oprleft, &oprright); \
 			_outToken(str, OidIsValid(oprleft) ? \
-					get_namespace_name(get_typ_namespace(oprleft)) : NULL); \
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL); \
 			appendStringInfoChar(str, ' '); \
 			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL); \
 			appendStringInfoChar(str, ' '); \
 			_outToken(str, OidIsValid(oprright) ? \
-					get_namespace_name(get_typ_namespace(oprright)) : NULL); \
+					NSP_NAME(get_typ_namespace(oprright)) : NULL); \
 			appendStringInfoChar(str, ' '); \
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL); \
 			appendStringInfoChar(str, ' '); \
@@ -204,7 +207,7 @@ set_portable_output(bool value)
 		appendStringInfo(str, " :" CppAsString(fldname) " "); \
 		if (OidIsValid(node->fldname)) \
 		{ \
-			_outToken(str, get_namespace_name(get_collation_namespace(node->fldname))); \
+			_outToken(str, NSP_NAME(get_collation_namespace(node->fldname))); \
 			appendStringInfoChar(str, ' '); \
 			_outToken(str, get_collation_name(node->fldname)); \
 			appendStringInfo(str, " %d", get_collation_encoding(node->fldname)); \
@@ -524,18 +527,18 @@ _outRecursiveUnion(StringInfo str, RecursiveUnion *node)
 			/* Unique operator is always valid */
 			Assert(OidIsValid(oper));
 			appendStringInfoChar(str, ' ');
-			_outToken(str, get_namespace_name(get_opnamespace(oper)));
+			_outToken(str, NSP_NAME(get_opnamespace(oper)));
 			appendStringInfoChar(str, ' ');
 			_outToken(str, get_opname(oper));
 			appendStringInfoChar(str, ' ');
 			op_input_types(oper, &oprleft, &oprright);
 			_outToken(str, OidIsValid(oprleft) ?
-					get_namespace_name(get_typ_namespace(oprleft)) : NULL);
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ?
-					get_namespace_name(get_typ_namespace(oprright)) : NULL);
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
 			appendStringInfoChar(str, ' ');
@@ -763,7 +766,7 @@ _outMergeJoin(StringInfo str, MergeJoin *node)
 			if (OidIsValid(coll))
 			{
 				appendStringInfoChar(str, ' ');
-				_outToken(str, get_namespace_name(get_collation_namespace(coll)));
+				_outToken(str, NSP_NAME(get_collation_namespace(coll)));
 				appendStringInfoChar(str, ' ');
 				_outToken(str, get_collation_name(coll));
 				appendStringInfo(str, " %d", get_collation_encoding(coll));
@@ -823,18 +826,18 @@ _outAgg(StringInfo str, Agg *node)
 			/* Group operator is always valid */
 			Assert(OidIsValid(oper));
 			appendStringInfoChar(str, ' ');
-			_outToken(str, get_namespace_name(get_opnamespace(oper)));
+			_outToken(str, NSP_NAME(get_opnamespace(oper)));
 			appendStringInfoChar(str, ' ');
 			_outToken(str, get_opname(oper));
 			appendStringInfoChar(str, ' ');
 			op_input_types(oper, &oprleft, &oprright);
 			_outToken(str, OidIsValid(oprleft) ?
-					get_namespace_name(get_typ_namespace(oprleft)) : NULL);
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ?
-					get_namespace_name(get_typ_namespace(oprright)) : NULL);
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
 			appendStringInfoChar(str, ' ');
@@ -872,18 +875,18 @@ _outWindowAgg(StringInfo str, WindowAgg *node)
 			/* The operator is always valid */
 			Assert(OidIsValid(oper));
 			appendStringInfoChar(str, ' ');
-			_outToken(str, get_namespace_name(get_opnamespace(oper)));
+			_outToken(str, NSP_NAME(get_opnamespace(oper)));
 			appendStringInfoChar(str, ' ');
 			_outToken(str, get_opname(oper));
 			appendStringInfoChar(str, ' ');
 			op_input_types(oper, &oprleft, &oprright);
 			_outToken(str, OidIsValid(oprleft) ?
-					get_namespace_name(get_typ_namespace(oprleft)) : NULL);
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ?
-					get_namespace_name(get_typ_namespace(oprright)) : NULL);
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
 			appendStringInfoChar(str, ' ');
@@ -908,18 +911,18 @@ _outWindowAgg(StringInfo str, WindowAgg *node)
 			/* Group operator is always valid */
 			Assert(OidIsValid(oper));
 			appendStringInfoChar(str, ' ');
-			_outToken(str, get_namespace_name(get_opnamespace(oper)));
+			_outToken(str, NSP_NAME(get_opnamespace(oper)));
 			appendStringInfoChar(str, ' ');
 			_outToken(str, get_opname(oper));
 			appendStringInfoChar(str, ' ');
 			op_input_types(oper, &oprleft, &oprright);
 			_outToken(str, OidIsValid(oprleft) ?
-					get_namespace_name(get_typ_namespace(oprleft)) : NULL);
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ?
-					get_namespace_name(get_typ_namespace(oprright)) : NULL);
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
 			appendStringInfoChar(str, ' ');
@@ -958,18 +961,18 @@ _outGroup(StringInfo str, Group *node)
 			/* Group operator is always valid */
 			Assert(OidIsValid(oper));
 			appendStringInfoChar(str, ' ');
-			_outToken(str, get_namespace_name(get_opnamespace(oper)));
+			_outToken(str, NSP_NAME(get_opnamespace(oper)));
 			appendStringInfoChar(str, ' ');
 			_outToken(str, get_opname(oper));
 			appendStringInfoChar(str, ' ');
 			op_input_types(oper, &oprleft, &oprright);
 			_outToken(str, OidIsValid(oprleft) ?
-					get_namespace_name(get_typ_namespace(oprleft)) : NULL);
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ?
-					get_namespace_name(get_typ_namespace(oprright)) : NULL);
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
 			appendStringInfoChar(str, ' ');
@@ -1012,18 +1015,18 @@ _outSort(StringInfo str, Sort *node)
 			/* Sort operator is always valid */
 			Assert(OidIsValid(oper));
 			appendStringInfoChar(str, ' ');
-			_outToken(str, get_namespace_name(get_opnamespace(oper)));
+			_outToken(str, NSP_NAME(get_opnamespace(oper)));
 			appendStringInfoChar(str, ' ');
 			_outToken(str, get_opname(oper));
 			appendStringInfoChar(str, ' ');
 			op_input_types(oper, &oprleft, &oprright);
 			_outToken(str, OidIsValid(oprleft) ?
-					get_namespace_name(get_typ_namespace(oprleft)) : NULL);
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ?
-					get_namespace_name(get_typ_namespace(oprright)) : NULL);
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
 		}
@@ -1040,7 +1043,7 @@ _outSort(StringInfo str, Sort *node)
 			if (OidIsValid(coll))
 			{
 				appendStringInfoChar(str, ' ');
-				_outToken(str, get_namespace_name(get_collation_namespace(coll)));
+				_outToken(str, NSP_NAME(get_collation_namespace(coll)));
 				appendStringInfoChar(str, ' ');
 				_outToken(str, get_collation_name(coll));
 				appendStringInfo(str, " %d", get_collation_encoding(coll));
@@ -1082,18 +1085,18 @@ _outUnique(StringInfo str, Unique *node)
 			/* Unique operator is always valid */
 			Assert(OidIsValid(oper));
 			appendStringInfoChar(str, ' ');
-			_outToken(str, get_namespace_name(get_opnamespace(oper)));
+			_outToken(str, NSP_NAME(get_opnamespace(oper)));
 			appendStringInfoChar(str, ' ');
 			_outToken(str, get_opname(oper));
 			appendStringInfoChar(str, ' ');
 			op_input_types(oper, &oprleft, &oprright);
 			_outToken(str, OidIsValid(oprleft) ?
-					get_namespace_name(get_typ_namespace(oprleft)) : NULL);
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ?
-					get_namespace_name(get_typ_namespace(oprright)) : NULL);
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
 			appendStringInfoChar(str, ' ');
@@ -1154,18 +1157,18 @@ _outSetOp(StringInfo str, SetOp *node)
 			/* Unique operator is always valid */
 			Assert(OidIsValid(oper));
 			appendStringInfoChar(str, ' ');
-			_outToken(str, get_namespace_name(get_opnamespace(oper)));
+			_outToken(str, NSP_NAME(get_opnamespace(oper)));
 			appendStringInfoChar(str, ' ');
 			_outToken(str, get_opname(oper));
 			appendStringInfoChar(str, ' ');
 			op_input_types(oper, &oprleft, &oprright);
 			_outToken(str, OidIsValid(oprleft) ?
-					get_namespace_name(get_typ_namespace(oprleft)) : NULL);
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ?
-					get_namespace_name(get_typ_namespace(oprright)) : NULL);
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
 			appendStringInfoChar(str, ' ');
@@ -1249,7 +1252,7 @@ _outRemoteStmt(StringInfo str, RemoteStmt *node)
 			Oid ptype = rparam->paramtype;
 			Assert(OidIsValid(ptype));
 			appendStringInfoChar(str, ' ');
-			_outToken(str, get_namespace_name(get_typ_namespace(ptype)));
+			_outToken(str, NSP_NAME(get_typ_namespace(ptype)));
 			appendStringInfoChar(str, ' ');
 			_outToken(str, get_typ_name(ptype));
 		}
@@ -1283,18 +1286,18 @@ _outSimpleSort(StringInfo str, SimpleSort *node)
 			/* Sort operator is always valid */
 			Assert(OidIsValid(oper));
 			appendStringInfoChar(str, ' ');
-			_outToken(str, get_namespace_name(get_opnamespace(oper)));
+			_outToken(str, NSP_NAME(get_opnamespace(oper)));
 			appendStringInfoChar(str, ' ');
 			_outToken(str, get_opname(oper));
 			appendStringInfoChar(str, ' ');
 			op_input_types(oper, &oprleft, &oprright);
 			_outToken(str, OidIsValid(oprleft) ?
-					get_namespace_name(get_typ_namespace(oprleft)) : NULL);
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ?
-					get_namespace_name(get_typ_namespace(oprright)) : NULL);
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
 			appendStringInfoChar(str, ' ');
 			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
 		}
@@ -1309,7 +1312,7 @@ _outSimpleSort(StringInfo str, SimpleSort *node)
 			if (OidIsValid(coll))
 			{
 				appendStringInfoChar(str, ' ');
-				_outToken(str, get_namespace_name(get_collation_namespace(coll)));
+				_outToken(str, NSP_NAME(get_collation_namespace(coll)));
 				appendStringInfoChar(str, ' ');
 				_outToken(str, get_collation_name(coll));
 				appendStringInfo(str, " %d", get_collation_encoding(coll));

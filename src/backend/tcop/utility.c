@@ -731,11 +731,15 @@ standard_ProcessUtility(Node *parsetree,
 				 */
 				if (isTopLevel)
 				{
+#ifdef XCP
+					stmts = AddRemoteQueryNode(stmts, queryString, is_temp ? EXEC_ON_DATANODES : EXEC_ON_ALL_NODES);
+#else
 					if (is_temp)
 						stmts = AddRemoteQueryNode(stmts, queryString, EXEC_ON_DATANODES, is_temp);
 					else
 						stmts = AddRemoteQueryNode(stmts, queryString, EXEC_ON_ALL_NODES, is_temp);
-					}
+#endif
+				}
 #endif
 
 				/* ... and do it */
@@ -1187,7 +1191,11 @@ standard_ProcessUtility(Node *parsetree,
 													 RangeVarGetRelid(stmt->relation, false),
 													 &is_temp);
 
+#ifdef XCP
+					stmts = AddRemoteQueryNode(stmts, queryString, exec_type);
+#else
 					stmts = AddRemoteQueryNode(stmts, queryString, exec_type, is_temp);
+#endif
 				}
 #endif
 
@@ -2162,7 +2170,9 @@ ExecUtilityStmtOnNodes(const char *queryString, ExecNodes *nodes,
 		step->sql_statement = pstrdup(queryString);
 		step->force_autocommit = force_autocommit;
 		step->exec_type = exec_type;
+#ifndef XCP
 		step->is_temp = is_temp;
+#endif
 		ExecRemoteUtility(step);
 		pfree(step->sql_statement);
 		pfree(step);

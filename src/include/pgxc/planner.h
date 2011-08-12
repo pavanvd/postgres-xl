@@ -109,9 +109,10 @@ typedef struct
 									 * plan. So, don't change this once set.
 									 */
 	RemoteQueryExecType		exec_type;
+#ifndef XCP
 	bool					is_temp; /* determine if this remote node is based
 									  * on a temporary objects (no 2PC) */
-
+#endif
 	/* Support for parameters */
 	char	   *paramval_data;		/* parameter data, format is like in BIND */
 	int			paramval_len;		/* length of parameter values data */
@@ -173,7 +174,11 @@ extern bool IsHashDistributable(Oid col_type);
 extern bool IsJoinReducible(RemoteQuery *innernode, RemoteQuery *outernode,
 					List *rtable_list, JoinPath *join_path, JoinReduceInfo *join_info);
 
+#ifdef XCP
+extern List *AddRemoteQueryNode(List *stmts, const char *queryString,
+								RemoteQueryExecType remoteExecType);
+#else
 extern List *AddRemoteQueryNode(List *stmts, const char *queryString,
 								RemoteQueryExecType remoteExecType, bool is_temp);
-
+#endif
 #endif   /* PGXCPLANNER_H */

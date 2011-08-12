@@ -913,9 +913,11 @@ DoCopy(const CopyStmt *stmt, const char *queryString)
 		rte->requiredPerms = required_access;
 
 #ifdef PGXC
+#ifndef XCP
 		/* In case COPY is used on a temporary table, never use 2PC for implicit commits */
 		if (rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 			ExecSetTempObjectIncluded();
+#endif
 #endif
 
 		tupDesc = RelationGetDescr(rel);

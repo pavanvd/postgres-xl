@@ -56,7 +56,9 @@
 static bool autocommit = true;
 static bool is_ddl = false;
 static bool implicit_force_autocommit = false;
+#ifndef XCP
 static bool temp_object_included = false;
+#endif
 static PGXCNodeHandle **write_node_list = NULL;
 static int	write_node_count = 0;
 static char *begin_string = NULL;
@@ -905,25 +907,20 @@ ValidateAndCloseCombiner(RemoteQueryState *combiner)
 }
 
 
+#ifndef XCP
  /*
  * Validate combiner and reset storage
  */
 static bool
-#ifdef XCP
-ValidateAndResetCombiner(ResponseCombiner *combiner)
-#else
 ValidateAndResetCombiner(RemoteQueryState *combiner)
-#endif
 {
 	bool		valid = validate_combiner(combiner);
 	ListCell   *lc;
 
 	if (combiner->connections)
 		pfree(combiner->connections);
-#ifndef XCP
 	if (combiner->tuple_desc)
 		FreeTupleDesc(combiner->tuple_desc);
-#endif
 	if (combiner->currentRow.msg)
 		pfree(combiner->currentRow.msg);
 	foreach(lc, combiner->rowBuffer)
@@ -938,38 +935,28 @@ ValidateAndResetCombiner(RemoteQueryState *combiner)
 		pfree(combiner->errorDetail);
 	if (combiner->tapenodes)
 		pfree(combiner->tapenodes);
-#ifdef XCP
-	if (combiner->tapemarks)
-		pfree(combiner->tapemarks);
-#endif
 
 	combiner->command_complete_count = 0;
 	combiner->connections = NULL;
 	combiner->conn_count = 0;
-#ifndef XCP
 	combiner->request_type = REQUEST_TYPE_NOT_DEFINED;
 	combiner->tuple_desc = NULL;
-#endif
 	combiner->description_count = 0;
 	combiner->copy_in_count = 0;
 	combiner->copy_out_count = 0;
 	combiner->errorMessage = NULL;
 	combiner->errorDetail = NULL;
-#ifndef XCP
 	combiner->query_Done = false;
-#endif
 	combiner->currentRow.msg = NULL;
 	combiner->currentRow.msglen = 0;
 	combiner->currentRow.msgnode = 0;
 	combiner->rowBuffer = NIL;
 	combiner->tapenodes = NULL;
-#ifdef XCP
-	combiner->tapemarks = NULL;
-#endif
 	combiner->copy_file = NULL;
 
 	return valid;
 }
+#endif
 
 
 /*
@@ -2036,7 +2023,7 @@ finish:
 
 	if (res != 0)
 	{
-
+#ifndef XCP
 		/* In case transaction has operated on temporary objects */
 		if (temp_object_included)
 		{
@@ -2048,14 +2035,19 @@ finish:
 		}
 		else
 		{
+#endif
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Could not prepare transaction on data nodes")));
+#ifndef XCP
 		}
+#endif
 	}
 
+#ifndef XCP
 	/* Reset temporary object flag */
 	temp_object_included = false;
+#endif
 
 	return local_operation;
 }
@@ -2355,8 +2347,10 @@ finish:
 	is_ddl = false;
 	clear_write_node_list();
 
+#ifndef XCP
 	/* Reset temporary object flag */
 	temp_object_included = false;
+#endif
 
 	/* Clean up connections */
 	pfree_pgxc_all_handles(pgxc_connections);
@@ -2512,8 +2506,10 @@ finish:
 	is_ddl = false;
 	clear_write_node_list();
 
+#ifndef XCP
 	/* Reset temporary object flag */
 	temp_object_included = false;
+#endif
 
 	/* Free node list taken from GTM */
 	if (datanodes && datanodecnt != 0)
@@ -2660,8 +2656,10 @@ finish:
 	is_ddl = false;
 	clear_write_node_list();
 
+#ifndef XCP
 	/* Reset temporary object flag */
 	temp_object_included = false;
+#endif
 
 	/* Free node list taken from GTM */
 	if (datanodes)
@@ -2765,8 +2763,10 @@ finish:
 	is_ddl = false;
 	clear_write_node_list();
 
+#ifndef XCP
 	/* Reset temporary object flag */
 	temp_object_included = false;
+#endif
 
 	/* Clean up connections */
 	pfree_pgxc_all_handles(pgxc_connections);
@@ -2847,8 +2847,10 @@ finish:
 	is_ddl = false;
 	clear_write_node_list();
 
+#ifndef XCP
 	/* Reset temporary object flag */
 	temp_object_included = false;
+#endif
 
 	/* Clean up connections */
 	pfree_pgxc_all_handles(pgxc_connections);
@@ -3954,9 +3956,11 @@ do_query(RemoteQueryState *node)
 	bool			need_tran;
 	PGXCNodeAllHandles *pgxc_connections;
 
+#ifndef XCP
 	/* Be sure to set temporary object flag if necessary */
 	if (step->is_temp)
 		temp_object_included = true;
+#endif
 
 	/*
 	 * Get connections for Datanodes only, utilities and DDLs
@@ -5258,14 +5262,14 @@ ExecRemoteUtility(RemoteQuery *node)
 
 	implicit_force_autocommit = force_autocommit;
 
-	/* A transaction using temporary objects cannot use 2PC */
-	temp_object_included = node->is_temp;
-
 #ifdef XCP
 	remotestate = makeNode(RemoteQueryState);
 	combiner = (ResponseCombiner *)remotestate;
 	InitResponseCombiner(combiner, 0, node->combine_type);
 #else
+	/* A transaction using temporary objects cannot use 2PC */
+	temp_object_included = node->is_temp;
+
 	remotestate = CreateResponseCombiner(0, node->combine_type);
 #endif
 
@@ -5831,11 +5835,17 @@ PGXCNodeIsImplicit2PC(bool *prepare_local_coord)
 	 * This case happens for Utilities using force autocommit (CREATE DATABASE, VACUUM...).
 	 * For a transaction using temporary objects, 2PC is not authorized.
 	 */
+#ifdef XCP
+	if (implicit_force_autocommit || MyXactAccessedTempRel)
+#else
 	if (implicit_force_autocommit || temp_object_included)
+#endif
 	{
 		*prepare_local_coord = false;
 		implicit_force_autocommit = false;
+#ifndef XCP
 		temp_object_included = false;
+#endif
 		return false;
 	}
 
@@ -6876,6 +6886,7 @@ int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_con
 	return 0;
 }
 
+#ifndef XCP
 /*
  * ExecSetTempObjectIncluded
  *
@@ -6887,3 +6898,4 @@ ExecSetTempObjectIncluded(void)
 {
 	temp_object_included = true;
 }
+#endif

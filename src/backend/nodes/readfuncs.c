@@ -35,6 +35,7 @@
 #include "access/htup.h"
 #endif
 #ifdef XCP
+#include "catalog/namespace.h"
 #include "nodes/plannodes.h"
 #include "pgxc/execRemote.h"
 #include "utils/builtins.h"
@@ -215,6 +216,7 @@ set_portable_input(bool value)
  * Macros to read an identifier and lookup the OID
  * The identifier depends on object type.
  */
+#define NSP_OID(nspname) LookupNamespaceNoError(nspname)
 
 /* Read relation identifier and lookup the OID */
 #define READ_RELID_FIELD(fldname) \
@@ -228,7 +230,7 @@ set_portable_input(bool value)
 		relname = nullable_string(token, length); \
 		if (relname) \
 			local_node->fldname = get_relname_relid(relname, \
-													get_namespaceid(nspname)); \
+													NSP_OID(nspname)); \
 		else \
 			local_node->fldname = InvalidOid; \
 	} while (0)
@@ -245,7 +247,7 @@ set_portable_input(bool value)
 		typname = nullable_string(token, length); \
 		if (typname) \
 			local_node->fldname = get_typname_typid(typname, \
-													get_namespaceid(nspname)); \
+													NSP_OID(nspname)); \
 		else \
 			local_node->fldname = InvalidOid; \
 	} while (0)
@@ -277,11 +279,11 @@ set_portable_input(bool value)
 				token = pg_strtok(&length); /* get type name */ \
 				typname = nullable_string(token, length); \
 				argtypes[i] = get_typname_typid(typname, \
-												get_namespaceid(typnspname)); \
+												NSP_OID(typnspname)); \
 			} \
 			local_node->fldname = get_funcid(funcname, \
 											 buildoidvector(argtypes, nargs), \
-											 get_namespaceid(nspname)); \
+											 NSP_OID(nspname)); \
 		} \
 		else \
 			local_node->fldname = InvalidOid; \
@@ -315,18 +317,18 @@ set_portable_input(bool value)
 		{ \
 			if (leftname) \
 				oprleft = get_typname_typid(leftname, \
-											get_namespaceid(leftnspname)); \
+											NSP_OID(leftnspname)); \
 			else \
 				oprleft = InvalidOid; \
 			if (rightname) \
 				oprright = get_typname_typid(rightname, \
-											 get_namespaceid(rightnspname)); \
+											 NSP_OID(rightnspname)); \
 			else \
 				oprright = InvalidOid; \
 			local_node->fldname = get_operid(oprname, \
 											 oprleft, \
 											 oprright, \
-											 get_namespaceid(nspname)); \
+											 NSP_OID(nspname)); \
 		} \
 		else \
 			local_node->fldname = InvalidOid; \
@@ -348,7 +350,7 @@ set_portable_input(bool value)
 		if (collname) \
 			local_node->fldname = get_collid(collname, \
 											 collencoding, \
-											 get_namespaceid(nspname)); \
+											 NSP_OID(nspname)); \
 		else \
 			local_node->fldname = InvalidOid; \
 	} while (0)
@@ -2319,7 +2321,7 @@ _readMergeJoin(void)
 			if (collname)
 				local_node->mergeCollations[i] = get_collid(collname,
 															collencoding,
-													get_namespaceid(nspname));
+															NSP_OID(nspname));
 			else
 				local_node->mergeCollations[i] = InvalidOid;
 		}
@@ -2427,18 +2429,18 @@ _readSort(void)
 			rightname = nullable_string(token, length);
 			if (leftname)
 				oprleft = get_typname_typid(leftname,
-											get_namespaceid(leftnspname));
+											NSP_OID(leftnspname));
 			else
 				oprleft = InvalidOid;
 			if (rightname)
 				oprright = get_typname_typid(rightname,
-											 get_namespaceid(rightnspname));
+											 NSP_OID(rightnspname));
 			else
 				oprright = InvalidOid;
 			local_node->sortOperators[i] = get_operid(oprname,
  													  oprleft,
 													  oprright,
-													  get_namespaceid(nspname));
+													  NSP_OID(nspname));
 		}
 		else
 		local_node->sortOperators[i] = atooid(token);
@@ -2463,7 +2465,7 @@ _readSort(void)
 			if (collname)
 				local_node->collations[i] = get_collid(collname,
 													   collencoding,
-												   get_namespaceid(nspname));
+													   NSP_OID(nspname));
 			else
 				local_node->collations[i] = InvalidOid;
 		}
@@ -2533,18 +2535,18 @@ _readGroup(void)
 			rightname = nullable_string(token, length);
 			if (leftname)
 				oprleft = get_typname_typid(leftname,
-											get_namespaceid(leftnspname));
+											NSP_OID(leftnspname));
 			else
 				oprleft = InvalidOid;
 			if (rightname)
 				oprright = get_typname_typid(rightname,
-											 get_namespaceid(rightnspname));
+											 NSP_OID(rightnspname));
 			else
 				oprright = InvalidOid;
 			local_node->grpOperators[i] = get_operid(oprname,
 													 oprleft,
 													 oprright,
-													 get_namespaceid(nspname));
+													 NSP_OID(nspname));
 		}
 		else
 			local_node->grpOperators[i] = atooid(token);
@@ -2606,18 +2608,18 @@ _readAgg(void)
 			rightname = nullable_string(token, length);
 			if (leftname)
 				oprleft = get_typname_typid(leftname,
-											get_namespaceid(leftnspname));
+											NSP_OID(leftnspname));
 			else
 				oprleft = InvalidOid;
 			if (rightname)
 				oprright = get_typname_typid(rightname,
-											 get_namespaceid(rightnspname));
+											 NSP_OID(rightnspname));
 			else
 				oprright = InvalidOid;
 			local_node->grpOperators[i] = get_operid(oprname,
 													 oprleft,
 													 oprright,
-													 get_namespaceid(nspname));
+													 NSP_OID(nspname));
 		}
 		else
 			local_node->grpOperators[i] = atooid(token);
@@ -2680,18 +2682,18 @@ _readWindowAgg(void)
 			rightname = nullable_string(token, length);
 			if (leftname)
 				oprleft = get_typname_typid(leftname,
-											get_namespaceid(leftnspname));
+											NSP_OID(leftnspname));
 			else
 				oprleft = InvalidOid;
 			if (rightname)
 				oprright = get_typname_typid(rightname,
-											 get_namespaceid(rightnspname));
+											 NSP_OID(rightnspname));
 			else
 				oprright = InvalidOid;
 			local_node->partOperators[i] = get_operid(oprname,
 													  oprleft,
 													  oprright,
-													  get_namespaceid(nspname));
+													  NSP_OID(nspname));
 		}
 		else
 			local_node->partOperators[i] = atooid(token);
@@ -2736,18 +2738,18 @@ _readWindowAgg(void)
 			rightname = nullable_string(token, length);
 			if (leftname)
 				oprleft = get_typname_typid(leftname,
-											get_namespaceid(leftnspname));
+											NSP_OID(leftnspname));
 			else
 				oprleft = InvalidOid;
 			if (rightname)
 				oprright = get_typname_typid(rightname,
-											 get_namespaceid(rightnspname));
+											 NSP_OID(rightnspname));
 			else
 				oprright = InvalidOid;
 			local_node->ordOperators[i] = get_operid(oprname,
 													 oprleft,
 													 oprright,
-													 get_namespaceid(nspname));
+													 NSP_OID(nspname));
 		}
 		else
 			local_node->ordOperators[i] = atooid(token);
@@ -2809,18 +2811,18 @@ _readUnique(void)
 			rightname = nullable_string(token, length);
 			if (leftname)
 				oprleft = get_typname_typid(leftname,
-											get_namespaceid(leftnspname));
+											NSP_OID(leftnspname));
 			else
 				oprleft = InvalidOid;
 			if (rightname)
 				oprright = get_typname_typid(rightname,
-											 get_namespaceid(rightnspname));
+											 NSP_OID(rightnspname));
 			else
 				oprright = InvalidOid;
 			local_node->uniqOperators[i] = get_operid(oprname,
 													  oprleft,
 													  oprright,
-													  get_namespaceid(nspname));
+													  NSP_OID(nspname));
 		}
 		else
 			local_node->uniqOperators[i] = atooid(token);
@@ -2977,7 +2979,7 @@ _readRemoteStmt(void)
 				typname = nullable_string(token, length);
 				if (typname)
 					rparam->paramtype = get_typname_typid(typname,
-													  get_namespaceid(nspname));
+														  NSP_OID(nspname));
 				else
 					rparam->paramtype = InvalidOid;
 			}
@@ -3047,18 +3049,18 @@ _readSimpleSort(void)
 			rightname = nullable_string(token, length);
 			if (leftname)
 				oprleft = get_typname_typid(leftname,
-											get_namespaceid(leftnspname));
+											NSP_OID(leftnspname));
 			else
 				oprleft = InvalidOid;
 			if (rightname)
 				oprright = get_typname_typid(rightname,
-											 get_namespaceid(rightnspname));
+											 NSP_OID(rightnspname));
 			else
 				oprright = InvalidOid;
 			local_node->sortOperators[i] = get_operid(oprname,
  													  oprleft,
 													  oprright,
-													  get_namespaceid(nspname));
+													  NSP_OID(nspname));
 		}
 		else
 			local_node->sortOperators[i] = atooid(token);
@@ -3083,7 +3085,7 @@ _readSimpleSort(void)
 			if (collname)
 				local_node->collations[i] = get_collid(collname,
 													   collencoding,
-												   get_namespaceid(nspname));
+													   NSP_OID(nspname));
 			else
 				local_node->collations[i] = InvalidOid;
 		}

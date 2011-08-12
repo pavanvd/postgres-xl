@@ -294,7 +294,9 @@ extern int ParamListToDataRow(ParamListInfo params, char** result);
 
 extern void ExecCloseRemoteStatement(const char *stmt_name, List *nodelist);
 
+#ifndef XCP
 extern void ExecSetTempObjectIncluded(void);
+#endif
 
 extern int primary_data_node;
 #endif

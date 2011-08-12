@@ -172,7 +172,9 @@ static int handle_limit_offset(RemoteQuery *query_step, Query *query, PlannedStm
 static void InitXCWalkerContext(XCWalkerContext *context);
 static RemoteQuery *makeRemoteQuery(void);
 static void validate_part_col_updatable(const Query *query);
+#ifndef XCP
 static bool contains_temp_tables(List *rtable);
+#endif
 static bool contains_only_pg_catalog(List *rtable);
 
 /*
@@ -1445,6 +1447,7 @@ contains_only_pg_catalog(List *rtable)
 	return true;
 }
 
+#ifndef XCP
 /*
  * Returns true if at least one temporary table is in use
  * in query (and its subqueries)
@@ -1470,6 +1473,7 @@ contains_temp_tables(List *rtable)
 
 	return false;
 }
+#endif
 
 /*
  * get_plan_nodes - determine the nodes to execute the command on.
@@ -1986,7 +1990,9 @@ makeRemoteQuery(void)
 	result->paramval_data = NULL;
 	result->paramval_len = 0;
 	result->exec_direct_type = EXEC_DIRECT_NONE;
+#ifndef XCP
 	result->is_temp = false;
+#endif
 
 	result->relname = NULL;
 	result->remotejoin = false;
@@ -2800,9 +2806,11 @@ pgxc_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 		return result;
 	}
 
+#ifndef XCP
 	/* Check if temporary tables are in use in target list */
 	if (contains_temp_tables(query->rtable))
 		query_step->is_temp = true;
+#endif
 
 	if (query_step->exec_nodes == NULL)
 		get_plan_nodes_command(query_step, root);
@@ -3221,8 +3229,13 @@ GetHashExecNodes(RelationLocInfo *rel_loc_info, ExecNodes **exec_nodes, const Ex
  * This can only be done for a query a Top Level to avoid
  * duplicated queries on Datanodes.
  */
+#ifdef XCP
+List *
+AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType remoteExecType)
+#else
 List *
 AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType remoteExecType, bool is_temp)
+#endif
 {
 	List *result = stmts;
 
@@ -3237,7 +3250,9 @@ AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType rem
 		step->combine_type = COMBINE_TYPE_SAME;
 		step->sql_statement = (char *) queryString;
 		step->exec_type = remoteExecType;
+#ifndef XCP
 		step->is_temp = is_temp;
+#endif
 		result = lappend(result, step);
 	}
 
