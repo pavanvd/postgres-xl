@@ -6023,6 +6023,15 @@ determine_param_types(Plan *plan,  struct find_params_context *context)
 			break;
 
 		case T_ModifyTable:
+			{
+				ListCell   *l;
+
+				foreach(l, ((ModifyTable *) plan)->plans)
+				{
+					if (determine_param_types((Plan *) lfirst(l), context))
+						return true;
+				}
+			}
 			break;
 
 		case T_RemoteSubplan:
