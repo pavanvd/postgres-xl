@@ -2194,6 +2194,7 @@ _readFunctionScan(void)
 	READ_NODE_FIELD(funccolnames);
 	READ_NODE_FIELD(funccoltypes);
 	READ_NODE_FIELD(funccoltypmods);
+	READ_NODE_FIELD(funccolcollations);
 
 	READ_DONE();
 }
