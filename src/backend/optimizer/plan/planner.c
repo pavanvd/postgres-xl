@@ -623,6 +623,13 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 			else
 				rowMarks = root->rowMarks;
 
+#ifdef XCP
+			if (root->query_level > 1)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("INSERT/UPDATE/DELETE is not supported in subquery")));
+#endif
+
 			plan = (Plan *) make_modifytable(parse->commandType,
 											 parse->canSetTag,
 									   list_make1_int(parse->resultRelation),
