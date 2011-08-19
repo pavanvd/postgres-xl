@@ -172,8 +172,6 @@ typedef enum
 	SNAPSHOT_DIRECT       /* Data Node obtained directly from GTM */
 } SnapshotSource;
 
-void SetGlobalSnapshotData(int xmin, int xmax, int xcnt, int *xip);
-void UnsetGlobalSnapshotData(void);
 static bool GetSnapshotDataDataNode(Snapshot snapshot);
 static bool GetSnapshotDataCoordinator(Snapshot snapshot);
 /* Global snapshot data */
@@ -2375,12 +2373,12 @@ DisplayXidCache(void)
 void 
 SetGlobalSnapshotData(int xmin, int xmax, int xcnt, int *xip)
 {
+	if (gxip)
+		free(gxip);
 	snapshot_source = SNAPSHOT_COORDINATOR;
 	gxmin = xmin;
 	gxmax = xmax;
 	gxcnt = xcnt;
-	if (gxip)
-		free(gxip);
 	gxip = xip;
 	elog (DEBUG1, "global snapshot info: gxmin: %d, gxmax: %d, gxcnt: %d", gxmin, gxmax, gxcnt);
 }
@@ -2391,12 +2389,12 @@ SetGlobalSnapshotData(int xmin, int xmax, int xcnt, int *xip)
 void
 UnsetGlobalSnapshotData(void)
 {
+	if (gxip)
+		free(gxip);
 	snapshot_source = SNAPSHOT_UNDEFINED;
 	gxmin = InvalidTransactionId;
 	gxmax = InvalidTransactionId;
 	gxcnt = 0;
-	if (gxip)
-		free(gxip);
 	gxip = NULL;
 	elog (DEBUG1, "unset snapshot info");
 }
@@ -2431,23 +2429,23 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				errmsg("GTM error, could not obtain snapshot")));
 		else {
+			if (gxip)
+				free(gxip);
 			snapshot_source = SNAPSHOT_DIRECT;
 			gxmin = gtm_snapshot->sn_xmin;
 			gxmax = gtm_snapshot->sn_xmax;
 			gxcnt = gtm_snapshot->sn_xcnt;
 			RecentGlobalXmin = gtm_snapshot->sn_recent_global_xmin;
-			if (gxip)
-				free(gxip);
 			if (gxcnt > 0)
 			{
-				gxip = malloc(gxcnt * 4);
+				gxip = malloc(gxcnt * sizeof(int));
 				if (gxip == NULL)
 				{
 					ereport(ERROR,
 							(errcode(ERRCODE_OUT_OF_MEMORY),
 							 errmsg("out of memory")));
 				}
-				memcpy(gxip, gtm_snapshot->sn_xip, gxcnt * 4);
+				memcpy(gxip, gtm_snapshot->sn_xip, gxcnt * sizeof(int));
 			}
 			else
 				gxip = NULL;
@@ -2507,7 +2505,8 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 			snapshot->max_xcnt = gxcnt;
 		}
 
-		memcpy(snapshot->xip, gxip, gxcnt * sizeof(TransactionId)); 
+		for (index = 0; index < gxcnt; index++)
+			snapshot->xip[index] = gxip[index];
 		snapshot->curcid = GetCurrentCommandId(false);
 
 		if (!TransactionIdIsValid(MyProc->xmin))

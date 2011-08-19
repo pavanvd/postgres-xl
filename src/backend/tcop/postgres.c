@@ -4739,7 +4739,7 @@ PostgresMain(int argc, char *argv[], const char *username)
 				if (xcnt > 0)
 				{
 					int i;
-					xip = malloc(xcnt * 4);
+					xip = malloc(xcnt * sizeof(int));
 					if (xip == NULL)
 					{
 						ereport(ERROR,
