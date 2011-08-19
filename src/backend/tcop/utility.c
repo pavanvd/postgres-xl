@@ -2211,9 +2211,17 @@ ExecUtilityFindNodes(ObjectType object_type,
 		case OBJECT_VIEW:
 			/* Check if object is a temporary view */
 			if ((*is_temp = IsTempTable(relid)))
+#ifdef XCP
+				exec_type = EXEC_ON_DATANODES;
+#else
 				exec_type = EXEC_ON_NONE;
+#endif
 			else
+#ifdef XCP
+				exec_type = EXEC_ON_ALL_NODES;
+#else
 				exec_type = EXEC_ON_COORDS;
+#endif
 			break;
 
 		case OBJECT_INDEX:
