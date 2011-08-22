@@ -2480,11 +2480,12 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 			 * First call for this snapshot
 			 */
 			snapshot->xip = (TransactionId *)
-				malloc(arrayP->maxProcs * sizeof(TransactionId));
+				malloc(Max(arrayP->maxProcs, gxcnt) * sizeof(TransactionId));
 			if (snapshot->xip == NULL)
 				ereport(ERROR,
 						(errcode(ERRCODE_OUT_OF_MEMORY),
 						 errmsg("out of memory")));
+			snapshot->max_xcnt = Max(arrayP->maxProcs, gxcnt);
 
 			Assert(snapshot->subxip == NULL);
 			snapshot->subxip = (TransactionId *)
