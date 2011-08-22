@@ -157,6 +157,13 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 			   *lrt,
 			   *lrm;
 
+#ifdef XCP
+	if (parse->commandType == CMD_SELECT && parse->intoClause)
+		ereport(ERROR,
+				(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+				 (errmsg("INTO clause not yet supported"))));
+#endif
+
 	/* Cursor options may come from caller or from DECLARE CURSOR stmt */
 	if (parse->utilityStmt &&
 		IsA(parse->utilityStmt, DeclareCursorStmt))
