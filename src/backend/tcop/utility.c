@@ -1725,8 +1725,16 @@ standard_ProcessUtility(Node *parsetree,
 			 * Send command down to data nodes
 			 */
 			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+			{
 				ExecUtilityStmtOnNodes(queryString, NULL, true,
 									   EXEC_ON_DATANODES, false);
+			}
+			else if (IS_PGXC_COORDINATOR && IsConnFromCoord())
+			{
+				LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+				MyProc->vacuumFlags |= PROC_VACUUM_COORD;
+				LWLockRelease(ProcArrayLock);
+			}
 #else
 			/*
 			 * We have to run the command on nodes before coordinator because
@@ -1752,6 +1760,12 @@ standard_ProcessUtility(Node *parsetree,
 				PushActiveSnapshot(GetTransactionSnapshot());
 				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_COORDS, false);
 				PopActiveSnapshot();
+			}
+			else if (IS_PGXC_COORDINATOR && IsConnFromCoord())
+			{
+				LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+				MyProc->vacuumFlags &= ~PROC_VACUUM_COORD;
+				LWLockRelease(ProcArrayLock);
 			}
 #endif
 			break;

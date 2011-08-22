@@ -123,7 +123,7 @@ GetNewGlobalTransactionId(bool *timestamp_received,
 			gxid = (TransactionId) BeginTranGTM(NULL);
 			elog(LOG, "Forcely Received GlobalTransactionId = %d", gxid);
 		}
-		else if (MyProc->vacuumFlags)
+		else if (MyProc->vacuumFlags & PROC_VACUUM_COORD)
 		{
 			elog (DEBUG1, "Get GXID for vacuum");
 			/* try and get gxid directly from GTM */

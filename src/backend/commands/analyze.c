@@ -2797,6 +2797,8 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 
 	elog(LOG, "Getting detailed statistics for %s.%s", nspname, relname);
 
+	PGXCNodeBegin();
+
 	/* Make up query string */
 	initStringInfo(&query);
 	/* Generic statistic fields */
@@ -3175,6 +3177,8 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 		result = ExecRemoteQuery(node);
 	}
 	ExecEndRemoteQuery(node);
+
+	PGXCNodeCommit(true);
 
 	for (i = 0; i < attr_cnt; i++)
 	{
