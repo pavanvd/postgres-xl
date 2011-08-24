@@ -6298,7 +6298,7 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 		 * it is a SELECT, otherwise secondary data nodes won't return tuples
 		 * expecting there will be nothing to return.
 		 */
-		if (IS_PGXC_COORDINATOR)
+		if (IsA(outerPlan(node), ModifyTable))
 		{
 			rstmt.commandType = estate->es_plannedstmt->commandType;
 			rstmt.hasReturning = estate->es_plannedstmt->hasReturning;
@@ -6574,7 +6574,7 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 
 
 			is_read_only = IS_PGXC_DATANODE ||
-					estate->es_plannedstmt->commandType == CMD_SELECT;
+					IsA(outerPlan(plan), ModifyTable);
 
 			/*
 			 * Start transaction on data nodes if we are in explicit transaction
