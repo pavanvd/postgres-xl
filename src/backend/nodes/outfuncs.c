@@ -1725,8 +1725,23 @@ _outNullIfExpr(StringInfo str, NullIfExpr *node)
 {
 	WRITE_NODE_TYPE("NULLIFEXPR");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_OPERID_FIELD(opno);
+	else
+#endif
 	WRITE_OID_FIELD(opno);
+#ifdef XCP
+	if (portable_output)
+		WRITE_FUNCID_FIELD(opfuncid);
+	else
+#endif
 	WRITE_OID_FIELD(opfuncid);
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(opresulttype);
+	else
+#endif
 	WRITE_OID_FIELD(opresulttype);
 	WRITE_BOOL_FIELD(opretset);
 #ifdef XCP

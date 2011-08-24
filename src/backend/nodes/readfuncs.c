@@ -1042,7 +1042,17 @@ _readNullIfExpr(void)
 {
 	READ_LOCALS(NullIfExpr);
 
+#ifdef XCP
+	if (portable_input)
+		READ_OPERID_FIELD(opno);
+	else
+#endif
 	READ_OID_FIELD(opno);
+#ifdef XCP
+	if (portable_input)
+		READ_FUNCID_FIELD(opfuncid);
+	else
+#endif
 	READ_OID_FIELD(opfuncid);
 
 	/*
@@ -1053,8 +1063,17 @@ _readNullIfExpr(void)
 	 * (We don't currently support an ALTER OPERATOR command, but might
 	 * someday.)
 	 */
+#ifdef XCP
+	/* Do not invalidate if we have just looked up the value */
+	if (!portable_input)
+#endif
 	local_node->opfuncid = InvalidOid;
 
+#ifdef XCP
+	if (portable_input)
+		READ_TYPID_FIELD(opresulttype);
+	else
+#endif
 	READ_OID_FIELD(opresulttype);
 	READ_BOOL_FIELD(opretset);
 #ifdef XCP
