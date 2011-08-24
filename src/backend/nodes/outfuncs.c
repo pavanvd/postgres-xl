@@ -490,10 +490,52 @@ _outMergeAppend(StringInfo str, MergeAppend *node)
 
 	appendStringInfo(str, " :sortOperators");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid oper = node->sortOperators[i];
+			Oid oprleft, oprright;
+			/* Sort operator is always valid */
+			Assert(OidIsValid(oper));
+			appendStringInfoChar(str, ' ');
+			_outToken(str, NSP_NAME(get_opnamespace(oper)));
+			appendStringInfoChar(str, ' ');
+			_outToken(str, get_opname(oper));
+			appendStringInfoChar(str, ' ');
+			op_input_types(oper, &oprleft, &oprright);
+			_outToken(str, OidIsValid(oprleft) ?
+					NSP_NAME(get_typ_namespace(oprleft)) : NULL);
+			appendStringInfoChar(str, ' ');
+			_outToken(str, OidIsValid(oprleft) ? get_typ_name(oprleft) : NULL);
+			appendStringInfoChar(str, ' ');
+			_outToken(str, OidIsValid(oprright) ?
+					NSP_NAME(get_typ_namespace(oprright)) : NULL);
+			appendStringInfoChar(str, ' ');
+			_outToken(str, OidIsValid(oprright) ? get_typ_name(oprright) : NULL);
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->sortOperators[i]);
 
 	appendStringInfo(str, " :collations");
 	for (i = 0; i < node->numCols; i++)
+#ifdef XCP
+		if (portable_output)
+		{
+			Oid coll = node->collations[i];
+			if (OidIsValid(coll))
+			{
+				appendStringInfoChar(str, ' ');
+				_outToken(str, NSP_NAME(get_collation_namespace(coll)));
+				appendStringInfoChar(str, ' ');
+				_outToken(str, get_collation_name(coll));
+				appendStringInfo(str, " %d", get_collation_encoding(coll));
+			}
+			else
+				appendStringInfo(str, " <> <> -1");
+		}
+		else
+#endif
 		appendStringInfo(str, " %u", node->collations[i]);
 
 	appendStringInfo(str, " :nullsFirst");

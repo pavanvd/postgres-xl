@@ -2012,6 +2012,112 @@ _readAppend(void)
 
 
 /*
+ * _readMergeAppend
+ */
+static MergeAppend *
+_readMergeAppend(void)
+{
+	int i;
+	READ_LOCALS(MergeAppend);
+
+	READ_PLAN_FIELDS();
+	READ_NODE_FIELD(mergeplans);
+	READ_INT_FIELD(numCols);
+
+	token = pg_strtok(&length);		/* skip :sortColIdx */
+	local_node->sortColIdx = (AttrNumber *) palloc(local_node->numCols * sizeof(AttrNumber));
+	for (i = 0; i < local_node->numCols; i++)
+	{
+		token = pg_strtok(&length);
+		local_node->sortColIdx[i] = atoi(token);
+	}
+
+	token = pg_strtok(&length);		/* skip :sortOperators */
+	local_node->sortOperators = (Oid *) palloc(local_node->numCols * sizeof(Oid));
+	for (i = 0; i < local_node->numCols; i++)
+	{
+		token = pg_strtok(&length);
+		if (portable_input)
+		{
+			char       *nspname; /* namespace name */
+			char       *oprname; /* operator name */
+			char	   *leftnspname; /* left type namespace */
+			char	   *leftname; /* left type name */
+			Oid			oprleft; /* left type */
+			char	   *rightnspname; /* right type namespace */
+			char	   *rightname; /* right type name */
+			Oid			oprright; /* right type */
+			/* token is already set to nspname */
+			nspname = nullable_string(token, length);
+			token = pg_strtok(&length); /* get operator name */
+			oprname = nullable_string(token, length);
+			token = pg_strtok(&length); /* left type namespace */
+			leftnspname = nullable_string(token, length);
+			token = pg_strtok(&length); /* left type name */
+			leftname = nullable_string(token, length);
+			token = pg_strtok(&length); /* right type namespace */
+			rightnspname = nullable_string(token, length);
+			token = pg_strtok(&length); /* right type name */
+			rightname = nullable_string(token, length);
+			if (leftname)
+				oprleft = get_typname_typid(leftname,
+											NSP_OID(leftnspname));
+			else
+				oprleft = InvalidOid;
+			if (rightname)
+				oprright = get_typname_typid(rightname,
+											 NSP_OID(rightnspname));
+			else
+				oprright = InvalidOid;
+			local_node->sortOperators[i] = get_operid(oprname,
+ 													  oprleft,
+													  oprright,
+													  NSP_OID(nspname));
+		}
+		else
+		local_node->sortOperators[i] = atooid(token);
+	}
+
+	token = pg_strtok(&length);		/* skip :collations */
+	local_node->collations = (Oid *) palloc(local_node->numCols * sizeof(Oid));
+	for (i = 0; i < local_node->numCols; i++)
+	{
+		token = pg_strtok(&length);
+		if (portable_input)
+		{
+			char       *nspname; /* namespace name */
+			char       *collname; /* collation name */
+			int 		collencoding; /* collation encoding */
+			/* the token is already read */
+			nspname = nullable_string(token, length);
+			token = pg_strtok(&length); /* get collname */
+			collname = nullable_string(token, length);
+			token = pg_strtok(&length); /* get nargs */
+			collencoding = atoi(token);
+			if (collname)
+				local_node->collations[i] = get_collid(collname,
+													   collencoding,
+													   NSP_OID(nspname));
+			else
+				local_node->collations[i] = InvalidOid;
+		}
+		else
+		local_node->collations[i] = atooid(token);
+	}
+
+	token = pg_strtok(&length);		/* skip :nullsFirst */
+	local_node->nullsFirst = (bool *) palloc(local_node->numCols * sizeof(bool));
+	for (i = 0; i < local_node->numCols; i++)
+	{
+		token = pg_strtok(&length);
+		local_node->nullsFirst[i] = strtobool(token);
+	}
+
+	READ_DONE();
+}
+
+
+/*
  * _readRecursiveUnion
  */
 static RecursiveUnion *
@@ -3138,6 +3244,26 @@ _readNestLoopParam(void)
 
 	READ_DONE();
 }
+
+
+/*
+ * _readPlanRowMark
+ */
+static PlanRowMark *
+_readPlanRowMark(void)
+{
+	READ_LOCALS(PlanRowMark);
+
+	READ_UINT_FIELD(rti);
+	READ_UINT_FIELD(prti);
+	READ_UINT_FIELD(rowmarkId);
+	READ_ENUM_FIELD(markType, RowMarkType);
+	READ_BOOL_FIELD(noWait);
+	READ_BOOL_FIELD(isParent);
+
+	READ_DONE();
+}
+
 #endif /* XCP */
 
 
@@ -3278,6 +3404,8 @@ parseNodeString(void)
 		return_value = _readModifyTable();
 	else if (MATCH("APPEND", 6))
 		return_value = _readAppend();
+	else if (MATCH("MERGEAPPEND", 11))
+		return_value = _readMergeAppend();
 	else if (MATCH("RECURSIVEUNION", 14))
 		return_value = _readRecursiveUnion();
 	else if (MATCH("BITMAPAND", 9))
@@ -3340,6 +3468,8 @@ parseNodeString(void)
 		return_value = _readSimpleSort();
 	else if (MATCH("NESTLOOPPARAM", 13))
 		return_value = _readNestLoopParam();
+	else if (MATCH("PLANROWMARK", 11))
+		return_value = _readPlanRowMark();
 #endif
 	else
 	{
