@@ -514,6 +514,16 @@ make_agg_subplan(PlannerInfo *root, MinMaxAggInfo *mminfo)
 
 	plan->targetlist = subparse->targetList;
 
+#ifdef XCP
+	/* Set plan distribution */
+	if (mminfo->path->distribution)
+	{
+		plan = (Plan *) make_remotesubplan(subroot, plan, NULL,
+										   mminfo->path->distribution,
+										   mminfo->path->pathkeys);
+	}
+#endif
+
 	plan = (Plan *) make_limit(plan,
 							   subparse->limitOffset,
 							   subparse->limitCount,
