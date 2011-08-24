@@ -1127,6 +1127,22 @@ _copyRemoteSubplan(RemoteSubplan *from)
 
 	return newnode;
 }
+
+/*
+ * _copyDistribution
+ */
+static Distribution *
+_copyDistribution(Distribution *from)
+{
+	Distribution *newnode = makeNode(Distribution);
+
+	COPY_SCALAR_FIELD(distributionType);
+	COPY_SCALAR_FIELD(distributionKey);
+	COPY_BITMAPSET_FIELD(nodes);
+	COPY_BITMAPSET_FIELD(restrictNodes);
+
+	return newnode;
+}
 #endif
 
 
@@ -4180,6 +4196,9 @@ copyObject(void *from)
 #ifdef XCP
 		case T_RemoteSubplan:
 			retval = _copyRemoteSubplan(from);
+			break;
+		case T_Distribution:
+			retval = _copyDistribution(from);
 			break;
 #endif
 			/*

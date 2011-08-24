@@ -1593,12 +1593,50 @@ create_append_path(RelOptInfo *rel, List *subpaths)
 {
 	AppendPath *pathnode = makeNode(AppendPath);
 	ListCell   *l;
+#ifdef XCP
+	Distribution *distribution = NULL;
+#endif
 
 	pathnode->path.pathtype = T_Append;
 	pathnode->path.parent = rel;
 	pathnode->path.pathkeys = NIL;		/* result is always considered
 										 * unsorted */
 	pathnode->subpaths = subpaths;
+
+#ifdef XCP
+	/*
+	 * Set distribution for the AppendPath.
+	 * We do not allow child tables are distributed differently then parent.
+	 * So we just verify that distribution of all the subplan is the same
+	 * for all the subplan. We only allow the distribution is not set for some
+	 * subplans (assume the subplans are constraint excluded dummy relations.
+	 */
+	foreach(l, subpaths)
+	{
+		Path	   *subpath = (Path *) lfirst(l);
+
+		if (distribution == NULL)
+			distribution = copyObject(subpath->distribution);
+		else
+		{
+			if (subpath->distribution == NULL)
+				continue;
+			else if (equal(distribution, subpath->distribution))
+			{
+				if (subpath->distribution->restrictNodes)
+					distribution->restrictNodes = bms_union(
+							distribution->restrictNodes,
+							subpath->distribution->restrictNodes);
+			}
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+						 errmsg("could not plan this distributed statement"),
+						 errdetail("Distribution of the subplans is different, can not append.")));
+		}
+	}
+	pathnode->path.distribution = distribution;
+#endif
 
 	/*
 	 * Compute cost as sum of subplan costs.  We charge nothing extra for the
@@ -1636,6 +1674,9 @@ create_merge_append_path(PlannerInfo *root,
 	Cost		input_startup_cost;
 	Cost		input_total_cost;
 	ListCell   *l;
+#ifdef XCP
+	Distribution *distribution = NULL;
+#endif
 
 	pathnode->path.pathtype = T_MergeAppend;
 	pathnode->path.parent = rel;
@@ -1670,6 +1711,41 @@ create_merge_append_path(PlannerInfo *root,
 			}
 		}
 	}
+
+#ifdef XCP
+	/*
+	 * Set distribution for the AppendPath.
+	 * We do not allow child tables are distributed differently then parent.
+	 * So we just verify that distribution of all the subplan is the same
+	 * for all the subplan. We only allow the distribution is not set for some
+	 * subplans (assume the subplans are constraint excluded dummy relations.
+	 */
+	foreach(l, subpaths)
+	{
+		Path	   *subpath = (Path *) lfirst(l);
+
+		if (distribution == NULL)
+			distribution = copyObject(subpath->distribution);
+		else
+		{
+			if (subpath->distribution == NULL)
+				continue;
+			else if (equal(distribution, subpath->distribution))
+			{
+				if (subpath->distribution->restrictNodes)
+					distribution->restrictNodes = bms_union(
+							distribution->restrictNodes,
+							subpath->distribution->restrictNodes);
+			}
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+						 errmsg("could not plan this distributed statement"),
+						 errdetail("Distribution of the subplans is different, can not append.")));
+		}
+	}
+	pathnode->path.distribution = distribution;
+#endif
 
 	/* Add up all the costs of the input paths */
 	input_startup_cost = 0;
