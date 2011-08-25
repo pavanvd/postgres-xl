@@ -99,8 +99,8 @@ static void close_node_cursors(PGXCNodeHandle **connections, int conn_count, cha
 static PGXCNodeAllHandles *pgxc_get_all_transaction_nodes(PGXCNode_HandleRequested status_requested);
 static bool pgxc_start_command_on_connection(PGXCNodeHandle *connection,
 					bool need_tran, GlobalTransactionId gxid, TimestampTz timestamp,
-					RemoteQuery *step, int total_conn_count, Snapshot snapshot);
 #ifndef XCP
+					RemoteQueryState *remotestate, int total_conn_count, Snapshot snapshot);
 static bool ExecRemoteQueryInnerPlan(RemoteQueryState *node);
 #endif
 
@@ -1961,6 +1961,12 @@ PGXCNodeSetBeginQuery(char *query_string)
 }
 
 /*
+ * Error messages for PREPARE
+ */
+#define ERROR_DATANODES_PREPARE	-1
+#define ERROR_ALREADY_PREPARE	-2
+
+/*
  * Prepare transaction on Datanodes and Coordinators involved in current transaction.
  * GXID associated to current transaction has to be committed on GTM.
  */
@@ -2033,6 +2039,11 @@ finish:
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("cannot PREPARE a transaction that has operated on temporary tables")));
 		}
+
+		if (res == ERROR_ALREADY_PREPARE)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("transaction identifier \"%s\" is already in use", gid)));
 		else
 		{
 #endif
@@ -2182,10 +2193,10 @@ finish:
 		 */
 		if (!gtm_error)
 			if (pgxc_all_handles_send_gxid(pgxc_handles, rollback_xid, false))
-				result = EOF;
+				result = ERROR_DATANODES_PREPARE;
 
 		if (pgxc_all_handles_send_query(pgxc_handles, buffer, false))
-			result = EOF;
+			result = ERROR_DATANODES_PREPARE;
 
 #ifdef XCP
 		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
@@ -2202,7 +2213,10 @@ finish:
 		if (!gtm_error)
 			CommitPreparedTranGTM(gxid, rollback_xid);
 
-		return EOF;
+		if (gtm_error)
+			return ERROR_ALREADY_PREPARE;
+		else
+			return ERROR_DATANODES_PREPARE;
 	}
 
 	return result;
@@ -3579,12 +3593,15 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 	}
 
 	/*
-	 * If we have parameter values here and planner has not had them we
-	 * should prepare them now
+	 * If there are parameters supplied, get them into a form to be sent to the
+	 * datanodes with bind message. We should not have had done this before.
 	 */
-	if (estate->es_param_list_info && !node->paramval_data)
-		node->paramval_len = ParamListToDataRow(estate->es_param_list_info,
-												&node->paramval_data);
+	if (estate->es_param_list_info)
+	{
+		Assert(!remotestate->paramval_data);
+		remotestate->paramval_len = ParamListToDataRow(estate->es_param_list_info,
+												&remotestate->paramval_data);
+	}
 
 	/* We need expression context to evaluate */
 	if (node->exec_nodes && node->exec_nodes->en_expr)
@@ -3887,9 +3904,10 @@ register_write_nodes(int conn_count, PGXCNodeHandle **connections)
 static bool
 pgxc_start_command_on_connection(PGXCNodeHandle *connection, bool need_tran,
 									GlobalTransactionId gxid, TimestampTz timestamp,
-									RemoteQuery *step, int total_conn_count,
+									RemoteQueryState *remotestate, int total_conn_count,
 									Snapshot snapshot)
 {
+	RemoteQuery	*step = (RemoteQuery *) remotestate->ss.ps.plan;
 	if (connection->state == DN_CONNECTION_STATE_QUERY)
 		BufferConnection(connection);
 
@@ -3900,7 +3918,7 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection, bool need_tran,
 		return false;
 	if (snapshot && pgxc_node_send_snapshot(connection, snapshot))
 		return false;
-	if (step->statement || step->cursor || step->paramval_data)
+	if (step->statement || step->cursor || step->param_types)
 	{
 		/* need to use Extended Query Protocol */
 		int		fetch = 0;
@@ -3923,8 +3941,8 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection, bool need_tran,
 										  step->cursor,
 										  step->num_params,
 										  step->param_types,
-										  step->paramval_len,
-										  step->paramval_data,
+										  remotestate->paramval_len,
+										  remotestate->paramval_data,
 										  step->read_only,
 										  fetch) != 0)
 			return false;
@@ -4056,7 +4074,7 @@ do_query(RemoteQueryState *node)
 	if (primaryconnection)
 	{
 		if (!pgxc_start_command_on_connection(primaryconnection, need_tran, gxid,
-												timestamp, step, total_conn_count, snapshot))
+												timestamp, node, total_conn_count, snapshot))
 		{
 			pfree(connections);
 			pfree(primaryconnection);
@@ -4100,7 +4118,7 @@ do_query(RemoteQueryState *node)
 	for (i = 0; i < regular_conn_count; i++)
 	{
 		if (!pgxc_start_command_on_connection(connections[i], need_tran, gxid,
-												timestamp, step, total_conn_count, snapshot))
+												timestamp, node, total_conn_count, snapshot))
 		{
 			pfree(connections);
 			if (primaryconnection)
@@ -4242,8 +4260,8 @@ ExecRemoteQueryInnerPlan(RemoteQueryState *node)
 	 */
 	if (!TupIsNull(innerSlot))
 	{
-		step->paramval_len = ExecCopySlotDatarow(innerSlot,
-												 &step->paramval_data);
+		node->paramval_len = ExecCopySlotDatarow(innerSlot,
+												 &node->paramval_data);
 
 		/* Needed for expression evaluation */
 		if (estate->es_param_exec_vals)
@@ -5017,13 +5035,13 @@ ExecEndRemoteQuery(RemoteQueryState *node)
 	}
 
 	/*
-	 * Clean up parameters if they were set, since plan may be reused
+	 * Clean up parameters if they were set
 	 */
-	if (((RemoteQuery *) node->ss.ps.plan)->paramval_data)
- 	{
-		pfree(((RemoteQuery *) node->ss.ps.plan)->paramval_data);
-		((RemoteQuery *) node->ss.ps.plan)->paramval_data = NULL;
-		((RemoteQuery *) node->ss.ps.plan)->paramval_len = 0;
+	if (node->paramval_data)
+	{
+		pfree(node->paramval_data);
+		node->paramval_data = NULL;
+		node->paramval_len = 0;
 	}
 	/*
 	 * shut down the subplan

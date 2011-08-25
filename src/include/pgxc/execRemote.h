@@ -136,6 +136,10 @@ typedef struct RemoteQueryState
 	/* Simple DISTINCT support */
 	FmgrInfo   *eqfunctions; 			/* functions to compare tuples */
 	MemoryContext tmp_ctx;				/* separate context is needed to compare tuples */
+	/* Support for parameters */
+	char	   *paramval_data;		/* parameter data, format is like in BIND */
+	int			paramval_len;		/* length of parameter values data */
+
 }	RemoteQueryState;
 
 

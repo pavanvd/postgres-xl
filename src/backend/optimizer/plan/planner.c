@@ -18,6 +18,9 @@
 #include <limits.h>
 
 #include "catalog/pg_operator.h"
+#ifdef PGXC
+#include "commands/prepare.h"
+#endif /* PGXC */
 #include "executor/executor.h"
 #include "executor/nodeAgg.h"
 #include "miscadmin.h"
@@ -137,7 +140,18 @@ planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		 * is not allowed to go into PGXC planner.
 		 */
 		if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+		{
 			result = pgxc_planner(parse, cursorOptions, boundParams);
+			if (boundParams)
+			{
+				Oid *param_types = palloc(sizeof(Oid) * boundParams->numParams);
+				int	cntParam;
+				for (cntParam = 0; cntParam < boundParams->numParams; cntParam++)
+					param_types[cntParam] = boundParams->params[cntParam].ptype;
+				SetRemoteStatementName(result->planTree, NULL,
+									boundParams->numParams, param_types, 0);
+			}
+		}
 		else
 #endif /* XCP */
 #endif /* PGXC */

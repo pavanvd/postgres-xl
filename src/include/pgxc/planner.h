@@ -113,9 +113,6 @@ typedef struct
 	bool					is_temp; /* determine if this remote node is based
 									  * on a temporary objects (no 2PC) */
 #endif
-	/* Support for parameters */
-	char	   *paramval_data;		/* parameter data, format is like in BIND */
-	int			paramval_len;		/* length of parameter values data */
 
 	char	  *relname;
 	bool	   remotejoin;			/* True if this is a reduced remote join  */
@@ -168,7 +165,6 @@ extern bool StrictSelectChecking;
 
 extern PlannedStmt *pgxc_planner(Query *query, int cursorOptions,
 								 ParamListInfo boundParams);
-extern Plan *pgxc_grouping_planner(PlannerInfo *root, Plan *agg_plan);
 extern bool IsHashDistributable(Oid col_type);
 
 extern bool IsJoinReducible(RemoteQuery *innernode, RemoteQuery *outernode,
