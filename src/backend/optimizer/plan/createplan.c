@@ -5294,9 +5294,15 @@ find_referenced_cols_walker(Node *node, find_referenced_cols_context *context)
 	{
 		/*
 		 * Referenced Var is not a member of subtlist.
-		 * Probably this can't happen.
+		 * Go ahead and add junk one.
 		 */
-		elog(ERROR, "variable not found in subplan target list");
+		TargetEntry *newtle;
+		newtle = makeTargetEntry((Expr *) copyObject(node),
+								 list_length(context->newtlist) + 1,
+								 NULL,
+								 true);
+		context->newtlist = lappend(context->newtlist, newtle);
+		return false;
 	}
 	return expression_tree_walker(node, find_referenced_cols_walker,
 								  (void *) context);
