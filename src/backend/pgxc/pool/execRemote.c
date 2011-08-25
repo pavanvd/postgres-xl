@@ -99,8 +99,8 @@ static void close_node_cursors(PGXCNodeHandle **connections, int conn_count, cha
 static PGXCNodeAllHandles *pgxc_get_all_transaction_nodes(PGXCNode_HandleRequested status_requested);
 static bool pgxc_start_command_on_connection(PGXCNodeHandle *connection,
 					bool need_tran, GlobalTransactionId gxid, TimestampTz timestamp,
-#ifndef XCP
 					RemoteQueryState *remotestate, int total_conn_count, Snapshot snapshot);
+#ifndef XCP
 static bool ExecRemoteQueryInnerPlan(RemoteQueryState *node);
 #endif
 
@@ -3517,13 +3517,17 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 	}
 
 	combiner->ss.ps.ps_TupFromTlist = false;
+
 	/*
-	 * If we have parameter values here and planner has not had them we
-	 * should prepare them now
+	 * If there are parameters supplied, get them into a form to be sent to the
+	 * datanodes with bind message. We should not have had done this before.
 	 */
-	if (estate->es_param_list_info && !node->paramval_data)
-		node->paramval_len = ParamListToDataRow(estate->es_param_list_info,
-												&node->paramval_data);
+	if (estate->es_param_list_info)
+	{
+		Assert(!remotestate->paramval_data);
+		remotestate->paramval_len = ParamListToDataRow(estate->es_param_list_info,
+												&remotestate->paramval_data);
+	}
 
 	/* We need expression context to evaluate */
 	if (node->exec_nodes && node->exec_nodes->en_expr)
@@ -3907,7 +3911,11 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection, bool need_tran,
 									RemoteQueryState *remotestate, int total_conn_count,
 									Snapshot snapshot)
 {
+#ifdef XCP
+	RemoteQuery	*step = (RemoteQuery *) remotestate->combiner.ss.ps.plan;
+#else
 	RemoteQuery	*step = (RemoteQuery *) remotestate->ss.ps.plan;
+#endif
 	if (connection->state == DN_CONNECTION_STATE_QUERY)
 		BufferConnection(connection);
 
@@ -3974,11 +3982,9 @@ do_query(RemoteQueryState *node)
 	bool			need_tran;
 	PGXCNodeAllHandles *pgxc_connections;
 
-#ifndef XCP
 	/* Be sure to set temporary object flag if necessary */
 	if (step->is_temp)
 		temp_object_included = true;
-#endif
 
 	/*
 	 * Get connections for Datanodes only, utilities and DDLs
@@ -4420,7 +4426,7 @@ ExecRemoteQuery(RemoteQueryState *node)
 
 			/* If explicit transaction is needed gxid is already sent */
 			if (!pgxc_start_command_on_connection(primaryconnection, need_tran, gxid,
-												timestamp, step, total_conn_count, snapshot))
+												timestamp, node, total_conn_count, snapshot))
 			{
 				pfree(connections);
 				pfree(primaryconnection);
@@ -4465,7 +4471,7 @@ ExecRemoteQuery(RemoteQueryState *node)
 				BufferConnection(connections[i]);
 			/* If explicit transaction is needed gxid is already sent */
 			if (!pgxc_start_command_on_connection(connections[i], need_tran, gxid,
-												timestamp, step, total_conn_count, snapshot))
+												timestamp, node, total_conn_count, snapshot))
 			{
 				pfree(connections);
 				if (primaryconnection)
@@ -4902,11 +4908,11 @@ ExecEndRemoteQuery(RemoteQueryState *node)
 	/*
 	 * Clean up parameters if they were set, since plan may be reused
 	 */
-	if (((RemoteQuery *) combiner->ss.ps.plan)->paramval_data)
- 	{
-		pfree(((RemoteQuery *) combiner->ss.ps.plan)->paramval_data);
-		((RemoteQuery *) combiner->ss.ps.plan)->paramval_data = NULL;
-		((RemoteQuery *) combiner->ss.ps.plan)->paramval_len = 0;
+	if (node->paramval_data)
+	{
+		pfree(node->paramval_data);
+		node->paramval_data = NULL;
+		node->paramval_len = 0;
 	}
 
 	CloseCombiner(combiner);

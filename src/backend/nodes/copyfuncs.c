@@ -1035,8 +1035,9 @@ _copyRemoteQuery(RemoteQuery *from)
 	COPY_POINTER_FIELD(param_types,
 					   sizeof(from->param_types[0]) * from->num_params);
 	COPY_SCALAR_FIELD(exec_type);
+#ifndef XCP
 	COPY_SCALAR_FIELD(is_temp);
-
+#endif
 	COPY_STRING_FIELD(relname);
 	COPY_SCALAR_FIELD(remotejoin);
 	COPY_SCALAR_FIELD(reduce_level);
