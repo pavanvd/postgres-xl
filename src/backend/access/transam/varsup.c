@@ -132,7 +132,6 @@ GetNewGlobalTransactionId(bool *timestamp_received,
 		else
 		{
 			gxid = next_xid;
-			elog(LOG, "GlobalTransactionId = %d", next_xid);
 			next_xid = InvalidTransactionId; /* reset */
 		}
 	}

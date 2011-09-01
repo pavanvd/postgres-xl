@@ -516,10 +516,7 @@ restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
 						  constExpr->constisnull, nodenums, NULL);
 
 		for (i = 0; i < count; i++)
-		{
-			elog(LOG, "Restrict distribution to node %d", nodenums[i]);
 			restrict = bms_add_member(restrict, nodenums[i]);
-		}
 		if (distribution->restrictNodes)
 			distribution->restrictNodes = bms_intersect(distribution->restrictNodes,
 														restrict);
