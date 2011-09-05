@@ -6598,7 +6598,7 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 
 
 			is_read_only = IS_PGXC_DATANODE ||
-					IsA(outerPlan(plan), ModifyTable);
+					!IsA(outerPlan(plan), ModifyTable);
 
 			/*
 			 * Start transaction on data nodes if we are in explicit transaction
