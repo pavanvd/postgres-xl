@@ -1591,49 +1591,64 @@ create_append_path(RelOptInfo *rel, List *subpaths)
 	AppendPath *pathnode = makeNode(AppendPath);
 	ListCell   *l;
 #ifdef XCP
-	Distribution *distribution = NULL;
+	Distribution *distribution;
+	Path	   *subpath;
 #endif
 
 	pathnode->path.pathtype = T_Append;
 	pathnode->path.parent = rel;
 	pathnode->path.pathkeys = NIL;		/* result is always considered
 										 * unsorted */
-	pathnode->subpaths = subpaths;
-
 #ifdef XCP
 	/*
-	 * Set distribution for the AppendPath.
-	 * We do not allow child tables are distributed differently then parent.
-	 * So we just verify that distribution of all the subplan is the same
-	 * for all the subplan. We only allow the distribution is not set for some
-	 * subplans (assume the subplans are constraint excluded dummy relations.
+	 * Append path is used to implement scans of inherited tables and some
+	 * "set" operations, like UNION ALL. While all inherited tables should
+	 * have the same distribution, UNION'ed queries may have different.
+	 * When paths being appended have the same distribution it is OK to push
+	 * Append down to the data nodes. If not, perform "coordinator" Append.
 	 */
-	foreach(l, subpaths)
-	{
-		Path	   *subpath = (Path *) lfirst(l);
 
-		if (distribution == NULL)
-			distribution = copyObject(subpath->distribution);
+	/* Take distribution of the first node */
+	l = list_head(subpaths);
+	subpath = (Path *) lfirst(l);
+	distribution = copyObject(subpath->distribution);
+	/*
+	 * Check remaining subpaths, if all distributions equal to the first set
+	 * it as a distribution of the Append path; otherwise make up coordinator
+	 * Append
+	 */
+	while (l = lnext(l))
+	{
+		subpath = (Path *) lfirst(l);
+
+		if (equal(distribution, subpath->distribution))
+		{
+			if (subpath->distribution->restrictNodes)
+				distribution->restrictNodes = bms_union(
+						distribution->restrictNodes,
+						subpath->distribution->restrictNodes);
+		}
 		else
 		{
-			if (subpath->distribution == NULL)
-				continue;
-			else if (equal(distribution, subpath->distribution))
-			{
-				if (subpath->distribution->restrictNodes)
-					distribution->restrictNodes = bms_union(
-							distribution->restrictNodes,
-							subpath->distribution->restrictNodes);
-			}
-			else
-				ereport(ERROR,
-						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
-						 errmsg("could not plan this distributed statement"),
-						 errdetail("Distribution of the subplans is different, can not append.")));
+			break;
 		}
 	}
-	pathnode->path.distribution = distribution;
+	if (l)
+	{
+		List *newsubpaths = NIL;
+		foreach(l, subpaths)
+		{
+			subpath = (Path *) lfirst(l);
+			subpath = redistribute_path(subpath, '\0', NULL, NULL);
+			newsubpaths = lappend(newsubpaths, subpath);
+		}
+		subpaths = newsubpaths;
+		pathnode->path.distribution = NULL;
+	}
+	else
+		pathnode->path.distribution = distribution;
 #endif
+	pathnode->subpaths = subpaths;
 
 	/*
 	 * Compute cost as sum of subplan costs.  We charge nothing extra for the
@@ -1673,10 +1688,66 @@ create_merge_append_path(PlannerInfo *root,
 	ListCell   *l;
 #ifdef XCP
 	Distribution *distribution = NULL;
+	Path	   *subpath;
 #endif
 
 	pathnode->path.pathtype = T_MergeAppend;
 	pathnode->path.parent = rel;
+#ifdef XCP
+	/*
+	 * It is safe to push down MergeAppend if all subpath distributions
+	 * are the same and these distributions are Replicated or distribution key
+	 * is the expression of the first pathkey.
+	 */
+	/* Take distribution of the first node */
+	l = list_head(subpaths);
+	subpath = (Path *) lfirst(l);
+	distribution = copyObject(subpath->distribution);
+	/*
+	 * Verify if it is safe to push down MergeAppend with this distribution.
+	 * TODO implement check of the second condition (distribution key is the
+	 * first pathkey)
+	 */
+	if (distribution == NULL || IsReplicated(distribution->distributionType))
+	{
+		/*
+		 * Check remaining subpaths, if all distributions equal to the first set
+		 * it as a distribution of the Append path; otherwise make up coordinator
+		 * Append
+		 */
+		while (l = lnext(l))
+		{
+			subpath = (Path *) lfirst(l);
+
+			if (equal(distribution, subpath->distribution))
+			{
+				if (subpath->distribution->restrictNodes)
+					distribution->restrictNodes = bms_union(
+							distribution->restrictNodes,
+							subpath->distribution->restrictNodes);
+			}
+			else
+			{
+				break;
+			}
+		}
+	}
+	if (l)
+	{
+		List *newsubpaths = NIL;
+		foreach(l, subpaths)
+		{
+			subpath = (Path *) lfirst(l);
+			subpath = redistribute_path(subpath, '\0', NULL, NULL);
+			newsubpaths = lappend(newsubpaths, subpath);
+		}
+		subpaths = newsubpaths;
+		pathnode->path.distribution = NULL;
+	}
+	else
+		pathnode->path.distribution = distribution;
+#endif
+
 	pathnode->path.pathkeys = pathkeys;
 	pathnode->subpaths = subpaths;
 
@@ -1708,41 +1779,6 @@ create_merge_append_path(PlannerInfo *root,
 			}
 		}
 	}
-
-#ifdef XCP
-	/*
-	 * Set distribution for the AppendPath.
-	 * We do not allow child tables are distributed differently then parent.
-	 * So we just verify that distribution of all the subplan is the same
-	 * for all the subplan. We only allow the distribution is not set for some
-	 * subplans (assume the subplans are constraint excluded dummy relations.
-	 */
-	foreach(l, subpaths)
-	{
-		Path	   *subpath = (Path *) lfirst(l);
-
-		if (distribution == NULL)
-			distribution = copyObject(subpath->distribution);
-		else
-		{
-			if (subpath->distribution == NULL)
-				continue;
-			else if (equal(distribution, subpath->distribution))
-			{
-				if (subpath->distribution->restrictNodes)
-					distribution->restrictNodes = bms_union(
-							distribution->restrictNodes,
-							subpath->distribution->restrictNodes);
-			}
-			else
-				ereport(ERROR,
-						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
-						 errmsg("could not plan this distributed statement"),
-						 errdetail("Distribution of the subplans is different, can not append.")));
-		}
-	}
-	pathnode->path.distribution = distribution;
-#endif
 
 	/* Add up all the costs of the input paths */
 	input_startup_cost = 0;

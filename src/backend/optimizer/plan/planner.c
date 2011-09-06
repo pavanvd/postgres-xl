@@ -999,9 +999,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	if (parse->setOperations)
 	{
 		List	   *set_sortclauses;
-#ifdef XCP
-		elog(ERROR, "Set operations are not supported yet");
-#endif
 
 		/*
 		 * If there's a top-level ORDER BY, assume we have to fetch all the
