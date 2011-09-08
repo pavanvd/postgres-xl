@@ -28,6 +28,7 @@
 #include "nodes/plannodes.h"
 #include "nodes/relation.h"
 #ifdef XCP
+#include "fmgr.h"
 #include "catalog/namespace.h"
 #include "pgxc/execRemote.h"
 #include "utils/lsyscache.h"
@@ -354,6 +355,35 @@ _outDatum(StringInfo str, Datum value, int typlen, bool typbyval)
 		}
 	}
 }
+
+
+#ifdef XCP
+/*
+ * Output value in text format
+ */
+static void
+_printDatum(StringInfo str, Datum value, Oid typid)
+{
+	Oid 		typOutput;
+	bool 		typIsVarlena;
+	FmgrInfo    finfo;
+	Datum		tmpval;
+	char	   *textvalue;
+
+	/* Get output function for the type */
+	getTypeOutputInfo(typid, &typOutput, &typIsVarlena);
+	fmgr_info(typOutput, &finfo);
+
+	/* Detoast value if needed */
+	if (typIsVarlena)
+		tmpval = PointerGetDatum(PG_DETOAST_DATUM(value));
+	else
+		tmpval = value;
+
+	textvalue = DatumGetCString(FunctionCall1(&finfo, tmpval));
+	_outToken(str, textvalue);
+}
+#endif
 
 
 /*
@@ -1501,6 +1531,11 @@ _outConst(StringInfo str, Const *node)
 	if (node->constisnull)
 		appendStringInfo(str, "<>");
 	else
+#ifdef XCP
+		if (portable_output)
+			_printDatum(str, node->constvalue, node->consttype);
+		else
+#endif
 		_outDatum(str, node->constvalue, node->constlen, node->constbyval);
 }
 
@@ -2164,6 +2199,11 @@ _outCoalesceExpr(StringInfo str, CoalesceExpr *node)
 {
 	WRITE_NODE_TYPE("COALESCE");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(coalescetype);
+	else
+#endif
 	WRITE_OID_FIELD(coalescetype);
 #ifdef XCP
 	if (portable_output)

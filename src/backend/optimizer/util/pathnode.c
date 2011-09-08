@@ -1158,22 +1158,41 @@ not_allowed_join:
 							(new_inner_key == NULL || new_outer_key == NULL))
 						continue;
 
+					/*
+					 * If this restriction the first or easier to calculate
+					 * then preferred, try to store it as new preferred
+					 * restriction to redistribute along it.
+					 */
 					if (preferred == NULL ||
 							(cost.per_tuple < preferred->eval_cost.per_tuple))
 					{
+						/*
+						 * Left expression depends only on outer subpath and
+						 * right expression depends only on inner subpath, so
+						 * we can redistribute both and make left expression the
+						 * distribution key of outer subplan and right
+						 * expression the distribution key of inner subplan
+						 */
 						if (bms_is_subset(ri->left_relids, outer_rels) &&
 								bms_is_subset(ri->right_relids, inner_rels))
 						{
 							preferred = ri;
-							new_inner_key = left;
-							new_outer_key = right;
+							new_outer_key = left;
+							new_inner_key = right;
 						}
+						/*
+						 * Left expression depends only on inner subpath and
+						 * right expression depends only on outer subpath, so
+						 * we can redistribute both and make left expression the
+						 * distribution key of inner subplan and right
+						 * expression the distribution key of outer subplan
+						 */
 						if (bms_is_subset(ri->left_relids, inner_rels) &&
 								bms_is_subset(ri->right_relids, outer_rels))
 						{
 							preferred = ri;
-							new_inner_key = right;
-							new_outer_key = left;
+							new_inner_key = left;
+							new_outer_key = right;
 						}
 					}
 				}
@@ -1186,16 +1205,17 @@ not_allowed_join:
 			Expr *key;
 			int idx;
 			Bitmapset *nodes = NULL;
-			/*
-			 * If we redistribute both parts do join on all nodes.
-			 * If we do only one of them distribute other as unchanged part.
-			 */
+			/* If we redistribute both parts do join on all nodes ... */
 			if (new_inner_key && new_outer_key)
 			{
 				int i;
 				for (i = 1; i <= NumDataNodes; i++)
 					nodes = bms_add_member(nodes, i);
 			}
+			/*
+			 * ... if we do only one of them redistribute it on the same nodes
+			 * as other.
+			 */
 			else if (new_inner_key)
 			{
 				nodes = bms_copy(outerd->nodes);
@@ -1621,7 +1641,7 @@ create_append_path(RelOptInfo *rel, List *subpaths)
 	{
 		subpath = (Path *) lfirst(l);
 
-		if (equal(distribution, subpath->distribution))
+		if (distribution && equal(distribution, subpath->distribution))
 		{
 			if (subpath->distribution->restrictNodes)
 				distribution->restrictNodes = bms_union(
@@ -1639,7 +1659,9 @@ create_append_path(RelOptInfo *rel, List *subpaths)
 		foreach(l, subpaths)
 		{
 			subpath = (Path *) lfirst(l);
-			subpath = redistribute_path(subpath, '\0', NULL, NULL);
+			if (subpath->distribution)
+				subpath = redistribute_path(subpath, LOCATOR_TYPE_COORDINATOR,
+											NULL, NULL);
 			newsubpaths = lappend(newsubpaths, subpath);
 		}
 		subpaths = newsubpaths;
@@ -1719,7 +1741,7 @@ create_merge_append_path(PlannerInfo *root,
 		{
 			subpath = (Path *) lfirst(l);
 
-			if (equal(distribution, subpath->distribution))
+			if (distribution && equal(distribution, subpath->distribution))
 			{
 				if (subpath->distribution->restrictNodes)
 					distribution->restrictNodes = bms_union(
@@ -1738,7 +1760,9 @@ create_merge_append_path(PlannerInfo *root,
 		foreach(l, subpaths)
 		{
 			subpath = (Path *) lfirst(l);
-			subpath = redistribute_path(subpath, '\0', NULL, NULL);
+			if (subpath->distribution)
+				subpath = redistribute_path(subpath, LOCATOR_TYPE_COORDINATOR,
+											NULL, NULL);
 			newsubpaths = lappend(newsubpaths, subpath);
 		}
 		subpaths = newsubpaths;

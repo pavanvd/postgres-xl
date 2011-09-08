@@ -35,6 +35,7 @@
 #include "access/htup.h"
 #endif
 #ifdef XCP
+#include "fmgr.h"
 #include "catalog/namespace.h"
 #include "nodes/plannodes.h"
 #include "pgxc/execRemote.h"
@@ -378,6 +379,9 @@ set_portable_input(bool value)
 
 
 static Datum readDatum(bool typbyval);
+#ifdef XCP
+static Datum scanDatum(Oid typid, int typmod);
+#endif
 
 /*
  * _readBitmapset
@@ -705,6 +709,12 @@ _readConst(void)
 	if (local_node->constisnull)
 		token = pg_strtok(&length);		/* skip "<>" */
 	else
+#ifdef XCP
+		if (portable_input)
+			local_node->constvalue = scanDatum(local_node->consttype,
+											   local_node->consttypmod);
+		else
+#endif
 		local_node->constvalue = readDatum(local_node->constbyval);
 
 	READ_DONE();
@@ -1540,6 +1550,11 @@ _readCoalesceExpr(void)
 {
 	READ_LOCALS(CoalesceExpr);
 
+#ifdef XCP
+	if (portable_input)
+		READ_TYPID_FIELD(coalescetype);
+	else
+#endif
 	READ_OID_FIELD(coalescetype);
 #ifdef XCP
 	if (portable_input)
@@ -3544,3 +3559,49 @@ readDatum(bool typbyval)
 
 	return res;
 }
+
+#ifdef XCP
+/*
+ * scanDatum
+ *
+ * Recreate Datum from the text format understandable by the input function
+ * of the specified data type.
+ */
+static Datum
+scanDatum(Oid typid, int typmod)
+{
+	Oid			typInput;
+	Oid			typioparam;
+	FmgrInfo	finfo;
+	FunctionCallInfoData fcinfo;
+	char	   *value;
+	Datum		res;
+	READ_TEMP_LOCALS();
+
+	/* Get input function for the type */
+	getTypeInputInfo(typid, &typInput, &typioparam);
+	fmgr_info(typInput, &finfo);
+
+	/* Read the value */
+	token = pg_strtok(&length);
+	value = nullable_string(token, length);
+
+	/* The value can not be NULL, so we actually received empty string */
+	if (value == NULL)
+		value = "";
+
+	/* Invoke input function */
+	InitFunctionCallInfoData(fcinfo, &finfo, 3, InvalidOid, NULL, NULL);
+
+	fcinfo.arg[0] = CStringGetDatum(value);
+	fcinfo.arg[1] = ObjectIdGetDatum(typioparam);
+	fcinfo.arg[2] = Int32GetDatum(typmod);
+	fcinfo.argnull[0] = false;
+	fcinfo.argnull[1] = false;
+	fcinfo.argnull[2] = false;
+
+	res = FunctionCallInvoke(&fcinfo);
+
+	return res;
+}
+#endif

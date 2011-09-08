@@ -48,6 +48,7 @@
 #include "executor/executor.h"
 #ifdef XCP
 #include "catalog/pg_aggregate.h"
+#include "parser/parse_coerce.h"
 #else
 #include "rewrite/rewriteManip.h"
 #endif /* XCP */
@@ -5264,8 +5265,40 @@ find_referenced_cols_walker(Node *node, find_referenced_cols_context *context)
 			aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
 			aggtranstype = aggform->aggtranstype;
 			ReleaseSysCache(aggTuple);
+			if (IsPolymorphicType(aggtranstype))
+			{
+				Oid 	   *inputTypes;
+				Oid		   *declaredArgTypes;
+				int			agg_nargs;
+				int			numArgs;
+				ListCell   *l;
+
+				inputTypes = (Oid *) palloc(sizeof(Oid) * list_length(aggref->args));
+				numArgs = 0;
+				foreach(l, aggref->args)
+				{
+					TargetEntry *tle = (TargetEntry *) lfirst(l);
+
+					if (!tle->resjunk)
+						inputTypes[numArgs++] = exprType((Node *) tle->expr);
+				}
+
+				/* have to fetch the agg's declared input types... */
+				(void) get_func_signature(aggref->aggfnoid,
+										  &declaredArgTypes, &agg_nargs);
+				Assert(agg_nargs == numArgs);
+
+
+				aggtranstype = enforce_generic_type_consistency(inputTypes,
+																declaredArgTypes,
+																agg_nargs,
+																aggtranstype,
+																false);
+				pfree(inputTypes);
+				pfree(declaredArgTypes);
+			}
 			newagg = copyObject(aggref);
-			newagg->aggtype = aggform->aggtranstype;
+			newagg->aggtype = aggtranstype;
 
 			newtle = makeTargetEntry((Expr *) newagg,
 									 list_length(context->newtlist) + 1,
