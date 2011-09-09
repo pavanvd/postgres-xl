@@ -2220,6 +2220,11 @@ _outMinMaxExpr(StringInfo str, MinMaxExpr *node)
 {
 	WRITE_NODE_TYPE("MINMAX");
 
+#ifdef XCP
+	if (portable_output)
+		WRITE_TYPID_FIELD(minmaxtype);
+	else
+#endif
 	WRITE_OID_FIELD(minmaxtype);
 #ifdef XCP
 	if (portable_output)

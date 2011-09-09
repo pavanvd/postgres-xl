@@ -1576,6 +1576,11 @@ _readMinMaxExpr(void)
 {
 	READ_LOCALS(MinMaxExpr);
 
+#ifdef XCP
+	if (portable_input)
+		READ_TYPID_FIELD(minmaxtype);
+	else
+#endif
 	READ_OID_FIELD(minmaxtype);
 #ifdef XCP
 	if (portable_input)
