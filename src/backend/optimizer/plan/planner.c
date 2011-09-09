@@ -1367,34 +1367,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			 */
 			if (need_tlist_eval)
 			{
-#ifdef XCP
-				/*
-				 * Result may change tuple values so distribution key may move
-				 * to different field or disappear at all
-				 */
-				if (distribution &&
-						distribution->distributionKey != InvalidAttrNumber)
-				{
-					TargetEntry	   *keyTle;
-					Expr		   *keyExpr;
-					ListCell	   *lc;
-
-					keyTle = (TargetEntry *) list_nth(result_plan->targetlist,
-										  distribution->distributionKey - 1);
-					keyExpr = keyTle->expr;
-
-					distribution->distributionKey = InvalidAttrNumber;
-					foreach(lc, sub_tlist)
-					{
-						TargetEntry	   *tle = (TargetEntry *) lfirst(lc);
-						if (equal(tle->expr, keyExpr))
-						{
-							distribution->distributionKey = tle->resno;
-							break;
-						}
-					}
-				}
-#endif
 				/*
 				 * If the top-level plan node is one that cannot do expression
 				 * evaluation, we must insert a Result node to project the
@@ -2007,7 +1979,54 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 				int			nodenum;
 
 				distributePlan->distributionType = root->distribution->distributionType;
-				distributePlan->distributionKey = root->distribution->distributionKey;
+				distributePlan->distributionKey = InvalidAttrNumber;
+				if (root->distribution->distributionExpr)
+				{
+					ListCell   *lc;
+
+					/* Find distribution expression in the target list */
+					foreach(lc, distributePlan->scan.plan.targetlist)
+					{
+						TargetEntry *tle = (TargetEntry *) lfirst(lc);
+
+						if (equal(tle->expr, root->distribution->distributionExpr))
+						{
+							distributePlan->distributionKey = tle->resno;
+							break;
+						}
+					}
+
+					if (distributePlan->distributionKey == InvalidAttrNumber)
+					{
+						Plan 	   *lefttree = distributePlan->scan.plan.lefttree;
+						Plan 	   *plan;
+						TargetEntry *newtle;
+
+						/* The expression is not found, need to add junk */
+						newtle = makeTargetEntry((Expr *) root->distribution->distributionExpr,
+												 list_length(lefttree->targetlist) + 1,
+												 NULL,
+												 true);
+
+						if (is_projection_capable_plan(lefttree))
+						{
+							/* Ok to modify subplan's target list */
+							lefttree->targetlist = lappend(lefttree->targetlist,
+														   newtle);
+						}
+						else
+						{
+							/* Use Result node to calculate expression */
+							List *newtlist = list_copy(lefttree->targetlist);
+							newtlist = lappend(newtlist, newtle);
+							lefttree = (Plan *) make_result(root, newtlist, NULL, lefttree);
+							distributePlan->scan.plan.lefttree = lefttree;
+						}
+						/* Update all the hierarchy */
+						for (plan = result_plan; plan != lefttree; plan = plan->lefttree)
+							plan->targetlist = lefttree->targetlist;
+					}
+				}
 				tmpset = bms_copy(root->distribution->nodes);
 				distributePlan->distributionNodes = NIL;
 				while ((nodenum = bms_first_member(tmpset)) >= 0)

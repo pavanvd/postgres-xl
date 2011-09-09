@@ -33,7 +33,7 @@ typedef struct Distribution
 	NodeTag		type;
 
 	char		distributionType;
-	AttrNumber	distributionKey;
+	Node	   *distributionExpr;
 	Bitmapset  *nodes;
 	Bitmapset  *restrictNodes;
 } Distribution;

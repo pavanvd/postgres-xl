@@ -98,50 +98,54 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 				distribution->nodes = bms_add_member(distribution->nodes,
 													 lfirst_int(lc));
 			distribution->restrictNodes = NULL;
-
-			/*
-			 * For INSERT and UPDATE plan tlist is matching the target table
-			 * layout
-			 */
-			if (command_type == CMD_INSERT || command_type == CMD_UPDATE)
-				distribution->distributionKey = rel_loc_info->partAttrNum;
-
-			/*
-			 * We do not support update of distribution key yet
-			 */
-			if (command_type == CMD_UPDATE && rel_loc_info->partAttrNum)
+			if (rel_loc_info->partAttrNum)
 			{
-				TargetEntry *keyTle = (TargetEntry *) list_nth(tlist,
-											   rel_loc_info->partAttrNum - 1);
-				if (!IsA(keyTle->expr, Var))
-					ereport(ERROR,
-							(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-							(errmsg("Partition column can't be updated in current version"))));
+				/*
+				 * For INSERT and UPDATE plan tlist is matching the target table
+				 * layout
+				 */
+				if (command_type == CMD_INSERT || command_type == CMD_UPDATE)
+				{
+					TargetEntry *keyTle;
+					keyTle = (TargetEntry *) list_nth(tlist,
+											  rel_loc_info->partAttrNum - 1);
+					/*
+					 * We do not support update of distribution key yet
+					 */
+					if (command_type == CMD_UPDATE && !IsA(keyTle->expr, Var))
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+								(errmsg("Partition column can't be updated in current version"))));
+
+					distribution->distributionExpr = (Node *) keyTle->expr;
+				}
+
+				/*
+				 * For delete we need to add the partitioning key of the target
+				 * table to the tlist, so distribution can be correctly handled
+				 * trough all the planning process.
+				 */
+				if (command_type == CMD_DELETE)
+				{
+					Form_pg_attribute att_tup;
+					TargetEntry *tle;
+					Var		   *var;
+
+					att_tup = rel->rd_att->attrs[rel_loc_info->partAttrNum - 1];
+					var = makeVar(result_relation, rel_loc_info->partAttrNum,
+								  att_tup->atttypid, att_tup->atttypmod,
+								  att_tup->attcollation, 0);
+
+					tle = makeTargetEntry((Expr *) var,
+										  list_length(tlist) + 1,
+										  pstrdup(NameStr(att_tup->attname)),
+										  true);
+					tlist = lappend(tlist, tle);
+					distribution->distributionExpr = (Node *) var;
+				}
 			}
-
-			/*
-			 * For delete we need to add the partitioning key of the target
-			 * table to the tlist, so distribution can be correctly handled
-			 * trough all the planning process.
-			 */
-			if (command_type == CMD_DELETE && rel_loc_info->partAttrNum)
-			{
-				Form_pg_attribute att_tup;
-				TargetEntry *tle;
-				Var		   *var;
-
-				att_tup = rel->rd_att->attrs[rel_loc_info->partAttrNum - 1];
-				var = makeVar(result_relation, rel_loc_info->partAttrNum,
-							  att_tup->atttypid, att_tup->atttypmod,
-							  att_tup->attcollation, 0);
-
-				tle = makeTargetEntry((Expr *) var,
-									  list_length(tlist) + 1,
-									  pstrdup(NameStr(att_tup->attname)),
-									  true);
-				tlist = lappend(tlist, tle);
-				distribution->distributionKey = tle->resno;
-			}
+			else
+				distribution->distributionExpr = NULL;
 
 			root->distribution = distribution;
 		}

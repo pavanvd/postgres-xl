@@ -2425,7 +2425,7 @@ static bool
 _equalDistribution(Distribution *a, Distribution *b)
 {
 	COMPARE_SCALAR_FIELD(distributionType);
-	COMPARE_SCALAR_FIELD(distributionKey);
+	COMPARE_NODE_FIELD(distributionExpr);
 	COMPARE_BITMAPSET_FIELD(nodes);
 
 	return true;

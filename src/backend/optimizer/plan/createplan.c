@@ -4101,14 +4101,50 @@ make_remotesubplan(PlannerInfo *root,
 	Assert(!equal(resultDistribution, execDistribution));
 	Assert(!IsA(lefttree, RemoteSubplan));
 
-	plan->qual = NIL;
-	plan->lefttree = lefttree;
-	plan->righttree = NULL;
-	copy_plan_costsize(plan, lefttree);
 	if (resultDistribution)
 	{
 		node->distributionType = resultDistribution->distributionType;
-		node->distributionKey = resultDistribution->distributionKey;
+		node->distributionKey = InvalidAttrNumber;
+		if (resultDistribution->distributionExpr)
+		{
+			ListCell   *lc;
+
+			/* Find distribution expression in the target list */
+			foreach(lc, lefttree->targetlist)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+
+				if (equal(tle->expr, resultDistribution->distributionExpr))
+				{
+					node->distributionKey = tle->resno;
+					break;
+				}
+			}
+
+			if (node->distributionKey == InvalidAttrNumber)
+			{
+				TargetEntry *newtle;
+
+				/* The expression is not found, need to add junk */
+				newtle = makeTargetEntry((Expr *) resultDistribution->distributionExpr,
+										 list_length(lefttree->targetlist) + 1,
+									     NULL,
+										 true);
+
+				if (is_projection_capable_plan(lefttree))
+				{
+					/* Ok to modify subplan's target list */
+					lefttree->targetlist = lappend(lefttree->targetlist, newtle);
+				}
+				else
+				{
+					/* Use Result node to calculate expression */
+					List *newtlist = list_copy(lefttree->targetlist);
+					newtlist = lappend(newtlist, newtle);
+					lefttree = (Plan *) make_result(root, newtlist, NULL, lefttree);
+				}
+			}
+		}
 		tmpset = bms_copy(resultDistribution->nodes);
 		node->distributionNodes = NIL;
 		while ((nodenum = bms_first_member(tmpset)) >= 0)
@@ -4128,6 +4164,10 @@ make_remotesubplan(PlannerInfo *root,
 		node->distributionKey = InvalidAttrNumber;
 		node->distributionNodes = NIL;
 	}
+	plan->qual = NIL;
+	plan->lefttree = lefttree;
+	plan->righttree = NULL;
+	copy_plan_costsize(plan, lefttree);
 	/* determine where subplan will be executed */
 	if (execDistribution)
 	{

@@ -1153,7 +1153,7 @@ _copyDistribution(Distribution *from)
 	Distribution *newnode = makeNode(Distribution);
 
 	COPY_SCALAR_FIELD(distributionType);
-	COPY_SCALAR_FIELD(distributionKey);
+	COPY_NODE_FIELD(distributionExpr);
 	COPY_BITMAPSET_FIELD(nodes);
 	COPY_BITMAPSET_FIELD(restrictNodes);
 
