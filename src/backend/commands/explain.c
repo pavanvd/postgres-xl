@@ -863,12 +863,6 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_ValuesScan:
 		case T_CteScan:
 		case T_WorkTableScan:
-		/*
-		 * !!! XCP !!! in this fragment ugly PGXC bug is fixed
-		 * PGXC code would not even compile without defined PGXC, and with
-		 * defined PGXC it could cause Sefmentation fault.
-		 * The note is for easier merge when they fix the problem.
-		 */
 		case T_ForeignScan:
 			ExplainScanTarget((Scan *) plan, es);
 			break;
@@ -897,9 +891,6 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			}
 			break;
 #endif
-		/*
-		 * !!! XCP !!! end note
-		 */
 #ifdef XCP
 		case T_RemoteSubplan:
 			{

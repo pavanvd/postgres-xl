@@ -734,10 +734,7 @@ standard_ProcessUtility(Node *parsetree,
 #ifdef XCP
 					stmts = AddRemoteQueryNode(stmts, queryString, is_temp ? EXEC_ON_DATANODES : EXEC_ON_ALL_NODES);
 #else
-					if (is_temp)
-						stmts = AddRemoteQueryNode(stmts, queryString, EXEC_ON_DATANODES, is_temp);
-					else
-						stmts = AddRemoteQueryNode(stmts, queryString, EXEC_ON_ALL_NODES, is_temp);
+					stmts = AddRemoteQueryNode(stmts, queryString, EXEC_ON_ALL_NODES, is_temp);
 #endif
 				}
 #endif
@@ -1813,17 +1810,13 @@ standard_ProcessUtility(Node *parsetree,
 			CheckRestrictedOperation("DISCARD");
 			DiscardCommand((DiscardStmt *) parsetree, isTopLevel);
 #ifdef PGXC
-			/* Let the pooler manage the statement */
-			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-			{
-				/*
-				 * If command is local and we are not in a transaction block do NOT
-				 * send this query to backend nodes
-				 */
-				if (!IsTransactionBlock())
-					if (PoolManagerSetCommand(POOL_CMD_GLOBAL_SET, queryString) < 0)
-						elog(ERROR, "Postgres-XC: ERROR DISCARD query");
-			}
+			/*
+			 * Discard objects for all the sessions possible.
+			 * For example, temporary tables are created on all Datanodes
+			 * and Coordinators.
+			 */
+			if (IS_PGXC_COORDINATOR)
+				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2277,10 +2270,8 @@ ExecUtilityFindNodesRelkind(Oid relid, bool *is_temp)
 			break;
 
 		case RELKIND_RELATION:
-			if ((*is_temp = IsTempTable(relid)))
-				exec_type = EXEC_ON_DATANODES;
-			else
-				exec_type = EXEC_ON_ALL_NODES;
+			*is_temp = IsTempTable(relid);
+			exec_type = EXEC_ON_ALL_NODES;
 			break;
 
 		case RELKIND_VIEW:

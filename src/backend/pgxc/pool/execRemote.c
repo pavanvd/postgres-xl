@@ -1754,6 +1754,7 @@ handle_response(PGXCNodeHandle *conn, RemoteQueryState *combiner)
 				break;
 			case 'A':			/* NotificationResponse */
 			case 'N':			/* NoticeResponse */
+			case 'S':			/* SetCommandComplete */
 				/*
 				 * Ignore these to prevent multiple messages, one from each
 				 * node. Coordinator will send one for DDL anyway
@@ -4257,7 +4258,6 @@ do_query(RemoteQueryState *node)
 static bool
 ExecRemoteQueryInnerPlan(RemoteQueryState *node)
 {
-	RemoteQuery    *step = (RemoteQuery *) node->ss.ps.plan;
 	EState		   *estate = node->ss.ps.state;
 	TupleTableSlot *innerSlot = ExecProcNode(innerPlanState(node));
 	/*
@@ -5291,8 +5291,14 @@ ExecRemoteUtility(RemoteQuery *node)
 	combiner = (ResponseCombiner *)remotestate;
 	InitResponseCombiner(combiner, 0, node->combine_type);
 #else
-	/* A transaction using temporary objects cannot use 2PC */
-	temp_object_included = node->is_temp;
+	/*
+	 * A transaction using temporary objects cannot use 2PC.
+	 * It is possible to invoke create table with inheritance on
+	 * temporary objects, so in this case temp_object_included flag
+	 * is already assigned when analyzing inner relations.
+	 */
+	if (!temp_object_included)
+		temp_object_included = node->is_temp;
 
 	remotestate = CreateResponseCombiner(0, node->combine_type);
 #endif
