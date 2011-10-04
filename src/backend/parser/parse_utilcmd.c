@@ -655,6 +655,7 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 						inhRelation->relation->relname)));
 
 #ifdef PGXC
+#ifndef XCP
 	/*
 	 * Check if relation is temporary and assign correct flag.
 	 * This will override transaction direct commit as no 2PC
@@ -662,6 +663,7 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 	 */
 	if (IsTempTable(RangeVarGetRelid(inhRelation->relation, false)))
 		ExecSetTempObjectIncluded();
+#endif
 #endif
 
 	/*
