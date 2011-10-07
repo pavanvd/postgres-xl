@@ -1738,6 +1738,31 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, show_log_file_mode
 	},
 
+#ifdef MULTITENANCY
+	{
+		{"work_mem", PGC_SUSET, RESOURCES_MEM,
+			gettext_noop("Sets the maximum memory to be used for query workspaces."),
+			gettext_noop("This much memory can be used by each internal "
+						 "sort operation and hash table before switching to "
+						 "temporary disk files."),
+			GUC_UNIT_KB
+		},
+		&work_mem,
+		1024, 64, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"maintenance_work_mem", PGC_SUSET, RESOURCES_MEM,
+			gettext_noop("Sets the maximum memory to be used for maintenance operations."),
+			gettext_noop("This includes operations such as VACUUM and CREATE INDEX."),
+			GUC_UNIT_KB
+		},
+		&maintenance_work_mem,
+		16384, 1024, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
+#else
 	{
 		{"work_mem", PGC_USERSET, RESOURCES_MEM,
 			gettext_noop("Sets the maximum memory to be used for query workspaces."),
@@ -1761,6 +1786,7 @@ static struct config_int ConfigureNamesInt[] =
 		16384, 1024, MAX_KILOBYTES,
 		NULL, NULL, NULL
 	},
+#endif
 
 	/*
 	 * We use the hopefully-safely-small value of 100kB as the compiled-in
