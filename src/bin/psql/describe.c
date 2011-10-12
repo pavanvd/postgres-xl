@@ -626,9 +626,6 @@ listAllDbs(bool verbose)
 	PGresult   *res;
 	PQExpBufferData buf;
 	printQueryOpt myopt = pset.popt;
-#ifdef XCP
-	char 	   *server_version;
-#endif
 
 	initPQExpBuffer(&buf);
 
@@ -662,19 +659,6 @@ listAllDbs(bool verbose)
 		appendPQExpBuffer(&buf,
 						  ",\n       pg_catalog.shobj_description(d.oid, 'pg_database') as \"%s\"",
 						  gettext_noop("Description"));
-#ifdef XCP
-	/*
-	 * Multi-Tenancy edition of StormDB does not allow non-privileged user
-	 * reading from pg_database, it provides pg_database_list view instead.
-	 */
-	server_version = PQparameterStatus(pset.db, "server_version");
-	if (server_version && strstr(server_version, "MT"))
-	{
-		appendPQExpBuffer(&buf,
-						  "\nFROM pg_database_list d\n");
-	}
-	else
-#endif
 	appendPQExpBuffer(&buf,
 					  "\nFROM pg_catalog.pg_database d\n");
 	if (verbose && pset.sversion >= 80000)
