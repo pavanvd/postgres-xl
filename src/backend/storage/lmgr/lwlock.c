@@ -31,7 +31,10 @@
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/spin.h"
-
+#ifdef XCP
+#include "pgxc/poolmgr.h"
+#include "pgxc/squeue.h"
+#endif
 
 /* We use the ShmemLock spinlock to protect LWLockAssign */
 extern slock_t *ShmemLock;
@@ -181,6 +184,12 @@ NumLWLocks(void)
 
 	/* predicate.c needs one per old serializable xid buffer */
 	numLocks += NUM_OLDSERXID_BUFFERS;
+
+#ifdef XCP
+	/* squeue.c needs one per consumer node in each shared queue.
+	 * Max number of consumers is NumDataNodes-1 */
+	numLocks += NUM_SQUEUES * (NumDataNodes-1);
+#endif
 
 	/*
 	 * Add any requested by loadable modules; for backwards-compatibility
@@ -585,6 +594,7 @@ LWLockRelease(LWLockId lockid)
 	}
 	if (i < 0)
 		elog(ERROR, "lock %d is not held", (int) lockid);
+
 	num_held_lwlocks--;
 	for (; i < num_held_lwlocks; i++)
 		held_lwlocks[i] = held_lwlocks[i + 1];

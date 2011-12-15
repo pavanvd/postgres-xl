@@ -17,6 +17,9 @@
 
 #include "nodes/execnodes.h"
 #include "nodes/plannodes.h"
+#ifdef XCP
+#include "pgxc/squeue.h"
+#endif
 #include "tcop/dest.h"
 
 
@@ -48,6 +51,14 @@ typedef struct QueryDesc
 	TupleDesc	tupDesc;		/* descriptor for result tuples */
 	EState	   *estate;			/* executor's query-wide state */
 	PlanState  *planstate;		/* tree of per-plan-node state */
+
+#ifdef XCP
+	SharedQueue squeue; 		/* the shared memory queue to sent data to other
+								 * nodes */
+	int 		myindex;		/* -1 if locally executed subplan is producing
+								 * data and distribute via squeue. Otherwise
+								 * get local data from squeue */
+#endif
 
 	/* This is always set NULL by the core system, but plugins can change it */
 	struct Instrumentation *totaltime;	/* total time spent in ExecutorRun */

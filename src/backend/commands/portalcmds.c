@@ -271,9 +271,38 @@ PortalCleanup(Portal portal)
 			PG_TRY();
 			{
 				CurrentResourceOwner = portal->resowner;
+#ifdef XCP
+				if (queryDesc->squeue)
+				{
+					/* If portal is producing it has an executor which should be
+					 * shut down */
+					if (queryDesc->myindex == -1)
+					{
+						/* Remove from producers list if there */
+						removeProducingPortal(portal);
+						/* executor may be finished already */
+						if (!queryDesc->estate->es_finished)
+							ExecutorFinish(queryDesc);
+						if (queryDesc->dest)
+							(*queryDesc->dest->rDestroy) (queryDesc->dest);
+						ExecutorEnd(queryDesc);
+						FreeQueryDesc(queryDesc);
+					}
+					else
+					{
+						SharedQueueReset(queryDesc->squeue, queryDesc->myindex);
+						FreeQueryDesc(queryDesc);
+					}
+				}
+				else
+				{
+#endif
 				ExecutorFinish(queryDesc);
 				ExecutorEnd(queryDesc);
 				FreeQueryDesc(queryDesc);
+#ifdef XCP
+				}
+#endif
 			}
 			PG_CATCH();
 			{

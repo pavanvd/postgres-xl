@@ -850,7 +850,11 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 					TupleDesc slot_meta = slot->tts_tupleDescriptor;
 					Datum ctid = 0;
 					char *ctid_str = NULL;
+#ifdef XCP
+					int nodenum = slot->tts_datarow->msgnode;
+#else
 					int nodenum = slot->tts_dataNode;
+#endif
 					AttrNumber att;
 					StringInfoData buf;
 					HeapTuple	tp;
@@ -967,7 +971,11 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 			else
 			{
 				/* Take target node from last scan tuple of referenced step */
+#ifdef XCP
+				int curr_node = node->ss.ss_ScanTupleSlot->tts_datarow->msgnode;
+#else
 				int curr_node = node->ss.ss_ScanTupleSlot->tts_dataNode;
+#endif
 				context->query_step->exec_nodes->nodelist = lappend_int(context->query_step->exec_nodes->nodelist, curr_node);
 			}
 			FreeRelationLocInfo(rel_loc_info1);

@@ -95,7 +95,9 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
-
+#ifdef XCP
+#include "access/gtm.h"
+#endif
 
 static TupleDesc ExecTypeFromTLInternal(List *targetList,
 					   bool hasoid, bool skipjunk);
@@ -123,11 +125,15 @@ MakeTupleTableSlot(void)
 	slot->tts_tuple = NULL;
 	slot->tts_tupleDescriptor = NULL;
 #ifdef PGXC
-		slot->tts_shouldFreeRow = false;
-		slot->tts_dataRow = NULL;
-		slot->tts_dataLen = -1;
-		slot->tts_dataNode = 0;
-		slot->tts_attinmeta = NULL;
+	slot->tts_shouldFreeRow = false;
+#ifdef XCP
+	slot->tts_datarow = NULL;
+#else
+	slot->tts_dataRow = NULL;
+	slot->tts_dataLen = -1;
+	slot->tts_dataNode = 0;
+#endif
+	slot->tts_attinmeta = NULL;
 #endif
 	slot->tts_mcxt = CurrentMemoryContext;
 	slot->tts_buffer = InvalidBuffer;
@@ -360,13 +366,22 @@ ExecStoreTuple(HeapTuple tuple,
 	if (slot->tts_shouldFreeMin)
 		heap_free_minimal_tuple(slot->tts_mintuple);
 #ifdef PGXC
+#ifdef XCP
+	if (slot->tts_shouldFreeRow)
+		pfree(slot->tts_datarow);
+#else
 	if (slot->tts_shouldFreeRow)
 		pfree(slot->tts_dataRow);
+#endif
 
 	slot->tts_shouldFreeRow = false;
+#ifdef XCP
+	slot->tts_datarow = NULL;
+#else
 	slot->tts_dataRow = NULL;
 	slot->tts_dataLen = -1;
 	slot->tts_dataNode = 0;
+#endif
 #endif
 
 	/*
@@ -430,13 +445,22 @@ ExecStoreMinimalTuple(MinimalTuple mtup,
 	if (slot->tts_shouldFreeMin)
 		heap_free_minimal_tuple(slot->tts_mintuple);
 #ifdef PGXC
+#ifdef XCP
+	if (slot->tts_shouldFreeRow)
+		pfree(slot->tts_datarow);
+#else
 	if (slot->tts_shouldFreeRow)
 		pfree(slot->tts_dataRow);
+#endif
 
 	slot->tts_shouldFreeRow = false;
+#ifdef XCP
+	slot->tts_datarow = NULL;
+#else
 	slot->tts_dataRow = NULL;
 	slot->tts_dataLen = -1;
 	slot->tts_dataNode = 0;
+#endif
 #endif
 
 	/*
@@ -490,13 +514,22 @@ ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 	if (slot->tts_shouldFreeMin)
 		heap_free_minimal_tuple(slot->tts_mintuple);
 #ifdef PGXC
+#ifdef XCP
+	if (slot->tts_shouldFreeRow)
+		pfree(slot->tts_datarow);
+#else
 	if (slot->tts_shouldFreeRow)
 		pfree(slot->tts_dataRow);
+#endif
 
 	slot->tts_shouldFreeRow = false;
+#ifdef XCP
+	slot->tts_datarow = NULL;
+#else
 	slot->tts_dataRow = NULL;
 	slot->tts_dataLen = -1;
 	slot->tts_dataNode = 0;
+#endif
 #endif
 
 	slot->tts_tuple = NULL;
@@ -609,8 +642,13 @@ ExecCopySlotTuple(TupleTableSlot *slot)
 	/*
 	 * Ensure values are extracted from data row to the Datum array
 	 */
+#ifdef XCP
+	if (slot->tts_datarow)
+		slot_getallattrs(slot);
+#else
 	if (slot->tts_dataRow)
 		slot_getallattrs(slot);
+#endif
 #endif
 	/*
 	 * Otherwise we need to build a tuple from the Datum array.
@@ -648,8 +686,13 @@ ExecCopySlotMinimalTuple(TupleTableSlot *slot)
 	/*
 	 * Ensure values are extracted from data row to the Datum array
 	 */
+#ifdef XCP
+	if (slot->tts_datarow)
+		slot_getallattrs(slot);
+#else
 	if (slot->tts_dataRow)
 		slot_getallattrs(slot);
+#endif
 #endif
 	/*
 	 * Otherwise we need to build a tuple from the Datum array.
@@ -660,6 +703,107 @@ ExecCopySlotMinimalTuple(TupleTableSlot *slot)
 }
 
 #ifdef PGXC
+#ifdef XCP
+/* --------------------------------
+ *		ExecCopySlotDatarow
+ *			Obtain a copy of a slot's data row.  The copy is
+ *			palloc'd in the current memory context.
+ *			The slot itself is undisturbed
+ * --------------------------------
+ */
+RemoteDataRow
+ExecCopySlotDatarow(TupleTableSlot *slot, MemoryContext tmpcxt)
+{
+	RemoteDataRow datarow;
+	if (slot->tts_datarow)
+	{
+		int len = slot->tts_datarow->msglen;
+		/* if we already have datarow make a copy */
+		datarow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + len);
+		datarow->msgnode = slot->tts_datarow->msgnode;
+		datarow->msglen = len;
+		memcpy(datarow->msg, slot->tts_datarow->msg, len);
+		return datarow;
+	}
+	else
+	{
+		TupleDesc	 	tdesc = slot->tts_tupleDescriptor;
+		MemoryContext	savecxt = NULL;
+		StringInfoData	buf;
+		uint16 			n16;
+		int 			i;
+
+		/* ensure we have all values */
+		slot_getallattrs(slot);
+
+		/* if temporary memory context is specified reset it */
+		if (tmpcxt)
+		{
+			MemoryContextReset(tmpcxt);
+			savecxt = MemoryContextSwitchTo(tmpcxt);
+		}
+
+		initStringInfo(&buf);
+		/* Number of parameter values */
+		n16 = htons(tdesc->natts);
+		appendBinaryStringInfo(&buf, (char *) &n16, 2);
+
+		for (i = 0; i < tdesc->natts; i++)
+		{
+			uint32 n32;
+
+			if (slot->tts_isnull[i])
+			{
+				n32 = htonl(-1);
+				appendBinaryStringInfo(&buf, (char *) &n32, 4);
+			}
+			else
+			{
+				Form_pg_attribute attr = tdesc->attrs[i];
+				Oid		typOutput;
+				bool	typIsVarlena;
+				Datum	pval;
+				char   *pstring;
+				int		len;
+
+				/* Get info needed to output the value */
+				getTypeOutputInfo(attr->atttypid, &typOutput, &typIsVarlena);
+				/*
+				 * If we have a toasted datum, forcibly detoast it here to avoid
+				 * memory leakage inside the type's output routine.
+				 */
+				if (typIsVarlena)
+					pval = PointerGetDatum(PG_DETOAST_DATUM(slot->tts_values[i]));
+				else
+					pval = slot->tts_values[i];
+
+				/* Convert Datum to string */
+				pstring = OidOutputFunctionCall(typOutput, pval);
+
+				/* copy data to the buffer */
+				len = strlen(pstring);
+				n32 = htonl(len);
+				appendBinaryStringInfo(&buf, (char *) &n32, 4);
+				appendBinaryStringInfo(&buf, pstring, len);
+			}
+		}
+
+		/* restore memory context to allocate result */
+		if (savecxt)
+		{
+			MemoryContextSwitchTo(savecxt);
+		}
+
+		/* copy data to the buffer */
+		datarow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + buf.len);
+		datarow->msgnode = PGXCNodeId;
+		datarow->msglen = buf.len;
+		memcpy(datarow->msg, buf.data, buf.len);
+		pfree(buf.data);
+		return datarow;
+	}
+}
+#else
 /* --------------------------------
  *		ExecCopySlotDatarow
  *			Obtain a copy of a slot's data row.  The copy is
@@ -741,6 +885,7 @@ ExecCopySlotDatarow(TupleTableSlot *slot, char **datarow)
 		return buf.len;
 	}
 }
+#endif
 #endif
 
 /* --------------------------------
@@ -931,9 +1076,13 @@ ExecMaterializeSlot(TupleTableSlot *slot)
 #ifdef PGXC
 	if (!slot->tts_shouldFreeRow)
 	{
+#ifdef XCP
+		slot->tts_datarow = NULL;
+#else
 		slot->tts_dataRow = NULL;
 		slot->tts_dataLen = -1;
 		slot->tts_dataNode = 0;
+#endif
 	}
 #endif
 
@@ -1375,6 +1524,54 @@ end_tup_output(TupOutputState *tstate)
  *
  * --------------------------------
  */
+#ifdef XCP
+TupleTableSlot *
+ExecStoreDataRowTuple(RemoteDataRow datarow,
+					  TupleTableSlot *slot,
+					  bool shouldFree)
+{
+	/*
+	 * sanity checks
+	 */
+	Assert(datarow != NULL);
+	Assert(slot != NULL);
+	Assert(slot->tts_tupleDescriptor != NULL);
+
+	/*
+	 * Free any old physical tuple belonging to the slot.
+	 */
+	if (slot->tts_shouldFree)
+		heap_freetuple(slot->tts_tuple);
+	if (slot->tts_shouldFreeMin)
+		heap_free_minimal_tuple(slot->tts_mintuple);
+	if (slot->tts_shouldFreeRow)
+		pfree(slot->tts_datarow);
+
+	/*
+	 * Drop the pin on the referenced buffer, if there is one.
+	 */
+	if (BufferIsValid(slot->tts_buffer))
+		ReleaseBuffer(slot->tts_buffer);
+
+	slot->tts_buffer = InvalidBuffer;
+
+	/*
+	 * Store the new tuple into the specified slot.
+	 */
+	slot->tts_isempty = false;
+	slot->tts_shouldFree = false;
+	slot->tts_shouldFreeMin = false;
+	slot->tts_shouldFreeRow = shouldFree;
+	slot->tts_tuple = NULL;
+	slot->tts_mintuple = NULL;
+	slot->tts_datarow = datarow;
+
+	/* Mark extracted state invalid */
+	slot->tts_nvalid = 0;
+
+	return slot;
+}
+#else
 TupleTableSlot *
 ExecStoreDataRowTuple(char *msg, size_t len, int node, TupleTableSlot *slot,
 					  bool shouldFree)
@@ -1430,4 +1627,5 @@ ExecStoreDataRowTuple(char *msg, size_t len, int node, TupleTableSlot *slot,
 
 	return slot;
 }
+#endif
 #endif

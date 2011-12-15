@@ -1922,15 +1922,6 @@ SS_finalize_plan(PlannerInfo *root, Plan *plan, bool attach_initplans)
 		plan->startup_cost += initplan_cost;
 		plan->total_cost += initplan_cost;
 	}
-
-#ifdef XCP
-	/*
-	 * We will be sending down parameters so we want to take advantage of
-	 * prepared statements and optimize multiple executions.
-	 */
-	if (plan->allParam && IsA(plan, RemoteSubplan))
-		((RemoteSubplan *) plan)->cursor = get_internal_cursor();
-#endif
 }
 
 /*

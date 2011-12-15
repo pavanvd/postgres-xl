@@ -106,6 +106,12 @@ _copyPlannedStmt(PlannedStmt *from)
 	COPY_SCALAR_FIELD(nParamRemote);
 	COPY_POINTER_FIELD(remoteparams,
 					   newnode->nParamRemote * sizeof(RemoteParam));
+	/*
+	 * We use COPY_SCALAR_FIELD to copy string field so we are actually copying
+	 * the pointer. It is OK, the string data is a portal key, this memory is
+	 * stable enough - it will be around while portal is valid.
+	 */
+	COPY_SCALAR_FIELD(pname);
 	COPY_SCALAR_FIELD(distributionType);
 	COPY_SCALAR_FIELD(distributionKey);
 	COPY_NODE_FIELD(distributionNodes);

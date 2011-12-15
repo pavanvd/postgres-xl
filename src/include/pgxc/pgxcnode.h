@@ -24,9 +24,6 @@
 #include <unistd.h>
 
 #define NO_SOCKET -1
-#ifdef XCP
-#define LOCAL_CONN -2
-#endif
 
 /* Connection to data node maintained by Pool Manager */
 typedef struct PGconn NODE_CONNECTION;

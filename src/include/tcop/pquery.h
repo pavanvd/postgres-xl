@@ -42,4 +42,8 @@ extern long PortalRunFetch(Portal portal,
 			   long count,
 			   DestReceiver *dest);
 
+#ifdef XCP
+extern int	AdvanceProducingPortal(Portal portal);
+#endif
+
 #endif   /* PQUERY_H */

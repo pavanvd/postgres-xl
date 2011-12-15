@@ -971,6 +971,9 @@ PlanCacheComputeResultDesc(List *stmt_list)
 
 	switch (ChoosePortalStrategy(stmt_list))
 	{
+#ifdef XCP
+		case PORTAL_DISTRIBUTED:
+#endif
 		case PORTAL_ONE_SELECT:
 		case PORTAL_ONE_MOD_WITH:
 			node = (Node *) linitial(stmt_list);

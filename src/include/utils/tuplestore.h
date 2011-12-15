@@ -82,4 +82,11 @@ extern void tuplestore_clear(Tuplestorestate *state);
 
 extern void tuplestore_end(Tuplestorestate *state);
 
+#ifdef XCP
+extern Tuplestorestate *tuplestore_begin_datarow(bool interXact, int maxKBytes,
+						 MemoryContext tmpcxt);
+#endif
+
+extern void tuplestore_collect_stat(Tuplestorestate *state, char *name);
+
 #endif   /* TUPLESTORE_H */

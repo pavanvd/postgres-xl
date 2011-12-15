@@ -1133,14 +1133,23 @@ slot_deform_datarow(TupleTableSlot *slot)
 	int attnum;
 	int i;
 	int 		col_count;
+#ifdef XCP
+	char	   *cur = slot->tts_datarow->msg;
+#else
 	char	   *cur = slot->tts_dataRow;
+#endif
 	StringInfo  buffer;
 	uint16		n16;
 	uint32		n32;
 	MemoryContext oldcontext;
 
+#ifdef XCP
+	if (slot->tts_tupleDescriptor == NULL || slot->tts_datarow == NULL)
+		return;
+#else
 	if (slot->tts_tupleDescriptor == NULL || slot->tts_dataRow == NULL)
 		return;
+#endif
 
 	attnum = slot->tts_tupleDescriptor->natts;
 
@@ -1148,7 +1157,10 @@ slot_deform_datarow(TupleTableSlot *slot)
 	if (slot->tts_nvalid == attnum)
 		return;
 
+#ifndef XCP
+	/* XCP: Can not happen, we return earlier if condition not true */
 	Assert(slot->tts_dataRow);
+#endif
 
 	memcpy(&n16, cur, 2);
 	cur += 2;
@@ -1261,7 +1273,11 @@ slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
 
 #ifdef PGXC
 	/* If it is a data row tuple extract all and return requested */
+#ifdef XCP
+	if (slot->tts_datarow)
+#else
 	if (slot->tts_dataRow)
+#endif
 	{
 		slot_deform_datarow(slot);
 		*isnull = slot->tts_isnull[attnum - 1];
@@ -1341,7 +1357,11 @@ slot_getallattrs(TupleTableSlot *slot)
 
 #ifdef PGXC
 	/* Handle the DataRow tuple case */
+#ifdef XCP
+	if (slot->tts_datarow)
+#else
 	if (slot->tts_dataRow)
+#endif
 	{
 		slot_deform_datarow(slot);
 		return;
@@ -1393,7 +1413,11 @@ slot_getsomeattrs(TupleTableSlot *slot, int attnum)
 
 #ifdef PGXC
 	/* Handle the DataRow tuple case */
+#ifdef XCP
+	if (slot->tts_datarow)
+#else
 	if (slot->tts_dataRow)
+#endif
 	{
 		slot_deform_datarow(slot);
 		return;
@@ -1469,7 +1493,11 @@ slot_attisnull(TupleTableSlot *slot, int attnum)
 
 #ifdef PGXC
 	/* If it is a data row tuple extract all and return requested */
+#ifdef XCP
+	if (slot->tts_datarow)
+#else
 	if (slot->tts_dataRow)
+#endif
 	{
 		slot_deform_datarow(slot);
 		return slot->tts_isnull[attnum - 1];

@@ -40,6 +40,7 @@
 #include "utils/snapmgr.h"
 #include "pgxc/locator.h"
 #include "pgxc/pgxc.h"
+#include "pgxc/squeue.h"
 #include "parser/parse_type.h"
 
 #define END_QUERY_TIMEOUT	20
@@ -107,8 +108,10 @@ static bool ExecRemoteQueryInnerPlan(RemoteQueryState *node);
 #ifdef XCP
 #define REMOVE_CURR_CONN(combiner) \
 	if ((combiner)->current_conn < --((combiner)->conn_count)) \
+	{ \
 		(combiner)->connections[(combiner)->current_conn] = \
 				(combiner)->connections[(combiner)->conn_count]; \
+	} \
 	else \
 		(combiner)->current_conn = 0
 #endif
@@ -251,9 +254,13 @@ CreateResponseCombiner(int node_count, CombineType combine_type)
 	combiner->errorMessage = NULL;
 	combiner->errorDetail = NULL;
 	combiner->tuple_desc = NULL;
+#ifdef XCP
+	combiner->currentRow = NULL;
+#else
 	combiner->currentRow.msg = NULL;
 	combiner->currentRow.msglen = 0;
 	combiner->currentRow.msgnode = 0;
+#endif
 	combiner->rowBuffer = NIL;
 	combiner->tapenodes = NULL;
 #ifdef XCP
@@ -581,10 +588,39 @@ HandleCopyDataRow(RemoteQueryState *combiner, char *msg_body, size_t len)
 #ifdef XCP
 static bool
 HandleDataRow(ResponseCombiner *combiner, char *msg_body, size_t len, int node)
+{
+	/* We expect previous message is consumed */
+	Assert(combiner->currentRow == NULL);
+
+	if (combiner->request_type != REQUEST_TYPE_QUERY)
+	{
+		/* Inconsistent responses */
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Unexpected response from the data nodes for 'D' message, current request type %d", combiner->request_type)));
+	}
+
+	/*
+	 * If we got an error already ignore incoming data rows from other nodes
+	 * Still we want to continue reading until get CommandComplete
+	 */
+	if (combiner->errorMessage)
+		return false;
+
+	/*
+	 * We are copying message because it points into connection buffer, and
+	 * will be overwritten on next socket read
+	 */
+	combiner->currentRow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + len);
+	memcpy(combiner->currentRow->msg, msg_body, len);
+	combiner->currentRow->msglen = len;
+	combiner->currentRow->msgnode = node;
+
+	return true;
+}
 #else
 static void
 HandleDataRow(RemoteQueryState *combiner, char *msg_body, size_t len, int node)
-#endif
 {
 	/* We expect previous message is consumed */
 	Assert(combiner->currentRow.msg == NULL);
@@ -601,13 +637,8 @@ HandleDataRow(RemoteQueryState *combiner, char *msg_body, size_t len, int node)
 	 * If we got an error already ignore incoming data rows from other nodes
 	 * Still we want to continue reading until get CommandComplete
 	 */
-#ifdef XCP
-	if (combiner->errorMessage)
-		return false;
-#else
 	if (combiner->errorMessage)
 		return;
-#endif
 
 	/*
 	 * We are copying message because it points into connection buffer, and
@@ -617,10 +648,8 @@ HandleDataRow(RemoteQueryState *combiner, char *msg_body, size_t len, int node)
 	memcpy(combiner->currentRow.msg, msg_body, len);
 	combiner->currentRow.msglen = len;
 	combiner->currentRow.msgnode = node;
-#ifdef XCP
-	return true;
-#endif
 }
+#endif
 
 /*
  * Handle ErrorResponse ('E') message from a data node connection
@@ -921,6 +950,10 @@ ValidateAndResetCombiner(RemoteQueryState *combiner)
 		pfree(combiner->connections);
 	if (combiner->tuple_desc)
 		FreeTupleDesc(combiner->tuple_desc);
+#ifdef XCP
+	if (combiner->currentRow)
+		pfree(combiner->currentRow);
+#else
 	if (combiner->currentRow.msg)
 		pfree(combiner->currentRow.msg);
 	foreach(lc, combiner->rowBuffer)
@@ -928,6 +961,7 @@ ValidateAndResetCombiner(RemoteQueryState *combiner)
 		RemoteDataRow dataRow = (RemoteDataRow) lfirst(lc);
 		pfree(dataRow->msg);
 	}
+#endif
 	list_free_deep(combiner->rowBuffer);
 	if (combiner->errorMessage)
 		pfree(combiner->errorMessage);
@@ -947,9 +981,13 @@ ValidateAndResetCombiner(RemoteQueryState *combiner)
 	combiner->errorMessage = NULL;
 	combiner->errorDetail = NULL;
 	combiner->query_Done = false;
+#ifdef XCP
+	combiner->currentRow = NULL;
+#else
 	combiner->currentRow.msg = NULL;
 	combiner->currentRow.msglen = 0;
 	combiner->currentRow.msgnode = 0;
+#endif
 	combiner->rowBuffer = NIL;
 	combiner->tapenodes = NULL;
 	combiner->copy_file = NULL;
@@ -1038,6 +1076,15 @@ BufferConnection(PGXCNodeHandle *conn)
 	{
 		int res;
 
+#ifdef XCP
+		/* Move to buffer currentRow (received from the data node) */
+		if (combiner->currentRow)
+		{
+			combiner->rowBuffer = lappend(combiner->rowBuffer,
+										  combiner->currentRow);
+			combiner->currentRow = NULL;
+		}
+#else
 		/* Move to buffer currentRow (received from the data node) */
 		if (combiner->currentRow.msg)
 		{
@@ -1049,7 +1096,7 @@ BufferConnection(PGXCNodeHandle *conn)
 			combiner->currentRow.msgnode = 0;
 			combiner->rowBuffer = lappend(combiner->rowBuffer, dataRow);
 		}
-
+#endif
 		res = handle_response(conn, combiner);
 		/*
 		 * If response message is a DataRow it will be handled on the next
@@ -1142,9 +1189,21 @@ BufferConnection(PGXCNodeHandle *conn)
 static void
 #ifdef XCP
 CopyDataRowTupleToSlot(ResponseCombiner *combiner, TupleTableSlot *slot)
+{
+	RemoteDataRow 	datarow;
+	MemoryContext	oldcontext;
+	oldcontext = MemoryContextSwitchTo(slot->tts_mcxt);
+	datarow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + combiner->currentRow->msglen);
+	datarow->msgnode = combiner->currentRow->msgnode;
+	datarow->msglen = combiner->currentRow->msglen;
+	memcpy(datarow->msg, combiner->currentRow->msg, datarow->msglen);
+	ExecStoreDataRowTuple(datarow, slot, true);
+	pfree(combiner->currentRow);
+	combiner->currentRow = NULL;
+	MemoryContextSwitchTo(oldcontext);
+}
 #else
 CopyDataRowTupleToSlot(RemoteQueryState *combiner, TupleTableSlot *slot)
-#endif
 {
 	char 			*msg;
 	MemoryContext	oldcontext;
@@ -1159,14 +1218,70 @@ CopyDataRowTupleToSlot(RemoteQueryState *combiner, TupleTableSlot *slot)
 	combiner->currentRow.msgnode = 0;
 	MemoryContextSwitchTo(oldcontext);
 }
+#endif
 
 #ifdef XCP
+/*
+ * FetchTuple
+ *
+		Get next tuple from one of the datanode connections.
+ * The connections should be in combiner->connections, if "local" dummy
+ * connection presents it should be the last active connection in the array.
+ *      If combiner is set up to perform merge sort function returns tuple from
+ * connection defined by combiner->current_conn, or NULL slot if no more tuple
+ * are available from the connection. Otherwise it returns tuple from any
+ * connection or NULL slot if no more available connections.
+ * 		Function looks into combiner->rowBuffer before accessing connection
+ * and return a tuple from there if found.
+ * 		Function may wait while more data arrive from the data nodes. If there
+ * is a locally executed subplan function advance it and buffer resulting rows
+ * instead of waiting.
+ */
 TupleTableSlot *
 FetchTuple(ResponseCombiner *combiner)
 {
 	PGXCNodeHandle *conn;
 	TupleTableSlot *slot;
 	int 			nodenum;
+
+	/*
+	 * Case if we run local subplan.
+	 * We do not have remote connections, so just get local tuple and return it
+	 */
+	if (outerPlanState(combiner))
+	{
+		RemoteSubplanState *planstate = (RemoteSubplanState *) combiner;
+		RemoteSubplan *plan = (RemoteSubplan *) combiner->ss.ps.plan;
+		/* Advance subplan in a loop until we have something to return */
+		for (;;)
+		{
+			Datum 	value;
+			bool 	isnull;
+			int 	numnodes;
+			int		i;
+
+			slot = ExecProcNode(outerPlanState(combiner));
+			/*
+			 * If NULL tuple is returned we done with the subplan, finish it up and
+			 * return NULL
+			 */
+			if (TupIsNull(slot))
+				return NULL;
+
+			/* Get pertitioning value */
+			if (plan->distributionKey != InvalidAttrNumber)
+				value = slot_getattr(slot, plan->distributionKey, &isnull);
+
+			/* Determine target nodes */
+			numnodes = GET_NODES(planstate->locator, value, isnull,
+								 planstate->dest_nodes, NULL);
+			for (i = 0; i < numnodes; i++)
+			{
+				if (planstate->dest_nodes[i] == PGXCNodeId)
+					return slot;
+			}
+		}
+	}
 
 	/*
 	 * Get current connection
@@ -1176,68 +1291,10 @@ FetchTuple(ResponseCombiner *combiner)
 	else
 		conn = NULL;
 
-fetch_local_conn:
-	/* If requested connection is specified and it is a "local" handle get
-	 * next tuple from it. We never buffer local nodes */
-	while (conn && conn->sock == LOCAL_CONN)
-	{
-		slot = ExecProcNode(outerPlanState(combiner));
-		if (TupIsNull(slot))
-		{
-			pfree(conn);
-			conn = NULL;
-			/*
-			 * If doing merge sort return NULL immediately to indicate end of
-			 * the tape, otherwise continue with ремоте connections.
-			 */
-			if (combiner->merge_sort)
-			{
-				combiner->connections[combiner->current_conn] = NULL;
-				return NULL;
-			}
-			else
-			{
-				REMOVE_CURR_CONN(combiner);
-				if (combiner->conn_count > 0)
-					conn = combiner->connections[combiner->current_conn];
-				else
-					conn = NULL;
-				/*
-				 * There can only be one local connection, so break the loop
-				 * and move to handling of remote connections.
-				 * The function will later return NULL if no more connections
-				 * and row buffer is empty
-				 */
-				break;
-			}
-		}
-		// Revisit: now local connections are only when running remote subquery
-		// Want to generalize it somehow
-		if (((RemoteSubplanState *) combiner)->locator)
-		{
-			RemoteSubplanState *planstate = (RemoteSubplanState *) combiner;
-			RemoteSubplan *plan = (RemoteSubplan *) combiner->ss.ps.plan;
-			Datum value = (Datum) 0;
-			bool  isnull = true;
-			int i, numnodes;
-
-			if (plan->distributionKey != InvalidAttrNumber)
-				value = slot_getattr(slot, plan->distributionKey, &isnull);
-
-			numnodes = GET_NODES(planstate->locator, value, isnull,
-								 planstate->dest_nodes, NULL);
-			// ignore destinations, for now, return to caller if at least one of
-			// the returned node equal to local node id
-			for (i = 0; i < numnodes; i++)
-				if (planstate->dest_nodes[i] == PGXCNodeId)
-					return slot;
-			/* does not match, get another tuple */
-			continue;
-		}
-		/* if no locator, always return the tuple */
-		return slot;
-	}
-
+	/*
+	 * If doing merge sort determine the node number.
+	 * It may be needed to get buffered row.
+	 */
 	if (combiner->merge_sort)
 	{
 		Assert(conn || combiner->tapenodes);
@@ -1247,6 +1304,7 @@ fetch_local_conn:
 	}
 
 	/*
+	 * First look into the row buffer.
 	 * When we are performing merge sort we need to get from the buffer record
 	 * from the connection marked as "current". Otherwise get first.
 	 */
@@ -1254,12 +1312,14 @@ fetch_local_conn:
 	{
 		RemoteDataRow dataRow;
 
-		Assert(combiner->currentRow.msg == NULL);
+		Assert(combiner->currentRow == NULL);
 
 		if (combiner->merge_sort)
 		{
 			ListCell *lc;
 			ListCell *prev;
+
+			elog(LOG, "Getting buffered tuple from node %d", nodenum);
 
 			prev = combiner->tapemarks[combiner->current_conn];
 			if (prev)
@@ -1275,8 +1335,7 @@ fetch_local_conn:
 					dataRow = (RemoteDataRow) lfirst(lc);
 					if (dataRow->msgnode == nodenum)
 					{
-						combiner->currentRow = *dataRow;
-						pfree(dataRow);
+						combiner->currentRow = dataRow;
 						break;
 					}
 					prev = lc;
@@ -1290,14 +1349,9 @@ fetch_local_conn:
 				lc = list_head(combiner->rowBuffer);
 				dataRow = (RemoteDataRow) lfirst(lc);
 				if (dataRow->msgnode == nodenum)
-				{
-					combiner->currentRow = *dataRow;
-					pfree(dataRow);
-				}
+					combiner->currentRow = dataRow;
 				else
-				{
 					lc = NULL;
-				}
 			}
 			if (lc)
 			{
@@ -1315,26 +1369,27 @@ fetch_local_conn:
 					if (combiner->tapemarks[i] == lc)
 						combiner->tapemarks[i] = prev;
 				}
+				elog(LOG, "Found buffered tuple from node %d", nodenum);
 				combiner->rowBuffer = list_delete_cell(combiner->rowBuffer,
 													   lc, prev);
 			}
+			elog(LOG, "Update tapemark");
 			combiner->tapemarks[combiner->current_conn] = prev;
 		}
 		else
 		{
 			dataRow = (RemoteDataRow) linitial(combiner->rowBuffer);
-			combiner->currentRow = *dataRow;
-			pfree(dataRow);
+			combiner->currentRow = dataRow;
 			combiner->rowBuffer = list_delete_first(combiner->rowBuffer);
 		}
 	}
 
 	/* If we have node message in the currentRow slot, and it is from a proper
 	 * node, consume it.  */
-	if (combiner->currentRow.msg)
+	if (combiner->currentRow)
 	{
 		Assert(!combiner->merge_sort ||
-			   combiner->currentRow.msgnode == nodenum);
+			   combiner->currentRow->msgnode == nodenum);
 		slot = combiner->ss.ps.ps_ResultTupleSlot;
 		CopyDataRowTupleToSlot(combiner, slot);
 		return slot;
@@ -1343,14 +1398,6 @@ fetch_local_conn:
 	while (conn)
 	{
 		int res;
-
-		/* We may have switched to a new connection and this new connection
-		 * may appear local and require different handling.
-		 * Verify that before checking ownership, it is incorrect to buffer
-		 * local connection and even may cause segmentation fault
-		 */
-		if (conn->sock == LOCAL_CONN)
-			goto fetch_local_conn;
 
 		/* Going to use a connection, buffer it if needed */
 		CHECK_OWNERSHIP(conn, combiner);
@@ -1361,7 +1408,7 @@ fetch_local_conn:
 		 */
 		if (conn->state == DN_CONNECTION_STATE_IDLE)
 		{
-			if (pgxc_node_send_execute(conn, combiner->cursor, 100) != 0)
+			if (pgxc_node_send_execute(conn, combiner->cursor, 1000) != 0)
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to fetch from data node")));
@@ -1507,7 +1554,7 @@ FetchTuple(RemoteQueryState *combiner, TupleTableSlot *slot)
 				return true;
 			else
 			{
-				if (pgxc_node_send_execute(conn, combiner->cursor, 1) != 0)
+				if (pgxc_node_send_execute(conn, combiner->cursor, 1000) != 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
 							 errmsg("Failed to fetch from data node")));
@@ -3765,9 +3812,15 @@ get_exec_connections(RemoteQueryState *planstate,
 
 				slot = source->ps_ResultTupleSlot;
 				/* The slot should be of type DataRow */
+#ifdef XCP
+				Assert(!TupIsNull(slot) && slot->tts_datarow);
+
+				nodelist = list_make1_int(slot->tts_datarow->msgnode);
+#else
 				Assert(!TupIsNull(slot) && slot->tts_dataRow);
 
 				nodelist = list_make1_int(slot->tts_dataNode);
+#endif
 				primarynode = NIL;
 			}
 			else
@@ -4829,19 +4882,10 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
 		}
 
 		/* throw away current message that may be in the buffer */
-		if (combiner->currentRow.msg)
+		if (combiner->currentRow)
 		{
-			pfree(combiner->currentRow.msg);
-			combiner->currentRow.msg = NULL;
-		}
-
-		/*
-		 * Local connection does not have pending data on it, just skip
-		 */
-		if (conn->sock == LOCAL_CONN)
-		{
-			REMOVE_CURR_CONN(combiner);
-			continue;
+			pfree(combiner->currentRow);
+			combiner->currentRow = NULL;
 		}
 
 		/* no data is expected */
@@ -4871,13 +4915,12 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
 	if (combiner->tuplesortstate)
 	{
 		/*
-		 * tuplesort_end invalidates minimal tuple if it is in the slot because
-		 * deletes the TupleSort memory context, causing seg fault later when
-		 * releasing tuple table
+		 * Free these before tuplesort_end, because these arrays may appear
+		 * in the tuplesort's memory context, tuplesort_end deletes this
+		 * context and may invalidate the memory.
+		 * We still want to free them here, because these may be in different
+		 * context.
 		 */
-		ExecClearTuple(combiner->ss.ps.ps_ResultTupleSlot);
-		tuplesort_end((Tuplesortstate *) combiner->tuplesortstate);
-		combiner->tuplesortstate = NULL;
 		if (combiner->tapenodes)
 		{
 			pfree(combiner->tapenodes);
@@ -4888,6 +4931,14 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
 			pfree(combiner->tapemarks);
 			combiner->tapemarks = NULL;
 		}
+		/*
+		 * tuplesort_end invalidates minimal tuple if it is in the slot because
+		 * deletes the TupleSort memory context, causing seg fault later when
+		 * releasing tuple table
+		 */
+		ExecClearTuple(combiner->ss.ps.ps_ResultTupleSlot);
+		tuplesort_end((Tuplesortstate *) combiner->tuplesortstate);
+		combiner->tuplesortstate = NULL;
 	}
 }
 
@@ -6189,6 +6240,10 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 
 	remotestate = makeNode(RemoteSubplanState);
 	combiner = (ResponseCombiner *) remotestate;
+	/*
+	 * We do not need to combine row counts if we will receive intermediate
+	 * results or if we won't return row count.
+	 */
 	if (IS_PGXC_DATANODE || estate->es_plannedstmt->commandType == CMD_SELECT)
 	{
 		combineType = COMBINE_TYPE_NONE;
@@ -6221,64 +6276,58 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 	/*
 	 * We optimize execution if we going to send down query to next level
 	 */
+	remotestate->local_exec = false;
 	if (IS_PGXC_DATANODE)
 	{
 		if (remotestate->execNodes == NIL)
 		{
-			/* Special case, if subplan is not distributed, like Result */
+			/*
+			 * Special case, if subplan is not distributed, like Result, or
+			 * query against catalog tables only.
+			 * We are only interested in filtering out the subplan results and
+			 * get only those we are interested in.
+			 * XXX we may want to prevent multiple executions in this case
+			 * either, to achieve this we will set single execNode on planning
+			 * time and this case would never happen, this code branch could
+			 * be removed.
+			 */
 			remotestate->local_exec = true;
-			remotestate->destinations = NULL;
 		}
-		else
+		else if (!remotestate->execOnAll)
 		{
-			ListCell   *lc;
-			ListCell   *prev;
+			/*
+			 * XXX We should change planner and remove this flag.
+			 * We want only one node is producing the replicated result set,
+			 * and planner should choose that node - it is too hard to determine
+			 * right node at execution time, because it should be guaranteed
+			 * that all consumers make the same decision.
+			 * For now always execute replicated plan on local node to save
+			 * resources.
+			 */
 
-			/* Find out if local node is in execution node list */
-			prev = NULL;
-			foreach(lc, remotestate->execNodes)
+			/*
+			 * Make sure local node is in execution list
+			 */
+			if (list_member_int(remotestate->execNodes, PGXCNodeId))
 			{
-				int nodenum = lfirst_int(lc);
-				if (nodenum == PGXCNodeId)
-				{
-					remotestate->local_exec = true;
-					remotestate->destinations = (void **) palloc0(NumDataNodes * sizeof(void *));
-					/* For now it is just flag */
-					remotestate->destinations[nodenum - 1] = (void *) 1;
-					if (remotestate->execOnAll)
-						remotestate->execNodes = list_delete_cell(
-													  remotestate->execNodes,
-													  lc, prev);
-					else
-					{
-						/*
-						 * save network traffic, always access local copy of the
-						 * replicated relation
-						 */
-						list_free(remotestate->execNodes);
-						remotestate->execNodes = NIL;
-					}
-					break;
-				}
-				prev = lc;
+				list_free(remotestate->execNodes);
+				remotestate->execNodes = NIL;
+				remotestate->local_exec = true;
+			}
+			else
+			{
+				/*
+				 * To support, we need to connect to some producer, so
+				 * each producer should be prepared to serve rows for random
+				 * number of consumers. It is hard, because new consumer may
+				 * connect after producing is started, on the other hand,
+				 * absence of expected consumer is a problem too.
+				 */
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("Getting replicated results from remote node is not supported")));
 			}
 		}
-
-		/*
-		 * TODO: determine pull nodes, which are both in execution and receiving
-		 * node lists. Populate destinations array at the same time.
-		 * Node will get into pullNodes list and into destinations if it present
-		 * in both execution and receiving lists.
-		 */
-		remotestate->pullNodes = NIL;
-	}
-	else
-	{
-		/* Remote plan never executed on coordinator */
-		remotestate->local_exec = false;
-		remotestate->locator = NULL;
-		remotestate->destinations = NULL;
-		remotestate->pullNodes = NIL;
 	}
 
 	/*
@@ -6433,7 +6482,11 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 		set_portable_output(false);
 	}
 	remotestate->bound = false;
-	if (node->sort)
+	/*
+	 * It does not makes sense to merge sort if there is only one tuple source.
+	 * By the contract it is already sorted
+	 */
+	if (node->sort && list_length(remotestate->execNodes) > 1)
 		combiner->merge_sort = true;
 
 	return remotestate;
@@ -6731,43 +6784,10 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 			}
 		}
 
-		/*
-		 * If executing plan locally add dummy connection handle.
-		 */
-		if (node->local_exec)
-		{
-			PGXCNodeHandle **conn;
-			/* need to repalloc the connection array if it already exists
-			 * (mixed local and remote sources) */
-			if (combiner->conn_count++ == 0)
-			{
-				/* allocate one item */
-				combiner->connections = (PGXCNodeHandle **)
-					palloc(sizeof(PGXCNodeHandle *));
-				conn = combiner->connections;
-			}
-			else
-			{
-				combiner->connections = (PGXCNodeHandle **)
-					repalloc(combiner->connections,
-						 combiner->conn_count * sizeof(PGXCNodeHandle *));
-				conn = combiner->connections + combiner->conn_count - 1;
-			}
-			*conn =	(PGXCNodeHandle *) palloc(sizeof(PGXCNodeHandle));
-			(*conn)->nodenum = PGXCNodeId;
-			(*conn)->sock = LOCAL_CONN;
-			(*conn)->error = NULL;
-			(*conn)->state = DN_CONNECTION_STATE_QUERY;
-			/*
-			 * no need to initialize buffers of dummy connection, we do
-			 * not use them
-			 */
-		}
-
 		if (combiner->merge_sort)
 		{
 			/*
-			 * Requests are already made and sorter can fetsh tuples to populate
+			 * Requests are already made and sorter can fetch tuples to populate
 			 * sort buffer.
 			 */
 			combiner->tuplesortstate = tuplesort_begin_merge(

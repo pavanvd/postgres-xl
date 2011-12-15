@@ -376,6 +376,52 @@ PortalCreateHoldStore(Portal portal)
 	MemoryContextSwitchTo(oldcxt);
 }
 
+#ifdef XCP
+void
+PortalCreateProducerStore(Portal portal)
+{
+	MemoryContext oldcxt;
+
+	Assert(portal->holdContext == NULL);
+	Assert(portal->holdStore == NULL);
+
+	/*
+	 * Create the memory context that is used for storage of the tuple set.
+	 * Note this is NOT a child of the portal's heap memory.
+	 */
+	portal->holdContext =
+		AllocSetContextCreate(PortalMemory,
+							  "PortalHoldContext",
+							  ALLOCSET_DEFAULT_MINSIZE,
+							  ALLOCSET_DEFAULT_INITSIZE,
+							  ALLOCSET_DEFAULT_MAXSIZE);
+
+	/*
+	 * Create the tuple store, selecting cross-transaction temp files, and
+	 * enabling random access only if cursor requires scrolling.
+	 *
+	 * XXX: Should maintenance_work_mem be used for the portal size?
+	 */
+	oldcxt = MemoryContextSwitchTo(portal->holdContext);
+
+	portal->tmpContext = AllocSetContextCreate(portal->holdContext,
+											   "TuplestoreTempContext",
+											   ALLOCSET_DEFAULT_MINSIZE,
+											   ALLOCSET_DEFAULT_INITSIZE,
+											   ALLOCSET_DEFAULT_MAXSIZE);
+	/*
+	 * We really do not need interXact set to true for the producer store,
+	 * but we have to set it as long as we store it in holdStore variable -
+	 * portal destroys it after the resource owner invalidating internal
+	 * temporary file if tuplestore has been ever spilled to disk
+	 */
+	portal->holdStore = tuplestore_begin_datarow(true, work_mem,
+												 portal->tmpContext);
+
+	MemoryContextSwitchTo(oldcxt);
+}
+#endif
+
 /*
  * PinPortal
  *		Protect a portal from dropping.
@@ -926,6 +972,32 @@ AtSubCleanup_Portals(SubTransactionId mySubid)
 		PortalDrop(portal, false);
 	}
 }
+
+
+#ifdef XCP
+static List *producingPortals = NIL;
+
+List *
+getProducingPortals(void)
+{
+	return producingPortals;
+}
+
+
+void
+addProducingPortal(Portal portal)
+{
+	producingPortals = lappend(producingPortals, portal);
+}
+
+
+void
+removeProducingPortal(Portal portal)
+{
+	producingPortals = list_delete_ptr(producingPortals, portal);
+}
+#endif
+
 
 /* Find all available cursors */
 Datum

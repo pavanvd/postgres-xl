@@ -370,10 +370,105 @@ SocketBackend(StringInfo inBuf)
 {
 	int			qtype;
 
+#ifdef XCP
+	/*
+	 * Session from data node may need to do some background work if it is
+	 * running producing subplans. So just poll the connection, and if it does
+	 * not have input for us do the work.
+	 * If we do not have producing portals we should use the blocking read
+	 * to avoid loop consuming 100% of CPU
+	 */
+	if (IS_PGXC_DATANODE && IsConnFromDatanode())
+	{
+		/*
+		 * Advance producing portals or poll client connection until we have
+		 * a client command to handle.
+		 */
+		while (true)
+		{
+			unsigned char c;
+
+			qtype = pq_getbyte_if_available(&c);
+			if (qtype == 0)			/* no commands, do producing */
+			{
+				/*
+				 * No command yet, try to advance producing portals, and
+				 * depending on result do:
+				 * -1 No producing portals, block and wait for client command
+				 * 0  All producing portals are paused, sleep for a moment and
+				 *    then check again either we have client command or some
+				 *    portal is awaken.
+				 * 1  check for client command and more continue advancing
+				 *    producers immediately
+				 */
+				int activePortals = -1;
+				ListCell   *lc = list_head(getProducingPortals());
+				while (lc)
+				{
+					Portal p = (Portal) lfirst(lc);
+					int result;
+
+					/*
+					 * Get next already, because next call may remove cell from
+					 * the list and invalidate next reference
+					 */
+					lc = lnext(lc);
+
+					result = AdvanceProducingPortal(p);
+					if (result == 0)
+					{
+						/* Portal is paused */
+						if (activePortals < 0)
+							activePortals = 0;
+					}
+					else if (result > 0)
+					{
+						if (activePortals < 0)
+							activePortals = result;
+						else
+							activePortals += result;
+					}
+				}
+				if (activePortals < 0)
+				{
+					/* no producers at all, we may wait while next command */
+					qtype = pq_getbyte();
+					break;
+				}
+				else if (activePortals == 0)
+				{
+					/* all producers are paused, sleep a little to allow other
+					 * processes to go */
+					pg_usleep(10000L);
+				}
+			}
+			else if (qtype == 1)
+			{
+				/* command code in c is defined, move it to qtype
+				 * and break to handle the command */
+				qtype = c;
+				break;
+			}
+			else
+			{
+				/* error, default handling, qtype is already set to EOF */
+				break;
+			}
+		}
+	}
+	else
+	{
+		/*
+		 * Get message type code from the frontend.
+		 */
+		qtype = pq_getbyte();
+	}
+#else
 	/*
 	 * Get message type code from the frontend.
 	 */
 	qtype = pq_getbyte();
+#endif
 
 	if (qtype == EOF)			/* frontend disconnected */
 	{
@@ -1582,7 +1677,7 @@ exec_bindplan_message(StringInfo input_message)
 						"commands ignored until end of transaction block")));
 
 	/*
-	 * If remote statement is passed in create the portal, if it is empty
+	 * If remote statement is passed in, create the portal, if it is empty
 	 * reset existing portal with new parameters.
 	 */
 	if (*plannodestr)
@@ -1626,6 +1721,13 @@ exec_bindplan_message(StringInfo input_message)
 													sizeof(RemoteParam));
 		memcpy(stmt->remoteparams, rstmt->remoteparams,
 			   rstmt->nParamRemote * sizeof(RemoteParam));
+		/*
+		 * Store just a pointer. It should be OK for our purposes - the pointer
+		 * is valid while portal alive and never moved. And only purpose while
+		 * it is used is the use it as a key of distribute executor's shared
+		 * queue.
+		 */
+		stmt->pname = portal->name;
 		stmt->distributionType = rstmt->distributionType;
 		stmt->distributionKey = rstmt->distributionKey;
 		stmt->distributionNodes = (List *) copyObject(rstmt->distributionNodes);
@@ -1645,9 +1747,9 @@ exec_bindplan_message(StringInfo input_message)
 					 errmsg("portal \"%s\" does not exist", portal_name)));
 		/*
 		 * Copy the planned statement from old portal. We have to make copy
-		 * twice - we finally want to have in in the new portal's heap memory,
-		 * but it created only when new portal is created but by the creation
-		 * time we should destroy old portal already.
+		 * twice - we finally want to have it in the new portal's heap memory,
+		 * but it is allocated only when new portal is created but by the
+		 * creation time we should destroy old portal already.
 		 */
 		oldplan = copyObject(oldportal->stmts);
 		PortalDrop(oldportal, false);

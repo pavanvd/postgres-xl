@@ -37,7 +37,10 @@
 #include "storage/procsignal.h"
 #include "storage/sinvaladt.h"
 #include "storage/spin.h"
-
+#ifdef XCP
+#include "pgxc/pgxc.h"
+#include "pgxc/squeue.h"
+#endif
 
 shmem_startup_hook_type shmem_startup_hook = NULL;
 
@@ -126,6 +129,10 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, AutoVacuumShmemSize());
 		size = add_size(size, WalSndShmemSize());
 		size = add_size(size, WalRcvShmemSize());
+#ifdef XCP
+		if (IS_PGXC_DATANODE)
+			size = add_size(size, SharedQueueShmemSize());
+#endif
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
@@ -234,6 +241,14 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	AutoVacuumShmemInit();
 	WalSndShmemInit();
 	WalRcvShmemInit();
+
+#ifdef XCP
+	/*
+	 * Set up distributed executor's shared queues
+	 */
+	if (IS_PGXC_DATANODE)
+		SharedQueuesInit();
+#endif
 
 	/*
 	 * Set up other modules that need some shared memory space

@@ -154,12 +154,6 @@ CreateExecutorState(void)
 	estate->es_epqTuple = NULL;
 	estate->es_epqTupleSet = NULL;
 	estate->es_epqScanDone = NULL;
-#ifdef XCP
-	/* Parameters to filter out result rows */
-	estate->es_distributionKey = InvalidAttrNumber;
-	estate->es_distributionNodes = NULL;
-	estate->es_locator = NULL;
-#endif
 
 	/*
 	 * Return the executor state structure

@@ -19,6 +19,9 @@
 #include "locator.h"
 #include "pgxcnode.h"
 #include "planner.h"
+#ifdef XCP
+#include "squeue.h"
+#endif
 #include "access/tupdesc.h"
 #include "executor/tuptable.h"
 #include "nodes/execnodes.h"
@@ -52,6 +55,8 @@ typedef struct CombineTag
 	char	data[COMPLETION_TAG_BUFSIZE];	/* execution result combination data */
 } CombineTag;
 
+
+#ifndef XCP
 /*
  * Represents a DataRow message received from a remote node.
  * Contains originating node number and message body in DataRow format without
@@ -64,6 +69,7 @@ typedef struct RemoteDataRowData
 	int 		msgnode;				/* node number of the data row message */
 } 	RemoteDataRowData;
 typedef RemoteDataRowData *RemoteDataRow;
+#endif
 
 #ifdef XCP
 /*
@@ -93,7 +99,11 @@ typedef struct RemoteQueryState
 	char		errorCode[5];			/* error code to send back to client */
 	char	   *errorMessage;			/* error message to send back to client */
 	char	   *errorDetail;			/* error detail to send back to client */
+#ifdef XCP
+	RemoteDataRow currentRow;			/* next data ro to be wrapped into a tuple */
+#else
 	RemoteDataRowData currentRow;		/* next data ro to be wrapped into a tuple */
+#endif
 	/* TODO use a tuplestore as a rowbuffer */
 	List 	   *rowBuffer;				/* buffer where rows are stored when connection
 										 * should be cleaned for reuse by other RemoteQuery */
@@ -164,23 +174,10 @@ typedef struct RemoteSubplanState
 	Locator    *locator;				/* determine destination of tuples of
 										 * locally executed plan */
 	int 	   *dest_nodes;				/* allocate once */
-	/*
-	 * Nodes where it is known the subplan is already running, or will be
-	 * running soon. Connect to these nodes and pull tuples from there.
-	 * TODO: implement, for now query is executed there anyway.
-	 */
-	List	   *pullNodes;
 	List	   *execNodes;				/* where to execute subplan */
 	/* should query be executed on all (true) or any (false) node specified
 	 * in the execNodes list */
 	bool 		execOnAll;
-	/*
-	 * If the destinations array is NULL return results to the parent plan only,
-	 * if locator is set filter out results which need to be sent to other nodes.
-	 * Also filter out results for destinations that are NULL.
-	 * TODO: implement, for now it is always NULL
-	 */
-    void	  **destinations;
 	int			nParamRemote;	/* number of params sent from the master node */
 	RemoteParam *remoteparams;  /* parameter descriptors */
 } RemoteSubplanState;

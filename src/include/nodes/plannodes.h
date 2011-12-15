@@ -73,6 +73,8 @@ typedef struct PlannedStmt
 
 	struct RemoteParam *remoteparams;/* parameter descriptors */
 
+	const char *pname;			/* the portal name */
+
 	/* Parameters to filter out result rows */
 	char		distributionType;
 	AttrNumber  distributionKey;

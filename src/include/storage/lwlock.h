@@ -75,6 +75,9 @@ typedef enum LWLockId
 	AnalyzeProcArrayLock,
 	BarrierLock,
 #endif
+#ifdef XCP
+	SQueuesLock,
+#endif
 	RelationMappingLock,
 	AsyncCtlLock,
 	AsyncQueueLock,

@@ -314,11 +314,19 @@ printtup(TupleTableSlot *slot, DestReceiver *self)
 	 * values, just send over the DataRow message as we received it from the
 	 * data node
 	 */
+#ifdef XCP
+	if (slot->tts_datarow)
+	{
+		pq_putmessage('D', slot->tts_datarow->msg, slot->tts_datarow->msglen);
+		return;
+	}
+#else
 	if (slot->tts_dataRow)
 	{
 		pq_putmessage('D', slot->tts_dataRow, slot->tts_dataLen);
 		return;
 	}
+#endif
 #endif
 
 	/* Set or update my derived attribute info, if needed */

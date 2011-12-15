@@ -33,6 +33,9 @@
 #include "commands/copy.h"
 #include "executor/executor.h"
 #include "executor/functions.h"
+#ifdef XCP
+#include "executor/producerReceiver.h"
+#endif
 #include "executor/tstoreReceiver.h"
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
@@ -125,6 +128,11 @@ CreateDestReceiver(CommandDest dest)
 
 		case DestSQLFunction:
 			return CreateSQLFunctionDestReceiver();
+
+#ifdef XCP
+		case DestProducer:
+			return CreateProducerDestReceiver();
+#endif
 	}
 
 	/* should never get here */

@@ -371,8 +371,8 @@ retry:
 	if (res_select == 0)
 	{
 		/* Handle timeout */
-		elog(WARNING, "timeout while waiting for response");
-		return ERROR_OCCURED;
+		elog(DEBUG1, "timeout while waiting for response");
+		return NO_ERROR_OCCURED;
 	}
 
 	/* read data */

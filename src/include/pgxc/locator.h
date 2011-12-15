@@ -110,7 +110,8 @@ struct _Locator
 extern Locator *createLocator(char locatorType, RelationAccessType accessType,
 			  Oid dataType, List *nodeList);
 #define GET_NODES(locator, value, isnull, nodes, primarynode) \
-	(*locator->locateNodes) (locator, value, isnull, nodes, primarynode)
+	(*(locator)->locateNodes) (locator, value, isnull, nodes, primarynode)
+#define LOCATOR_MAX_NODES(locator) (locator)->nodeCount
 #endif
 
 extern char *PreferredDataNodes;

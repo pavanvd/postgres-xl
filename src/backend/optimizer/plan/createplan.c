@@ -47,6 +47,7 @@
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #ifdef XCP
+#include "access/gtm.h"
 #include "catalog/pg_aggregate.h"
 #include "parser/parse_coerce.h"
 #else
@@ -72,6 +73,7 @@ static Plan *create_unique_plan(PlannerInfo *root, UniquePath *best_path);
 #ifdef XCP
 static RemoteSubplan *create_remotescan_plan(PlannerInfo *root,
 					   RemoteSubPath *best_path);
+static char *get_internal_cursor(void);
 #endif
 static SeqScan *create_seqscan_plan(PlannerInfo *root, Path *best_path,
 					List *tlist, List *scan_clauses);
@@ -4370,7 +4372,7 @@ make_remotesubplan(PlannerInfo *root,
 		node->sort->collations = collations;
 		node->sort->nullsFirst = nullsFirst;
 	}
-	node->cursor = NULL;
+	node->cursor = get_internal_cursor();
 	return node;
 }
 #endif /* XCP */
@@ -6218,7 +6220,10 @@ is_projection_capable_plan(Plan *plan)
 static int cursor_id = 0;
 
 
-char *
+/*
+ * Return a name unique for the cluster
+ */
+static char *
 get_internal_cursor(void)
 {
 	char *cursor;
@@ -6227,7 +6232,8 @@ get_internal_cursor(void)
 	if (cursor_id++ == INT_MAX)
 		cursor_id = 0;
 
-	snprintf(cursor, CNAME_MAXLEN - 1, "p_%x", cursor_id);
+	snprintf(cursor, CNAME_MAXLEN - 1, "p_%d_%x_%x",
+			 PGXCNodeId, getpid(), cursor_id);
 	return cursor;
 }
 #endif

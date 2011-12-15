@@ -91,6 +91,10 @@ typedef enum PortalStrategy
 	PORTAL_ONE_MOD_WITH,
 	PORTAL_UTIL_SELECT,
 	PORTAL_MULTI_QUERY
+#ifdef XCP
+	,
+	PORTAL_DISTRIBUTED
+#endif
 } PortalStrategy;
 
 /*
@@ -156,6 +160,9 @@ typedef struct PortalData
 	 */
 	Tuplestorestate *holdStore; /* store for holdable cursors */
 	MemoryContext holdContext;	/* memory containing holdStore */
+#ifdef XCP
+	MemoryContext tmpContext;	/* temporary memory */
+#endif
 
 	/*
 	 * atStart, atEnd and portalPos indicate the current cursor position.
@@ -218,5 +225,11 @@ extern void PortalDefineQuery(Portal portal,
 extern Node *PortalListGetPrimaryStmt(List *stmts);
 extern void PortalCreateHoldStore(Portal portal);
 extern void PortalHashTableDeleteAll(void);
+#ifdef XCP
+extern void PortalCreateProducerStore(Portal portal);
+extern List *getProducingPortals(void);
+extern void addProducingPortal(Portal portal);
+extern void removeProducingPortal(Portal portal);
+#endif
 
 #endif   /* PORTAL_H */

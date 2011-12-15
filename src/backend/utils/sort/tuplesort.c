@@ -3138,7 +3138,7 @@ getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
 	if (conn->state == DN_CONNECTION_STATE_IDLE)
 	{
 		Assert(combiner->cursor);
-		if (pgxc_node_send_execute(conn, combiner->cursor, 1) != 0)
+		if (pgxc_node_send_execute(conn, combiner->cursor, 1000) != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Failed to fetch from data node cursor")));
@@ -3159,7 +3159,7 @@ getlen_datanode(Tuplesortstate *state, int tapenum, bool eofOK)
 				Assert(combiner->cursor);
 				if (len)
 					return len;
-				if (pgxc_node_send_execute(conn, combiner->cursor, 1) != 0)
+				if (pgxc_node_send_execute(conn, combiner->cursor, 1000) != 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
 							 errmsg("Failed to fetch from data node cursor")));
