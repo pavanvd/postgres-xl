@@ -1444,7 +1444,7 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 /*
  * Cancel query
  */
-static int 
+static int
 cancel_query_on_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 {
 	ListCell	*nodelist_item;
@@ -1871,11 +1871,20 @@ reload_database_pools(void)
 			Oid nodeoid_check = coord_connInfos[i].nodeoid;
 			bool is_found = false;
 			int index_id = 0;
+#ifdef XCP
+			char *connstr_chk = PGXCNodeConnStr(coord_connInfos[i].host,
+												coord_connInfos[i].port,
+												databasePool->database,
+												databasePool->user_name,
+												"coordinator",
+												PGXCNodeId);
+#else
 			char *connstr_chk = PGXCNodeConnStr(coord_connInfos[i].host,
 												coord_connInfos[i].port,
 												databasePool->database,
 												databasePool->user_name,
 												"coordinator");
+#endif
 
 			/* Scan for pool existence */
 			for (j = 0; j < databasePool->num_co_pools; j++)
@@ -1914,11 +1923,20 @@ reload_database_pools(void)
 			Oid nodeoid_check = datanode_connInfos[i].nodeoid;
 			int index_id = 0;
 			bool is_found = false;
+#ifdef XCP
+			char *connstr_chk = PGXCNodeConnStr(datanode_connInfos[i].host,
+												datanode_connInfos[i].port,
+												databasePool->database,
+												databasePool->user_name,
+												"datanode",
+												PGXCNodeId);
+#else
 			char *connstr_chk = PGXCNodeConnStr(datanode_connInfos[i].host,
 												datanode_connInfos[i].port,
 												databasePool->database,
 												databasePool->user_name,
 												"coordinator");
+#endif
 
 			/* Scan for pool existence */
 			for (j = 0; j < databasePool->num_dn_pools; j++)
@@ -2016,14 +2034,14 @@ find_database_pool_to_clean(const char *database,
 		/* If database name does not correspond, move to next one */
 		if (database && strcmp(database, databasePool->database) != 0)
 		{
-			databasePool = databasePool->next;		
+			databasePool = databasePool->next;
 			continue;
 		}
 
 		/* If user name does not correspond, move to next one */
 		if (user_name && strcmp(user_name, databasePool->user_name) != 0)
 		{
-			databasePool = databasePool->next;		
+			databasePool = databasePool->next;
 			continue;
 		}
 
@@ -2282,17 +2300,35 @@ grow_pool(DatabasePool * dbPool, int index, char client_conn_type)
 
 		if (client_conn_type == REMOTE_CONN_DATANODE)
 			/* initialize it */
+#ifdef XCP
+			nodePool->connstr = PGXCNodeConnStr(datanode_connInfos[index].host,
+												datanode_connInfos[index].port,
+												dbPool->database,
+												dbPool->user_name,
+												remote_type,
+												PGXCNodeId);
+#else
 			nodePool->connstr = PGXCNodeConnStr(datanode_connInfos[index].host,
 												datanode_connInfos[index].port,
 												dbPool->database,
 												dbPool->user_name,
 												remote_type);
+#endif
 		else if (client_conn_type == REMOTE_CONN_COORD)
+#ifdef XCP
+			nodePool->connstr = PGXCNodeConnStr(datanode_connInfos[index].host,
+												datanode_connInfos[index].port,
+												dbPool->database,
+												dbPool->user_name,
+												remote_type,
+												PGXCNodeId);
+#else
 			nodePool->connstr = PGXCNodeConnStr(coord_connInfos[index].host,
 												coord_connInfos[index].port,
 												dbPool->database,
 												dbPool->user_name,
 												remote_type);
+#endif
 
 		if (!nodePool->connstr)
 		{

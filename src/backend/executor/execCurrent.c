@@ -267,12 +267,14 @@ search_plan_tree(PlanState *node, Oid table_oid)
 	switch (nodeTag(node))
 	{
 #ifdef PGXC
+#ifndef XCP
 		case T_RemoteQueryState:
 			{
 				RemoteQueryState *rqs = (RemoteQueryState *) node;
 				ScanState  *sstate = &(rqs->ss);
 				return sstate;
 			}
+#endif
 #endif
 			/*
 			 * scan nodes can all be treated alike
