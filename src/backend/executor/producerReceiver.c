@@ -16,7 +16,7 @@
 #include "postgres.h"
 
 #include "executor/producerReceiver.h"
-#include "pgxc/poolmgr.h"
+#include "pgxc/nodemgr.h"
 #include "utils/tuplestore.h"
 
 

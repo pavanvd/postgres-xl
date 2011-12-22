@@ -50,6 +50,9 @@ MemoryContext CurTransactionContext = NULL;
 MemoryContext PortalContext = NULL;
 
 static void MemoryContextStatsInternal(MemoryContext context, int level);
+#ifdef PGXC
+void *allocTopCxt(size_t s);
+#endif
 
 
 /*****************************************************************************
@@ -739,10 +742,16 @@ void *current_memcontext()
 	return((void *)CurrentMemoryContext);
 }
 
+void *allocTopCxt(size_t s)
+{
+	return MemoryContextAlloc(TopMemoryContext, (Size)s);
+}
+
 Gen_Alloc genAlloc_class = {(void *)MemoryContextAlloc,
 							(void *)MemoryContextAllocZero,
 							(void *)repalloc,
 							(void *)pfree,
-							(void *)current_memcontext};
+							(void *)current_memcontext,
+							(void *)allocTopCxt};
 
 #endif

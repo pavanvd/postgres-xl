@@ -39,7 +39,9 @@
 #include "pgxc/pgxc.h"
 #include "pgxc/execRemote.h"
 #include "pgxc/locator.h"
+#include "nodes/nodes.h"
 #include "pgxc/poolmgr.h"
+#include "catalog/pgxc_node.h"
 #endif
 #include "rewrite/rewriteHandler.h"
 #include "storage/fd.h"
@@ -209,7 +211,7 @@ typedef struct CopyStateData
 
 	/* Locator information */
 	RelationLocInfo *rel_loc;	/* the locator key */
-	int			idx_dist_by_col;		/* index of the distributed by column */
+	int		idx_dist_by_col;		/* index of the distributed by column */
 
 	PGXCNodeHandle **connections; /* Involved data node connections */
 	TupleDesc	tupDesc;		/* for INSERT SELECT */
@@ -1495,9 +1497,9 @@ BeginCopy(bool is_from,
 		if (cstate->rel_loc)
 		{
 			cstate->connections = DataNodeCopyBegin(cstate->query_buf.data,
-													exec_nodes->nodelist,
-													GetActiveSnapshot(),
-													is_from);
+								exec_nodes->nodeList,
+								GetActiveSnapshot(),
+								is_from);
 			if (!cstate->connections)
 				ereport(ERROR,
 						(errcode(ERRCODE_CONNECTION_EXCEPTION),
@@ -2885,7 +2887,7 @@ EndCopyFrom(CopyState cstate)
 #else
 		DataNodeCopyFinish(
 				cstate->connections,
-				replicated ? primary_data_node : 0,
+				replicated ? PGXCNodeGetNodeId(primary_data_node, PGXC_NODE_DATANODE) : -1,
 				replicated ? COMBINE_TYPE_SAME : COMBINE_TYPE_SUM);
 #endif
 		pfree(cstate->connections);
@@ -4228,8 +4230,6 @@ build_copy_statement(CopyState cstate, List *attnamelist,
 				TupleDesc tupDesc, bool is_from, List *force_quote, List *force_notnull)
 {
 	char *pPartByCol;
-
-
 	ExecNodes *exec_nodes = makeNode(ExecNodes);
 
 	/*
@@ -4246,18 +4246,13 @@ build_copy_statement(CopyState cstate, List *attnamelist,
 		 * Pick up one node only
 		 * This case corresponds to a replicated table with COPY TO
 		 *
-		 * PGXCTODO: this is true as long as subset of nodes is not
-		 * supported for tables. In this case, we need one node
-		 * in the node list associated to the table.
 		 */
 		if (!is_from && cstate->rel_loc->locatorType == 'R')
-			exec_nodes->nodelist = GetAnyDataNode();
+			exec_nodes->nodeList = GetAnyDataNode(cstate->rel_loc->nodeList);
 		else
 		{
-			/*
-			 * All nodes necessary
-			 */
-			exec_nodes->nodelist = list_copy(cstate->rel_loc->nodeList);
+			/* All nodes necessary */
+			exec_nodes->nodeList = list_concat(exec_nodes->nodeList, cstate->rel_loc->nodeList);
 		}
 	}
 

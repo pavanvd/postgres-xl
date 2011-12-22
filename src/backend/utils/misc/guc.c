@@ -59,6 +59,7 @@
 #include "pgxc/execRemote.h"
 #include "pgxc/locator.h"
 #include "pgxc/planner.h"
+#include "nodes/nodes.h"
 #include "pgxc/poolmgr.h"
 #endif
 #include "postmaster/autovacuum.h"
@@ -503,7 +504,6 @@ static int	effective_io_concurrency;
 /* should be static, but commands/variable.c needs to get at this */
 char	   *role_string;
 
-
 /*
  * Displayable names for context types (enum GucContext)
  *
@@ -778,15 +778,15 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 #ifdef PGXC
-	{       
+	{
 		{"enable_remotejoin", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of remote join plans."),
 			NULL
-		},  
+		},
 		&enable_remotejoin,
 		true,
 		NULL, NULL, NULL
-	},      
+	},
 #endif
 	{
 		{"geqo", PGC_USERSET, QUERY_TUNING_GEQO,
@@ -1451,6 +1451,7 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 #ifdef PGXC
+#ifndef XCP
 	{
 		{"persistent_datanode_connections", PGC_BACKEND, DEVELOPER_OPTIONS,
 			gettext_noop("Session never releases acquired connections."),
@@ -1470,20 +1471,7 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
-	{
-		/*
-		 * This is temporary work-around until we allow for a merge-sort of
-		 * ORDER BY.
-		 */
-		{"strict_select_checking", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Forbid if SELECT has ORDER BY"),
-			gettext_noop("and is not safe for the cluster"),
-			GUC_NOT_IN_SAMPLE
-		},
-		&StrictSelectChecking,
-		false,
-		NULL, NULL, NULL
-	},
+#endif
 #endif
 
 	{
@@ -2445,26 +2433,6 @@ static struct config_int ConfigureNamesInt[] =
 	},
 #ifdef PGXC
 	{
-		{"num_data_nodes", PGC_POSTMASTER, DATA_NODES,
-			gettext_noop("Number of data nodes."),
-			NULL
-		},
-		&NumDataNodes,
-		2, 1, 65535,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"num_coordinators", PGC_POSTMASTER, COORDINATORS,
-			gettext_noop("Number of Coordinators."),
-			NULL
-		},
-		&NumCoords,
-		1, 1, 65535,
-		NULL, NULL, NULL
-	},
-
-	{
 		{"min_pool_size", PGC_POSTMASTER, DATA_NODES,
 			gettext_noop("Initial pool size."),
 			gettext_noop("If number of active connections decreased below this value, "
@@ -2503,26 +2471,6 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&GtmPort,
 		6666, 1, 65535,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"pgxc_node_id", PGC_POSTMASTER, GTM,
-			gettext_noop("The Coordinator or Datanode Identifier."),
-			NULL
-		},
-		&PGXCNodeId,
-		1, 1, INT_MAX,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"primary_data_node", PGC_POSTMASTER, DATA_NODES,
-			gettext_noop("Primary Data Node For Replicated Handling."),
-			NULL
-		},
-		&primary_data_node,
-		1, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 #endif /* PGXC */
@@ -3181,38 +3129,6 @@ static struct config_string ConfigureNamesString[] =
 
 #ifdef PGXC
 	{
-		{"preferred_data_nodes", PGC_POSTMASTER, DATA_NODES,
-			gettext_noop("Preferred data nodes."),
-			gettext_noop("A list of data nodes to read from replicated tables")
-		},
-		&PreferredDataNodes,
-		"",
-		NULL, NULL, NULL
-	},
-
-	{
-		{"data_node_hosts", PGC_POSTMASTER, DATA_NODES,
-			gettext_noop("Host names or addresses of data nodes."),
-			gettext_noop("Comma separated list or single value, "
-						 "if all data nodes on the same host")
-		},
-		&DataNodeHosts,
-		"localhost",
-		NULL, NULL, NULL
-	},
-
-	{
-		{"data_node_ports", PGC_POSTMASTER, DATA_NODES,
-			gettext_noop("Port numbers of data nodes."),
-			gettext_noop("Comma separated list or single value, "
-						 "if all data nodes listen on the same port")
-		},
-		&DataNodePorts,
-		"15432,25432",
-		NULL, NULL, NULL
-	},
-
-	{
 		{"gtm_host", PGC_POSTMASTER, GTM,
 			gettext_noop("Host name or address of GTM"),
 			NULL
@@ -3223,24 +3139,13 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"coordinator_hosts", PGC_POSTMASTER, COORDINATORS,
-			gettext_noop("Host names or addresses of Coordinators."),
-			gettext_noop("Comma separated list or single value, "
-						 "if all Coordinators on the same host")
+		{"pgxc_node_name", PGC_POSTMASTER, GTM,
+			gettext_noop("The Coordinator or Datanode name."),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_IS_NAME
 		},
-		&CoordinatorHosts,
-		"localhost",
-		NULL, NULL, NULL
-	},
-
-	{
-		{"coordinator_ports", PGC_POSTMASTER, COORDINATORS,
-			gettext_noop("Port numbers of Coordinators."),
-			gettext_noop("Comma separated list or single value, "
-						 "if all Coordinators listen on the same port")
-		},
-		&CoordinatorPorts,
-		"5432",
+		&PGXCNodeName,
+		"",
 		NULL, NULL, NULL
 	},
 #endif
@@ -3488,7 +3393,7 @@ static struct config_enum ConfigureNamesEnum[] =
 
 #ifdef PGXC
 	{
-		{"remotetype", PGC_BACKEND, CONN_AUTH, 
+		{"remotetype", PGC_BACKEND, CONN_AUTH,
 			gettext_noop("Sets the type of Postgres-XC remote connection"),
 			NULL
 		},

@@ -17,6 +17,7 @@
 #ifndef EXECREMOTE_H
 #define EXECREMOTE_H
 #include "locator.h"
+#include "nodes/nodes.h"
 #include "pgxcnode.h"
 #include "planner.h"
 #ifdef XCP
@@ -64,9 +65,9 @@ typedef struct CombineTag
  */
 typedef struct RemoteDataRowData
 {
-	char	   *msg;					/* last data row message */
-	int 		msglen;					/* length of the data row message */
-	int 		msgnode;				/* node number of the data row message */
+	char	*msg;					/* last data row message */
+	int 	msglen;					/* length of the data row message */
+	int 	msgnode;				/* node number of the data row message */
 } 	RemoteDataRowData;
 typedef RemoteDataRowData *RemoteDataRow;
 #endif
@@ -149,6 +150,10 @@ typedef struct RemoteQueryState
 	/* Support for parameters */
 	char	   *paramval_data;		/* parameter data, format is like in BIND */
 	int			paramval_len;		/* length of parameter values data */
+
+	int			eflags;			/* capability flags to pass to tuplestore */
+	bool		eof_underlying; /* reached end of underlying plan? */
+	Tuplestorestate *tuplestorestate;
 
 }	RemoteQueryState;
 
@@ -235,10 +240,7 @@ extern void	PGXCNodeImplicitCommitPrepared(GlobalTransactionId prepare_xid,
 										   bool is_commit);
 
 /* Get list of nodes */
-extern void PGXCNodeGetNodeList(PGXC_NodeId **datanodes,
-								int *dn_conn_count,
-								PGXC_NodeId **coordinators,
-								int *co_conn_count);
+extern char *PGXCNodeGetNodeList(char *nodestring);
 
 /* Copy command just involves Datanodes */
 extern PGXCNodeHandle** DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_from);
@@ -247,7 +249,7 @@ extern uint64 DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_conne
 #ifdef XCP
 extern void DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_data_node);
 #else
-extern void DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_data_node, CombineType combine_type);
+extern void DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_dn_index, CombineType combine_type);
 #endif
 extern bool DataNodeCopyEnd(PGXCNodeHandle *handle, bool is_error);
 extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_connections);
@@ -296,8 +298,9 @@ extern int ParamListToDataRow(ParamListInfo params, char** result);
 extern void ExecCloseRemoteStatement(const char *stmt_name, List *nodelist);
 
 #ifndef XCP
+/* Flags related to temporary objects included in query */
 extern void ExecSetTempObjectIncluded(void);
+extern bool ExecIsTempObjectIncluded(void);
+extern void ExecRemoteInsert(Relation resultRelationDesc, RemoteQueryState *resultRemoteRel, TupleTableSlot *slot);
 #endif
-
-extern int primary_data_node;
 #endif

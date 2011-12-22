@@ -107,6 +107,7 @@
 #include "pgxc/pgxc.h"
 /* COORD */
 #include "pgxc/locator.h"
+#include "nodes/nodes.h"
 #include "pgxc/poolmgr.h"
 #include "access/gtm.h"
 #endif
@@ -127,6 +128,9 @@
 #include "utils/datetime.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
+#ifdef PGXC
+#include "utils/resowner.h"
+#endif
 
 #ifdef EXEC_BACKEND
 #include "storage/spin.h"
@@ -330,6 +334,11 @@ extern int	optreset;			/* might not be declared by system headers */
 
 #ifdef USE_BONJOUR
 static DNSServiceRef bonjour_sdref = NULL;
+#endif
+
+#ifdef PGXC
+char			*PGXCNodeName = NULL;
+int			PGXCNodeId = -1;
 #endif
 
 /*
@@ -573,7 +582,7 @@ PostmasterMain(int argc, char *argv[])
 			case 'C':
 				isPGXCCoordinator = true;
 				break;
-#endif 
+#endif
 
 			case 'b':
 				/* Undocumented flag used for binary upgrades */
@@ -704,7 +713,7 @@ PostmasterMain(int argc, char *argv[])
 			case 'X':
 				isPGXCDataNode = true;
 				break;
-#endif 
+#endif
 			case 'c':
 			case '-':
 				{
@@ -1124,14 +1133,14 @@ PostmasterMain(int argc, char *argv[])
 	/* Register node on GTM during Postmaster Startup. */
 	if (IS_PGXC_COORDINATOR)
 	{
-		if (RegisterGTM(PGXC_NODE_COORDINATOR, PostPortNumber, userDoption) < 0)
+		if (RegisterGTM(GTM_NODE_COORDINATOR, PostPortNumber, userDoption) < 0)
 			ereport(FATAL,
 				(errcode(ERRCODE_IO_ERROR),
 				 errmsg("Can not register Coordinator on GTM")));
 	}
 	if (IS_PGXC_DATANODE)
 	{
-		if (RegisterGTM(PGXC_NODE_DATANODE, PostPortNumber, userDoption) < 0)
+		if (RegisterGTM(GTM_NODE_DATANODE, PostPortNumber, userDoption) < 0)
 			ereport(FATAL,
 				(errcode(ERRCODE_IO_ERROR),
 				 errmsg("Can not register Datanode on GTM")));
@@ -2328,9 +2337,9 @@ pmdie(SIGNAL_ARGS)
 
 				/* Unregister Node on GTM */
 				if (IS_PGXC_COORDINATOR)
-					UnregisterGTM(PGXC_NODE_COORDINATOR);
+					UnregisterGTM(GTM_NODE_COORDINATOR);
 				else if (IS_PGXC_DATANODE)
-					UnregisterGTM(PGXC_NODE_DATANODE);
+					UnregisterGTM(GTM_NODE_DATANODE);
 #endif
 
 				/*
@@ -2394,7 +2403,7 @@ pmdie(SIGNAL_ARGS)
 				/* and the walwriter too */
 				if (WalWriterPID != 0)
 					signal_child(WalWriterPID, SIGTERM);
-#ifdef PGXC 
+#ifdef PGXC
 				/* and the pool manager too */
 #ifdef XCP
 				if (PgPoolerPID != 0)
@@ -2405,9 +2414,9 @@ pmdie(SIGNAL_ARGS)
 
 				/* Unregister Node on GTM */
 				if (IS_PGXC_COORDINATOR)
-					UnregisterGTM(PGXC_NODE_COORDINATOR);
+					UnregisterGTM(GTM_NODE_COORDINATOR);
 				else if (IS_PGXC_DATANODE)
-					UnregisterGTM(PGXC_NODE_DATANODE);
+					UnregisterGTM(GTM_NODE_DATANODE);
 #endif /* PGXC */
 				pmState = PM_WAIT_BACKENDS;
 			}
@@ -2733,8 +2742,8 @@ reaper(SIGNAL_ARGS)
 		}
 
 #ifdef PGXC /* PGXC_COORD */
-		/* 
-		 * Was it the pool manager?  TODO decide how to handle 
+		/*
+		 * Was it the pool manager?  TODO decide how to handle
 		 * Probably we should restart the system
 		 */
 #ifdef XCP
@@ -3423,9 +3432,6 @@ BackendStartup(Port *port)
 {
 	Backend    *bn;				/* for backend cleanup */
 	pid_t		pid;
-#ifdef PGXC /* PGXC_COORD */
-	PoolHandle *pool_handle;
-#endif 
 
 	/*
 	 * Create backend data structure.  Better before the fork() so we can
@@ -3461,32 +3467,6 @@ BackendStartup(Port *port)
 	else
 		bn->child_slot = 0;
 
-#ifdef PGXC /* PGXC_COORD */
-#ifdef XCP
-	pool_handle = GetPoolManagerHandle();
-	if (pool_handle == NULL)
-	{
-		ereport(ERROR,
-			(errcode(ERRCODE_IO_ERROR),
-			 errmsg("Can not connect to pool manager")));
-		return STATUS_ERROR;
-	}
-#else
-	/* Don't get a Pooler Handle if Postmaster is activated from another Coordinator */
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-	{
-		pool_handle = GetPoolManagerHandle();
-		if (pool_handle == NULL)
-		{
-			ereport(ERROR,
-				(errcode(ERRCODE_IO_ERROR),
-				 errmsg("Can not connect to pool manager")));
-			return STATUS_ERROR;
-		}
-	}
-#endif /* XCP */
-#endif /* PGXC */
-
 #ifdef EXEC_BACKEND
 	pid = backend_forkexec(port);
 #else							/* !EXEC_BACKEND */
@@ -3515,29 +3495,10 @@ BackendStartup(Port *port)
 		/* Perform additional initialization and collect startup packet */
 		BackendInitialize(port);
 
-#ifdef PGXC
-		/* User is authenticated and dbname is known at this point */
-#ifdef XCP
-		PoolManagerConnect(pool_handle, port->database_name, port->user_name);
-#else
-		if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-		{
-			PoolManagerConnect(pool_handle, port->database_name, port->user_name);
-		}
-#endif
-#endif
-
 		/* And run the backend */
 		proc_exit(BackendRun(port));
 	}
 #endif   /* EXEC_BACKEND */
-
-#ifdef PGXC /* PGXC_COORD */
-#ifndef XCP
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-#endif
-		PoolManagerCloseHandle(pool_handle);
-#endif 
 
 	if (pid < 0)
 	{

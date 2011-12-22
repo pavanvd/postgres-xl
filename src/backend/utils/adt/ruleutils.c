@@ -23,6 +23,9 @@
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_authid.h"
+#ifdef PGXC
+#include "catalog/pg_aggregate.h"
+#endif /* PGXC */
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_depend.h"
@@ -46,6 +49,7 @@
 #include "parser/keywords.h"
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
+#include "parser/parse_type.h"
 #include "parser/parser.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteHandler.h"
@@ -98,6 +102,9 @@ typedef struct
 	int			prettyFlags;	/* enabling of pretty-print functions */
 	int			indentLevel;	/* current indent level for prettyprint */
 	bool		varprefix;		/* TRUE to print prefixes on Vars */
+#ifdef PGXC
+	bool		finalise_aggs;	/* should datanode finalise the aggregates? */
+#endif /* PGXC */
 } deparse_context;
 
 /*
@@ -682,6 +689,9 @@ pg_get_triggerdef_worker(Oid trigid, bool pretty)
 		context.windowTList = NIL;
 		context.varprefix = true;
 		context.prettyFlags = pretty ? PRETTYFLAG_PAREN : 0;
+#ifdef PGXC
+		context.finalise_aggs = false;
+#endif /* PGXC */
 		context.indentLevel = PRETTYINDENT_STD;
 
 		get_rule_expr(qual, &context, false);
@@ -2125,6 +2135,9 @@ deparse_expression_pretty(Node *expr, List *dpcontext,
 	context.windowTList = NIL;
 	context.varprefix = forceprefix;
 	context.prettyFlags = prettyFlags;
+#ifdef PGXC
+	context.finalise_aggs = false;
+#endif /* PGXC */
 	context.indentLevel = startIndent;
 
 	get_rule_expr(expr, &context, showimplicit);
@@ -2625,6 +2638,9 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 		context.varprefix = (list_length(query->rtable) != 1);
 		context.prettyFlags = prettyFlags;
 		context.indentLevel = PRETTYINDENT_STD;
+#ifdef PGXC
+		context.finalise_aggs = false;
+#endif /* PGXC */
 
 		memset(&dpns, 0, sizeof(dpns));
 		dpns.rtable = query->rtable;
@@ -2787,6 +2803,9 @@ get_query_def_from_valuesList(Query *query, StringInfo buf)
 	context.varprefix = (list_length(query->rtable) != 1);
 	context.prettyFlags = 0;
 	context.indentLevel = 0;
+#ifdef PGXC
+	context.finalise_aggs = query->qry_finalise_aggs;
+#endif /* PGXC */
 
 	dpns.rtable = query->rtable;
 	dpns.ctes = query->cteList;
@@ -2942,6 +2961,9 @@ get_query_def(Query *query, StringInfo buf, List *parentnamespace,
 						 list_length(query->rtable) != 1);
 	context.prettyFlags = prettyFlags;
 	context.indentLevel = startIndent;
+#ifdef PGXC
+	context.finalise_aggs = query->qry_finalise_aggs;
+#endif /* PGXC */
 
 	memset(&dpns, 0, sizeof(dpns));
 	dpns.rtable = query->rtable;
@@ -4034,6 +4056,154 @@ get_utility_query_def(Query *query, deparse_context *context)
 			simple_quote_literal(buf, stmt->payload);
 		}
 	}
+#ifdef PGXC	
+	else if (query->utilityStmt && IsA(query->utilityStmt, CreateStmt))
+	{
+		CreateStmt *stmt = (CreateStmt *) query->utilityStmt;
+		ListCell   *column;
+		const char *delimiter = "";
+		RangeVar   *relation = stmt->relation;
+		bool		istemp = (relation->relpersistence == RELPERSISTENCE_TEMP);
+		bool		isunlogged = (relation->relpersistence == RELPERSISTENCE_UNLOGGED);
+
+		if (istemp && relation->schemaname)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("temporary tables cannot specify a schema name")));
+
+		appendStringInfo(buf, "CREATE %s %s TABLE ",
+				istemp ? "TEMP" : "",
+				isunlogged ? "UNLOGGED" : "");
+
+		if (relation->schemaname && relation->schemaname[0])
+			appendStringInfo(buf, "%s.", relation->schemaname);
+		appendStringInfo(buf, "%s", relation->relname);
+
+		appendStringInfo(buf, "(");
+		foreach(column, stmt->tableElts)
+		{
+			Node *node = (Node *) lfirst(column);
+
+			appendStringInfo(buf, "%s", delimiter);
+			delimiter = ", ";
+
+			if (IsA(node, ColumnDef))
+			{
+				ColumnDef *coldef = (ColumnDef *) node;
+				TypeName *typename = coldef->typeName;
+				Type type;
+
+				/* error out if we have no recourse at all */
+				if (!OidIsValid(typename->typeOid))
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("improper type oid: \"%u\"", typename->typeOid)));
+
+				/* get typename from the oid */
+				type = typeidType(typename->typeOid);
+
+				if (!HeapTupleIsValid(type))
+					ereport(ERROR,
+							(errcode(ERRCODE_UNDEFINED_OBJECT),
+							 errmsg("type \"%u\" does not exist",
+								 typename->typeOid)));
+				appendStringInfo(buf, "%s %s", quote_identifier(coldef->colname),
+						typeTypeName(type));
+				ReleaseSysCache(type);
+			}
+			else
+				elog(ERROR, "Invalid table column definition.");
+		}
+		appendStringInfo(buf, ")");
+
+		/* add the on commit clauses for temporary tables */
+		switch (stmt->oncommit)
+		{
+			case ONCOMMIT_NOOP:
+				/* do nothing */
+				break;
+
+			case ONCOMMIT_PRESERVE_ROWS:
+				appendStringInfo(buf, " ON COMMIT PRESERVE ROWS");
+				break;
+
+			case ONCOMMIT_DELETE_ROWS:
+				appendStringInfo(buf, " ON COMMIT DELETE ROWS");
+				break;
+
+			case ONCOMMIT_DROP:
+				appendStringInfo(buf, " ON COMMIT DROP");
+				break;
+		}
+
+		if (stmt->distributeby)
+		{
+			/* add the on commit clauses for temporary tables */
+			switch (stmt->distributeby->disttype)
+			{
+				case DISTTYPE_REPLICATION:
+					appendStringInfo(buf, " DISTRIBUTE BY REPLICATION");
+					break;
+
+				case DISTTYPE_HASH:
+					appendStringInfo(buf, " DISTRIBUTE BY HASH(%s)", stmt->distributeby->colname);
+					break;
+
+				case DISTTYPE_ROUNDROBIN:
+					appendStringInfo(buf, " DISTRIBUTE BY ROUND ROBIN");
+					break;
+
+				case DISTTYPE_MODULO:
+					appendStringInfo(buf, " DISTRIBUTE BY MODULO(%s)", stmt->distributeby->colname);
+					break;
+
+				default:
+					ereport(ERROR, (errcode(ERRCODE_SYNTAX_ERROR),
+								errmsg("Invalid distribution type")));
+
+			}
+		}
+
+		if (stmt->subcluster)
+		{
+			ListCell   *cell;
+
+			switch (stmt->subcluster->clustertype)
+			{
+				case SUBCLUSTER_NODE:
+					appendStringInfo(buf, " TO NODE");
+
+					/* Add node members */
+					Assert(stmt->subcluster->members);
+					foreach(cell, stmt->subcluster->members)
+					{
+						appendStringInfo(buf, " %s", strVal(lfirst(cell)));
+						if (cell->next)
+							appendStringInfo(buf, ",");
+					}
+					break;
+
+				case SUBCLUSTER_GROUP:
+					appendStringInfo(buf, " TO GROUP");
+
+					/* Add group members */
+					Assert(stmt->subcluster->members);
+					foreach(cell, stmt->subcluster->members)
+					{
+						appendStringInfo(buf, " %s", strVal(lfirst(cell)));
+						if (cell->next)
+							appendStringInfo(buf, ",");
+					}
+					break;
+
+				case SUBCLUSTER_NONE:
+				default:
+					/* Nothing to do */
+					break;
+			}
+		}
+	}
+#endif	
 	else
 	{
 		/* Currently only NOTIFY utility commands can appear in rules */
@@ -6215,6 +6385,9 @@ get_agg_expr(Aggref *aggref, deparse_context *context)
 	List	   *arglist;
 	int			nargs;
 	ListCell   *l;
+#ifdef PGXC
+	bool		added_finalfn = false;
+#endif /* PGXC */
 
 	/* Extract the regular arguments, ignoring resjunk stuff for the moment */
 	arglist = NIL;
@@ -6236,6 +6409,35 @@ get_agg_expr(Aggref *aggref, deparse_context *context)
 		nargs++;
 	}
 
+#ifdef PGXC
+	/*
+	 * Datanode should send finalised aggregate results. Datanodes evaluate only
+	 * transition results. In order to get the finalised aggregate, we enclose
+	 * the aggregate call inside final function call, so as to get finalised
+	 * results at the coordinator
+	 */
+	if (context->finalise_aggs)
+	{
+		HeapTuple			aggTuple;
+		Form_pg_aggregate	aggform;
+		aggTuple = SearchSysCache(AGGFNOID,
+						  ObjectIdGetDatum(aggref->aggfnoid),
+						  0, 0, 0);
+		if (!HeapTupleIsValid(aggTuple))
+			elog(ERROR, "cache lookup failed for aggregate %u",
+				 aggref->aggfnoid);
+		aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
+
+		if (OidIsValid(aggform->aggfinalfn))
+		{
+			appendStringInfo(buf, "%s(", generate_function_name(aggform->aggfinalfn, 0,
+													NULL, NULL, NULL));
+			added_finalfn = true;
+		}
+		ReleaseSysCache(aggTuple);
+	}
+#endif /* PGXC */
+
 	appendStringInfo(buf, "%s(%s",
 					 generate_function_name(aggref->aggfnoid, nargs,
 											NIL, argtypes, NULL),
@@ -6251,6 +6453,11 @@ get_agg_expr(Aggref *aggref, deparse_context *context)
 		get_rule_orderby(aggref->aggorder, aggref->args, false, context);
 	}
 	appendStringInfoChar(buf, ')');
+
+#ifdef PGXC
+	if (added_finalfn)
+		appendStringInfoChar(buf, ')');
+#endif /* PGXC */
 }
 
 /*
@@ -6777,6 +6984,22 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 							 quote_identifier(rte->eref->aliasname));
 			gavealias = true;
 		}
+#ifdef PGXC
+		else if (rte->rtekind == RTE_SUBQUERY && rte->eref->aliasname)
+		{
+			/*
+			 *
+			 * This condition arises when the from clause is a view. The
+			 * corresponding subquery RTE has its eref set to view name.
+			 * The remote query generated has this subquery of which the
+			 * columns can be referred to as view_name.col1, so it should
+			 * be possible to refer to this subquery object.
+			 */
+			appendStringInfo(buf, " %s",
+							 quote_identifier(rte->eref->aliasname));
+			gavealias = true;
+		}
+#endif
 		else if (rte->rtekind == RTE_FUNCTION)
 		{
 			/*

@@ -1166,6 +1166,7 @@ _equalCreateStmt(CreateStmt *a, CreateStmt *b)
 	COMPARE_SCALAR_FIELD(if_not_exists);
 #ifdef PGXC
 	COMPARE_NODE_FIELD(distributeby);
+	COMPARE_NODE_FIELD(subcluster);
 #endif
 
 	return true;

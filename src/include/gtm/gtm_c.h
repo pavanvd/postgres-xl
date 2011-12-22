@@ -35,7 +35,6 @@
 #include "c.h"
 
 typedef uint32	GlobalTransactionId;		/* 32-bit global transaction ids */
-typedef uint32	PGXC_NodeId;
 typedef int16	GTMProxy_ConnID;
 typedef uint32	GTM_StrLen;
 
@@ -49,12 +48,13 @@ typedef uint32		GTM_PGXCNodePort;
 /* Possible type of nodes for registration */
 typedef enum GTM_PGXCNodeType
 {
-	PGXC_NODE_GTM_PROXY,
-	PGXC_NODE_GTM_PROXY_POSTMASTER,	/* Used by Proxy to communicate with GTM and not use Proxy headers */
-	PGXC_NODE_COORDINATOR,
-	PGXC_NODE_DATANODE,
-	PGXC_NODE_GTM,
-	PGXC_NODE_DEFAULT	/* In case nothing is associated to connection */
+	GTM_NODE_GTM_PROXY = 1,
+	GTM_NODE_GTM_PROXY_POSTMASTER = 2,
+				/* Used by Proxy to communicate with GTM and not use Proxy headers */
+	GTM_NODE_COORDINATOR = 3,
+	GTM_NODE_DATANODE = 4,
+	GTM_NODE_GTM = 5,
+	GTM_NODE_DEFAULT = 6	/* In case nothing is associated to connection */
 } GTM_PGXCNodeType;
 
 /*
@@ -95,8 +95,8 @@ typedef GTM_SequenceKeyData *GTM_SequenceKey;
 
 #define GTM_MAX_SEQKEY_LENGTH		1024
 
-#define InvalidSequenceValue				0x7fffffffffffffffLL
-#define SEQVAL_IS_VALID(v)					((v) != InvalidSequenceValue)
+#define InvalidSequenceValue		0x7fffffffffffffffLL
+#define SEQVAL_IS_VALID(v)		((v) != InvalidSequenceValue)
 
 #define GTM_MAX_GLOBAL_TRANSACTIONS	4096
 
@@ -111,19 +111,31 @@ typedef struct GTM_SnapshotData
 	GlobalTransactionId		sn_xmin;
 	GlobalTransactionId		sn_xmax;
 	GlobalTransactionId		sn_recent_global_xmin;
-	uint32					sn_xcnt;
+	uint32				sn_xcnt;
 	GlobalTransactionId		*sn_xip;
 } GTM_SnapshotData;
 
 typedef GTM_SnapshotData *GTM_Snapshot;
 
+/* Define max size of node name in start up packet */
+#define SP_NODE_NAME		64
+
 typedef struct GTM_StartupPacket {
-	GTM_PGXCNodeId			sp_cid;
+	char					sp_node_name[SP_NODE_NAME];
 	GTM_PGXCNodeType		sp_remotetype;
 	bool					sp_ispostmaster;
 } GTM_StartupPacket;
 
 #define InvalidGlobalTransactionId		((GlobalTransactionId) 0)
+
+/*
+ * Initial GXID value to start with, when -x option is not specified at the first run.
+ *
+ * This value is supposed to be safe enough.   If initdb involves huge amount of initial
+ * statements/transactions, users should consider to tweak this value with explicit
+ * -x option.
+ */
+#define InitialGXIDValue_Default		((GlobalTransactionId) 10000)
 
 #define GlobalTransactionIdIsValid(gxid) ((GlobalTransactionId) (gxid)) != InvalidGlobalTransactionId
 

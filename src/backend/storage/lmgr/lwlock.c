@@ -32,7 +32,7 @@
 #include "storage/proc.h"
 #include "storage/spin.h"
 #ifdef XCP
-#include "pgxc/poolmgr.h"
+#include "pgxc/nodemgr.h"
 #include "pgxc/squeue.h"
 #endif
 

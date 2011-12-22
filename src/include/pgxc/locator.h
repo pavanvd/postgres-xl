@@ -25,6 +25,10 @@
 #define LOCATOR_TYPE_RROBIN 'N'
 #define LOCATOR_TYPE_CUSTOM 'C'
 #define LOCATOR_TYPE_MODULO 'M'
+#define LOCATOR_TYPE_NONE 'O'
+
+/* Maximum number of preferred datanodes that can be defined in cluster */
+#define MAX_PREFERRED_NODES 64
 
 #define HASH_SIZE 4096
 #define HASH_MASK 0x00000FFF;
@@ -32,12 +36,16 @@
 #ifdef XCP
 #define IsReplicated(x) ((x) == LOCATOR_TYPE_REPLICATED)
 #else
-#define IsReplicated(x) (x->locatorType == LOCATOR_TYPE_REPLICATED)
+#define IsLocatorReplicated(x) (x == LOCATOR_TYPE_REPLICATED)
+#define IsLocatorNone(x) (x == LOCATOR_TYPE_NONE)
+#define IsLocatorReplicated(x) (x == LOCATOR_TYPE_REPLICATED)
+#define IsLocatorColumnDistributed(x) (x == LOCATOR_TYPE_HASH || \
+									   x == LOCATOR_TYPE_RROBIN || \
+									   x == LOCATOR_TYPE_MODULO)
 #endif
 
 #include "nodes/primnodes.h"
 #include "utils/relcache.h"
-
 
 typedef int PartAttrNumber;
 
@@ -65,13 +73,12 @@ typedef enum
 
 typedef struct
 {
-	Oid			relid;
+	Oid		relid;
 	char		locatorType;
-	PartAttrNumber partAttrNum; /* if partitioned */
-	char	   *partAttrName;	/* if partitioned */
-	int			nodeCount;
-	List	   *nodeList;
-	ListCell   *roundRobinNode; /* points to next one to use */
+	PartAttrNumber	partAttrNum;	/* if partitioned */
+	char		*partAttrName;		/* if partitioned */
+	List		*nodeList;			/* Node Indices */
+	ListCell	*roundRobinNode;	/* index of the next one to use */
 } RelationLocInfo;
 
 /*
@@ -83,14 +90,14 @@ typedef struct
 typedef struct
 {
 	NodeTag		type;
-	List	   *primarynodelist;
-	List	   *nodelist;
-	char	    baselocatortype;
-	TableUsageType tableusagetype;  /* track pg_catalog usage */
-	Expr	   *en_expr; /* expression to evaluate at execution time if planner
-					   * can not determine execution nodes */
-	Oid			en_relid; /* Relation to determine execution nodes */
-	RelationAccessType accesstype; /* Access type to determine execution nodes */
+	List		*primarynodelist;
+	List		*nodeList;
+	char		baselocatortype;
+	TableUsageType	tableusagetype;		/* track pg_catalog usage */
+	Expr		*en_expr;		/* expression to evaluate at execution time if planner
+						 * can not determine execution nodes */
+	Oid		en_relid;		/* Relation to determine execution nodes */
+	RelationAccessType accesstype;		/* Access type to determine execution nodes */
 } ExecNodes;
 
 
@@ -98,12 +105,22 @@ typedef struct
 typedef struct _Locator Locator;
 struct _Locator
 {
+	/*
+	 * Determine target nodes for value.
+	 * Resulting nodes are stored to the nodes array which must have enough space.
+	 * Function returns number of nodes written to the array.
+	 */
 	int			(*locateNodes) (Locator *self, Datum value, bool isnull,
 						int *nodes, int *primarynode);
-	Oid			dataType;
-	int			roundRobinNode;
-	int			nodeCount;
-	int			nodeMap[1];
+	Oid			dataType; 		/* values of that type are passed to locateNodes function */
+	/* locator-specific data */
+	/* XXX: move them into union ? */
+	int			roundRobinNode; /* for LOCATOR_TYPE_RROBIN */
+	Datum		(*hashfunc) (PG_FUNCTION_ARGS); /* for LOCATOR_TYPE_HASH */
+	int 		valuelen; /* 1, 2 or 4 for LOCATOR_TYPE_MODULO */
+
+	int			nodeCount; /* How many nodes are in the map */
+	int			nodeMap[1]; /* map node index to NodeId */
 };
 
 
@@ -114,7 +131,10 @@ extern Locator *createLocator(char locatorType, RelationAccessType accessType,
 #define LOCATOR_MAX_NODES(locator) (locator)->nodeCount
 #endif
 
-extern char *PreferredDataNodes;
+/* Extern variables related to locations */
+extern Oid primary_data_node;
+extern Oid preferred_data_node[MAX_PREFERRED_NODES];
+extern int num_preferred_data_nodes;
 
 extern void InitRelationLocInfo(void);
 extern char GetLocatorType(Oid relid);
@@ -123,6 +143,7 @@ extern char ConvertToLocatorType(int disttype);
 extern char *GetRelationHashColumn(RelationLocInfo *rel_loc_info);
 extern RelationLocInfo *GetRelationLocInfo(Oid relid);
 extern RelationLocInfo *CopyRelationLocInfo(RelationLocInfo *src_info);
+extern bool IsTableDistOnPrimary(RelationLocInfo *rel_loc_info);
 extern ExecNodes *GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeOfValueForDistCol, RelationAccessType accessType);
 extern bool IsHashColumn(RelationLocInfo *rel_loc_info, char *part_col_name);
 extern bool IsHashColumnForRelId(Oid relid, char *part_col_name);
@@ -131,7 +152,7 @@ extern int	GetRoundRobinNode(Oid relid);
 extern bool IsHashDistributable(Oid col_type);
 extern List *GetAllDataNodes(void);
 extern List *GetAllCoordNodes(void);
-extern List *GetAnyDataNode(void);
+extern List *GetAnyDataNode(List *relNodes);
 extern void RelationBuildLocator(Relation rel);
 extern void FreeRelationLocInfo(RelationLocInfo *relationLocInfo);
 
@@ -141,8 +162,5 @@ extern bool IsModuloColumn(RelationLocInfo *rel_loc_info, char *part_col_name);
 extern bool IsModuloColumnForRelId(Oid relid, char *part_col_name);
 extern char *GetRelationDistColumn(RelationLocInfo * rel_loc_info);
 extern bool IsDistColumnForRelId(Oid relid, char *part_col_name);
-#ifdef XCP
-extern List *GetPreferredDataNodes(void);
-#endif
 
 #endif   /* LOCATOR_H */

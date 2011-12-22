@@ -1227,7 +1227,7 @@ GetSnapshotData(Snapshot snapshot)
  	 * The data nodes may however connect directly to GTM themselves to obtain
  	 * XID and snapshot information for autovacuum worker threads.
  	 */
-	if (IS_PGXC_DATANODE)
+	if (IS_PGXC_DATANODE || IsConnFromCoord())
 	{
 		if (GetSnapshotDataDataNode(snapshot))
 			return snapshot;
@@ -2225,6 +2225,14 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 				continue;
 			if (proc == MyProc)
 				continue;
+#ifdef PGXC
+			/*
+			 * PGXC pooler just refers to XC-specific catalogs,
+			 * it does not create any consistency issues.
+			 */
+			if (proc->isPooler)
+				continue;
+#endif
 
 			found = true;
 
@@ -2260,6 +2268,47 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 	return true;				/* timed out, still conflicts */
 }
 
+#ifdef PGXC
+/*
+ * ReloadConnInfoOnBackends -- reload connection information for all the backends
+ */
+void
+ReloadConnInfoOnBackends(void)
+{
+	ProcArrayStruct *arrayP = procArray;
+	int			index;
+	pid_t		pid = 0;
+
+	/* tell all backends to reload except this one who already reloaded */
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		volatile PGPROC *proc = arrayP->procs[index];
+		VirtualTransactionId vxid;
+		GET_VXID_FROM_PGPROC(vxid, *proc);
+
+		if (proc == MyProc)
+			continue;			/* do not do that on myself */
+		if (proc->isPooler)
+			continue;			/* Pooler cannot do that */
+		if (proc->pid == 0)
+			continue;			/* useless on prepared xacts */
+		if (!OidIsValid(proc->databaseId))
+			continue;			/* ignore backends not connected to a database */
+		if (proc->vacuumFlags & PROC_IN_VACUUM)
+			continue;			/* ignore vacuum processes */
+
+		pid = proc->pid;
+		/*
+		 * Send the reload signal if backend still exists
+		 */
+		(void) SendProcSignal(pid, PROCSIG_PGXCPOOL_RELOAD, vxid.backendId);
+	}
+
+	LWLockRelease(ProcArrayLock);
+}
+#endif
 
 #define XidCacheRemove(i) \
 	do { \
@@ -2408,7 +2457,7 @@ UnsetGlobalSnapshotData(void)
 static bool 
 GetSnapshotDataDataNode(Snapshot snapshot)
 {
-	Assert(IS_PGXC_DATANODE);
+	Assert(IS_PGXC_DATANODE || IsConnFromCoord());
 
 
 	if (IsAutoVacuumWorkerProcess() || GetForceXidFromGTM())

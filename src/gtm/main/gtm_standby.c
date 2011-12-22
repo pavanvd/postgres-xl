@@ -25,27 +25,21 @@
 #include "gtm/gtm_utils.h"
 #include "gtm/register.h"
 
-static GTM_Conn *GTM_ActiveConn = NULL;
+GTM_Conn *GTM_ActiveConn = NULL;
+static char standbyHostName[NI_MAXHOST];
 static char standbyNodeName[NI_MAXHOST];
-static GTM_PGXCNodeId standbyNodeNum;
 static int standbyPortNumber;
 static char *standbyDataDir;
 
-static GTM_Conn *gtm_standby_connect_to_standby_int(int *);
+static GTM_Conn * gtm_standby_connect_to_standby_int(int *report_needed);
+static GTM_Conn *gtm_standby_connectToActiveGTM(void);
+
+extern char *NodeName;		/* Defined in main.c */
 
 int
 gtm_standby_start_startup(void)
 {
-	char connect_string[1024];
-	int active_port = Recovery_StandbyGetActivePort();
-	char *active_address = Recovery_StandbyGetActiveAddress();
-
-	elog(LOG, "Connecting the GTM active on %s:%d...", active_address, active_port);
-
-	sprintf(connect_string, "host=%s port=%d pgxc_node_id=1 remote_type=%d",
-			active_address, active_port, PGXC_NODE_GTM);
-	
-	GTM_ActiveConn = PQconnectGTM(connect_string);
+	GTM_ActiveConn = gtm_standby_connectToActiveGTM();
 	if (GTM_ActiveConn == NULL)
 	{
 		elog(DEBUG3, "Error in connection");
@@ -65,6 +59,7 @@ gtm_standby_finish_startup(void)
 	elog(LOG, "Closing a startup connection...");
 
 	GTMPQfinish(GTM_ActiveConn);
+	GTM_ActiveConn = NULL;
 
 	elog(LOG, "A startup connection closed.");
 	return 1;
@@ -144,41 +139,22 @@ gtm_standby_restore_gxid(void)
 		GTMTransactions.gt_transactions_array[i].gti_in_use = txn.gt_transactions_array[i].gti_in_use;
 		GTMTransactions.gt_transactions_array[i].gti_gxid = txn.gt_transactions_array[i].gti_gxid;
 		GTMTransactions.gt_transactions_array[i].gti_state = txn.gt_transactions_array[i].gti_state;
-		GTMTransactions.gt_transactions_array[i].gti_coordid = txn.gt_transactions_array[i].gti_coordid;
+		GTMTransactions.gt_transactions_array[i].gti_coordname = txn.gt_transactions_array[i].gti_coordname;
 		GTMTransactions.gt_transactions_array[i].gti_xmin = txn.gt_transactions_array[i].gti_xmin;
 		GTMTransactions.gt_transactions_array[i].gti_isolevel = txn.gt_transactions_array[i].gti_isolevel;
 		GTMTransactions.gt_transactions_array[i].gti_readonly = txn.gt_transactions_array[i].gti_readonly;
 		GTMTransactions.gt_transactions_array[i].gti_backend_id = txn.gt_transactions_array[i].gti_backend_id;
 
-		/* data node */
-		GTMTransactions.gt_transactions_array[i].gti_datanodecount = txn.gt_transactions_array[i].gti_datanodecount;
-		if (GTMTransactions.gt_transactions_array[i].gti_datanodecount > 0)
-		{
-			GTMTransactions.gt_transactions_array[i].gti_datanodes
-				= txn.gt_transactions_array[i].gti_datanodes;
-		}
+		if (txn.gt_transactions_array[i].nodestring == NULL )
+			GTMTransactions.gt_transactions_array[i].nodestring = NULL;
 		else
-		{
-			GTMTransactions.gt_transactions_array[i].gti_datanodes = NULL;
-		}
+			GTMTransactions.gt_transactions_array[i].nodestring = txn.gt_transactions_array[i].nodestring;
 
-		/* coordinator node */
-		GTMTransactions.gt_transactions_array[i].gti_coordcount = txn.gt_transactions_array[i].gti_coordcount;
-		if (GTMTransactions.gt_transactions_array[i].gti_coordcount > 0)
-		{
-			GTMTransactions.gt_transactions_array[i].gti_coordinators = txn.gt_transactions_array[i].gti_coordinators;
-		}
-		else
-		{
-			GTMTransactions.gt_transactions_array[i].gti_coordinators = NULL;
-		}
-
-		if (txn.gt_transactions_array[i].gti_gid==NULL )
+		/* GID */
+		if (txn.gt_transactions_array[i].gti_gid == NULL )
 			GTMTransactions.gt_transactions_array[i].gti_gid = NULL;
 		else
-		{
 			GTMTransactions.gt_transactions_array[i].gti_gid = txn.gt_transactions_array[i].gti_gid;
-		}
 
 		/* copy GTM_SnapshotData */
 		GTMTransactions.gt_transactions_array[i].gti_current_snapshot.sn_xmin =
@@ -241,10 +217,10 @@ gtm_standby_restore_node(void)
 
 	for (i = 0; i < num_node; i++)
 	{
-		elog(LOG, "get_node_list: nodetype=%d, nodenum=%d, datafolder=%s",
-			 data[i].type, data[i].nodenum, data[i].datafolder);
-		if (Recovery_PGXCNodeRegister(data[i].type, data[i].nodenum, data[i].port,
-					 data[i].proxynum, data[i].status,
+		elog(LOG, "get_node_list: nodetype=%d, nodename=%s, datafolder=%s",
+			 data[i].type, data[i].nodename, data[i].datafolder);
+		if (Recovery_PGXCNodeRegister(data[i].type, data[i].nodename, data[i].port,
+					 data[i].proxyname, data[i].status,
 					 data[i].ipaddress, data[i].datafolder, true,
 					 -1 /* dummy socket */) != 0)
 		{
@@ -269,22 +245,23 @@ finished:
  * Returns 1 on success, 0 on failure.
  */
 int
-gtm_standby_register_self(GTM_PGXCNodeId nodenum, int port, const char *datadir)
+gtm_standby_register_self(const char *node_name, int port, const char *datadir)
 {
 	int rc;
 
 	elog(LOG, "Registering standby-GTM status...");
 
-	node_get_local_addr(GTM_ActiveConn, standbyNodeName, sizeof(standbyNodeName), &rc);
+	node_get_local_addr(GTM_ActiveConn, standbyHostName, sizeof(standbyNodeName), &rc);
 	if (rc != 0)
 		return 0;
 
-	standbyNodeNum = nodenum;
+	memset(standbyNodeName, 0, NI_MAXHOST);
+	strncpy(standbyNodeName, node_name, NI_MAXHOST - 1);
 	standbyPortNumber = port;
 	standbyDataDir= (char *)datadir;
 
-	rc = node_register_internal(GTM_ActiveConn, PGXC_NODE_GTM, standbyNodeName, standbyPortNumber,
-			standbyNodeNum, standbyDataDir, NODE_DISCONNECTED);
+	rc = node_register_internal(GTM_ActiveConn, GTM_NODE_GTM, standbyHostName, standbyPortNumber,
+			standbyNodeName, standbyDataDir, NODE_DISCONNECTED);
 	if (rc < 0)
 	{
 		elog(LOG, "Failed to register a standby-GTM status.");
@@ -308,15 +285,15 @@ gtm_standby_activate_self(void)
 
 	elog(LOG, "Updating the standby-GTM status to \"CONNECTED\"...");
 
-	rc = node_unregister(GTM_ActiveConn, PGXC_NODE_GTM, standbyNodeNum);
+	rc = node_unregister(GTM_ActiveConn, GTM_NODE_GTM, standbyNodeName);
 	if (rc < 0)
 	{
 		elog(LOG, "Failed to unregister old standby-GTM status.");
 		return 0;
 	}
 
-	rc = node_register_internal(GTM_ActiveConn, PGXC_NODE_GTM, standbyNodeName, standbyPortNumber,
-			standbyNodeNum, standbyDataDir, NODE_CONNECTED);
+	rc = node_register_internal(GTM_ActiveConn, GTM_NODE_GTM, standbyHostName, standbyPortNumber,
+			standbyNodeName, standbyDataDir, NODE_CONNECTED);
 
 	if (rc < 0)
 	{
@@ -336,25 +313,25 @@ gtm_standby_activate_self(void)
  * Returns a pointer to GTM_PGXCNodeInfo on success,
  * or returns NULL on failure.
  */
-static GTM_PGXCNodeInfo *
+GTM_PGXCNodeInfo *
 find_standby_node_info(void)
 {
 	GTM_PGXCNodeInfo *node[1024];
 	size_t n;
 	int i;
 
-	n = pgxcnode_find_by_type(PGXC_NODE_GTM, node, 1024);
+	n = pgxcnode_find_by_type(GTM_NODE_GTM, node, 1024);
 
 	for (i = 0 ; i < n ; i++)
 	{
-		elog(LOG, "pgxcnode_find_by_type: nodenum=%d, type=%d, ipaddress=%s, port=%d, status=%d",
-			 node[i]->nodenum,
+		elog(LOG, "pgxcnode_find_by_type: nodename=%s, type=%d, ipaddress=%s, port=%d, status=%d",
+			 node[i]->nodename,
 			 node[i]->type,
 			 node[i]->ipaddress,
 			 node[i]->port,
 			 node[i]->status);
 
-		if (node[i]->nodenum != standbyNodeNum &&
+		if ( (strcmp(standbyNodeName, node[i]->nodename) != 0) && 
 			node[i]->status == NODE_CONNECTED)
 			return node[i];
 	}
@@ -414,8 +391,8 @@ gtm_standby_connect_to_standby_int(int *report_needed)
 	*report_needed = 1;
 
 	snprintf(conn_string, sizeof(conn_string),
-		 "host=%s port=%d pgxc_node_id=1 remote_type=4",
-		 n->ipaddress, n->port);
+		 "host=%s port=%d node_name=%s remote_type=4",
+			 n->ipaddress, n->port, NodeName);
 
 	standby = PQconnectGTM(conn_string);
 		
@@ -508,4 +485,53 @@ gtm_standby_check_communication_error(int *retry_count, GTM_Conn *oldconn)
 #endif
 	}
 	return false;
+}
+
+int
+gtm_standby_begin_backup(void)
+{
+	int rc = set_begin_end_backup(GTM_ActiveConn, true);
+	return (rc ? 0 : 1);
+}
+
+int
+gtm_standby_end_backup(void)
+{
+	int rc = set_begin_end_backup(GTM_ActiveConn, false);
+	return (rc ? 0 : 1);
+}
+
+extern char *NodeName;		/* Defined in main.c */
+
+void
+gtm_standby_finishActiveConn(void)
+{
+	GTM_ActiveConn = gtm_standby_connectToActiveGTM();
+	if (GTM_ActiveConn == NULL)
+	{
+		elog(DEBUG3, "Error in connection");
+		return;
+	}
+	elog(LOG, "Connection established to the GTM active.");
+
+	/* Unregister self from Active-GTM */
+	node_unregister(GTM_ActiveConn, GTM_NODE_GTM, NodeName);
+	/* Disconnect form Active */
+	GTMPQfinish(GTM_ActiveConn);
+}
+
+static GTM_Conn *
+gtm_standby_connectToActiveGTM(void)
+{
+	char connect_string[1024];
+	int active_port = Recovery_StandbyGetActivePort();
+	char *active_address = Recovery_StandbyGetActiveAddress();
+
+	/* Need to connect to Active-GTM again here */
+	elog(LOG, "Connecting the GTM active on %s:%d...", active_address, active_port);
+
+	sprintf(connect_string, "host=%s port=%d node_name=%s remote_type=%d",
+			active_address, active_port, NodeName, GTM_NODE_GTM);
+	
+	return PQconnectGTM(connect_string);
 }

@@ -23,7 +23,7 @@
 #include "pg_trace.h"
 #ifdef XCP
 #include "executor/producerReceiver.h"
-#include "pgxc/poolmgr.h"
+#include "pgxc/nodemgr.h"
 #endif
 #ifdef PGXC
 #include "pgxc/pgxc.h"
@@ -1548,7 +1548,7 @@ PortalRunMulti(Portal portal, bool isTopLevel,
 				/* it's special for INSERT */
 				if (IS_PGXC_COORDINATOR &&
 					pstmt->commandType == CMD_INSERT)
-					HandleCmdComplete(pstmt->commandType, &combine, 
+					HandleCmdComplete(pstmt->commandType, &combine,
 							completionTag, strlen(completionTag));
 #endif
 			}
@@ -1629,7 +1629,7 @@ PortalRunMulti(Portal portal, bool isTopLevel,
 	 * e.g.  an INSERT that does an UPDATE instead should not print "0 1" if
 	 * one row was updated.  See QueryRewrite(), step 3, for details.
 	 */
-	 
+
 #ifdef PGXC
 	if (IS_PGXC_COORDINATOR && combine.data[0] != '\0')
 		strcpy(completionTag, combine.data);

@@ -92,7 +92,6 @@ typedef enum
 typedef struct
 {
 	Scan		scan;
-	bool		is_single_step;		/* special case, skip extra work */
 	ExecDirectType	exec_direct_type;	/* track if remote query is execute direct and what type it is */
 	char	   *sql_statement;
 	ExecNodes  *exec_nodes;			/* List of Datanodes where to launch query */
@@ -157,6 +156,7 @@ typedef struct
 	ExecNodes *exec_nodes;
 } JoinReduceInfo;
 
+#ifndef XCP
 /* forbid SQL if unsafe, useful to turn off for development */
 extern bool StrictStatementChecking;
 
@@ -170,11 +170,14 @@ extern bool IsHashDistributable(Oid col_type);
 extern bool IsJoinReducible(RemoteQuery *innernode, RemoteQuery *outernode,
 					List *rtable_list, JoinPath *join_path, JoinReduceInfo *join_info);
 
+extern List *AddRemoteQueryNode(List *stmts, const char *queryString,
+								RemoteQueryExecType remoteExecType, bool is_temp);
+extern bool pgxc_query_contains_temp_tables(List *queries);
+#endif
+
 #ifdef XCP
 extern List *AddRemoteQueryNode(List *stmts, const char *queryString,
 								RemoteQueryExecType remoteExecType);
-#else
-extern List *AddRemoteQueryNode(List *stmts, const char *queryString,
-								RemoteQueryExecType remoteExecType, bool is_temp);
 #endif
+
 #endif   /* PGXCPLANNER_H */

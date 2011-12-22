@@ -5,7 +5,6 @@
  * partitioning and replication information.
  *
  *
- * PGXCTODO - do not use a single mappingTable for all
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
@@ -36,35 +35,26 @@
 #include "utils/rel.h"
 #include "utils/relcache.h"
 #include "utils/tqual.h"
-#include "pgxc/poolmgr.h"
+#include "utils/syscache.h"
+#include "nodes/nodes.h"
+#include "pgxc/nodemgr.h"
 #include "pgxc/locator.h"
+#include "pgxc/pgxc.h"
+#include "pgxc/pgxcnode.h"
 
 #include "catalog/pgxc_class.h"
+#include "catalog/pgxc_node.h"
 #include "catalog/namespace.h"
 #include "access/hash.h"
 #ifdef XCP
+#include "utils/date.h"
 #include "utils/memutils.h"
 #endif
 
-/*
- * PGXCTODO For prototype, relations use the same hash mapping table.
- * Long term, make it a pointer in RelationLocInfo, and have
- * similarly handled tables point to the same mapping table,
- * to check faster for equivalency
- */
-int			mappingTable[HASH_SIZE];
 
-bool		locatorInited = false;
-
-
-/* GUC parameter */
-char	   *PreferredDataNodes = NULL;
-int			primary_data_node = 1;
-
-/* Local functions */
-static List *get_preferred_node_list(void);
-static void init_mapping_table(int nodeCount, int mapTable[]);
-
+Oid		primary_data_node = InvalidOid;
+int		num_preferred_data_nodes = 0;
+Oid		preferred_data_node[MAX_PREFERRED_NODES];
 
 #ifdef XCP
 static int locate_replicated_all(Locator *self, Datum value, bool isnull,
@@ -85,216 +75,170 @@ static int locate_modulo_select(Locator *self, Datum value, bool isnull,
 						  int *nodes, int *primarynode);
 #endif
 
-/*
- * init_mapping_table - initializes a mapping table
- *
- * PGXCTODO
- * For the prototype, all partitioned tables will use the same partition map.
- * We cannot assume this long term
- */
-static void
-init_mapping_table(int nodeCount, int mapTable[])
+static const unsigned int xc_mod_m[] =
 {
-	int			i;
+  0x00000000, 0x55555555, 0x33333333, 0xc71c71c7,
+  0x0f0f0f0f, 0xc1f07c1f, 0x3f03f03f, 0xf01fc07f,
+  0x00ff00ff, 0x07fc01ff, 0x3ff003ff, 0xffc007ff,
+  0xff000fff, 0xfc001fff, 0xf0003fff, 0xc0007fff,
+  0x0000ffff, 0x0001ffff, 0x0003ffff, 0x0007ffff,
+  0x000fffff, 0x001fffff, 0x003fffff, 0x007fffff,
+  0x00ffffff, 0x01ffffff, 0x03ffffff, 0x07ffffff,
+  0x0fffffff, 0x1fffffff, 0x3fffffff, 0x7fffffff
+};
 
-	for (i = 0; i < HASH_SIZE; i++)
-	{
-		mapTable[i] = (i % nodeCount) + 1;
-	}
-}
-
-/*
- * get_preferred_node_list
- *
- * Build list of prefered Datanodes
- * from string preferred_data_nodes (GUC parameter).
- * This is used to identify nodes that should be used when
- * performing a read operation on replicated tables.
- * Result needs to be freed.
- */
-static List *
-get_preferred_node_list(void)
+static const unsigned int xc_mod_q[][6] =
 {
-	List *rawlist;
-	List *result = NIL;
-	char *rawstring = pstrdup(PreferredDataNodes);
-	ListCell *cell;
+  { 0,  0,  0,  0,  0,  0}, {16,  8,  4,  2,  1,  1}, {16,  8,  4,  2,  2,  2},
+  {15,  6,  3,  3,  3,  3}, {16,  8,  4,  4,  4,  4}, {15,  5,  5,  5,  5,  5},
+  {12,  6,  6,  6 , 6,  6}, {14,  7,  7,  7,  7,  7}, {16,  8,  8,  8,  8,  8},
+  { 9,  9,  9,  9,  9,  9}, {10, 10, 10, 10, 10, 10}, {11, 11, 11, 11, 11, 11},
+  {12, 12, 12, 12, 12, 12}, {13, 13, 13, 13, 13, 13}, {14, 14, 14, 14, 14, 14},
+  {15, 15, 15, 15, 15, 15}, {16, 16, 16, 16, 16, 16}, {17, 17, 17, 17, 17, 17},
+  {18, 18, 18, 18, 18, 18}, {19, 19, 19, 19, 19, 19}, {20, 20, 20, 20, 20, 20},
+  {21, 21, 21, 21, 21, 21}, {22, 22, 22, 22, 22, 22}, {23, 23, 23, 23, 23, 23},
+  {24, 24, 24, 24, 24, 24}, {25, 25, 25, 25, 25, 25}, {26, 26, 26, 26, 26, 26},
+  {27, 27, 27, 27, 27, 27}, {28, 28, 28, 28, 28, 28}, {29, 29, 29, 29, 29, 29},
+  {30, 30, 30, 30, 30, 30}, {31, 31, 31, 31, 31, 31}
+};
 
-	if (!SplitIdentifierString(rawstring, ',', &rawlist))
-	{
-		/* Syntax error in string parameter */
-		ereport(FATAL,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid list syntax for \"preferred_data_nodes\"")));
-	}
-
-	/* Finish list conversion */
-	foreach(cell, rawlist)
-	{
-		int nodenum = atoi(lfirst(cell));
-		result = lappend_int(result, nodenum);
-	}
-
-	pfree(rawstring);
-	list_free(rawlist);
-	return result;
-}
-
-
-#ifdef XCP
-static List *globalPreferredNodes = NIL;
-
-/*
- * Returns preferred data nodes as a list of integers from 1 to NumDataNodes
- * or NIL if none is defined
- */
-List *
-GetPreferredDataNodes(void)
+static const unsigned int xc_mod_r[][6] =
 {
-	if (PreferredDataNodes && !globalPreferredNodes)
-	{
-		char	   *rawstring;
-		List	   *elemlist;
-		ListCell   *l;
-		MemoryContext oldcontext;
-
-		/* Get writeable copy */
-		rawstring = pstrdup(PreferredDataNodes);
-
-		/* Parse string into list of identifiers */
-		if (!SplitIdentifierString(rawstring, ',', &elemlist))
-		{
-			/* syntax error in list */
-			ereport(FATAL,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("invalid list syntax for \"data_node_ports\"")));
-		}
-
-		/* Make sure the cached list never disappear */
-		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		/* Store entries */
-		foreach(l, elemlist)
-		{
-			char	   *curnode = (char *) lfirst(l);
-			int 		nnode = atoi(curnode);
-
-			/* Silently skip invalid values */
-			if (nnode > 0 && nnode <= NumDataNodes)
-				globalPreferredNodes = lappend_int(globalPreferredNodes, nnode);
-		}
-		MemoryContextSwitchTo(oldcontext);
-		/* clean up temporary data */
-		list_free_deep(elemlist);
-		pfree(rawstring);
-	}
-	return globalPreferredNodes;
-}
-#endif
+  {0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000},
+  {0x0000ffff, 0x000000ff, 0x0000000f, 0x00000003, 0x00000001, 0x00000001},
+  {0x0000ffff, 0x000000ff, 0x0000000f, 0x00000003, 0x00000003, 0x00000003},
+  {0x00007fff, 0x0000003f, 0x00000007, 0x00000007, 0x00000007, 0x00000007},
+  {0x0000ffff, 0x000000ff, 0x0000000f, 0x0000000f, 0x0000000f, 0x0000000f},
+  {0x00007fff, 0x0000001f, 0x0000001f, 0x0000001f, 0x0000001f, 0x0000001f},
+  {0x00000fff, 0x0000003f, 0x0000003f, 0x0000003f, 0x0000003f, 0x0000003f},
+  {0x00003fff, 0x0000007f, 0x0000007f, 0x0000007f, 0x0000007f, 0x0000007f},
+  {0x0000ffff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff, 0x000000ff},
+  {0x000001ff, 0x000001ff, 0x000001ff, 0x000001ff, 0x000001ff, 0x000001ff},
+  {0x000003ff, 0x000003ff, 0x000003ff, 0x000003ff, 0x000003ff, 0x000003ff},
+  {0x000007ff, 0x000007ff, 0x000007ff, 0x000007ff, 0x000007ff, 0x000007ff},
+  {0x00000fff, 0x00000fff, 0x00000fff, 0x00000fff, 0x00000fff, 0x00000fff},
+  {0x00001fff, 0x00001fff, 0x00001fff, 0x00001fff, 0x00001fff, 0x00001fff},
+  {0x00003fff, 0x00003fff, 0x00003fff, 0x00003fff, 0x00003fff, 0x00003fff},
+  {0x00007fff, 0x00007fff, 0x00007fff, 0x00007fff, 0x00007fff, 0x00007fff},
+  {0x0000ffff, 0x0000ffff, 0x0000ffff, 0x0000ffff, 0x0000ffff, 0x0000ffff},
+  {0x0001ffff, 0x0001ffff, 0x0001ffff, 0x0001ffff, 0x0001ffff, 0x0001ffff},
+  {0x0003ffff, 0x0003ffff, 0x0003ffff, 0x0003ffff, 0x0003ffff, 0x0003ffff},
+  {0x0007ffff, 0x0007ffff, 0x0007ffff, 0x0007ffff, 0x0007ffff, 0x0007ffff},
+  {0x000fffff, 0x000fffff, 0x000fffff, 0x000fffff, 0x000fffff, 0x000fffff},
+  {0x001fffff, 0x001fffff, 0x001fffff, 0x001fffff, 0x001fffff, 0x001fffff},
+  {0x003fffff, 0x003fffff, 0x003fffff, 0x003fffff, 0x003fffff, 0x003fffff},
+  {0x007fffff, 0x007fffff, 0x007fffff, 0x007fffff, 0x007fffff, 0x007fffff},
+  {0x00ffffff, 0x00ffffff, 0x00ffffff, 0x00ffffff, 0x00ffffff, 0x00ffffff},
+  {0x01ffffff, 0x01ffffff, 0x01ffffff, 0x01ffffff, 0x01ffffff, 0x01ffffff},
+  {0x03ffffff, 0x03ffffff, 0x03ffffff, 0x03ffffff, 0x03ffffff, 0x03ffffff},
+  {0x07ffffff, 0x07ffffff, 0x07ffffff, 0x07ffffff, 0x07ffffff, 0x07ffffff},
+  {0x0fffffff, 0x0fffffff, 0x0fffffff, 0x0fffffff, 0x0fffffff, 0x0fffffff},
+  {0x1fffffff, 0x1fffffff, 0x1fffffff, 0x1fffffff, 0x1fffffff, 0x1fffffff},
+  {0x3fffffff, 0x3fffffff, 0x3fffffff, 0x3fffffff, 0x3fffffff, 0x3fffffff},
+  {0x7fffffff, 0x7fffffff, 0x7fffffff, 0x7fffffff, 0x7fffffff, 0x7fffffff}
+};
 
 
 /*
  * GetAnyDataNode
- *
- * Pick any data node, but try a preferred node
+ * Pick any data node from given list, but try a preferred node
  */
 List *
-GetAnyDataNode(void)
+GetAnyDataNode(List *relNodes)
 {
-	List		*destList = NULL;
-	List		*globalPreferredNodes = get_preferred_node_list();
-
-	/* try and pick from the preferred list */
-	if (globalPreferredNodes != NULL)
-		return destList = lappend_int(NULL, linitial_int(globalPreferredNodes));
-
-	list_free(globalPreferredNodes);
-
-	return destList = lappend_int(NULL, 1);
-}
-
-
-/*
- * hash_range - hash the key to a value between 0 and HASH_SIZE
- *
- * Note, this function corresponds to GridSQL hashing
- * and is used here to allow us the wire up GridSQL
- * to the same underlying nodes
- */
-static int
-hash_range(char *key)
-{
-	int			i;
-	int			length;
-	int			value;
-
-	if (key == NULL || key == '\0')
+	/*
+	 * Try to find the first node in given list relNodes
+	 * that is in the list of preferred nodes
+	 */
+	if (num_preferred_data_nodes != 0)
 	{
-		return 0;
+		ListCell	*item;
+		foreach(item, relNodes)
+		{
+			int		relation_nodeid = lfirst_int(item);
+			int		i;
+			for (i = 0; i < num_preferred_data_nodes; i++)
+			{
+				int nodeid = PGXCNodeGetNodeId(preferred_data_node[i], PGXC_NODE_DATANODE);
+
+				/* OK, found one */
+				if (nodeid == relation_nodeid)
+					return lappend_int(NULL, nodeid);
+			}
+		}
 	}
 
-	length = strlen(key);
-
-	value = 0x238F13AF * length;
-
-	for (i = 0; i < length; i++)
-	{
-		value = value + ((key[i] << i * 5 % 24) & 0x7fffffff);
-	}
-
-	return (1103515243 * value + 12345) % 65537 & HASH_MASK;
-}
-
-/*
- * hash_range_int - hashes the integer key to a value between 0 and HASH_SIZE
- *
- * See hash_range
- */
-static int
-hash_range_int(int intkey)
-{
-	char		int_str[13];	/* plenty for 32 bit int */
-
-	int_str[12] = '\0';
-	snprintf(int_str, 12, "%d", intkey);
-
-	return hash_range(int_str);
-}
-
-
-/*
- * get_node_from_hash - determine node based on hash bucket
- *
- */
-static int
-get_node_from_hash(int hash)
-{
-	if (hash > HASH_SIZE || hash < 0)
-		ereport(ERROR, (errmsg("Hash value out of range\n")));
-
-	return mappingTable[hash];
+	/* Nothing found? Return the 1st one */
+	return lappend_int(NULL, 0);
 }
 
 /*
  * compute_modulo
+ * This function performs modulo in an optimized way
+ * It optimizes modulo of any positive number by
+ * 1,2,3,4,7,8,15,16,31,32,63,64 and so on
+ * for the rest of the denominators it uses % operator
+ * The optimized algos have been taken from
+ * http://www-graphics.stanford.edu/~seander/bithacks.html
  */
 static int
-compute_modulo(int valueOfPartCol)
+compute_modulo(unsigned int numerator, unsigned int denominator)
 {
-	return ((abs(valueOfPartCol)) % NumDataNodes)+1;
+	unsigned int d;
+	unsigned int m;
+	unsigned int s;
+	unsigned int mask;
+	int k;
+	unsigned int q, r;
+
+	if (numerator == 0)
+		return 0;
+
+	/* Check if denominator is a power of 2 */
+	if ((denominator & (denominator - 1)) == 0)
+		return numerator & (denominator - 1);
+
+	/* Check if (denominator+1) is a power of 2 */
+	d = denominator + 1;
+	if ((d & (d - 1)) == 0)
+	{
+		/* Which power of 2 is this number */
+		s = 0;
+		mask = 0x01;
+		for (k = 0; k < 32; k++)
+		{
+			if ((d & mask) == mask)
+				break;
+			s++;
+			mask = mask << 1;
+		}
+
+		m = (numerator & xc_mod_m[s]) + ((numerator >> s) & xc_mod_m[s]);
+
+		for (q = 0, r = 0; m > denominator; q++, r++)
+			m = (m >> xc_mod_q[s][q]) + (m & xc_mod_r[s][r]);
+
+		m = m == denominator ? 0 : m;
+
+		return m;
+	}
+	return numerator % denominator;
 }
 
 /*
  * get_node_from_modulo - determine node based on modulo
  *
+ * compute_modulo
  */
 static int
-get_node_from_modulo(int modulo)
+get_node_from_modulo(int modulo, List *nodeList)
 {
-	if (modulo > NumDataNodes || modulo <= 0)
+	if (nodeList == NIL || modulo >= list_length(nodeList) || modulo < 0)
 		ereport(ERROR, (errmsg("Modulo value out of range\n")));
 
-	return modulo;
+	return list_nth_int(nodeList, modulo);
 }
+
 
 /*
  * GetRelationDistColumn - Returns the name of the hash or modulo distribution column
@@ -535,7 +479,6 @@ int
 GetRoundRobinNode(Oid relid)
 {
 	int			ret_node;
-
 	Relation	rel = relation_open(relid, AccessShareLock);
 
 #ifdef XCP
@@ -560,6 +503,28 @@ GetRoundRobinNode(Oid relid)
 	return ret_node;
 }
 
+/*
+ * IsTableDistOnPrimary
+ *
+ * Does the table distribution list include the primary node?
+ */
+bool
+IsTableDistOnPrimary(RelationLocInfo *rel_loc_info)
+{
+	ListCell *item;
+
+	if (!OidIsValid(primary_data_node) ||
+		rel_loc_info == NULL ||
+		list_length(rel_loc_info->nodeList = 0))
+		return false;
+
+	foreach(item, rel_loc_info->nodeList)
+	{
+		if (PGXCNodeGetNodeId(primary_data_node, PGXC_NODE_DATANODE) == lfirst_int(item))
+			return true;
+	}
+	return false;
+}
 
 /*
  * GetRelationNodes
@@ -582,11 +547,12 @@ GetRoundRobinNode(Oid relid)
 ExecNodes *
 GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeOfValueForDistCol, RelationAccessType accessType)
 {
-	ListCell   *prefItem;
-	ListCell   *stepItem;
-	ExecNodes *exec_nodes;
-	long	hashValue;
-	int	nError;
+	ExecNodes	*exec_nodes;
+	long		hashValue;
+	int		nError;
+	int		modulo;
+	int		nodeIndex;
+	int		k;
 
 	if (rel_loc_info == NULL)
 		return NULL;
@@ -598,109 +564,110 @@ GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeO
 	{
 		case LOCATOR_TYPE_REPLICATED:
 
-			if (accessType == RELATION_ACCESS_UPDATE ||
-					accessType == RELATION_ACCESS_INSERT)
+			if (accessType == RELATION_ACCESS_UPDATE || accessType == RELATION_ACCESS_INSERT)
 			{
 				/* we need to write to all synchronously */
-				exec_nodes->nodelist = list_copy(rel_loc_info->nodeList);
+				exec_nodes->nodeList = list_concat(exec_nodes->nodeList, rel_loc_info->nodeList);
 
 				/*
 				 * Write to primary node first, to reduce chance of a deadlock
-				 * on replicated tables. If 0, do not use primary copy.
+				 * on replicated tables. If -1, do not use primary copy.
 				 */
-				if (primary_data_node && exec_nodes->nodelist
-						&& list_length(exec_nodes->nodelist) > 1) /* make sure more than 1 */
+				if (IsTableDistOnPrimary(rel_loc_info)
+						&& exec_nodes->nodeList
+						&& list_length(exec_nodes->nodeList) > 1) /* make sure more than 1 */
 				{
-					exec_nodes->primarynodelist = lappend_int(NULL, primary_data_node);
-					list_delete_int(exec_nodes->nodelist, primary_data_node);
+					exec_nodes->primarynodelist = lappend_int(NULL,
+							  PGXCNodeGetNodeId(primary_data_node, PGXC_NODE_DATANODE));
+					list_delete_int(exec_nodes->nodeList,
+									PGXCNodeGetNodeId(primary_data_node, PGXC_NODE_DATANODE));
 				}
 			}
 			else
 			{
-				List *globalPreferredNodes = get_preferred_node_list();
-
-				if (accessType == RELATION_ACCESS_READ_FOR_UPDATE
-						&& primary_data_node)
+				if (accessType == RELATION_ACCESS_READ_FOR_UPDATE &&
+					IsTableDistOnPrimary(rel_loc_info))
 				{
 					/*
 					 * We should ensure row is locked on the primary node to
 					 * avoid distributed deadlock if updating the same row
 					 * concurrently
 					 */
-					exec_nodes->nodelist = lappend_int(NULL, primary_data_node);
+					exec_nodes->nodeList = lappend_int(NULL,
+						   PGXCNodeGetNodeId(primary_data_node, PGXC_NODE_DATANODE));
 				}
-				else if (globalPreferredNodes != NULL)
+				else if (num_preferred_data_nodes >= 0)
 				{
-					/* try and pick from the preferred list */
-					foreach(prefItem, globalPreferredNodes)
+					ListCell *item;
+
+					foreach(item, rel_loc_info->nodeList)
 					{
-						/* make sure it is valid for this relation */
-						foreach(stepItem, rel_loc_info->nodeList)
+						for (k = 0; k < num_preferred_data_nodes; k++)
 						{
-							if (lfirst_int(stepItem) == lfirst_int(prefItem))
+							if (PGXCNodeGetNodeId(preferred_data_node[k],
+												  PGXC_NODE_DATANODE) == lfirst_int(item))
 							{
-								exec_nodes->nodelist = lappend_int(NULL, lfirst_int(prefItem));
+								exec_nodes->nodeList = lappend_int(NULL,
+																   lfirst_int(item));
 								break;
 							}
 						}
 					}
 				}
-				list_free(globalPreferredNodes);
 
-				if (exec_nodes->nodelist == NULL)
-					/* read from just one of them. Use round robin mechanism */
-					exec_nodes->nodelist = lappend_int(NULL, GetRoundRobinNode(rel_loc_info->relid));
+				/*
+				 * In case there are nodes defined here,
+				 * Enforce the use of one.
+				 */
+				if (rel_loc_info->nodeList)
+					exec_nodes->nodeList = lappend_int(NULL,
+													   linitial_int(rel_loc_info->nodeList));
+
+				/* read from just one of them. Use round robin mechanism */
+				if (exec_nodes->nodeList == NULL)
+					exec_nodes->nodeList = lappend_int(NULL,
+													   GetRoundRobinNode(rel_loc_info->relid));
 			}
 			break;
 
 		case LOCATOR_TYPE_HASH:
-			hashValue = compute_hash(typeOfValueForDistCol, valueForDistCol, &nError);
-			if (nError == 0)
-				/* in prototype, all partitioned tables use same map */
-				exec_nodes->nodelist = lappend_int(NULL, get_node_from_hash(hash_range_int(hashValue)));
-			else
-				if (accessType == RELATION_ACCESS_INSERT)
-					/* Insert NULL to node 1 */
-					exec_nodes->nodelist = lappend_int(NULL, 1);
-				else
-					/* Use all nodes for other types of access */
-					exec_nodes->nodelist = list_copy(rel_loc_info->nodeList);
-			break;
-
 		case LOCATOR_TYPE_MODULO:
-			hashValue = compute_hash(typeOfValueForDistCol, valueForDistCol, &nError);
+			hashValue = compute_hash(typeOfValueForDistCol, valueForDistCol,
+									 &nError, rel_loc_info->locatorType);
 			if (nError == 0)
-				/* in prototype, all partitioned tables use same map */
-				exec_nodes->nodelist = lappend_int(NULL, get_node_from_modulo(compute_modulo(hashValue)));
+			{
+				modulo = compute_modulo(abs(hashValue), list_length(rel_loc_info->nodeList));
+				nodeIndex = get_node_from_modulo(modulo, rel_loc_info->nodeList);
+				exec_nodes->nodeList = lappend_int(NULL, nodeIndex);
+			}
 			else
 				if (accessType == RELATION_ACCESS_INSERT)
-					/* Insert NULL to node 1 */
-					exec_nodes->nodelist = lappend_int(NULL, 1);
+					/* Insert NULL to first node*/
+					exec_nodes->nodeList = lappend_int(NULL, linitial_int(rel_loc_info->nodeList));
 				else
-					/* Use all nodes for other types of access */
-					exec_nodes->nodelist = list_copy(rel_loc_info->nodeList);
+					exec_nodes->nodeList = list_concat(exec_nodes->nodeList, rel_loc_info->nodeList);
+
 			break;
 
 		case LOCATOR_TYPE_SINGLE:
-
 			/* just return first (there should only be one) */
-			exec_nodes->nodelist = list_copy(rel_loc_info->nodeList);
+			exec_nodes->nodeList = list_concat(exec_nodes->nodeList,
+											   rel_loc_info->nodeList);
 			break;
 
 		case LOCATOR_TYPE_RROBIN:
-
 			/* round robin, get next one */
 			if (accessType == RELATION_ACCESS_INSERT)
 			{
 				/* write to just one of them */
-				exec_nodes->nodelist = lappend_int(NULL, GetRoundRobinNode(rel_loc_info->relid));
+				exec_nodes->nodeList = lappend_int(NULL, GetRoundRobinNode(rel_loc_info->relid));
 			}
 			else
 			{
 				/* we need to read from all */
-				exec_nodes->nodelist = list_copy(rel_loc_info->nodeList);
+				exec_nodes->nodeList = list_concat(exec_nodes->nodeList,
+												   rel_loc_info->nodeList);
 			}
-
 			break;
 
 			/* PGXCTODO case LOCATOR_TYPE_RANGE: */
@@ -777,17 +744,10 @@ List *
 GetAllDataNodes(void)
 {
 	int			i;
-
-	/*
-	 * PGXCTODO - add support for having nodes on a subset of nodes
-	 * For now, assume on all nodes
-	 */
 	List	   *nodeList = NIL;
 
-	for (i = 1; i < NumDataNodes + 1; i++)
-	{
+	for (i = 0; i < NumDataNodes; i++)
 		nodeList = lappend_int(nodeList, i);
-	}
 
 	return nodeList;
 }
@@ -801,20 +761,16 @@ List *
 GetAllCoordNodes(void)
 {
 	int			i;
-
-	/*
-	 * PGXCTODO - add support for having nodes on a subset of nodes
-	 * For now, assume on all nodes
-	 */
 	List	   *nodeList = NIL;
 
-	for (i = 1; i < NumCoords + 1; i++)
+	for (i = 0; i < NumCoords; i++)
 	{
 		/*
 		 * Do not put in list the Coordinator we are on,
 		 * it doesn't make sense to connect to the local coordinator.
 		 */
-		if (i != PGXCNodeId)
+
+		if (i != PGXCNodeId - 1)
 			nodeList = lappend_int(nodeList, i);
 	}
 
@@ -829,24 +785,13 @@ void
 RelationBuildLocator(Relation rel)
 {
 	Relation	pcrel;
-	ScanKeyData skey;
-	SysScanDesc pcscan;
+	ScanKeyData	skey;
+	SysScanDesc	pcscan;
 	HeapTuple	htup;
-	MemoryContext oldContext;
-	RelationLocInfo *relationLocInfo;
-	int			i;
-	int			offset;
-	Form_pgxc_class pgxc_class;
-
-
-	/** PGXCTODO temporarily use the same mapping table for all
-	 * Use all nodes.
-	 */
-	if (!locatorInited)
-	{
-		init_mapping_table(NumDataNodes, mappingTable);
-		locatorInited = true;
-	}
+	MemoryContext	oldContext;
+	RelationLocInfo	*relationLocInfo;
+	int		j;
+	Form_pgxc_class	pgxc_class;
 
 	ScanKeyInit(&skey,
 				Anum_pgxc_class_pcrelid,
@@ -879,14 +824,14 @@ RelationBuildLocator(Relation rel)
 
 	relationLocInfo->partAttrNum = pgxc_class->pcattnum;
 
-	relationLocInfo->partAttrName = get_attname(relationLocInfo->relid,
-												pgxc_class->pcattnum);
+	relationLocInfo->partAttrName = get_attname(relationLocInfo->relid, pgxc_class->pcattnum);
 
-	/** PGXCTODO - add support for having nodes on a subset of nodes
-	 * For now, assume on all nodes
-	 */
-	relationLocInfo->nodeList = GetAllDataNodes();
-	relationLocInfo->nodeCount = relationLocInfo->nodeList->length;
+	relationLocInfo->nodeList = NIL;
+
+	for (j = 0; j < pgxc_class->nodeoids.dim1; j++)
+		relationLocInfo->nodeList = lappend_int(relationLocInfo->nodeList,
+												PGXCNodeGetNodeId(pgxc_class->nodeoids.values[j],
+																  PGXC_NODE_DATANODE));
 
 	/*
 	 * If the locator type is round robin, we set a node to
@@ -900,18 +845,17 @@ RelationBuildLocator(Relation rel)
 		|| relationLocInfo->locatorType == LOCATOR_TYPE_REPLICATED)
 #endif
 	{
+		int offset;
 		/*
 		 * pick a random one to start with,
 		 * since each process will do this independently
 		 */
-		srand(time(NULL));
-		offset = rand() % relationLocInfo->nodeCount + 1;
-		relationLocInfo->roundRobinNode = relationLocInfo->nodeList->head;		/* initialize */
+		offset = compute_modulo(abs(rand()), list_length(relationLocInfo->nodeList));
 
-		for (i = 0; i < offset && relationLocInfo->roundRobinNode->next != NULL; i++)
-		{
+		srand(time(NULL));
+		relationLocInfo->roundRobinNode = relationLocInfo->nodeList->head; /* initialize */
+		for (j = 0; j < offset && relationLocInfo->roundRobinNode->next != NULL; j++)
 			relationLocInfo->roundRobinNode = relationLocInfo->roundRobinNode->next;
-		}
 	}
 
 	systable_endscan(pcscan);
@@ -948,7 +892,6 @@ CopyRelationLocInfo(RelationLocInfo * src_info)
 {
 	RelationLocInfo *dest_info;
 
-
 	Assert(src_info);
 
 	dest_info = (RelationLocInfo *) palloc0(sizeof(RelationLocInfo));
@@ -958,10 +901,9 @@ CopyRelationLocInfo(RelationLocInfo * src_info)
 	dest_info->partAttrNum = src_info->partAttrNum;
 	if (src_info->partAttrName)
 		dest_info->partAttrName = pstrdup(src_info->partAttrName);
-	dest_info->nodeCount = src_info->nodeCount;
+
 	if (src_info->nodeList)
 		dest_info->nodeList = list_copy(src_info->nodeList);
-
 	/* Note, for round robin, we use the relcache entry */
 
 	return dest_info;
@@ -1000,7 +942,6 @@ createLocator(char locatorType, RelationAccessType accessType,
 	foreach(lc, nodeList)
 		locator->nodeMap[i++] = lfirst_int(lc);
 	locator->nodeCount = list_length(nodeList);
-	locator->roundRobinNode = -1;
 	switch (locatorType)
 	{
 		case LOCATOR_TYPE_REPLICATED:
@@ -1015,18 +956,109 @@ createLocator(char locatorType, RelationAccessType accessType,
 				locator->locateNodes = locate_roundrobin_insert;
 			else
 				locator->locateNodes = locate_roundrobin_select;
+			locator->roundRobinNode = -1;
 			break;
 		case LOCATOR_TYPE_HASH:
 			if (accessType == RELATION_ACCESS_INSERT)
 				locator->locateNodes = locate_hash_insert;
 			else
 				locator->locateNodes = locate_hash_select;
+
+			switch (dataType)
+			{
+				case INT8OID:
+				case CASHOID:
+					locator->hashfunc = hashint8;
+					break;
+				case INT2OID:
+					locator->hashfunc = hashint2;
+					break;
+				case OIDOID:
+					locator->hashfunc = hashoid;
+					break;
+				case INT4OID:
+				case ABSTIMEOID:
+				case RELTIMEOID:
+				case DATEOID:
+					locator->hashfunc = hashint4;
+					break;
+				case BOOLOID:
+				case CHAROID:
+					locator->hashfunc = hashchar;
+					break;
+				case NAMEOID:
+					locator->hashfunc = hashname;
+					break;
+				case INT2VECTOROID:
+					locator->hashfunc = hashint2vector;
+					break;
+				case VARCHAROID:
+				case TEXTOID:
+					locator->hashfunc = hashtext;
+					break;
+				case OIDVECTOROID:
+					locator->hashfunc = hashoidvector;
+					break;
+				case FLOAT4OID:
+					locator->hashfunc = hashfloat4;
+					break;
+				case FLOAT8OID:
+					locator->hashfunc = hashfloat8;
+					break;
+				case BPCHAROID:
+					locator->hashfunc = hashbpchar;
+					break;
+				case BYTEAOID:
+					locator->hashfunc = hashvarlena;
+					break;
+				case TIMEOID:
+					locator->hashfunc = time_hash;
+					break;
+				case TIMESTAMPOID:
+				case TIMESTAMPTZOID:
+					locator->hashfunc = timestamp_hash;
+					break;
+				case INTERVALOID:
+					locator->hashfunc = interval_hash;
+					break;
+				case TIMETZOID:
+					locator->hashfunc = timetz_hash;
+					break;
+				case NUMERICOID:
+					locator->hashfunc = hash_numeric;
+					break;
+				default:
+					ereport(ERROR, (errmsg("Error: unsupported data type for HASH locator: %d\n",
+									   dataType)));
+			}
 			break;
 		case LOCATOR_TYPE_MODULO:
 			if (accessType == RELATION_ACCESS_INSERT)
 				locator->locateNodes = locate_modulo_insert;
 			else
 				locator->locateNodes = locate_modulo_select;
+
+			switch (dataType)
+			{
+				case INT8OID: /* just ignore high bits */
+				case OIDOID:
+				case INT4OID:
+				case ABSTIMEOID:
+				case RELTIMEOID:
+				case DATEOID:
+					locator->valuelen = 4;
+					break;
+				case INT2OID:
+					locator->valuelen = 2;
+					break;
+				case BOOLOID:
+				case CHAROID:
+					locator->valuelen = 1;
+					break;
+				default:
+					ereport(ERROR, (errmsg("Error: unsupported data type for MODULO locator: %d\n",
+									   dataType)));
+			}
 			break;
 		default:
 			ereport(ERROR, (errmsg("Error: no such supported locator type: %c\n",
@@ -1128,7 +1160,13 @@ locate_hash_insert(Locator *self, Datum value, bool isnull,
 	if (isnull)
 		*nodes = self->nodeMap[0];
 	else
-		*nodes = self->nodeMap[hash_range_int(compute_hash(self->dataType, value, &nErr)) % self->nodeCount];
+	{
+		unsigned int hash32;
+
+		hash32 = (unsigned int) DatumGetInt32(DirectFunctionCall1(self->hashfunc, value));
+
+		*nodes = self->nodeMap[compute_modulo(hash32, self->nodeCount)];
+	}
 	return 1;
 }
 
@@ -1147,7 +1185,11 @@ locate_hash_select(Locator *self, Datum value, bool isnull,
 	}
 	else
 	{
-		*nodes = self->nodeMap[hash_range_int(compute_hash(self->dataType, value, &nErr)) % self->nodeCount];
+		unsigned int hash32;
+
+		hash32 = (unsigned int) DatumGetInt32(DirectFunctionCall1(self->hashfunc, value));
+
+		*nodes = self->nodeMap[compute_modulo(hash32, self->nodeCount)];
 		return 1;
 	}
 }
@@ -1162,7 +1204,20 @@ locate_modulo_insert(Locator *self, Datum value, bool isnull,
 	if (isnull)
 		*nodes = self->nodeMap[0];
 	else
-		*nodes = self->nodeMap[abs(DatumGetInt32(value)) % self->nodeCount];
+	{
+		unsigned int mod32;
+
+		if (self->valuelen == 4)
+			mod32 = (unsigned int) (GET_4_BYTES(value));
+		else if (self->valuelen == 2)
+			mod32 = (unsigned int) (GET_2_BYTES(value));
+		else if (self->valuelen == 1)
+			mod32 = (unsigned int) (GET_1_BYTE(value));
+		else
+			mod32 = 0;
+
+		*nodes = self->nodeMap[compute_modulo(mod32, self->nodeCount)];
+	}
 	return 1;
 }
 
@@ -1179,7 +1234,18 @@ locate_modulo_select(Locator *self, Datum value, bool isnull,
 	}
 	else
 	{
-		*nodes = self->nodeMap[abs(DatumGetInt32(value)) % self->nodeCount];
+		unsigned int mod32;
+
+		if (self->valuelen == 4)
+			mod32 = (unsigned int) (GET_4_BYTES(value));
+		else if (self->valuelen == 2)
+			mod32 = (unsigned int) (GET_2_BYTES(value));
+		else if (self->valuelen == 1)
+			mod32 = (unsigned int) (GET_1_BYTE(value));
+		else
+			mod32 = 0;
+
+		*nodes = self->nodeMap[compute_modulo(mod32, self->nodeCount)];
 		return 1;
 	}
 }

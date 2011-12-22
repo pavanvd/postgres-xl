@@ -17,6 +17,7 @@
 #ifndef POOLMGR_H
 #define POOLMGR_H
 #include <sys/time.h>
+#include "nodes/nodes.h"
 #include "pgxcnode.h"
 #include "poolcomm.h"
 #include "storage/pmsignal.h"
@@ -45,13 +46,6 @@ typedef enum
 	POOL_CMD_GLOBAL_SET /* Global SET flag */
 } PoolCommandType;
 
-/* TODO move? */
-typedef struct
-{
-	char	   *host;
-	char	   *port;
-} PGXCNodeConnectionInfo;
-
 /* Connection pool entry */
 typedef struct
 {
@@ -64,6 +58,7 @@ typedef struct
 typedef struct
 {
 	char	   *connstr;
+	Oid			nodeoid;	/* Node Oid related to this pool */
 	int			freeSize;	/* available connections */
 	int			size;  		/* total pool size */
 	PGXCNodePoolSlot **slot;
@@ -74,6 +69,8 @@ typedef struct databasepool
 {
 	char	   *database;
 	char	   *user_name;
+	int			num_dn_pools;
+	int			num_co_pools;
 	PGXCNodePool **dataNodePools;	/* one for each Datanode */
 	PGXCNodePool **coordNodePools;	/* one for each Coordinator */
 	struct databasepool *next;
@@ -91,6 +88,8 @@ typedef struct
 	/* communication channel */
 	PoolPort	port;
 	DatabasePool *pool;
+	int			num_dn_connections;
+	int			num_coord_connections;
 	PGXCNodePoolSlot **dn_connections; /* one for each Datanode */
 	PGXCNodePoolSlot **coord_connections; /* one for each Coordinator */
 	char	   *session_params;
@@ -105,19 +104,15 @@ typedef struct
 	PoolPort	port;
 } PoolHandle;
 
-extern int	NumDataNodes;
-extern int	NumCoords;
 extern int	MinPoolSize;
 extern int	MaxPoolSize;
 extern int	PoolerPort;
 
 extern bool PersistentConnections;
 
-extern char *DataNodeHosts;
-extern char *DataNodePorts;
-
-extern char *CoordinatorHosts;
-extern char *CoordinatorPorts;
+/* Status inquiry functions */
+extern void PGXCPoolerProcessIam(void);
+extern bool IsPGXCPoolerProcess(void);
 
 /* Initialize internal structures */
 extern int	PoolManagerInit(void);
@@ -154,6 +149,12 @@ extern void PoolManagerDisconnect(void);
 extern void PoolManagerConnect(PoolHandle *handle, const char *database, const char *user_name);
 
 /*
+ * Reconnect to pool manager
+ * This simply does a disconnection followed by a reconnection.
+ */
+extern void PoolManagerReconnect(void);
+
+/*
  * Save a SET command in Pooler.
  * This command is run on existent agent connections
  * and stored in pooler agent to be replayed when new connections
@@ -167,6 +168,12 @@ extern int *PoolManagerGetConnections(List *datanodelist, List *coordlist);
 /* Clean pool connections */
 extern void PoolManagerCleanConnection(List *datanodelist, List *coordlist, char *dbname, char *username);
 
+/* Check consistency of connection information cached in pooler with catalogs */
+extern bool PoolManagerCheckConnectionInfo(void);
+
+/* Reload connection data in pooler and drop all the existing connections of pooler */
+extern void PoolManagerReloadConnectionInfo(void);
+
 /* Send Abort signal to transactions being run */
 extern int	PoolManagerAbortTransactions(char *dbname, char *username, int **proc_pids);
 
@@ -176,4 +183,9 @@ extern void PoolManagerReleaseConnections(void);
 /* Cancel a running query on data nodes as well as on other coordinators */
 extern void PoolManagerCancelQuery(int dn_count, int* dn_list, int co_count, int* co_list);
 
+/* Lock/unlock pool manager */
+extern void PoolManagerLock(bool is_lock);
+
+/* Check if pool has a handle */
+extern bool IsPoolHandle(void);
 #endif

@@ -35,6 +35,7 @@
 #include "pgxc/execRemote.h"
 #include "pgxc/pgxc.h"
 #include "pgxc/locator.h"
+#include "pgxc/nodemgr.h"
 #include "pgxc/planner.h"
 #include "pgxc/postgresql_fdw.h"
 #include "tcop/pquery.h"
@@ -50,6 +51,7 @@
 #include "utils/timestamp.h"
 #include "utils/date.h"
 
+#ifndef XCP
 /*
  * Convenient format for literal comparisons
  */
@@ -161,9 +163,6 @@ typedef struct XCWalkerContext
 /* Forbid unsafe SQL statements */
 bool		StrictStatementChecking = true;
 
-/* Forbid multi-node SELECT statements with an ORDER BY clause */
-bool		StrictSelectChecking = false;
-
 static void get_plan_nodes(PlannerInfo *root, RemoteQuery *step, RelationAccessType accessType);
 static bool get_plan_nodes_walker(Node *query_node, XCWalkerContext *context);
 static bool examine_conditions_walker(Node *expr_node, XCWalkerContext *context);
@@ -171,10 +170,9 @@ static int handle_limit_offset(RemoteQuery *query_step, Query *query, PlannedStm
 static void InitXCWalkerContext(XCWalkerContext *context);
 static RemoteQuery *makeRemoteQuery(void);
 static void validate_part_col_updatable(const Query *query);
-#ifndef XCP
 static bool contains_temp_tables(List *rtable);
-#endif
 static bool contains_only_pg_catalog(List *rtable);
+static bool is_subcluster_mapping(List *rtable);
 static void pgxc_handle_unsupported_stmts(Query *query);
 static PlannedStmt *pgxc_fqs_planner(Query *query, int cursorOptions,
 										ParamListInfo boundParams);
@@ -702,7 +700,7 @@ get_plan_nodes_insert(PlannerInfo *root, RemoteQuery *step)
 				step->exec_nodes->baselocatortype = rel_loc_info->locatorType;
 				step->exec_nodes->tableusagetype = TABLE_USAGE_TYPE_USER;
 				step->exec_nodes->primarynodelist = NULL;
-				step->exec_nodes->nodelist = NULL;
+				step->exec_nodes->nodeList = NULL;
 				step->exec_nodes->en_expr = eval_expr;
 				step->exec_nodes->en_relid = rel_loc_info->relid;
 				step->exec_nodes->accesstype = RELATION_ACCESS_INSERT;
@@ -712,7 +710,6 @@ get_plan_nodes_insert(PlannerInfo *root, RemoteQuery *step)
 			constExpr = (Const *) checkexpr;
 		}
 	}
-
 	if (constExpr == NULL)
 		step->exec_nodes = GetRelationNodes(rel_loc_info, 0, InvalidOid, RELATION_ACCESS_INSERT);
 	else
@@ -743,12 +740,11 @@ static bool
 examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 {
 	RelationLocInfo *rel_loc_info1,
-			   *rel_loc_info2;
-	Const	   *constant;
-	Expr	   *checkexpr;
+			*rel_loc_info2;
+	Const		*constant;
+	Expr		*checkexpr;
 	bool		result = false;
 	bool		is_and = false;
-
 
 	Assert(context);
 
@@ -797,11 +793,7 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 
 		if (IsA(queryDesc->planstate, RemoteQueryState))
 		{
-#ifdef XCP
-			ResponseCombiner *node = (ResponseCombiner *) queryDesc->planstate;
-#else
 			RemoteQueryState *node = (RemoteQueryState *) queryDesc->planstate;
-#endif
 			RemoteQuery *step = (RemoteQuery *) queryDesc->planstate->plan;
 
 			/*
@@ -825,11 +817,7 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 			context->query_step->exec_nodes = makeNode(ExecNodes);
 			context->query_step->exec_nodes->tableusagetype = TABLE_USAGE_TYPE_USER;
 			context->query_step->exec_nodes->baselocatortype = rel_loc_info1->locatorType;
-#ifdef XCP
-			if (IsReplicated(rel_loc_info1->locatorType))
-#else
 			if (rel_loc_info1->locatorType == LOCATOR_TYPE_REPLICATED)
-#endif
 			{
 				RemoteQuery *step1, *step2, *step3;
 				/*
@@ -850,11 +838,7 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 					TupleDesc slot_meta = slot->tts_tupleDescriptor;
 					Datum ctid = 0;
 					char *ctid_str = NULL;
-#ifdef XCP
-					int nodenum = slot->tts_datarow->msgnode;
-#else
-					int nodenum = slot->tts_dataNode;
-#endif
+					int nindex = slot->tts_dataNodeIndex;
 					AttrNumber att;
 					StringInfoData buf;
 					HeapTuple	tp;
@@ -923,7 +907,7 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 									 tableName, ctid_str);
 					step1->sql_statement = pstrdup(buf.data);
 					step1->exec_nodes = makeNode(ExecNodes);
-					step1->exec_nodes->nodelist = list_make1_int(nodenum);
+					step1->exec_nodes->nodeList = list_make1_int(nindex);
 
 					/* Step 2: declare cursor for update target table */
 					step2 = makeRemoteQuery();
@@ -951,7 +935,9 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 					appendStringInfoString(&buf, "FOR UPDATE");
 					step2->sql_statement = pstrdup(buf.data);
 					step2->exec_nodes = makeNode(ExecNodes);
-					step2->exec_nodes->nodelist = list_copy(rel_loc_info1->nodeList);
+
+					step2->exec_nodes->nodeList = list_copy(rel_loc_info1->nodeList);
+
 					innerPlan(step2) = (Plan *) step1;
 					/* Step 3: move cursor to first position */
 					step3 = makeRemoteQuery();
@@ -959,28 +945,26 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 					appendStringInfo(&buf, "MOVE %s", node_cursor);
 					step3->sql_statement = pstrdup(buf.data);
 					step3->exec_nodes = makeNode(ExecNodes);
-					step3->exec_nodes->nodelist = list_copy(rel_loc_info1->nodeList);
+
+					step3->exec_nodes->nodeList = list_copy(rel_loc_info1->nodeList);
+
 					innerPlan(step3) = (Plan *) step2;
 
 					innerPlan(context->query_step) = (Plan *) step3;
 
 					pfree(buf.data);
 				}
-				context->query_step->exec_nodes->nodelist = list_copy(rel_loc_info1->nodeList);
+
+				context->query_step->exec_nodes->nodeList = list_copy(rel_loc_info1->nodeList);
 			}
 			else
 			{
 				/* Take target node from last scan tuple of referenced step */
-#ifdef XCP
-				int curr_node = node->ss.ss_ScanTupleSlot->tts_datarow->msgnode;
-#else
-				int curr_node = node->ss.ss_ScanTupleSlot->tts_dataNode;
-#endif
-				context->query_step->exec_nodes->nodelist = lappend_int(context->query_step->exec_nodes->nodelist, curr_node);
+				context->query_step->exec_nodes->nodeList = lappend_int(context->query_step->exec_nodes->nodeList,
+											node->ss.ss_ScanTupleSlot->tts_dataNodeIndex);
 			}
 			FreeRelationLocInfo(rel_loc_info1);
 
-			context->query_step->is_single_step = true;
 			/*
 			 * replace cursor name in the query if differs
 			 */
@@ -1109,9 +1093,10 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 	if (!context->within_or && !context->within_not && IsA(expr_node, OpExpr))
 	{
 		OpExpr	   *opexpr = (OpExpr *) expr_node;
+		Node       *leftarg = linitial(opexpr->args);
 
 		/* See if we can equijoin these */
-		if (op_mergejoinable(opexpr->opno, opexpr->inputcollid) &&
+		if (op_mergejoinable(opexpr->opno, exprType(leftarg)) &&
 			opexpr->args->length == 2)
 		{
 			Expr	   *arg1 = linitial(opexpr->args);
@@ -1225,11 +1210,7 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 					pgxc_join = find_or_create_pgxc_join(column_base->relid, column_base->relalias,
 										 column_base2->relid, column_base2->relalias, context);
 
-#ifdef XCP
-					if (IsReplicated(rel_loc_info1->locatorType))
-#else
 					if (rel_loc_info1->locatorType == LOCATOR_TYPE_REPLICATED)
-#endif
 					{
 
 						/* add to replicated join conditions */
@@ -1239,12 +1220,40 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 						if (colvar->varlevelsup != colvar2->varlevelsup)
 							context->multilevel_join = true;
 
-#ifdef XCP
-						if (IsReplicated(rel_loc_info2->locatorType))
-#else
 						if (rel_loc_info2->locatorType == LOCATOR_TYPE_REPLICATED)
-#endif
+						{
+							/*
+							 * This is a replicated/replicated join case
+							 * and node lists are mapping so node selection for remote join
+							 * is made based on the intersection list of the two node lists.
+							 */
+							int len1 = NumDataNodes;
+							int len2 = NumDataNodes;
+
+							if (rel_loc_info1)
+								len1 = list_length(rel_loc_info1->nodeList);
+							if (rel_loc_info2)
+								len2 = list_length(rel_loc_info2->nodeList);
+
 							pgxc_join->join_type = JOIN_REPLICATED_ONLY;
+
+							/* Be sure that intersection list can be built */
+							if ((len1 != NumDataNodes ||
+								 len2 != NumDataNodes) &&
+								rel_loc_info1 &&
+								rel_loc_info2)
+							{
+								List *join_node_list = list_intersection_int(rel_loc_info1->nodeList,
+																			 rel_loc_info2->nodeList);
+								context->conditions->base_rel_name = column_base2->relname;
+								context->conditions->base_rel_loc_info = rel_loc_info2;
+								/* Set a modified node list holding the intersection node list */
+								context->conditions->base_rel_loc_info->nodeList =
+									list_copy(join_node_list);
+								if (rel_loc_info1)
+									FreeRelationLocInfo(rel_loc_info1);
+							}
+						}
 						else
 						{
 							pgxc_join->join_type = JOIN_REPLICATED_PARTITIONED;
@@ -1266,11 +1275,7 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 
 						return false;
 					}
-#ifdef XCP
-					else if (IsReplicated(rel_loc_info2->locatorType))
-#else
 					else if (rel_loc_info2->locatorType == LOCATOR_TYPE_REPLICATED)
-#endif
 					{
 						/* note nature of join between the two relations */
 						pgxc_join->join_type = JOIN_REPLICATED_PARTITIONED;
@@ -1289,13 +1294,9 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 						return false;
 					}
 					/* Now check for a partitioned join */
-					/*
-					 * PGXCTODO - for the prototype, we assume all partitioned
-					 * tables are on the same nodes.
-					 */
-					if ( ( (IsHashColumn(rel_loc_info1, column_base->colname)) &&
-						(IsHashColumn(rel_loc_info2, column_base2->colname))) ||
-					     ( (IsModuloColumn(rel_loc_info1, column_base->colname)) &&
+					if (((IsHashColumn(rel_loc_info1, column_base->colname)) &&
+						 (IsHashColumn(rel_loc_info2, column_base2->colname))) ||
+						((IsModuloColumn(rel_loc_info1, column_base->colname)) &&
 						(IsModuloColumn(rel_loc_info2, column_base2->colname))))
 					{
 						/* We found a partitioned join */
@@ -1379,7 +1380,6 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 
 		/* push onto rtables list before recursing */
 		context->rtables = lappend(context->rtables, current_rtable);
-
 		if (get_plan_nodes_walker(sublink->subselect, context))
 			return true;
 
@@ -1405,8 +1405,8 @@ examine_conditions_walker(Node *expr_node, XCWalkerContext *context)
 					if (save_exec_nodes->tableusagetype != TABLE_USAGE_TYPE_USER_REPLICATED)
 					{
 						/* See if they run on the same node */
-						if (same_single_node(context->query_step->exec_nodes->nodelist,
-											 save_exec_nodes->nodelist))
+						if (same_single_node(context->query_step->exec_nodes->nodeList,
+											 save_exec_nodes->nodeList))
 							return false;
 					}
 					else
@@ -1513,7 +1513,7 @@ contains_only_pg_catalog(List *rtable)
 	return true;
 }
 
-#ifndef XCP
+
 /*
  * Returns true if at least one temporary table is in use
  * in query (and its subqueries)
@@ -1539,7 +1539,143 @@ contains_temp_tables(List *rtable)
 
 	return false;
 }
-#endif
+
+
+/*
+ * Returns true if tables in this list have their node list mapping.
+ * The node list determines on which subset of nodes table data is located.
+ */
+static bool
+is_subcluster_mapping(List *rtable)
+{
+	ListCell *item;
+	char	 global_locator_type = LOCATOR_TYPE_NONE;
+	List	 *inter_nodelist = NIL;
+
+	/* Single table, so do not matter */
+	if (list_length(rtable) == 1)
+		return true;
+
+	/*
+	 * Successive lists of node lists of rtables are checked by taking
+	 * their successive intersections for mapping.
+	 * As a global rule, distributed table mapping has to be at least
+	 * in reference mapping.
+	 *
+	 * The following cases are considered:
+	 * - replicated/replicated mapping
+	 *	 Intersection of node lists cannot be disjointed.
+	 * - replicated/distributed mapping
+	 *	 Distributed mapping has to be included in replicated mapping
+	 * - distributed/distributed mapping
+	 *	 Node lists have to include each other, so they are equal.
+	 */
+	foreach(item, rtable)
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) lfirst(item);
+		RelationLocInfo *rel_loc_info;
+
+		/* Don't mind if it is not a relation */
+		if (rte->rtekind != RTE_RELATION)
+			continue;
+
+		/* Time to get the necessary location data */
+		rel_loc_info = GetRelationLocInfo(rte->relid);
+
+		/*
+		 * If no location info is found it means that relation is
+		 * local like a catalog, this does not impact mapping check.
+		 */
+		if (!rel_loc_info)
+			continue;
+
+		/* Initialize location information to be checked */
+		if (IsLocatorNone(global_locator_type))
+		{
+			global_locator_type = rel_loc_info->locatorType;
+			inter_nodelist = list_copy(rel_loc_info->nodeList);
+			continue;
+		}
+
+		/* Time for the real checking */
+		if (IsLocatorReplicated(global_locator_type) &&
+			IsLocatorReplicated(rel_loc_info->locatorType))
+		{
+			/*
+			 * Replicated/replicated join case
+			 * Check that replicated relation is not disjoint
+			 * with initial relation which is also replicated.
+			 * If there is a common portion of the node list between
+			 * the two relations, other rtables have to be checked on
+			 * this restricted list.
+			 */
+			inter_nodelist = list_intersection_int(inter_nodelist,
+												   rel_loc_info->nodeList);
+			/* No intersection, so has to go though standard planner... */
+			if (!inter_nodelist)
+				return false;
+		}
+		else if ((IsLocatorReplicated(global_locator_type) &&
+				  IsLocatorColumnDistributed(rel_loc_info->locatorType)) ||
+				 (IsLocatorColumnDistributed(global_locator_type) &&
+				  IsLocatorReplicated(rel_loc_info->locatorType)))
+		{
+			/*
+			 * Replicated/distributed join case.
+			 * Node list of distributed table has to be included
+			 * in node list of replicated table.
+			 */
+			List *diff_nodelist = NIL;
+
+			/*
+			 * In both cases, check that replicated table node list maps entirely
+			 * distributed table node list.
+			 */
+			if (IsLocatorReplicated(global_locator_type))
+			{
+				diff_nodelist = list_difference_int(rel_loc_info->nodeList, inter_nodelist);
+
+				/* Save new comparison info */
+				inter_nodelist = list_copy(rel_loc_info->nodeList);
+				global_locator_type = rel_loc_info->locatorType;
+			}
+			else
+				diff_nodelist = list_difference_int(inter_nodelist, rel_loc_info->nodeList);
+
+			/*
+			 * If the difference list is not empty, this means that node list of
+			 * distributed table is not completely mapped by node list of replicated
+			 * table, so go through standard planner.
+			 */
+			if (diff_nodelist)
+				return false;
+		}
+		else if (IsLocatorColumnDistributed(global_locator_type) &&
+				 IsLocatorColumnDistributed(rel_loc_info->locatorType))
+		{
+			/*
+			 * Distributed/distributed case.
+			 * Tables have to map perfectly.
+			 */
+			List *diff_left = list_difference_int(inter_nodelist, rel_loc_info->nodeList);
+			List *diff_right = list_difference_int(rel_loc_info->nodeList, inter_nodelist);
+
+			/* Mapping is disjointed, so this goes through standard planner */
+			if (diff_left || diff_right)
+				return false;
+		}
+		else
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("Postgres-XC does not support this distribution type yet"),
+					 errdetail("The feature is not currently supported")));
+		}
+	}
+
+	return true;
+}
+
 
 /*
  * get_plan_nodes - determine the nodes to execute the command on.
@@ -1551,18 +1687,16 @@ contains_temp_tables(List *rtable)
 static bool
 get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 {
-	Query *query;
-	RangeTblEntry *rte;
-	ListCell   *lc,
-			   *item;
-	RelationLocInfo *rel_loc_info;
-	ExecNodes  *test_exec_nodes = NULL;
-	ExecNodes  *current_nodes = NULL;
-	ExecNodes  *from_query_nodes = NULL;
-	TableUsageType 	table_usage_type = TABLE_USAGE_TYPE_NO_TABLE;
-	TableUsageType 	current_usage_type = TABLE_USAGE_TYPE_NO_TABLE;
-	int 		from_subquery_count = 0;
-
+	Query		*query;
+	RangeTblEntry	*rte;
+	ListCell	*lc, *item;
+	RelationLocInfo	*rel_loc_info;
+	ExecNodes	*test_exec_nodes = NULL;
+	ExecNodes	*current_nodes = NULL;
+	ExecNodes	*from_query_nodes = NULL;
+	TableUsageType	table_usage_type = TABLE_USAGE_TYPE_NO_TABLE;
+	TableUsageType	current_usage_type = TABLE_USAGE_TYPE_NO_TABLE;
+	int		from_subquery_count = 0;
 
 	if (!query_node && !IsA(query_node,Query))
 		return true;
@@ -1579,7 +1713,16 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 
 	/* Look for special conditions */
 
-	/* Examine projection list, to handle cases like
+	/*
+	 * Check node list for each table specified.
+	 * Nodes where is located data have to map in case of queries
+	 * involving multiple tables.
+	 */
+	if (!is_subcluster_mapping(query->rtable))
+		return true; /* Run through standard planner */
+
+	/*
+	 * Examine projection list, to handle cases like
 	 * SELECT col1, (SELECT col2 FROM non_replicated_table...), ...
 	 * PGXCTODO: Improve this to allow for partitioned tables
 	 * where all subqueries and the main query use the same single node
@@ -1658,7 +1801,6 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 				 */
 				context->rtables = lappend(context->rtables, current_rtable);
 				context->conditions = (Special_Conditions *) palloc0(sizeof(Special_Conditions));
-
 				if (get_plan_nodes_walker((Node *) rte->subquery, context))
 					return true;
 
@@ -1695,7 +1837,7 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 					else
 					{
 						/* Allow if they are both using one node, and the same one */
-						if (!same_single_node(from_query_nodes->nodelist, current_nodes->nodelist))
+						if (!same_single_node(from_query_nodes->nodeList, current_nodes->nodeList))
 							/* Complicated */
 							return true;
 					}
@@ -1756,6 +1898,13 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 		context->exec_on_coord = true;
 		return false;
 	}
+
+	/*
+	 * From this point onwards, opfuncids should be filled to determine
+	 * immuability of functions. View RTE does not have function oids populated
+	 * in its quals at this point.
+	 */
+	fix_opfuncids((Node *) query->jointree->quals);
 
 	/* Examine the WHERE clause, too */
 	if (examine_conditions_walker(query->jointree->quals, context) ||
@@ -1830,21 +1979,16 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 
 		if (rel_loc_info->locatorType != LOCATOR_TYPE_HASH &&
 			rel_loc_info->locatorType != LOCATOR_TYPE_MODULO)
+		{
 			/* do not need to determine partitioning expression */
-			context->query_step->exec_nodes = GetRelationNodes(rel_loc_info,
-															   0,
-															   UNKNOWNOID,
-															   context->accessType);
+			context->query_step->exec_nodes = GetRelationNodes(rel_loc_info, 0, UNKNOWNOID, context->accessType);
+		}
 
 		/* Note replicated table usage for determining safe queries */
 		if (context->query_step->exec_nodes)
 		{
-#ifdef XCP
 			if (table_usage_type == TABLE_USAGE_TYPE_USER &&
-					IsReplicated(rel_loc_info->locatorType))
-#else
-			if (table_usage_type == TABLE_USAGE_TYPE_USER && IsReplicated(rel_loc_info))
-#endif
+				IsLocatorReplicated(rel_loc_info->locatorType))
 				table_usage_type = TABLE_USAGE_TYPE_USER_REPLICATED;
 
 			context->query_step->exec_nodes->tableusagetype = table_usage_type;
@@ -1858,12 +2002,10 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 				if (rel_loc_info->relid == expr_comp->relid)
 				{
 					context->query_step->exec_nodes = makeNode(ExecNodes);
-					context->query_step->exec_nodes->baselocatortype =
-						rel_loc_info->locatorType;
-					context->query_step->exec_nodes->tableusagetype =
-						TABLE_USAGE_TYPE_USER;
+					context->query_step->exec_nodes->baselocatortype = rel_loc_info->locatorType;
+					context->query_step->exec_nodes->tableusagetype = TABLE_USAGE_TYPE_USER;
 					context->query_step->exec_nodes->primarynodelist = NULL;
-					context->query_step->exec_nodes->nodelist = NULL;
+					context->query_step->exec_nodes->nodeList = NULL;
 					context->query_step->exec_nodes->en_expr = expr_comp->expr;
 					context->query_step->exec_nodes->en_relid = expr_comp->relid;
 					context->query_step->exec_nodes->accesstype = context->accessType;
@@ -1875,13 +2017,10 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 		{
 			/* run query on all nodes */
 			context->query_step->exec_nodes = makeNode(ExecNodes);
-			context->query_step->exec_nodes->baselocatortype =
-				rel_loc_info->locatorType;
-			context->query_step->exec_nodes->tableusagetype =
-				TABLE_USAGE_TYPE_USER;
+			context->query_step->exec_nodes->baselocatortype = rel_loc_info->locatorType;
+			context->query_step->exec_nodes->tableusagetype = TABLE_USAGE_TYPE_USER;
 			context->query_step->exec_nodes->primarynodelist = NULL;
-			context->query_step->exec_nodes->nodelist =
-				list_copy(rel_loc_info->nodeList);
+			context->query_step->exec_nodes->nodeList = list_copy(rel_loc_info->nodeList);
 			context->query_step->exec_nodes->en_expr = NULL;
 			context->query_step->exec_nodes->en_relid = InvalidOid;
 			context->query_step->exec_nodes->accesstype = context->accessType;
@@ -1909,6 +2048,10 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 			foreach(lc, context->query->rtable)
 			{
 				RangeTblEntry *rte = lfirst(lc);
+
+				/* This check is not necessary if rte is not a relation */
+				if (rte->rtekind != RTE_RELATION)
+					continue;
 
 				if (!save_rte)
 				{
@@ -1960,8 +2103,7 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 			{
 				if (context->query_step->exec_nodes == NULL ||
 					!is_single_node_safe ||
-					!same_single_node(context->query_step->exec_nodes->nodelist,
-									  test_exec_nodes->nodelist))
+					!same_single_node(context->query_step->exec_nodes->nodeList, test_exec_nodes->nodeList))
 					return true;
 			}
 		}
@@ -1996,8 +2138,7 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 		 * same node
 		 */
 		else if (from_query_nodes->tableusagetype == TABLE_USAGE_TYPE_USER_REPLICATED
-					|| (same_single_node(from_query_nodes->nodelist,
-										 context->query_step->exec_nodes->nodelist)))
+					|| (same_single_node(from_query_nodes->nodeList, context->query_step->exec_nodes->nodeList)))
 				return false;
 		else
 		{
@@ -2005,7 +2146,7 @@ get_plan_nodes_walker(Node *query_node, XCWalkerContext *context)
 			 * but the parent query applies a condition on the from subquery.
 			 */
 			if (list_length(query->jointree->fromlist) == from_subquery_count
-					&& list_length(context->query_step->exec_nodes->nodelist) == 1)
+					&& list_length(context->query_step->exec_nodes->nodeList) == 1)
 				return false;
 		}
 		/* Too complicated, give up */
@@ -2043,8 +2184,6 @@ static RemoteQuery *
 makeRemoteQuery(void)
 {
 	RemoteQuery *result = makeNode(RemoteQuery);
-	result->is_single_step = true;
-	result->sql_statement = NULL;
 	result->exec_nodes = NULL;
 	result->combine_type = COMBINE_TYPE_NONE;
 	result->sort = NULL;
@@ -2054,9 +2193,7 @@ makeRemoteQuery(void)
 	result->cursor = NULL;
 	result->exec_type = EXEC_ON_DATANODES;
 	result->exec_direct_type = EXEC_DIRECT_NONE;
-#ifndef XCP
 	result->is_temp = false;
-#endif
 
 	result->relname = NULL;
 	result->remotejoin = false;
@@ -2091,7 +2228,6 @@ get_plan_nodes(PlannerInfo *root, RemoteQuery *step, RelationAccessType accessTy
 	context.query_step = step;
 	context.root = root;
 	context.rtables = lappend(context.rtables, query->rtable);
-
 	if ((get_plan_nodes_walker((Node *) query, &context)
 		 || context.exec_on_coord) && context.query_step->exec_nodes)
 	{
@@ -2152,11 +2288,7 @@ get_plan_combine_type(Query *query, char baselocatortype)
 		case CMD_INSERT:
 		case CMD_UPDATE:
 		case CMD_DELETE:
-#ifdef XCP
-			return IsReplicated(baselocatortype) ?
-#else
 			return baselocatortype == LOCATOR_TYPE_REPLICATED ?
-#endif
 					COMBINE_TYPE_SAME : COMBINE_TYPE_SUM;
 
 		default:
@@ -2691,7 +2823,7 @@ handle_limit_offset(RemoteQuery *query_step, Query *query, PlannedStmt *plan_stm
 		return 0;
 
 	if (query_step && query_step->exec_nodes &&
-				list_length(query_step->exec_nodes->nodelist) <= 1)
+				list_length(query_step->exec_nodes->nodeList) <= 1)
 		return 0;
 
 	/* if order by and limit are present, do not optimize yet */
@@ -2699,8 +2831,6 @@ handle_limit_offset(RemoteQuery *query_step, Query *query, PlannedStmt *plan_stm
 		return 1;
 
 	/*
-	 * Note that query_step->is_single_step is set to true, but
-	 * it is ok even if we add limit here.
 	 * If OFFSET is set, we strip the final offset value and add
 	 * it to the LIMIT passed down. If there is an OFFSET and no
 	 * LIMIT, we just strip off OFFSET.
@@ -2811,12 +2941,6 @@ pgxc_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 static void
 pgxc_handle_unsupported_stmts(Query *query)
 {
-	/* we don't support SELECT INTO yet */
-	if (query->commandType == CMD_SELECT && query->intoClause)
-		ereport(ERROR,
-				(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
-				 (errmsg("INTO clause not yet supported"))));
-
 	/*
 	 * PGXCTODO: This validation will not be removed
 	 * until we support moving tuples from one node to another
@@ -2949,11 +3073,9 @@ pgxc_fqs_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 	if (query->commandType != CMD_SELECT)
 		result->resultRelations = list_make1_int(query->resultRelation);
 
-#ifndef XCP
 	/* Check if temporary tables are in use in target list */
 	if (contains_temp_tables(query->rtable))
 		query_step->is_temp = true;
-#endif
 
 	if (query_step->exec_nodes == NULL)
 		get_plan_nodes_command(query_step, root);
@@ -2968,6 +3090,9 @@ pgxc_fqs_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 		return NULL;
 	}
 
+	/* Datanodes should finalise the results of this query */
+	query->qry_finalise_aggs = true;
+
 	/*
 	 * Deparse query tree to get step query. It may be modified later on
 	 */
@@ -2975,8 +3100,14 @@ pgxc_fqs_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 	deparse_query(query, &buf, NIL);
 	query_step->sql_statement = pstrdup(buf.data);
 	pfree(buf.data);
+	/*
+	 * PGXCTODO: we may route this same Query structure through
+	 * standard_planner, where we don't want datanodes to finalise the results.
+	 * Turn it off. At some point, we will avoid routing the same query
+	 * structure through the standard_planner
+	 */
+	query->qry_finalise_aggs = false;
 
-	query_step->is_single_step = true;
 	/*
 	 * PGXCTODO
 	 * When Postgres runs insert into t (a) values (1); against table
@@ -2999,7 +3130,7 @@ pgxc_fqs_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 	/*
 	 * Add sorting to the step
 	 */
-	if (list_length(query_step->exec_nodes->nodelist) > 1 &&
+	if (list_length(query_step->exec_nodes->nodeList) > 1 &&
 			(query->sortClause || query->distinctClause))
 		make_simple_sort_from_sortclauses(query, query_step);
 
@@ -3103,8 +3234,31 @@ pgxc_query_needs_coord(Query *query)
 						query->groupClause ||
 						query->havingQual ||
 						query->hasWindowFuncs ||
-						query->hasRecursive))
+						query->hasRecursive ||
+						query->intoClause))
 		return true;
+
+	/*
+	 * Handle INSERT INTO .. SELECT through standard planner. There might be
+	 * some cases where we should be able to push down these queries to the
+	 * data node, but that needs to be thouroughly tested. For example, if the
+	 * source and target tables are distributed on the same column, then we
+	 * should be able to push that down. Similarly, if both the tables are
+	 * replicated, we should be able to push down the queries. And we have some
+	 * of these checks in the pgxc_planner. But I am not sure if its well
+	 * tested and hence closing that path for now
+	 */
+	if (query->commandType == CMD_INSERT)
+	{
+		ListCell *l;
+
+		foreach (l, query->rtable)
+		{
+			RangeTblEntry *rte = (RangeTblEntry *) lfirst(l);
+			if (rte->rtekind == RTE_SUBQUERY || rte->rtekind == RTE_VALUES)
+				return true;
+		}
+	}
 
 	/* Allow for override */
 	if (query->commandType != CMD_SELECT &&
@@ -3188,11 +3342,17 @@ IsJoinReducible(RemoteQuery *innernode, RemoteQuery *outernode,
 	join_info->partitioned_replicated = false;
 	join_info->exec_nodes = NULL;
 
+	/*
+	 * Before examining such conditions, we need to be sure that node lists
+	 * of tables are mapping.
+	 */
+	if (!is_subcluster_mapping(rtable_list))
+		return false;
+
 	InitXCWalkerContext(&context);
 	context.accessType = RELATION_ACCESS_READ; /* PGXCTODO - determine */
 	context.rtables = NIL;
 	context.rtables = lappend(context.rtables, rtable_list); /* add to list of lists */
-
 
 	foreach(cell, join_path->joinrestrictinfo)
 	{
@@ -3339,7 +3499,7 @@ validate_part_col_updatable(const Query *query)
  * GetHashExecNodes -
  *	Get hash key of execution nodes according to the expression value
  *
- * Input parameters: 
+ * Input parameters:
  *	rel_loc_info is a locator function. It contains distribution information.
  *	exec_nodes is the list of nodes to be executed
  *	expr is the partition column value
@@ -3379,13 +3539,8 @@ GetHashExecNodes(RelationLocInfo *rel_loc_info, ExecNodes **exec_nodes, const Ex
  * This can only be done for a query a Top Level to avoid
  * duplicated queries on Datanodes.
  */
-#ifdef XCP
-List *
-AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType remoteExecType)
-#else
 List *
 AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType remoteExecType, bool is_temp)
-#endif
 {
 	List *result = stmts;
 
@@ -3400,11 +3555,75 @@ AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType rem
 		step->combine_type = COMBINE_TYPE_SAME;
 		step->sql_statement = (char *) queryString;
 		step->exec_type = remoteExecType;
-#ifndef XCP
 		step->is_temp = is_temp;
-#endif
 		result = lappend(result, step);
 	}
 
 	return result;
 }
+
+/*
+ * pgxc_query_contains_temp_tables
+ *
+ * Check if there is any temporary object used in given list of queries.
+ */
+bool
+pgxc_query_contains_temp_tables(List *queries)
+{
+	ListCell   *elt;
+
+	foreach(elt, queries)
+	{
+		Query *query = (Query *) lfirst(elt);
+
+		if (!query)
+			continue;
+
+		switch(query->commandType)
+		{
+			case CMD_SELECT:
+			case CMD_UPDATE:
+			case CMD_INSERT:
+			case CMD_DELETE:
+				if (contains_temp_tables(query->rtable))
+					return true;
+			default:
+				break;
+		}
+	}
+
+	return false;
+}
+#endif
+
+
+#ifdef XCP
+/*
+ * AddRemoteQueryNode
+ *
+ * Add a Remote Query node to launch on Datanodes.
+ * This can only be done for a query a Top Level to avoid
+ * duplicated queries on Datanodes.
+ */
+List *
+AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType remoteExecType)
+{
+	List *result = stmts;
+
+	/* If node is appplied on EXEC_ON_NONE, simply return the list unchanged */
+	if (remoteExecType == EXEC_ON_NONE)
+		return result;
+
+	/* Only a remote Coordinator is allowed to send a query to backend nodes */
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		RemoteQuery *step = makeNode(RemoteQuery);
+		step->combine_type = COMBINE_TYPE_SAME;
+		step->sql_statement = (char *) queryString;
+		step->exec_type = remoteExecType;
+		result = lappend(result, step);
+	}
+
+	return result;
+}
+#endif

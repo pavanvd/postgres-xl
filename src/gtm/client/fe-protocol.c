@@ -189,7 +189,7 @@ gtmpqGetError(GTM_Conn *conn, GTM_Result *result)
 	 * If we are a GTM proxy, expect an additional proxy header in the incoming
 	 * message.
 	 */
-	if (conn->remote_type == PGXC_NODE_GTM_PROXY)
+	if (conn->remote_type == GTM_NODE_GTM_PROXY)
 	{
 		if (gtmpqGetnchar((char *)&result->gr_proxyhdr,
 					sizeof (GTM_ProxyMsgHeader), conn))
@@ -306,7 +306,7 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 		return 1;
 	result->gr_msglen -= 4;
 
-	if (conn->remote_type == PGXC_NODE_GTM_PROXY)
+	if (conn->remote_type == GTM_NODE_GTM_PROXY)
 	{
 		if (gtmpqGetnchar((char *)&result->gr_proxyhdr,
 					sizeof (GTM_ProxyMsgHeader), conn))
@@ -355,6 +355,12 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 			break;
 
 		case NODE_END_REPLICATION_INIT_RESULT:
+			break;
+
+		case BEGIN_BACKUP_RESULT:
+			break;
+
+		case END_BACKUP_RESULT:
 			break;
 
 		case TXN_BEGIN_RESULT:
@@ -604,48 +610,37 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 				result->gr_status = GTM_RESULT_ERROR;
 				break;
 			}
-			if (gtmpqGetInt(&result->gr_resdata.grd_txn_get_gid_data.datanodecnt,
+			if (gtmpqGetInt(&result->gr_resdata.grd_txn_get_gid_data.nodelen,
 					sizeof (int32), conn))
 			{
 				result->gr_status = GTM_RESULT_ERROR;
 				break;
 			}
-			if (result->gr_resdata.grd_txn_get_gid_data.datanodecnt != 0)
+			if (result->gr_resdata.grd_txn_get_gid_data.nodelen != 0)
 			{
-				if ((result->gr_resdata.grd_txn_get_gid_data.datanodes = (PGXC_NodeId *)
-						malloc(sizeof(PGXC_NodeId) * result->gr_resdata.grd_txn_get_gid_data.datanodecnt)) == NULL)
+				/* Do necessary allocation */
+				result->gr_resdata.grd_txn_get_gid_data.nodestring = 
+					(char *)malloc(sizeof(char *) * result->gr_resdata.grd_txn_get_gid_data.nodelen + 1);
+				if (result->gr_resdata.grd_txn_get_gid_data.nodestring == NULL)
 				{
 					result->gr_status = GTM_RESULT_ERROR;
 					break;
 				}
-				if (gtmpqGetnchar((char *)result->gr_resdata.grd_txn_get_gid_data.datanodes,
-						sizeof(PGXC_NodeId) * result->gr_resdata.grd_txn_get_gid_data.datanodecnt, conn))
+
+				/* get the string itself */
+				if (gtmpqGetnchar(result->gr_resdata.grd_txn_get_gid_data.nodestring,
+					result->gr_resdata.grd_txn_get_gid_data.nodelen, conn))
 				{
 					result->gr_status = GTM_RESULT_ERROR;
 					break;
 				}
+
+				/* null terminate the name*/
+				result->gr_resdata.grd_txn_get_gid_data.nodestring[result->gr_resdata.grd_txn_get_gid_data.nodelen] = '\0';
 			}
-			if (gtmpqGetInt(&result->gr_resdata.grd_txn_get_gid_data.coordcnt,
-					sizeof (int32), conn))
-			{
-				result->gr_status = GTM_RESULT_ERROR;
-				break;
-			}
-			if (result->gr_resdata.grd_txn_get_gid_data.coordcnt != 0)
-			{
-				if ((result->gr_resdata.grd_txn_get_gid_data.coordinators = (PGXC_NodeId *)
-					 malloc(sizeof(PGXC_NodeId) * result->gr_resdata.grd_txn_get_gid_data.coordcnt)) == NULL)
-				{
-					result->gr_status = GTM_RESULT_ERROR;
-					break;
-				}
-				if (gtmpqGetnchar((char *)result->gr_resdata.grd_txn_get_gid_data.coordinators,
-								  sizeof(PGXC_NodeId) * result->gr_resdata.grd_txn_get_gid_data.coordcnt, conn))
-				{
-					result->gr_status = GTM_RESULT_ERROR;
-					break;
-				}
-			}
+			else
+				result->gr_resdata.grd_txn_get_gid_data.nodestring = NULL;
+
 			break;
 
 		case TXN_GXID_LIST_RESULT:
@@ -659,6 +654,9 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 				break;
 			}
 
+			/*
+			 * I don't understand why malloc() here?  Should be palloc()?
+			 */
 			result->gr_resdata.grd_txn_gid_list.ptr =
 					(char *)malloc(result->gr_resdata.grd_txn_gid_list.len);
 
@@ -679,17 +677,39 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 
 		case NODE_UNREGISTER_RESULT:
 		case NODE_REGISTER_RESULT:
+			result->gr_resdata.grd_node.len = 0;
+			result->gr_resdata.grd_node.node_name = NULL;
+
 			if (gtmpqGetnchar((char *)&result->gr_resdata.grd_node.type,
 						sizeof (GTM_PGXCNodeType), conn))
 			{
 				result->gr_status = GTM_RESULT_ERROR;
 				break;
 			}
-			if (gtmpqGetnchar((char *)&result->gr_resdata.grd_node.nodenum,
-						sizeof (GTM_PGXCNodeId), conn))
+			if (gtmpqGetInt((int *)&result->gr_resdata.grd_node.len,
+					sizeof(int32), conn))
 			{
 				result->gr_status = GTM_RESULT_ERROR;
+				break;
 			}
+
+			result->gr_resdata.grd_node.node_name =
+					(char *)malloc(result->gr_resdata.grd_node.len+1);
+
+			if (result->gr_resdata.grd_node.node_name==NULL)
+			{
+				result->gr_status = GTM_RESULT_ERROR;
+				break;
+			}
+
+			if (gtmpqGetnchar(result->gr_resdata.grd_node.node_name,
+					  result->gr_resdata.grd_node.len,
+					  conn))  /* serialized GTM_Transactions */
+			{
+				result->gr_status = GTM_RESULT_ERROR;
+				break;
+			}
+			result->gr_resdata.grd_node.node_name[result->gr_resdata.grd_node.len] = '\0';
 			break;
 
 		case NODE_LIST_RESULT:
@@ -769,7 +789,7 @@ gtmpqFreeResultData(GTM_Result *result, GTM_PGXCNodeType remote_type)
 	 * change though as we add more message types below and some of them may
 	 * need cleanup even at the proxy level
 	 */
-	if (remote_type == PGXC_NODE_GTM_PROXY)
+	if (remote_type == GTM_NODE_GTM_PROXY)
 		return;
 
 	switch (result->gr_type)

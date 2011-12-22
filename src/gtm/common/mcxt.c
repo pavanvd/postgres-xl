@@ -39,6 +39,7 @@
 
 static void MemoryContextStatsInternal(MemoryContext context, int level);
 static void MemoryContextDeleteInternal(MemoryContext context, bool parent_locked);
+void *allocTopMemCxt(size_t s);
 
 MemoryContext	TopMostMemoryContext;
 
@@ -770,9 +771,15 @@ void *current_memcontext(void)
 	return((void *)CurrentMemoryContext);
 }
 
+void *allocTopMemCxt(size_t s)
+{
+	return (void *)MemoryContextAlloc(TopMostMemoryContext, (Size)s);
+}
+
 Gen_Alloc genAlloc_class = {(void *)MemoryContextAlloc,
                             (void *)MemoryContextAllocZero,
                             (void *)repalloc,
                             (void *)pfree,
-                            (void *)current_memcontext};
+                            (void *)current_memcontext,
+							(void *)allocTopMemCxt};
 

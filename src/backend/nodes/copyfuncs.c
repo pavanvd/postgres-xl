@@ -203,6 +203,9 @@ _copyModifyTable(ModifyTable *from)
 	COPY_NODE_FIELD(returningLists);
 	COPY_NODE_FIELD(rowMarks);
 	COPY_SCALAR_FIELD(epqParam);
+#ifdef PGXC	
+	COPY_NODE_FIELD(remote_plans);
+#endif	
 
 	return newnode;
 }
@@ -1004,7 +1007,7 @@ _copyExecDirect(ExecDirectStmt *from)
 	ExecDirectStmt *newnode = makeNode(ExecDirectStmt);
 
 	COPY_SCALAR_FIELD(coordinator);
-	COPY_NODE_FIELD(nodes);
+	COPY_NODE_FIELD(node_names);
 	COPY_STRING_FIELD(query);
 
 	return newnode;
@@ -1026,7 +1029,6 @@ _copyRemoteQuery(RemoteQuery *from)
 	/*
 	 * copy remainder of node
 	 */
-	COPY_SCALAR_FIELD(is_single_step);
 	COPY_SCALAR_FIELD(exec_direct_type);
 	COPY_STRING_FIELD(sql_statement);
 	COPY_NODE_FIELD(exec_nodes);
@@ -1070,7 +1072,7 @@ _copyExecNodes(ExecNodes *from)
 	ExecNodes *newnode = makeNode(ExecNodes);
 
 	COPY_NODE_FIELD(primarynodelist);
-	COPY_NODE_FIELD(nodelist);
+	COPY_NODE_FIELD(nodeList);
 	COPY_SCALAR_FIELD(baselocatortype);
 	COPY_SCALAR_FIELD(tableusagetype);
 	COPY_NODE_FIELD(en_expr);
@@ -1219,6 +1221,10 @@ _copyIntoClause(IntoClause *from)
 	COPY_NODE_FIELD(options);
 	COPY_SCALAR_FIELD(onCommit);
 	COPY_STRING_FIELD(tableSpaceName);
+#ifdef PGXC
+	COPY_NODE_FIELD(distributeby);
+	COPY_NODE_FIELD(subcluster);
+#endif
 
 	return newnode;
 }
@@ -2900,6 +2906,17 @@ _copyDistributeBy(DistributeBy *from)
 
 	return newnode;
 }
+
+static PGXCSubCluster *
+_copyPGXCSubCluster(PGXCSubCluster *from)
+{
+	PGXCSubCluster *newnode = makeNode(PGXCSubCluster);
+
+	COPY_SCALAR_FIELD(clustertype);
+	COPY_NODE_FIELD(members);
+
+	return newnode;
+}
 #endif
 
 /*
@@ -2922,6 +2939,7 @@ CopyCreateStmtFields(CreateStmt *from, CreateStmt *newnode)
 	COPY_SCALAR_FIELD(if_not_exists);
 #ifdef PGXC
 	COPY_NODE_FIELD(distributeby);
+	COPY_NODE_FIELD(subcluster);
 #endif
 }
 
@@ -4822,6 +4840,10 @@ copyObject(void *from)
 #ifdef PGXC
 		case T_DistributeBy:
 			retval = _copyDistributeBy(from);
+			break;
+
+		case T_PGXCSubCluster:
+			retval = _copyPGXCSubCluster(from);
 			break;
 #endif
 		default:

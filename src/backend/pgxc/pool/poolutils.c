@@ -18,15 +18,136 @@
 #include "libpq/pqsignal.h"
 
 #include "pgxc/pgxc.h"
+#include "nodes/nodes.h"
 #include "pgxc/poolmgr.h"
 #include "pgxc/locator.h"
+#include "pgxc/nodemgr.h"
 #include "pgxc/poolutils.h"
+#include "pgxc/pgxcnode.h"
 #include "access/gtm.h"
+#include "access/xact.h"
 #include "commands/dbcommands.h"
-#include "utils/lsyscache.h"
+#include "commands/prepare.h"
+#include "storage/procarray.h"
 #include "utils/acl.h"
+#include "utils/builtins.h"
+#include "utils/lsyscache.h"
+#include "utils/memutils.h"
+#include "utils/resowner.h"
 
-#include "nodes/parsenodes.h"
+/*
+ * pgxc_pool_check
+ *
+ * Check if Pooler information in catalog is consistent
+ * with information cached.
+ */
+Datum
+pgxc_pool_check(PG_FUNCTION_ARGS)
+{
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 (errmsg("must be superuser to manage pooler"))));
+
+	/* A datanode has no pooler active, so do not bother about that */
+	if (IS_PGXC_DATANODE)
+		PG_RETURN_BOOL(true);
+
+	/* Simply check with pooler */
+	PG_RETURN_BOOL(PoolManagerCheckConnectionInfo());
+}
+
+/*
+ * pgxc_pool_reload
+ *
+ * Reload data cached in pooler and reload node connection
+ * information in all the server sessions. This aborts all
+ * the existing transactions on this node and reinitializes pooler.
+ * First a lock is taken on Pooler to keep consistency of node information
+ * being updated. If connection information cached is already consistent
+ * in pooler, reload is not executed.
+ * Reload itself is made in 2 phases:
+ * 1) Update database pools with new connection information based on catalog
+ *    pgxc_node. Remote node pools are changed as follows:
+ *	  - cluster nodes dropped in new cluster configuration are deleted and all
+ *      their remote connections are dropped.
+ *    - cluster nodes whose port or host value is modified are dropped the same
+ *      way, as connection information has changed.
+ *    - cluster nodes whose port or host has not changed are kept as is, but
+ *      reorganized respecting the new cluster configuration.
+ *    - new cluster nodes are added.
+ * 2) Reload information in all the sessions of the local node.
+ *    All the sessions in server are signaled to reconnect to pooler to get
+ *    newest connection information and update connection information related
+ *    to remote nodes. This results in losing prepared and temporary objects
+ *    in all the sessions of server. All the existing transactions are aborted
+ *    and a WARNING message is sent back to client.
+ *    Session that invocated the reload does the same process, but no WARNING
+ *    message is sent back to client.
+ */
+Datum
+pgxc_pool_reload(PG_FUNCTION_ARGS)
+{
+	MemoryContext old_context;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 (errmsg("must be superuser to manage pooler"))));
+
+	if (IsTransactionBlock())
+		ereport(ERROR,
+				(errcode(ERRCODE_ACTIVE_SQL_TRANSACTION),
+				 errmsg("pgxc_pool_reload cannot run inside a transaction block")));
+
+	/* A datanode has no pooler active, so do not bother about that */
+	if (IS_PGXC_DATANODE)
+		PG_RETURN_BOOL(true);
+
+	/* Take a lock on pooler to forbid any action during reload */
+	PoolManagerLock(true);
+
+	/* No need to reload, node information is consistent */
+	if (PoolManagerCheckConnectionInfo())
+	{
+		/* Release the lock on pooler */
+		PoolManagerLock(false);
+		PG_RETURN_BOOL(true);
+	}
+
+	/* Reload connection information in pooler */
+	PoolManagerReloadConnectionInfo();
+
+	/* Be sure it is done consistently */
+	if (!PoolManagerCheckConnectionInfo())
+	{
+		/* Release the lock on pooler */
+		PoolManagerLock(false);
+		PG_RETURN_BOOL(false);
+	}
+
+	/* Now release the lock on pooler */
+	PoolManagerLock(false);
+
+	/* Signal other sessions to reconnect to pooler */
+	ReloadConnInfoOnBackends();
+
+	/* Session is being reloaded, drop prepared and temporary objects */
+	DropAllPreparedStatements();
+
+	/* Now session information is reset in correct memory context */
+	old_context = MemoryContextSwitchTo(TopMemoryContext);
+
+	/* Reconnect to pool manager */
+	PoolManagerReconnect();
+
+	/* And reinitialize session */
+	InitMultinodeExecutor(true);
+
+	MemoryContextSwitchTo(old_context);
+
+	PG_RETURN_BOOL(true);
+}
 
 /*
  * CleanConnection()
@@ -51,10 +172,10 @@
  * if no database name is specified.
  *
  * It is also possible to clean connections of several Coordinators or Datanodes
- * Ex:	CLEAN CONNECTION TO DATANODE 1,5,7 FOR DATABASE template1
- *		CLEAN CONNECTION TO COORDINATOR 2,4,6 FOR DATABASE template1
- *		CLEAN CONNECTION TO DATANODE 3,5 TO USER postgres
- *		CLEAN CONNECTION TO COORDINATOR 6,1 FOR DATABASE template1 TO USER postgres
+ * Ex:	CLEAN CONNECTION TO DATANODE dn1,dn2,dn3 FOR DATABASE template1
+ *		CLEAN CONNECTION TO COORDINATOR co2,co4,co3 FOR DATABASE template1
+ *		CLEAN CONNECTION TO DATANODE dn2,dn5 TO USER postgres
+ *		CLEAN CONNECTION TO COORDINATOR co6,co1 FOR DATABASE template1 TO USER postgres
  *
  * Or even to all Coordinators/Datanodes at the same time
  * Ex:	CLEAN CONNECTION TO DATANODE * FOR DATABASE template1
@@ -174,14 +295,17 @@ CleanConnection(CleanConnStmt *stmt)
 
 	foreach(nodelist_item, stmt->nodes)
 	{
-		int node_num = intVal(lfirst(nodelist_item));
-		stmt_nodes = lappend_int(stmt_nodes, node_num);
+		char *node_name = strVal(lfirst(nodelist_item));
+		Oid nodeoid = get_pgxc_nodeoid(node_name);
 
-		if (node_num > max_node_number ||
-			node_num < 1)
+		if (!OidIsValid(nodeoid))
 			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Node Number %d is incorrect", node_num)));
+					(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("PGXC Node %s: object not defined",
+									node_name)));
+
+		stmt_nodes = lappend_int(stmt_nodes,
+								 PGXCNodeGetNodeId(nodeoid, get_pgxc_nodetype(nodeoid)));
 	}
 
 	/* Build lists to be sent to Pooler Manager */
@@ -240,4 +364,54 @@ DropDBCleanConnection(char *dbname)
 		list_free(co_list);
 	if (dn_list)
 		list_free(dn_list);
+}
+
+/*
+ * HandlePoolerReload
+ *
+ * This is called when PROCSIG_PGXCPOOL_RELOAD is activated.
+ * Abort the current transaction if any, then reconnect to pooler.
+ * and reinitialize session connection information.
+ */
+void
+HandlePoolerReload(void)
+{
+	MemoryContext old_context;
+
+	/* A Datanode has no pooler active, so do not bother about that */
+	if (IS_PGXC_DATANODE)
+		return;
+
+	/* Abort existing xact if any */
+	AbortCurrentTransactionOnce();
+
+	/* Session is being reloaded, drop prepared and temporary objects */
+	DropAllPreparedStatements();
+
+	/* Now session information is reset in correct memory context */
+	old_context = MemoryContextSwitchTo(TopMemoryContext);
+
+	/* Need to be able to look into catalogs */
+	CurrentResourceOwner = ResourceOwnerCreate(NULL, "ForPoolerReload");
+
+	/* Reconnect to pool manager */
+	PoolManagerReconnect();
+
+	/* And reinitialize session */
+	InitMultinodeExecutor(true);
+
+	/* Send a message back to client regarding session being reloaded */
+    ereport(WARNING,
+            (errcode(ERRCODE_OPERATOR_INTERVENTION),
+             errmsg("session has been reloaded due to a cluster configuration modification"),
+			 errdetail("Temporary and prepared objects hold by session have been"
+					   " dropped and current transaction has been aborted.")));
+
+	/* Release everything */
+	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_BEFORE_LOCKS, true, true);
+	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
+	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
+	CurrentResourceOwner = NULL;
+
+	MemoryContextSwitchTo(old_context);
 }

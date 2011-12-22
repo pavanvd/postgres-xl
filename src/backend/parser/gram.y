@@ -59,6 +59,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/gramparse.h"
+#include "nodes/nodes.h"
 #include "pgxc/poolmgr.h"
 #include "parser/parser.h"
 #include "storage/lmgr.h"
@@ -186,6 +187,7 @@ static void SplitColQualList(List *qualList,
 	VariableSetStmt		*vsetstmt;
 /* PGXC_BEGIN */
 	DistributeBy		*distby;
+	PGXCSubCluster		*subclus;
 /* PGXC_END */
 }
 
@@ -222,7 +224,8 @@ static void SplitColQualList(List *qualList,
 		DeallocateStmt PrepareStmt ExecuteStmt
 		DropOwnedStmt ReassignOwnedStmt
 		AlterTSConfigurationStmt AlterTSDictionaryStmt
-		BarrierStmt
+		BarrierStmt AlterNodeStmt CreateNodeStmt DropNodeStmt
+		CreateNodeGroupStmt DropNodeGroupStmt
 
 %type <node>	select_no_parens select_with_parens select_clause
 				simple_select values_clause
@@ -238,6 +241,7 @@ static void SplitColQualList(List *qualList,
 %type <list>	createdb_opt_list alterdb_opt_list copy_opt_list
 				transaction_mode_list
 				create_extension_opt_list alter_extension_opt_list
+				pgxcnode_list
 %type <defelt>	createdb_opt_item alterdb_opt_item copy_opt_item
 				transaction_mode_item
 				create_extension_opt_item alter_extension_opt_item
@@ -269,6 +273,7 @@ static void SplitColQualList(List *qualList,
 				database_name access_method_clause access_method attr_name
 				name cursor_name file_name
 				index_name opt_index_name cluster_index_specification
+				pgxcnode_name pgxcgroup_name
 
 %type <list>	func_name handler_name qual_Op qual_all_Op subquery_Op
 				opt_class opt_inline_handler opt_validator validator_clause
@@ -351,7 +356,6 @@ static void SplitColQualList(List *qualList,
 %type <boolean> opt_freeze opt_default opt_recheck
 %type <defelt>	opt_binary opt_oids copy_delimiter
 
-%type <list>	data_node_list coord_list
 %type <str>		DirectStmt CleanConnDbName CleanConnUserName
 /* PGXC_END */
 %type <boolean> copy_from
@@ -467,6 +471,7 @@ static void SplitColQualList(List *qualList,
 /* PGXC_BEGIN */
 %type <str>		opt_barrier_id
 %type <distby>	OptDistributeBy
+%type <subclus> OptSubCluster
 /* PGXC_END */
 
 
@@ -551,7 +556,9 @@ static void SplitColQualList(List *qualList,
 	ORDER OUT_P OUTER_P OVER OVERLAPS OVERLAY OWNED OWNER
 
 	PARSER PARTIAL PARTITION PASSING PASSWORD PLACING PLANS POSITION
-	PRECEDING PRECISION PRESERVE PREPARE PREPARED PRIMARY
+/* PGXC_BEGIN */
+	PRECEDING PRECISION PREFERRED PRESERVE PREPARE PREPARED PRIMARY
+/* PGXC_END */
 	PRIOR PRIVILEGES PROCEDURAL PROCEDURE
 
 	QUOTE
@@ -565,8 +572,10 @@ static void SplitColQualList(List *qualList,
 
 	SAVEPOINT SCHEMA SCROLL SEARCH SECOND_P SECURITY SELECT SEQUENCE SEQUENCES
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETOF SHARE
+/* PGXC_BEGIN */
 	SHOW SIMILAR SIMPLE SMALLINT SOME STABLE STANDALONE_P START STATEMENT
 	STATISTICS STDIN STDOUT STORAGE STRICT_P STRIP_P SUBSTRING
+/* PGXC_END */
 	SYMMETRIC SYSID SYSTEM_P
 
 	TABLE TABLES TABLESPACE TEMP TEMPLATE TEMPORARY TEXT_P THEN TIME TIMESTAMP
@@ -700,6 +709,7 @@ stmt :
 			| AlterForeignTableStmt
 			| AlterFunctionStmt
 			| AlterGroupStmt
+			| AlterNodeStmt
 			| AlterObjectSchemaStmt
 			| AlterOwnerStmt
 			| AlterSeqStmt
@@ -732,6 +742,8 @@ stmt :
 			| CreateForeignTableStmt
 			| CreateFunctionStmt
 			| CreateGroupStmt
+			| CreateNodeGroupStmt
+			| CreateNodeStmt
 			| CreateOpClassStmt
 			| CreateOpFamilyStmt
 			| AlterOpFamilyStmt
@@ -756,6 +768,8 @@ stmt :
 			| DropFdwStmt
 			| DropForeignServerStmt
 			| DropGroupStmt
+			| DropNodeGroupStmt
+			| DropNodeStmt
 			| DropOpClassStmt
 			| DropOpFamilyStmt
 			| DropOwnedStmt
@@ -2385,12 +2399,19 @@ copy_generic_opt_arg_list_item:
  *		QUERY :
  *				CREATE TABLE relname
  *
+ *		PGXC-related extensions:
+ *		1) Distribution type of a table:
+ *			DISTRIBUTE BY ( HASH(column) | MODULO(column) |
+ *							REPLICATION | ROUND ROBIN )
+ *		2) Subcluster for table
+ *			TO ( GROUP groupname | NODE nodename1,...,nodenameN )
+ *
  *****************************************************************************/
 
 CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 			OptInherit OptWith OnCommitOption OptTableSpace 
 /* PGXC_BEGIN */
-			OptDistributeBy
+			OptDistributeBy OptSubCluster
 /* PGXC_END */
 				{
 					CreateStmt *n = makeNode(CreateStmt);
@@ -2405,6 +2426,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->if_not_exists = false;
 /* PGXC_BEGIN */
 					n->distributeby = $12;
+					n->subcluster = $13;
 					if (n->inhRelations != NULL && n->distributeby != NULL)
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
@@ -2417,7 +2439,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 			OptTableElementList ')' OptInherit OptWith OnCommitOption
 			OptTableSpace
 /* PGXC_BEGIN */
-			OptDistributeBy
+			OptDistributeBy OptSubCluster
 /* PGXC_END */
 				{
 					CreateStmt *n = makeNode(CreateStmt);
@@ -2432,6 +2454,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->if_not_exists = true;
 /* PGXC_BEGIN */
 					n->distributeby = $15;
+					n->subcluster = $16;
 					if (n->inhRelations != NULL && n->distributeby != NULL)
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
@@ -2443,7 +2466,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 		| CREATE OptTemp TABLE qualified_name OF any_name
 			OptTypedTableElementList OptWith OnCommitOption OptTableSpace
 /* PGXC_BEGIN */
-			OptDistributeBy
+			OptDistributeBy OptSubCluster
 /* PGXC_END */
 				{
 					CreateStmt *n = makeNode(CreateStmt);
@@ -2459,6 +2482,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->if_not_exists = false;
 /* PGXC_BEGIN */
 					n->distributeby = $11;
+					n->subcluster = $12;
 					if (n->inhRelations != NULL && n->distributeby != NULL)
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
@@ -2470,7 +2494,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 		| CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name OF any_name
 			OptTypedTableElementList OptWith OnCommitOption OptTableSpace
 /* PGXC_BEGIN */
-			OptDistributeBy
+			OptDistributeBy OptSubCluster
 /* PGXC_END */
 				{
 					CreateStmt *n = makeNode(CreateStmt);
@@ -2486,6 +2510,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->if_not_exists = true;
 /* PGXC_BEGIN */
 					n->distributeby = $14;
+					n->subcluster = $15;
 					if (n->inhRelations != NULL && n->distributeby != NULL)
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
@@ -3079,6 +3104,24 @@ OptDistributeBy: DistributeByHash '(' name ')'
 				}
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
+
+OptSubCluster:
+			TO NODE pgxcnode_list
+				{
+					PGXCSubCluster *n = makeNode(PGXCSubCluster);
+					n->clustertype = SUBCLUSTER_NODE;
+					n->members = $3;
+					$$ = n;
+				}
+			| TO GROUP_P pgxcgroup_name
+				{
+					PGXCSubCluster *n = makeNode(PGXCSubCluster);
+					n->clustertype = SUBCLUSTER_GROUP;
+					n->members = list_make1(makeString($3));
+					$$ = n;
+				}
+			| /* EMPTY */							{ $$ = NULL; }
+		;
 /* PGXC_END */
 
 OptConsTableSpace:   USING INDEX TABLESPACE name	{ $$ = $4; }
@@ -3120,7 +3163,10 @@ CreateAsStmt:
 		;
 
 create_as_target:
-			qualified_name OptCreateAs OptWith OnCommitOption OptTableSpace
+			qualified_name OptCreateAs OptWith OnCommitOption OptTableSpace 
+/* PGXC_BEGIN */
+			OptDistributeBy OptSubCluster
+/* PGXC_END */
 				{
 					$$ = makeNode(IntoClause);
 					$$->rel = $1;
@@ -3128,6 +3174,10 @@ create_as_target:
 					$$->options = $3;
 					$$->onCommit = $4;
 					$$->tableSpaceName = $5;
+/* PGXC_BEGIN */
+					$$->distributeby = $6;
+					$$->subcluster = $7;
+/* PGXC_END */
 				}
 		;
 
@@ -7975,6 +8025,111 @@ opt_barrier_id:
 					$$ = NULL;
 				}
 			;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *
+ *		CREATE NODE nodename WITH
+ *				(
+ *					[ TYPE = ('datanode' | 'coordinator') ],
+ *					[ HOST = 'hostname'],
+ *					[ PORT = portnum ],
+ *					[ PRIMARY ],
+ *					[ PREFERRED ]
+ *				)
+ *
+ *****************************************************************************/
+
+CreateNodeStmt: CREATE NODE pgxcnode_name OptWith
+				{
+					CreateNodeStmt *n = makeNode(CreateNodeStmt);
+					n->node_name = $3;
+					n->options = $4;
+					$$ = (Node *)n;
+				}
+		;
+
+pgxcnode_name:
+			ColId							{ $$ = $1; };
+
+pgxcgroup_name:
+			ColId							{ $$ = $1; };
+
+pgxcnode_list:
+			pgxcnode_list ',' pgxcnode_name				{ $$ = lappend($1, makeString($3)); }
+			| pgxcnode_name						{ $$ = list_make1(makeString($1)); }
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *		ALTER NODE nodename WITH
+ *				(
+ *					[ TYPE = ('datanode' | 'coordinator') ],
+ *					[ HOST = 'hostname'],
+ *					[ PORT = portnum ],
+ *					[ PRIMARY ],
+ *					[ PREFERRED ]
+ *				)
+ *
+ *****************************************************************************/
+
+AlterNodeStmt: ALTER NODE pgxcnode_name OptWith
+				{
+					AlterNodeStmt *n = makeNode(AlterNodeStmt);
+					n->node_name = $3;
+					n->options = $4;
+					$$ = (Node *)n;
+				}
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *				DROP NODE nodename
+ *
+ *****************************************************************************/
+
+DropNodeStmt: DROP NODE pgxcnode_name
+				{
+					DropNodeStmt *n = makeNode(DropNodeStmt);
+					n->node_name = $3;
+					$$ = (Node *)n;
+				}
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *				CREATE NODE GROUP groupname WITH node1,...,nodeN
+ *
+ *****************************************************************************/
+
+CreateNodeGroupStmt: CREATE NODE GROUP_P pgxcgroup_name WITH pgxcnode_list
+				{
+					CreateGroupStmt *n = makeNode(CreateGroupStmt);
+					n->group_name = $4;
+					n->nodes = $6;
+					$$ = (Node *)n;
+				}
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *				DROP NODE GROUP groupname
+ *
+ *****************************************************************************/
+
+DropNodeGroupStmt: DROP NODE GROUP_P pgxcgroup_name
+				{
+					DropGroupStmt *n = makeNode(DropGroupStmt);
+					n->group_name = $4;
+					$$ = (Node *)n;
+				}
+		;
+
 /* PGXC_END */
 
 /*****************************************************************************
@@ -8062,23 +8217,23 @@ explain_option_arg:
 /*****************************************************************************
  *
  *		QUERY:
- *				EXECUTE DIRECT ON (COORDINATOR num, ... | NODE num, ...) query
+ *				EXECUTE DIRECT ON (COORDINATOR nodename, ... | NODE nodename, ...) query
  *
  *****************************************************************************/
 
-ExecDirectStmt: EXECUTE DIRECT ON COORDINATOR coord_list DirectStmt
+ExecDirectStmt: EXECUTE DIRECT ON COORDINATOR pgxcnode_list DirectStmt
 				{
 					ExecDirectStmt *n = makeNode(ExecDirectStmt);
 					n->coordinator = TRUE;
-					n->nodes = $5;
+					n->node_names = $5;
 					n->query = $6;
 					$$ = (Node *)n;
 				}
-				| EXECUTE DIRECT ON NODE data_node_list DirectStmt
+				| EXECUTE DIRECT ON NODE pgxcnode_list DirectStmt
 				{
 					ExecDirectStmt *n = makeNode(ExecDirectStmt);
 					n->coordinator = FALSE;
-					n->nodes = $5;
+					n->node_names = $5;
 					n->query = $6;
 					$$ = (Node *)n;
 				}
@@ -8088,41 +8243,17 @@ DirectStmt:
 			Sconst					/* by default all are $$=$1 */
 		;
 
-coord_list:
-		 	Iconst					{ $$ = list_make1(makeInteger($1)); }
-			| coord_list ',' Iconst	{ $$ = lappend($1, makeInteger($3)); }
-			| '*'
-				{
-					int i;
-					$$ = NIL;
-					for (i=1; i<=NumCoords; i++)
-						$$ = lappend($$, makeInteger(i));
-				}
-		;
-
-data_node_list:
-		 	Iconst					{ $$ = list_make1(makeInteger($1)); }
-			| data_node_list ',' Iconst	{ $$ = lappend($1, makeInteger($3)); }
-			| '*'
-				{
-					int i;
-					$$ = NIL;
-					for (i=1; i<=NumDataNodes; i++)
-						$$ = lappend($$, makeInteger(i));
-				}
-		;
-
 /*****************************************************************************
  *
  *		QUERY:
  *
- *		CLEAN CONNECTION TO (COORDINATOR num | NODE num | ALL {FORCE})
+ *		CLEAN CONNECTION TO (COORDINATOR nodename | NODE nodename | ALL {FORCE})
  *				[ FOR DATABASE dbname ]
  *				[ TO USER username ]
  *
  *****************************************************************************/
 
-CleanConnStmt: CLEAN CONNECTION TO COORDINATOR coord_list CleanConnDbName CleanConnUserName
+CleanConnStmt: CLEAN CONNECTION TO COORDINATOR pgxcnode_list CleanConnDbName CleanConnUserName
 				{
 					CleanConnStmt *n = makeNode(CleanConnStmt);
 					n->is_coord = true;
@@ -8132,7 +8263,7 @@ CleanConnStmt: CLEAN CONNECTION TO COORDINATOR coord_list CleanConnDbName CleanC
 					n->username = $7;
 					$$ = (Node *)n;
 				}
-				| CLEAN CONNECTION TO NODE data_node_list CleanConnDbName CleanConnUserName
+				| CLEAN CONNECTION TO NODE pgxcnode_list CleanConnDbName CleanConnUserName
 				{
 					CleanConnStmt *n = makeNode(CleanConnStmt);
 					n->is_coord = false;
@@ -12225,6 +12356,9 @@ unreserved_keyword:
 			| PASSWORD
 			| PLANS
 			| PRECEDING
+/* PGXC_BEGIN */
+			| PREFERRED
+/* PGXC_END */
 			| PREPARE
 			| PREPARED
 			| PRESERVE

@@ -12,10 +12,10 @@ char connect_string[100];
 void
 print_nodeinfo(GTM_PGXCNodeInfo d)
 {
-	client_log(("type=%d, nodenum=%d, proxynum=%d, ipaddress=%s, port=%d, datafolder=%s, status=%d\n",
+	client_log(("type=%d, nodename=%s, proxyname=%s, ipaddress=%s, port=%d, datafolder=%s, status=%d\n",
 		    d.type,
-		    d.nodenum,
-		    d.proxynum,
+		    d.nodename,
+		    d.proxyname,
 		    d.ipaddress,
 		    d.port,
 		    d.datafolder,
@@ -29,8 +29,8 @@ print_nodeinfo(GTM_PGXCNodeInfo d)
 void
 connect1()
 {
-	sprintf(connect_string, "host=localhost port=6666 pgxc_node_id=101 remote_type=%d",
-		PGXC_NODE_GTM);
+	sprintf(connect_string, "host=localhost port=6666 node_name=one_zero_one remote_type=%d",
+		GTM_NODE_GTM);
 	
 	conn = PQconnectGTM(connect_string);
 	if (conn == NULL)
@@ -47,8 +47,8 @@ connect1()
 void
 connect2()
 {
-	sprintf(connect_string, "host=localhost port=6667 pgxc_node_id=102 remote_type=%d",
-		PGXC_NODE_GTM);
+	sprintf(connect_string, "host=localhost port=6667 node_name=one_zero_two remote_type=%d",
+		GTM_NODE_GTM);
 	
 	conn = PQconnectGTM(connect_string);
 	if (conn == NULL)

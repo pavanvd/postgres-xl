@@ -22,6 +22,7 @@
 #include "pgxc/execRemote.h"
 #include "pgxc/locator.h"
 #include "pgxc/pgxc.h"
+#include "nodes/nodes.h"
 #include "pgxc/pgxcnode.h"
 #include "storage/lwlock.h"
 #include "tcop/dest.h"
@@ -150,9 +151,9 @@ generate_barrier_id(const char *id)
 
 	ts = GetCurrentTimestamp();
 #ifdef HAVE_INT64_TIMESTAMP
-	sprintf(genid, "%d_"INT64_FORMAT, PGXCNodeId, ts);
+	sprintf(genid, "%s_"INT64_FORMAT, PGXCNodeName, ts);
 #else
-	sprintf(genid, "%d_%.0f", PGXCNodeId, ts);
+	sprintf(genid, "%s_%.0f", PGXCNodeName, ts);
 #endif
 	return pstrdup(genid);
 }
@@ -205,9 +206,6 @@ SendBarrierPrepareRequest(List *coords, const char *id)
 		handle->state = DN_CONNECTION_STATE_QUERY;
 
 		pgxc_node_flush(handle);
-
-		/* FIXME Use the right context */
-		handle->barrier_id = strdup(id);
 	}
 
 	return coord_handles;
@@ -293,9 +291,6 @@ SendBarrierEndRequest(PGXCNodeAllHandles *coord_handles, const char *id)
 
 		handle->state = DN_CONNECTION_STATE_QUERY;
 		pgxc_node_flush(handle);
-
-		/* FIXME Use the right context */
-		handle->barrier_id = strdup(id);
 	}
 
 }
@@ -408,12 +403,11 @@ ExecuteBarrier(const char *id)
 
 		handle->state = DN_CONNECTION_STATE_QUERY;
 		pgxc_node_flush(handle);
-
-		/* FIXME Use the right context */
-		handle->barrier_id = strdup(id);
 	}
 
 	CheckBarrierCommandStatus(conn_handles, id, "EXECUTE");
+
+	pfree_pgxc_all_handles(conn_handles);
 
 	/*
 	 * Also WAL log the BARRIER locally and flush the WAL buffers to disk
@@ -489,6 +483,9 @@ RequestBarrier(const char *id, char *completionTag)
 	 * Step three. Inform coordinators about a successfully completed barrier
 	 */
 	EndBarrier(prepared_handles, barrier_id);
+
+	/* Free the handles */
+	pfree_pgxc_all_handles(prepared_handles);
 
 	if (completionTag)
 		snprintf(completionTag, COMPLETION_TAG_BUFSIZE, "BARRIER %s", barrier_id);

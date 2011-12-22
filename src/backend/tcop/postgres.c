@@ -86,6 +86,8 @@
 #include "pgxc/execRemote.h"
 #include "pgxc/barrier.h"
 #include "pgxc/planner.h"
+#include "nodes/nodes.h"
+#include "pgxc/poolmgr.h"
 #include "pgxc/pgxcnode.h"
 #include "commands/copy.h"
 /* PGXC_DATANODE */
@@ -603,6 +605,7 @@ ReadCommand(StringInfo inBuf)
 		result = SocketBackend(inBuf);
 	else
 		result = InteractiveBackend(inBuf);
+
 	return result;
 }
 
@@ -820,6 +823,17 @@ pg_rewrite_query(Query *query)
 		/* don't rewrite utilities, just dump 'em into result list */
 		querytree_list = list_make1(query);
 	}
+#ifdef PGXC
+	else if ((query->commandType == CMD_SELECT) && (query->intoClause != NULL))
+	{
+		/*
+		 * CREATE TABLE AS SELECT and SELECT INTO are rewritten so that the
+		 * target table is created first. The SELECT query is then transformed
+		 * into an INSERT INTO statement
+		 */
+		querytree_list = QueryRewriteCTAS(query);
+	}
+#endif
 	else
 	{
 		/* rewrite regular queries */
@@ -1104,7 +1118,7 @@ exec_simple_query(const char *query_string)
 
 		querytree_list = pg_analyze_and_rewrite(parsetree, query_string,
 												NULL, 0);
-		
+
 		plantree_list = pg_plan_queries(querytree_list, 0, NULL);
 
 		/* Done with the snapshot used for parsing/planning */
@@ -4103,10 +4117,11 @@ PostgresMain(int argc, char *argv[], const char *username)
 	/* Snapshot info */
 	int 			xmin;
 	int 			xmax;
-	int				xcnt;
-	int 		   *xip;
+	int			xcnt;
+	int 			*xip;
 	/* Timestamp info */
 	TimestampTz		timestamp;
+	PoolHandle		*pool_handle;
 
 	remoteConnType = REMOTE_CONN_APP;
 #endif
@@ -4376,14 +4391,55 @@ PostgresMain(int argc, char *argv[], const char *username)
 
 #ifdef PGXC
 #ifdef XCP
-	InitMultinodeExecutor();
-	/* If we exit, first try and clean connections and send to pool */
-	on_proc_exit (PGXCNodeCleanAndRelease, 0);
+	if (!IsPoolHandle())
+	{
+		CurrentResourceOwner = ResourceOwnerCreate(NULL, "ForPGXCNodes");
+
+		InitMultinodeExecutor(false);
+
+		pool_handle = GetPoolManagerHandle();
+		if (pool_handle == NULL)
+		{
+			ereport(ERROR,
+				(errcode(ERRCODE_IO_ERROR),
+				 errmsg("Can not connect to pool manager")));
+			return STATUS_ERROR;
+		}
+		/* Pooler initialization has to be made before ressource is released */
+		PoolManagerConnect(pool_handle, dbname, username);
+
+		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_BEFORE_LOCKS, true, true);
+		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
+		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
+		CurrentResourceOwner = NULL;
+
+		/* If we exit, first try and clean connections and send to pool */
+		on_proc_exit (PGXCNodeCleanAndRelease, 0);
+	}
 #else
 	/* If this postmaster is launched from another Coord, do not initialize handles. skip it */
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	if (IS_PGXC_COORDINATOR && !IsPoolHandle())
 	{
-		InitMultinodeExecutor();
+		CurrentResourceOwner = ResourceOwnerCreate(NULL, "ForPGXCNodes");
+
+		InitMultinodeExecutor(false);
+
+		pool_handle = GetPoolManagerHandle();
+		if (pool_handle == NULL)
+		{
+			ereport(ERROR,
+				(errcode(ERRCODE_IO_ERROR),
+				 errmsg("Can not connect to pool manager")));
+			return STATUS_ERROR;
+		}
+		/* Pooler initialization has to be made before ressource is released */
+		PoolManagerConnect(pool_handle, dbname, username);
+
+		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_BEFORE_LOCKS, true, true);
+		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
+		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
+		CurrentResourceOwner = NULL;
+
 		/* If we exit, first try and clean connections and send to pool */
 		on_proc_exit (PGXCNodeCleanAndRelease, 0);
 	}
@@ -4392,6 +4448,26 @@ PostgresMain(int argc, char *argv[], const char *username)
 	{
 		/* If we exit, first try and clean connection to GTM */
 		on_proc_exit (DataNodeShutdown, 0);
+	}
+
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		/*
+		 * Do not authorize connection to Coordinator if
+		 * connection data to remote nodes is inconsistent.
+		 */
+		bool is_pool_chk = PoolManagerCheckConnectionInfo();
+
+		if (!is_pool_chk && !superuser())
+			ereport(ERROR,
+					(errcode(ERRCODE_OPERATOR_INTERVENTION),
+					 errmsg("Remote node information on pool manager inconsistent "
+							"with catalogs")));
+
+		if (!is_pool_chk && superuser())
+			elog(WARNING, "Remote connection information on pooler is inconsistent "
+						  "with catalogs. You should run pgxc_pool_reload() to reload "
+						  "new cluster configuration");
 	}
 #endif
 
@@ -4462,7 +4538,7 @@ PostgresMain(int argc, char *argv[], const char *username)
 		/*
 		 * Temporarily do not abort if we are already in an abort state.
 		 * This change tries to handle the case where the error data stack fills up.
-		*/
+		 */
 		AbortCurrentTransactionOnce();
 #else
 		AbortCurrentTransaction();

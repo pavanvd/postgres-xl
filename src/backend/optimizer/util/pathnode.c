@@ -35,7 +35,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "pgxc/locator.h"
-#include "pgxc/poolmgr.h"
+#include "pgxc/nodemgr.h"
 #endif
 
 static List *translate_sub_tlist(List *tlist, int relid);
@@ -2399,14 +2399,6 @@ create_remotequery_path(PlannerInfo *root, RelOptInfo *rel)
 
 	/* PGXCTODO - set cost properly */
 	cost_seqscan(pathnode, root, rel);
-
-	/*
-	 * ReScan of RemoteQuery is not implemented so we have to materialize
-	 * results. Anyway, it may be more effective to materialize results then
-	 * execute query against remote query multiple times.
-	 * Subject for future optimization
-	 */
-	pathnode = (Path *) create_material_path(rel, pathnode);
 
 	return pathnode;
 }

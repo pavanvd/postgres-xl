@@ -67,12 +67,15 @@
 #include "pgxc/locator.h"
 #include "pgxc/pgxc.h"
 #include "pgxc/planner.h"
+#include "pgxc/poolutils.h"
+#include "nodes/nodes.h"
 #include "pgxc/poolmgr.h"
+#include "pgxc/nodemgr.h"
+#include "pgxc/groupmgr.h"
 #include "utils/lsyscache.h"
 #include "pgxc/poolutils.h"
 #ifdef XCP
 #include "access/transam.h"
-#include "pgxc/execRemote.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/snapmgr.h"
@@ -759,7 +762,6 @@ standard_ProcessUtility(Node *parsetree,
 						relOid = DefineRelation((CreateStmt *) stmt,
 												RELKIND_RELATION,
 												InvalidOid);
-
 						/*
 						 * Let AlterTableCreateToastTable decide if this one
 						 * needs a secondary relation too.
@@ -772,6 +774,7 @@ standard_ProcessUtility(Node *parsetree,
 															"toast",
 															validnsps,
 															true, false);
+
 						(void) heap_reloptions(RELKIND_TOASTVALUE, toast_options,
 											   true);
 
@@ -1430,6 +1433,7 @@ standard_ProcessUtility(Node *parsetree,
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
 			{
+#ifdef XCP
 				/*
 				 * If view is temporary, no need to send this query to other
 				 * remote Coordinators
@@ -1437,9 +1441,9 @@ standard_ProcessUtility(Node *parsetree,
 				ViewStmt *stmt = (ViewStmt *) parsetree;
 
 				if (stmt->view->relpersistence != RELPERSISTENCE_TEMP)
-#ifdef XCP
 					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
 #else
+				if (!ExecIsTempObjectIncluded())
 					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_COORDS, false);
 #endif
 			}
@@ -1481,8 +1485,9 @@ standard_ProcessUtility(Node *parsetree,
 
 				/* INDEX on a temporary table cannot use 2PC at commit */
 				relid = RangeVarGetRelid(stmt->relation, true);
+
 				if (OidIsValid(relid))
-					exec_type = ExecUtilityFindNodes(OBJECT_TABLE, relid, &is_temp);
+					exec_type = ExecUtilityFindNodes(OBJECT_INDEX, relid, &is_temp);
 #endif
 
 				if (stmt->concurrent)
@@ -2006,6 +2011,37 @@ standard_ProcessUtility(Node *parsetree,
 		case T_BarrierStmt:
 			RequestBarrier(((BarrierStmt *) parsetree)->id, completionTag);
 			break;
+
+		/*
+		 * Node DDL is an operation local to Coordinator.
+		 * In case of a new node being created in the cluster,
+		 * it is necessary to create this node on all the Coordinators independently.
+		 */
+		case T_AlterNodeStmt:
+			PgxcNodeAlter((AlterNodeStmt *) parsetree);
+			break;
+
+		case T_CreateNodeStmt:
+			PgxcNodeCreate((CreateNodeStmt *) parsetree);
+			break;
+
+		case T_DropNodeStmt:
+			PgxcNodeRemove((DropNodeStmt *) parsetree);
+			break;
+
+		case T_CreateGroupStmt:
+			PgxcGroupCreate((CreateGroupStmt *) parsetree);
+
+			if (IS_PGXC_COORDINATOR)
+				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+			break;
+
+		case T_DropGroupStmt:
+			PgxcGroupRemove((DropGroupStmt *) parsetree);
+
+			if (IS_PGXC_COORDINATOR)
+				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+			break;
 #endif
 
 		case T_ReindexStmt:
@@ -2169,6 +2205,14 @@ ExecUtilityStmtOnNodes(const char *queryString, ExecNodes *nodes,
 	if (exec_type == EXEC_ON_NONE)
 		return;
 
+	/* If no Datanodes defined, the query cannot be launched */
+	if (NumDataNodes == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("No Datanode defined in cluster"),
+				 errhint("You need to define at least 1 Datanode with "
+						 "CREATE NODE.")));
+
 	if (!IsConnFromCoord())
 	{
 		RemoteQuery *step = makeNode(RemoteQuery);
@@ -2233,7 +2277,7 @@ ExecUtilityFindNodes(ObjectType object_type,
 
 		case OBJECT_INDEX:
 			/* Check if given index uses temporary tables */
-			if ((*is_temp = IsIndexUsingTempTable(relid)))
+			if ((*is_temp = IsTempTable(relid)))
 				exec_type = EXEC_ON_DATANODES;
 			else
 				exec_type = EXEC_ON_ALL_NODES;
@@ -3091,6 +3135,26 @@ CreateCommandTag(Node *parsetree)
 #ifdef PGXC
 		case T_BarrierStmt:
 			tag = "BARRIER";
+			break;
+
+		case T_AlterNodeStmt:
+			tag = "ALTER NODE";
+			break;
+
+		case T_CreateNodeStmt:
+			tag = "CREATE NODE";
+			break;
+
+		case T_DropNodeStmt:
+			tag = "DROP NODE";
+			break;
+
+		case T_CreateGroupStmt:
+			tag = "CREATE NODE GROUP";
+			break;
+
+		case T_DropGroupStmt:
+			tag = "DROP NODE GROUP";
 			break;
 #endif
 

@@ -43,6 +43,10 @@
 #include "executor/nodeModifyTable.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#ifdef PGXC
+#include "pgxc/execRemote.h"
+#include "pgxc/pgxc.h"
+#endif
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
@@ -168,6 +172,11 @@ ExecInsert(TupleTableSlot *slot,
 	Relation	resultRelationDesc;
 	Oid			newId;
 	List	   *recheckIndexes = NIL;
+#ifdef PGXC
+#ifndef PGXC
+	PlanState  *resultRemoteRel = NULL;
+#endif
+#endif
 
 	/*
 	 * get the heap tuple out of the tuple table slot, making sure we have a
@@ -180,7 +189,11 @@ ExecInsert(TupleTableSlot *slot,
 	 */
 	resultRelInfo = estate->es_result_relation_info;
 	resultRelationDesc = resultRelInfo->ri_RelationDesc;
-
+#ifdef PGXC
+#ifndef PGXC
+	resultRemoteRel = estate->es_result_remoterel;
+#endif
+#endif
 	/*
 	 * If the result relation has OIDs, force the tuple's OID to zero so that
 	 * heap_insert will assign a fresh OID.  Usually the OID already will be
@@ -231,21 +244,32 @@ ExecInsert(TupleTableSlot *slot,
 		if (resultRelationDesc->rd_att->constr)
 			ExecConstraints(resultRelInfo, slot, estate);
 
-		/*
-		 * insert the tuple
-		 *
-		 * Note: heap_insert returns the tid (location) of the new tuple in
-		 * the t_self field.
-		 */
-		newId = heap_insert(resultRelationDesc, tuple,
-							estate->es_output_cid, 0, NULL);
+#ifdef PGXC
+#ifndef PGXC
+		if (IS_PGXC_COORDINATOR && resultRemoteRel)
+		{
+			ExecRemoteInsert(resultRelationDesc, (RemoteQueryState *)resultRemoteRel, slot);
+		}
+		else
+#endif
+#endif
+		{
+			/*
+			 * insert the tuple
+			 *
+			 * Note: heap_insert returns the tid (location) of the new tuple in
+			 * the t_self field.
+			 */
+			newId = heap_insert(resultRelationDesc, tuple,
+								estate->es_output_cid, 0, NULL);
 
-		/*
-		 * insert index entries for tuple
-		 */
-		if (resultRelInfo->ri_NumIndices > 0)
-			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
-												   estate);
+			/*
+			 * insert index entries for tuple
+			 */
+			if (resultRelInfo->ri_NumIndices > 0)
+				recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+													   estate);
+		}
 	}
 
 	if (canSetTag)
@@ -707,6 +731,12 @@ ExecModifyTable(ModifyTableState *node)
 	ResultRelInfo *saved_resultRelInfo;
 	ResultRelInfo *resultRelInfo;
 	PlanState  *subplanstate;
+#ifdef PGXC
+#ifndef PGXC
+	PlanState  *remoterelstate;
+	PlanState  *saved_resultRemoteRel;
+#endif
+#endif
 	JunkFilter *junkfilter;
 	TupleTableSlot *slot;
 	TupleTableSlot *planSlot;
@@ -735,6 +765,11 @@ ExecModifyTable(ModifyTableState *node)
 	/* Preload local variables */
 	resultRelInfo = node->resultRelInfo + node->mt_whichplan;
 	subplanstate = node->mt_plans[node->mt_whichplan];
+#ifdef PGXC
+#ifndef PGXC
+	remoterelstate = node->mt_remoterels[node->mt_whichplan];
+#endif
+#endif
 	junkfilter = resultRelInfo->ri_junkFilter;
 
 	/*
@@ -745,8 +780,18 @@ ExecModifyTable(ModifyTableState *node)
 	 * CTE).  So we have to save and restore the caller's value.
 	 */
 	saved_resultRelInfo = estate->es_result_relation_info;
+#ifdef PGXC
+#ifndef PGXC
+	saved_resultRemoteRel = estate->es_result_remoterel;
+#endif
+#endif
 
 	estate->es_result_relation_info = resultRelInfo;
+#ifdef PGXC
+#ifndef PGXC
+	estate->es_result_remoterel = remoterelstate;
+#endif
+#endif
 
 	/*
 	 * Fetch rows from subplan(s), and execute the required table modification
@@ -772,6 +817,11 @@ ExecModifyTable(ModifyTableState *node)
 			{
 				resultRelInfo++;
 				subplanstate = node->mt_plans[node->mt_whichplan];
+#ifdef PGXC
+#ifndef PGXC
+				remoterelstate = node->mt_plans[node->mt_whichplan];
+#endif
+#endif
 				junkfilter = resultRelInfo->ri_junkFilter;
 				estate->es_result_relation_info = resultRelInfo;
 				EvalPlanQualSetPlan(&node->mt_epqstate, subplanstate->plan,
@@ -860,6 +910,11 @@ ExecModifyTable(ModifyTableState *node)
 
 	/* Restore es_result_relation_info before exiting */
 	estate->es_result_relation_info = saved_resultRelInfo;
+#ifdef PGXC
+#ifndef PGXC
+	estate->es_result_remoterel = saved_resultRemoteRel;
+#endif
+#endif
 
 	/*
 	 * We're done, but fire AFTER STATEMENT triggers before exiting.
@@ -912,6 +967,9 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	mtstate->mt_done = false;
 
 	mtstate->mt_plans = (PlanState **) palloc0(sizeof(PlanState *) * nplans);
+#ifdef PGXC
+	mtstate->mt_remoterels = (PlanState **) palloc0(sizeof(PlanState *) * nplans);
+#endif
 	mtstate->resultRelInfo = estate->es_result_relations + node->resultRelIndex;
 	mtstate->mt_arowmarks = (List **) palloc0(sizeof(List *) * nplans);
 	mtstate->mt_nplans = nplans;
@@ -934,7 +992,16 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	i = 0;
 	foreach(l, node->plans)
 	{
+#ifdef PGXC
+		Plan *remoteplan = NULL;
+#endif
+
 		subplan = (Plan *) lfirst(l);
+
+#ifdef PGXC
+		if (node->remote_plans)
+			remoteplan = list_nth(node->remote_plans, i);
+#endif
 
 		/*
 		 * Verify result relation is a valid target for the current operation
@@ -954,6 +1021,17 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		/* Now init the plan for this result rel */
 		estate->es_result_relation_info = resultRelInfo;
 		mtstate->mt_plans[i] = ExecInitNode(subplan, estate, eflags);
+
+#ifdef PGXC
+		if (remoteplan)
+		{
+			/*
+			 * Init the plan for the remote execution for this result rel. This is
+			 * used to execute data modification queries on the remote nodes
+			 */
+			mtstate->mt_remoterels[i] = ExecInitNode(remoteplan, estate, eflags);
+		}
+#endif
 
 		resultRelInfo++;
 		i++;

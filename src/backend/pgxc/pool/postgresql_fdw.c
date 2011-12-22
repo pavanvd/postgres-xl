@@ -204,6 +204,7 @@ foreign_qual_walker(Node *node, foreign_qual_context *context)
 		case T_PlaceHolderVar:
 		case T_AppendRelInfo:
 		case T_PlaceHolderInfo:
+		case T_SubPlan:
 			/* TODO: research whether those complex nodes are evaluatable. */
 			return true;
 		default:
@@ -250,8 +251,6 @@ deparseSql(RemoteQueryState *scanstate)
 	int				i;
 	TupleDesc		tupdesc;
 	bool			first;
-
-elog(DEBUG2, "%s(%u) called", __FUNCTION__, __LINE__);
 
 	/* extract RemoteQuery and RangeTblEntry */
 #ifdef XCP

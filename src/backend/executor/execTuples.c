@@ -96,7 +96,7 @@
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
 #ifdef XCP
-#include "access/gtm.h"
+#include "pgxc/pgxc.h"
 #endif
 
 static TupleDesc ExecTypeFromTLInternal(List *targetList,
@@ -131,7 +131,7 @@ MakeTupleTableSlot(void)
 #else
 	slot->tts_dataRow = NULL;
 	slot->tts_dataLen = -1;
-	slot->tts_dataNode = 0;
+	slot->tts_dataNodeIndex = 0;
 #endif
 	slot->tts_attinmeta = NULL;
 #endif
@@ -380,7 +380,7 @@ ExecStoreTuple(HeapTuple tuple,
 #else
 	slot->tts_dataRow = NULL;
 	slot->tts_dataLen = -1;
-	slot->tts_dataNode = 0;
+	slot->tts_dataNodeIndex = 0;
 #endif
 #endif
 
@@ -459,7 +459,7 @@ ExecStoreMinimalTuple(MinimalTuple mtup,
 #else
 	slot->tts_dataRow = NULL;
 	slot->tts_dataLen = -1;
-	slot->tts_dataNode = 0;
+	slot->tts_dataNodeIndex = 0;
 #endif
 #endif
 
@@ -528,7 +528,7 @@ ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 #else
 	slot->tts_dataRow = NULL;
 	slot->tts_dataLen = -1;
-	slot->tts_dataNode = 0;
+	slot->tts_dataNodeIndex = 0;
 #endif
 #endif
 
@@ -1081,7 +1081,7 @@ ExecMaterializeSlot(TupleTableSlot *slot)
 #else
 		slot->tts_dataRow = NULL;
 		slot->tts_dataLen = -1;
-		slot->tts_dataNode = 0;
+		slot->tts_dataNodeIndex = 0;
 #endif
 	}
 #endif
@@ -1573,7 +1573,7 @@ ExecStoreDataRowTuple(RemoteDataRow datarow,
 }
 #else
 TupleTableSlot *
-ExecStoreDataRowTuple(char *msg, size_t len, int node, TupleTableSlot *slot,
+ExecStoreDataRowTuple(char *msg, size_t len, int nindex, TupleTableSlot *slot,
 					  bool shouldFree)
 {
 	/*
@@ -1620,7 +1620,7 @@ ExecStoreDataRowTuple(char *msg, size_t len, int node, TupleTableSlot *slot,
 	slot->tts_mintuple = NULL;
 	slot->tts_dataRow = msg;
 	slot->tts_dataLen = len;
-	slot->tts_dataNode = node;
+	slot->tts_dataNodeIndex = nindex;
 
 	/* Mark extracted state invalid */
 	slot->tts_nvalid = 0;
