@@ -423,33 +423,6 @@ standard_ProcessUtility(Node *parsetree,
 												  list_make1(item->arg),
 												  true);
 							}
-
-#ifdef PGXC
-							/*
-							 * Now that all the local variables have been set,
-							 * it is time to rebuild the query.
-							 */
-							if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-							{
-								char *begin_string = NULL;
-
-								/* Result is palloc'd */
-								foreach(lc, stmt->options)
-								{
-									DefElem    *item = (DefElem *) lfirst(lc);
-
-									if (strcmp(item->defname, "transaction_isolation") == 0)
-										begin_string = RewriteBeginQuery(begin_string,
-																		 "transaction_isolation",
-																		 list_make1(item->arg));
-									else if (strcmp(item->defname, "transaction_read_only") == 0)
-										begin_string = RewriteBeginQuery(begin_string,
-																		 "transaction_read_only",
-																		 list_make1(item->arg));
-								}
-								PGXCNodeSetBeginQuery(begin_string);
-							}
-#endif
 						}
 						break;
 
@@ -840,6 +813,12 @@ standard_ProcessUtility(Node *parsetree,
 			break;
 
 		case T_CreateFdwStmt:
+#ifdef PGXC
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("Postgres-XC does not support FOREIGN DATA WRAPPER yet"),
+					 errdetail("The feature is not currently supported")));
+#endif
 			CreateForeignDataWrapper((CreateFdwStmt *) parsetree);
 			break;
 
@@ -852,6 +831,12 @@ standard_ProcessUtility(Node *parsetree,
 			break;
 
 		case T_CreateForeignServerStmt:
+#ifdef PGXC
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("Postgres-XC does not support SERVER yet"),
+					 errdetail("The feature is not currently supported")));
+#endif
 			CreateForeignServer((CreateForeignServerStmt *) parsetree);
 			break;
 
@@ -864,6 +849,12 @@ standard_ProcessUtility(Node *parsetree,
 			break;
 
 		case T_CreateUserMappingStmt:
+#ifdef PGXC
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("Postgres-XC does not support USER MAPPING yet"),
+					 errdetail("The feature is not currently supported")));
+#endif
 			CreateUserMapping((CreateUserMappingStmt *) parsetree);
 			break;
 
@@ -1285,8 +1276,7 @@ standard_ProcessUtility(Node *parsetree,
 
 				/* Launch GRANT on Coordinator if object is a sequence */
 				if ((stmt->objtype == ACL_OBJECT_RELATION &&
-					 stmt->targtype == ACL_TARGET_OBJECT) ||
-					stmt->objtype == ACL_OBJECT_SEQUENCE)
+					 stmt->targtype == ACL_TARGET_OBJECT))
 				{
 					/*
 					 * In case object is a relation, differenciate the case
@@ -1316,7 +1306,7 @@ standard_ProcessUtility(Node *parsetree,
 								ereport(ERROR,
 										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 										 errmsg("PGXC does not support GRANT on multiple object types"),
-										 errdetail("Grant VIEW/SEQUENCE/TABLE with separate queries")));
+										 errdetail("Grant VIEW/TABLE with separate queries")));
 						}
 					}
 				}
@@ -1548,14 +1538,14 @@ standard_ProcessUtility(Node *parsetree,
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
 			{
-				/*
-				 * If sequence is temporary, no need to send this query to other
-				 * remote Coordinators.
-				 */
 				CreateSeqStmt *stmt = (CreateSeqStmt *) parsetree;
+				bool is_temp = stmt->sequence->relpersistence == RELPERSISTENCE_TEMP;
 
-				if (stmt->sequence->relpersistence != RELPERSISTENCE_TEMP)
-					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_COORDS, false);
+				/* Set temporary object flag in pooler */
+				if (is_temp)
+					PoolManagerSetCommand(POOL_CMD_TEMP, NULL);
+
+				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, is_temp);
 			}
 #endif
 			break;
@@ -1565,15 +1555,15 @@ standard_ProcessUtility(Node *parsetree,
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
 			{
-				/*
-				 * If sequence is temporary, no need to send this query to other
-				 * remote Coordinators.
-				 */
 				AlterSeqStmt *stmt = (AlterSeqStmt *) parsetree;
-				Oid			  relid = RangeVarGetRelid(stmt->sequence, false);
+				bool		  is_temp;
+				RemoteQueryExecType exec_type;
 
-				if (!IsTempSequence(relid))
-					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_COORDS, false);
+				exec_type = ExecUtilityFindNodes(OBJECT_SEQUENCE,
+												 RangeVarGetRelid(stmt->sequence, false),
+												 &is_temp);
+
+				ExecUtilityStmtOnNodes(queryString, NULL, false, exec_type, is_temp);
 			}
 #endif
 			break;
@@ -2247,11 +2237,8 @@ ExecUtilityFindNodes(ObjectType object_type,
 	switch (object_type)
 	{
 		case OBJECT_SEQUENCE:
-			/* Check if object is a temporary sequence */
-			if ((*is_temp = IsTempSequence(relid)))
-				exec_type = EXEC_ON_NONE;
-			else
-				exec_type = EXEC_ON_COORDS;
+			*is_temp = IsTempTable(relid);
+			exec_type = EXEC_ON_ALL_NODES;
 			break;
 
 		case OBJECT_TABLE:
@@ -2307,10 +2294,8 @@ ExecUtilityFindNodesRelkind(Oid relid, bool *is_temp)
 	switch (relkind_str)
 	{
 		case RELKIND_SEQUENCE:
-			if ((*is_temp = IsTempSequence(relid)))
-				exec_type = EXEC_ON_NONE;
-			else
-				exec_type = EXEC_ON_COORDS;
+			*is_temp = IsTempTable(relid);
+			exec_type = EXEC_ON_ALL_NODES;
 			break;
 
 		case RELKIND_RELATION:

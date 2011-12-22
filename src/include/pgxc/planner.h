@@ -150,13 +150,15 @@ typedef struct
 #endif
 
 
+#ifndef XCP
 typedef struct
 {
 	bool partitioned_replicated;
 	ExecNodes *exec_nodes;
 } JoinReduceInfo;
 
-#ifndef XCP
+/* global variable corresponding to the GUC with same name */
+extern bool enable_fast_query_shipping;
 /* forbid SQL if unsafe, useful to turn off for development */
 extern bool StrictStatementChecking;
 

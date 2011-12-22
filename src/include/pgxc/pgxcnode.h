@@ -118,6 +118,7 @@ extern PGXCNodeHandle *get_any_handle(List *datanodelist);
 /* Look at information cached in node handles */
 extern int PGXCNodeGetNodeId(Oid nodeoid, char node_type);
 extern Oid PGXCNodeGetNodeOid(int nodeid, char node_type);
+extern int PGXCNodeGetNodeIdFromName(char *node_name, char node_type);
 
 extern PGXCNodeAllHandles *get_handles(List *datanodelist, List *coordlist, bool is_query_coord_only);
 extern void pfree_pgxc_all_handles(PGXCNodeAllHandles *handles);
