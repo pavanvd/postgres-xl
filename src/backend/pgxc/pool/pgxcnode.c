@@ -151,10 +151,6 @@ InitMultinodeExecutor(bool is_force)
 		init_pgxc_handle(&dn_handles[count]);
 		dn_handles[count].nodeoid = dnOids[count];
 	}
-#ifdef XCP
-	/* Data node never connects to a coordinator */
-	if (IS_PGXC_COORDINATOR)
-#endif
 	for (count = 0; count < NumCoords; count++)
 	{
 		init_pgxc_handle(&co_handles[count]);
@@ -165,6 +161,26 @@ InitMultinodeExecutor(bool is_force)
 	coord_count = 0;
 	PGXCNodeId = 0;
 
+#ifdef XCP
+	if (IS_PGXC_COORDINATOR)
+	{
+		for (count = 0; count < NumCoords; count++)
+		{
+			if (pg_strcasecmp(PGXCNodeName,
+					   get_pgxc_nodename(co_handles[count].nodeoid)) == 0)
+				PGXCNodeId = count + 1;
+		}
+	}
+	else /* DataNode */
+	{
+		for (count = 0; count < NumDataNodes; count++)
+		{
+			if (pg_strcasecmp(PGXCNodeName,
+					   get_pgxc_nodename(dn_handles[count].nodeoid)) == 0)
+				PGXCNodeId = count + 1;
+		}
+	}
+#else
 	/* Finally determine which is the node-self */
 	for (count = 0; count < NumCoords; count++)
 	{
@@ -181,6 +197,7 @@ InitMultinodeExecutor(bool is_force)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_EXCEPTION),
 				 errmsg("Coordinator cannot identify itself")));
+#endif
 }
 
 
@@ -190,7 +207,7 @@ InitMultinodeExecutor(bool is_force)
 char *
 #ifdef XCP
 PGXCNodeConnStr(char *host, int port, char *dbname,
-				char *user, char *remote_type, int parent_node)
+				char *user, char *remote_type, char *parent_node)
 #else
 PGXCNodeConnStr(char *host, int port, char *dbname,
 				char *user, char *remote_type)
@@ -206,7 +223,7 @@ PGXCNodeConnStr(char *host, int port, char *dbname,
 	 */
 #ifdef XCP
 	num = snprintf(connstr, sizeof(connstr),
-				   "host=%s port=%d dbname=%s user=%s options='-c remotetype=%s -c parentnode=%d'",
+				   "host=%s port=%d dbname=%s user=%s options='-c remotetype=%s -c parentnode=%s'",
 				   host, port, dbname, user, remote_type, parent_node);
 #else
 	num = snprintf(connstr, sizeof(connstr),

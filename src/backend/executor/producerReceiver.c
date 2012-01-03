@@ -73,16 +73,14 @@ producerReceiveSlot(TupleTableSlot *slot, DestReceiver *self)
 	}
 	else
 		value = slot_getattr(slot, myState->distKey, &isnull);
-	ncount = GET_NODES(myState->locator, value, isnull, myState->distNodes, NULL);
+	ncount = GET_NODES(myState->locator, value, isnull, NULL);
 
 	myState->tcount++;
 	/* Dispatch the tuple */
 	for (i = 0; i < ncount; i++)
 	{
-		int consumerIdx = myState->consMap[myState->distNodes[i]-1];
+		int consumerIdx = myState->distNodes[i];
 
-		if (consumerIdx == SQ_CONS_NONE)
-			continue;
 		if (consumerIdx == SQ_CONS_SELF)
 		{
 			Assert(myState->consumer);
@@ -145,9 +143,8 @@ producerDestroyReceiver(DestReceiver *self)
 	myState->squeue = NULL;
 
 	/* Release workspace if any */
-	if (myState->distNodes)
-		pfree(myState->distNodes);
-	myState->distNodes = NULL;
+	if (myState->locator)
+		freeLocator(myState->locator);
 	pfree(myState);
 }
 
@@ -182,7 +179,6 @@ void
 SetProducerDestReceiverParams(DestReceiver *self,
 							  AttrNumber distKey,
 							  Locator *locator,
-							  int *consMap,
 							  SharedQueue squeue)
 {
 	ProducerState *myState = (ProducerState *) self;
@@ -190,13 +186,11 @@ SetProducerDestReceiverParams(DestReceiver *self,
 	Assert(myState->pub.mydest == DestProducer);
 	myState->distKey = distKey;
 	myState->locator = locator;
-	myState->consMap = consMap;
 	myState->squeue = squeue;
 	myState->typeinfo = NULL;
 	myState->tmpcxt = NULL;
 	/* Create workspace */
-	myState->distNodes = (int *)
-		palloc(LOCATOR_MAX_NODES(locator) * sizeof(int));
+	myState->distNodes = (int *) getLocatorResults(locator);
 	myState->tstores = (Tuplestorestate **)
 		palloc0(NumDataNodes * sizeof(Tuplestorestate *));
 }

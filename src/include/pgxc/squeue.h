@@ -28,8 +28,7 @@
 
 #define SQUEUE_KEYSIZE (64)
 
-#define SQ_CONS_SELF -2
-#define SQ_CONS_NONE -1
+#define SQ_CONS_SELF -1
 
 typedef struct SQueueHeader *SharedQueue;
 

@@ -561,11 +561,11 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 
 				{
 					int 	   *consMap;
-					int 		i;
+					int 		len;
+
 					/* Distributed data requesteb, bind shared queue for data exchange */
-					consMap = (int *) palloc(NumDataNodes * sizeof(int));
-					for (i = 0; i < NumDataNodes; i++)
-						consMap[i] = SQ_CONS_NONE;
+					len = list_length(queryDesc->plannedstmt->distributionNodes);
+					consMap = (int *) palloc(len * sizeof(int));
 					queryDesc->squeue = SharedQueueBind(portal->name,
 									queryDesc->plannedstmt->distributionNodes,
 									&queryDesc->myindex, consMap);
@@ -593,11 +593,15 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 								queryDesc->plannedstmt->distributionType,
 								RELATION_ACCESS_INSERT,
 								keytype,
-								queryDesc->plannedstmt->distributionNodes);
+								LOCATOR_LIST_INT,
+								len,
+								consMap,
+								NULL,
+								false);
 						dest = CreateDestReceiver(DestProducer);
 						SetProducerDestReceiverParams(dest,
 								queryDesc->plannedstmt->distributionKey,
-								locator, consMap, queryDesc->squeue);
+								locator, queryDesc->squeue);
 						queryDesc->dest = dest;
 					}
 					else
@@ -609,9 +613,8 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 						queryDesc->tupDesc = ExecCleanTypeFromTL(
 								queryDesc->plannedstmt->planTree->targetlist,
 								false);
-						/* consumer does not need this */
-						pfree(consMap);
 					}
+					pfree(consMap);
 				}
 				/*
 				 * This tells PortalCleanup to shut down the executor

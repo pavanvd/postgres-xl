@@ -188,9 +188,11 @@ typedef struct ModifyTable
 	List	   *returningLists; /* per-target-table RETURNING tlists */
 	List	   *rowMarks;		/* PlanRowMarks (non-locking only) */
 	int			epqParam;		/* ID of Param for EvalPlanQual re-eval */
-#ifdef PGXC	
+#ifdef PGXC
+#ifndef XCP
 	List	   *remote_plans;	/* per-target-table remote node */
-#endif	
+#endif
+#endif
 } ModifyTable;
 
 /* ----------------

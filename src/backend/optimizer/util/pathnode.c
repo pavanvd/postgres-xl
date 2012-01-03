@@ -497,7 +497,7 @@ restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
 		Bitmapset  *tmpset = bms_copy(distribution->nodes);
 		Bitmapset  *restrict = NULL;
 		Locator    *locator;
-		int      	nodenums[NumDataNodes];
+		int		   *nodenums;
 		int 		i, count;
 
 		while((i = bms_first_member(tmpset)) >= 0)
@@ -507,9 +507,13 @@ restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
 		locator = createLocator(distribution->distributionType,
 								RELATION_ACCESS_READ,
 								keytype,
-								nodeList);
+								LOCATOR_LIST_LIST,
+								0,
+								(void *) nodeList,
+								(void **) &nodenums,
+								false);
 		count = GET_NODES(locator, constExpr->constvalue,
-						  constExpr->constisnull, nodenums, NULL);
+						  constExpr->constisnull, NULL);
 
 		for (i = 0; i < count; i++)
 			restrict = bms_add_member(restrict, nodenums[i]);
@@ -518,6 +522,8 @@ restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
 														restrict);
 		else
 			distribution->restrictNodes = restrict;
+		list_free(nodeList);
+		freeLocator(locator);
 	}
 }
 

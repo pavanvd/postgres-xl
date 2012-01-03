@@ -19,7 +19,7 @@
 extern bool isPGXCCoordinator;
 extern bool isPGXCDataNode;
 #ifdef XCP
-extern int parentPGXCNode;
+extern char *parentPGXCNode;
 #endif
 
 typedef enum

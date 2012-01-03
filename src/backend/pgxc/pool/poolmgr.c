@@ -731,12 +731,20 @@ agent_destroy(PoolAgent *agent)
 void
 PoolManagerDisconnect(void)
 {
+#ifdef XCP
+	if (!poolHandle)
+		return; /* not even connected */
+#else
 	Assert(poolHandle);
+#endif
 
 	pool_putmessage(&poolHandle->port, 'd', NULL, 0);
 	pool_flush(&poolHandle->port);
 
 	close(Socket(poolHandle->port));
+#ifdef XCP
+	free(poolHandle);
+#endif
 	poolHandle = NULL;
 }
 
@@ -1842,7 +1850,6 @@ static void
 reload_database_pools(void)
 {
 	DatabasePool *databasePool;
-
 	/* Scan the list and reload each pool */
 	databasePool = databasePools;
 	while (databasePool)
@@ -1876,8 +1883,8 @@ reload_database_pools(void)
 												coord_connInfos[i].port,
 												databasePool->database,
 												databasePool->user_name,
-												"coordinator",
-												PGXCNodeId);
+												IS_PGXC_COORDINATOR ? "coordinator" : "datanode",
+												PGXCNodeName);
 #else
 			char *connstr_chk = PGXCNodeConnStr(coord_connInfos[i].host,
 												coord_connInfos[i].port,
@@ -1928,8 +1935,8 @@ reload_database_pools(void)
 												datanode_connInfos[i].port,
 												databasePool->database,
 												databasePool->user_name,
-												"datanode",
-												PGXCNodeId);
+												IS_PGXC_COORDINATOR ? "coordinator" : "datanode",
+												PGXCNodeName);
 #else
 			char *connstr_chk = PGXCNodeConnStr(datanode_connInfos[i].host,
 												datanode_connInfos[i].port,
@@ -2279,7 +2286,9 @@ grow_pool(DatabasePool * dbPool, int index, char client_conn_type)
 
 	if (!nodePool)
 	{
+#ifndef XCP
 		char *remote_type;
+#endif
 
 		/* Allocate new DBNode Pool */
 		nodePool = (PGXCNodePool *) palloc(sizeof(PGXCNodePool));
@@ -2288,6 +2297,7 @@ grow_pool(DatabasePool * dbPool, int index, char client_conn_type)
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of memory")));
 
+#ifndef XCP
 		/*
 		 * Don't forget to define the type of remote connection
 		 * Now PGXC just support Co->Co and Co->Dn connections
@@ -2297,6 +2307,7 @@ grow_pool(DatabasePool * dbPool, int index, char client_conn_type)
 			remote_type = pstrdup("coordinator");
 		else if (IS_PGXC_DATANODE)
 			remote_type = pstrdup("datanode");
+#endif
 
 		if (client_conn_type == REMOTE_CONN_DATANODE)
 			/* initialize it */
@@ -2305,8 +2316,8 @@ grow_pool(DatabasePool * dbPool, int index, char client_conn_type)
 												datanode_connInfos[index].port,
 												dbPool->database,
 												dbPool->user_name,
-												remote_type,
-												PGXCNodeId);
+												IS_PGXC_COORDINATOR ? "coordinator" : "datanode",
+												PGXCNodeName);
 #else
 			nodePool->connstr = PGXCNodeConnStr(datanode_connInfos[index].host,
 												datanode_connInfos[index].port,
@@ -2316,12 +2327,12 @@ grow_pool(DatabasePool * dbPool, int index, char client_conn_type)
 #endif
 		else if (client_conn_type == REMOTE_CONN_COORD)
 #ifdef XCP
-			nodePool->connstr = PGXCNodeConnStr(datanode_connInfos[index].host,
-												datanode_connInfos[index].port,
+			nodePool->connstr = PGXCNodeConnStr(coord_connInfos[index].host,
+												coord_connInfos[index].port,
 												dbPool->database,
 												dbPool->user_name,
-												remote_type,
-												PGXCNodeId);
+												IS_PGXC_COORDINATOR ? "coordinator" : "datanode",
+												PGXCNodeName);
 #else
 			nodePool->connstr = PGXCNodeConnStr(coord_connInfos[index].host,
 												coord_connInfos[index].port,

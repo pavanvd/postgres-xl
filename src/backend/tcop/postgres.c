@@ -4126,7 +4126,7 @@ PostgresMain(int argc, char *argv[], const char *username)
 	remoteConnType = REMOTE_CONN_APP;
 #endif
 #ifdef XCP
-	parentPGXCNode = 0;
+	parentPGXCNode = NULL;
 #endif /* XCP */
 
 	/*
@@ -4391,31 +4391,17 @@ PostgresMain(int argc, char *argv[], const char *username)
 
 #ifdef PGXC
 #ifdef XCP
-	if (!IsPoolHandle())
-	{
-		CurrentResourceOwner = ResourceOwnerCreate(NULL, "ForPGXCNodes");
+	CurrentResourceOwner = ResourceOwnerCreate(NULL, "ForPGXCNodes");
 
-		InitMultinodeExecutor(false);
+	InitMultinodeExecutor(false);
 
-		pool_handle = GetPoolManagerHandle();
-		if (pool_handle == NULL)
-		{
-			ereport(ERROR,
-				(errcode(ERRCODE_IO_ERROR),
-				 errmsg("Can not connect to pool manager")));
-			return STATUS_ERROR;
-		}
-		/* Pooler initialization has to be made before ressource is released */
-		PoolManagerConnect(pool_handle, dbname, username);
+	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_BEFORE_LOCKS, true, true);
+	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
+	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
+	CurrentResourceOwner = NULL;
 
-		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_BEFORE_LOCKS, true, true);
-		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
-		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
-		CurrentResourceOwner = NULL;
-
-		/* If we exit, first try and clean connections and send to pool */
-		on_proc_exit (PGXCNodeCleanAndRelease, 0);
-	}
+	/* If we exit, first try and clean connections and send to pool */
+	on_proc_exit (PGXCNodeCleanAndRelease, 0);
 #else
 	/* If this postmaster is launched from another Coord, do not initialize handles. skip it */
 	if (IS_PGXC_COORDINATOR && !IsPoolHandle())
@@ -4450,6 +4436,8 @@ PostgresMain(int argc, char *argv[], const char *username)
 		on_proc_exit (DataNodeShutdown, 0);
 	}
 
+
+#ifndef XCP
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
 		/*
@@ -4469,6 +4457,7 @@ PostgresMain(int argc, char *argv[], const char *username)
 						  "with catalogs. You should run pgxc_pool_reload() to reload "
 						  "new cluster configuration");
 	}
+#endif
 #endif
 
 	/*

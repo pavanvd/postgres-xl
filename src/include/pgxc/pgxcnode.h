@@ -100,7 +100,7 @@ extern void InitMultinodeExecutor(bool is_force);
 /* Open/close connection routines (invoked from Pool Manager) */
 #ifdef XCP
 extern char *PGXCNodeConnStr(char *host, int port, char *dbname, char *user,
-							 char *remote_type, int parent_node);
+							 char *remote_type, char *parent_node);
 #else
 extern char *PGXCNodeConnStr(char *host, int port, char *dbname, char *user,
 							 char *remote_type);

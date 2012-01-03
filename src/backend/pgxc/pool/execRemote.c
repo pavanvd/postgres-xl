@@ -113,6 +113,9 @@ static TupleTableSlot * RemoteQueryNext(RemoteQueryState *node);
 static char *GenerateBeginCommand(void);
 
 #ifdef XCP
+static void register_write_nodes(int conn_count, PGXCNodeHandle **connections);
+
+
 #define REMOVE_CURR_CONN(combiner) \
 	if ((combiner)->current_conn < --((combiner)->conn_count)) \
 	{ \
@@ -1350,11 +1353,10 @@ FetchTuple(ResponseCombiner *combiner)
 				value = slot_getattr(slot, plan->distributionKey, &isnull);
 
 			/* Determine target nodes */
-			numnodes = GET_NODES(planstate->locator, value, isnull,
-								 planstate->dest_nodes, NULL);
+			numnodes = GET_NODES(planstate->locator, value, isnull, NULL);
 			for (i = 0; i < numnodes; i++)
 			{
-				if (planstate->dest_nodes[i] == PGXCNodeId)
+				if (planstate->dest_nodes[i] == PGXCNodeId-1)
 					return slot;
 			}
 		}
@@ -2040,7 +2042,7 @@ analyze_node_string(char *nodestring,
 	return is_local_coord;
 }
 
-/* 
+/*
  * Construct a BEGIN TRANSACTION command after taking into account the
  * current options. The returned string is not palloced and is valid only until
  * the next call to the function.
@@ -2052,7 +2054,7 @@ GenerateBeginCommand(void)
 	const char *read_only;
 	const char *isolation_level;
 
-	/* 
+	/*
 	 * First get the READ ONLY status because the next call to GetConfigOption
 	 * will overwrite the return buffer
 	 */
@@ -2065,7 +2067,7 @@ GenerateBeginCommand(void)
 	isolation_level = GetConfigOption("transaction_isolation", false);
 	if (strcmp(isolation_level, "default") == 0)
 		isolation_level = GetConfigOption("default_transaction_isolation", false);
-   	
+
 	/* Finally build a START TRANSACTION command */
 	sprintf(begin_cmd, "START TRANSACTION ISOLATION LEVEL %s %s", isolation_level, read_only);
 
@@ -3024,6 +3026,156 @@ pgxc_node_rollback(PGXCNodeAllHandles *pgxc_handles)
  * Begin COPY command
  * The copy_connections array must have room for NumDataNodes items
  */
+#ifdef XCP
+Locator*
+DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
+								  Oid partType, bool is_from)
+{
+	int i;
+	List *nodelist = rel_loc->nodeList;
+	PGXCNodeHandle **connections;
+	bool need_tran;
+	GlobalTransactionId gxid;
+	ResponseCombiner combiner;
+	TimestampTz timestamp = GetCurrentGTMStartTimestamp();
+	Snapshot snapshot = GetActiveSnapshot();
+	int conn_count = list_length(nodelist);
+
+	/* Get needed datanode connections */
+	if (!is_from && IsReplicated(rel_loc->locatorType))
+	{
+		/* Connections is a single handle to read from */
+		connections = (PGXCNodeHandle **) palloc(sizeof(PGXCNodeHandle *));
+		connections[0] = get_any_handle(nodelist);
+		conn_count = 1;
+	}
+	else
+	{
+		PGXCNodeAllHandles *pgxc_handles;
+		pgxc_handles = get_handles(nodelist, NULL, false);
+		connections = pgxc_handles->datanode_handles;
+		Assert(pgxc_handles->dn_conn_count == conn_count);
+		pfree(pgxc_handles);
+	}
+
+	need_tran = !autocommit || conn_count > 1;
+
+	elog(DEBUG1, "autocommit = %s, conn_count = %d, need_tran = %s", autocommit ? "true" : "false", conn_count, need_tran ? "true" : "false");
+
+	/* Gather statistics */
+	stat_statement();
+
+	if (autocommit)
+	{
+		stat_transaction(conn_count);
+		/* We normally clear for transactions, but if autocommit, clear here, too */
+		clear_write_node_list();
+	}
+
+	if (is_from)
+		register_write_nodes(conn_count, connections);
+
+	gxid = GetCurrentGlobalTransactionId();
+	if (!GlobalTransactionIdIsValid(gxid))
+	{
+		pfree(connections);
+		return NULL;
+	}
+
+	if (need_tran)
+	{
+		/*
+		 * Check if data node connections are in transaction and start
+		 * transactions on nodes where it is not started
+		 */
+		PGXCNodeHandle *new_connections[conn_count];
+		int 		new_count = 0;
+
+		for (i = 0; i < conn_count; i++)
+			if (connections[i]->transaction_status != 'T')
+				new_connections[new_count++] = connections[i];
+
+		if (new_count && pgxc_node_begin(new_count, new_connections, gxid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Could not begin transaction on data nodes.")));
+	}
+
+
+	/* Send query to nodes */
+	for (i = 0; i < conn_count; i++)
+	{
+		CHECK_OWNERSHIP(connections[i], NULL);
+
+		/* If explicit transaction is needed gxid is already sent */
+		if (!need_tran && pgxc_node_send_gxid(connections[i], gxid))
+		{
+			add_error_message(connections[i], "Can not send request");
+			pfree(connections);
+			return NULL;
+		}
+		if (conn_count > 1 && pgxc_node_send_timestamp(connections[i], timestamp))
+		{
+			/*
+			 * If a transaction involves multiple connections timestamp is
+			 * always sent down to Datanodes with pgxc_node_begin.
+			 * An autocommit transaction needs the global timestamp also,
+			 * so handle this case here.
+			 */
+			add_error_message(connections[i], "Can not send request");
+			pfree(connections);
+			return NULL;
+		}
+		if (snapshot && pgxc_node_send_snapshot(connections[i], snapshot))
+		{
+			add_error_message(connections[i], "Can not send request");
+			pfree(connections);
+			return NULL;
+		}
+		if (pgxc_node_send_query(connections[i], query) != 0)
+		{
+			add_error_message(connections[i], "Can not send request");
+			pfree(connections);
+			return NULL;
+		}
+	}
+
+	/*
+	 * We are expecting CopyIn response, but do not want to send it to client,
+	 * caller should take care about this, because here we do not know if
+	 * client runs console or file copy
+	 */
+	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
+	/*
+	 * Make sure there are zeroes in unused fields
+	 */
+	memset(&combiner, 0, sizeof(ScanState));
+
+	/* Receive responses */
+	if (pgxc_node_receive_responses(conn_count, connections, NULL, &combiner)
+			|| !ValidateAndCloseCombiner(&combiner))
+	{
+		if (autocommit)
+		{
+			if (need_tran)
+				DataNodeCopyFinish(conn_count, connections);
+			else if (!PersistentConnections)
+				release_handles();
+		}
+
+		pfree(connections);
+		return NULL;
+	}
+	return createLocator(rel_loc->locatorType,
+					 is_from ? RELATION_ACCESS_INSERT : RELATION_ACCESS_READ,
+						 partType,
+						 LOCATOR_LIST_POINTER,
+						 conn_count,
+						 (void *) connections,
+						 NULL,
+						 false);
+}
+#else
 PGXCNodeHandle**
 DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_from)
 {
@@ -3038,11 +3190,7 @@ DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_
 	ListCell *nodeitem;
 	bool need_tran;
 	GlobalTransactionId gxid;
-#ifdef XCP
-	ResponseCombiner combiner;
-#else
 	RemoteQueryState *combiner;
-#endif
 	TimestampTz timestamp = GetCurrentGTMStartTimestamp();
 
 	if (conn_count == 0)
@@ -3175,32 +3323,16 @@ DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_
 	 * caller should take care about this, because here we do not know if
 	 * client runs console or file copy
 	 */
-#ifdef XCP
-	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
-	/*
-	 * Make sure there are zeroes in unused fields
-	 */
-	memset(&combiner, 0, sizeof(ScanState));
-
-	/* Receive responses */
-	if (pgxc_node_receive_responses(conn_count, connections, timeout, &combiner)
-			|| !ValidateAndCloseCombiner(&combiner))
-#else
 	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_NONE);
 
  	/* Receive responses */
 	if (pgxc_node_receive_responses(conn_count, connections, timeout, combiner)
 			|| !ValidateAndCloseCombiner(combiner))
-#endif
 	{
 		if (autocommit)
 		{
 			if (need_tran)
-#ifdef XCP
-				DataNodeCopyFinish(connections, -1);
-#else
 				DataNodeCopyFinish(connections, -1, COMBINE_TYPE_NONE);
-#endif
 			else if (!PersistentConnections)
 				release_handles();
 		}
@@ -3212,10 +3344,91 @@ DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_
 	pfree(connections);
 	return copy_connections;
 }
+#endif
+
 
 /*
  * Send a data row to the specified nodes
  */
+#ifdef XCP
+int
+DataNodeCopyIn(char *data_row, int len, int conn_count, PGXCNodeHandle** copy_connections)
+{
+	/* size + data row + \n */
+	int msgLen = 4 + len + 1;
+	int nLen = htonl(msgLen);
+	int i;
+
+	for(i = 0; i < conn_count; i++)
+	{
+		PGXCNodeHandle *handle = copy_connections[i];
+		if (handle->state == DN_CONNECTION_STATE_COPY_IN)
+		{
+			/* precalculate to speed up access */
+			int bytes_needed = handle->outEnd + 1 + msgLen;
+
+			/* flush buffer if it is almost full */
+			if (bytes_needed > COPY_BUFFER_SIZE)
+			{
+				int to_send = handle->outEnd;
+
+				/* First look if data node has sent a error message */
+				int read_status = pgxc_node_read_data(handle, true);
+				if (read_status == EOF || read_status < 0)
+				{
+					add_error_message(handle, "failed to read data from data node");
+					return EOF;
+				}
+
+				if (handle->inStart < handle->inEnd)
+				{
+					ResponseCombiner combiner;
+					InitResponseCombiner(&combiner, 1, COMBINE_TYPE_NONE);
+					/*
+					 * Make sure there are zeroes in unused fields
+					 */
+					memset(&combiner, 0, sizeof(ScanState));
+					handle_response(handle, &combiner);
+					if (!ValidateAndCloseCombiner(&combiner))
+						return EOF;
+				}
+
+				if (DN_CONNECTION_STATE_ERROR(handle))
+					return EOF;
+
+				/*
+				 * Try to send down buffered data if we have
+				 */
+				if (to_send && send_some(handle, to_send) < 0)
+				{
+					add_error_message(handle, "failed to send data to data node");
+					return EOF;
+				}
+			}
+
+			if (ensure_out_buffer_capacity(bytes_needed, handle) != 0)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("out of memory")));
+			}
+
+			handle->outBuffer[handle->outEnd++] = 'd';
+			memcpy(handle->outBuffer + handle->outEnd, &nLen, 4);
+			handle->outEnd += 4;
+			memcpy(handle->outBuffer + handle->outEnd, data_row, len);
+			handle->outEnd += len;
+			handle->outBuffer[handle->outEnd++] = '\n';
+		}
+		else
+		{
+			add_error_message(handle, "Invalid data node connection");
+			return EOF;
+		}
+	}
+	return 0;
+}
+#else
 int
 DataNodeCopyIn(char *data_row, int len, ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections)
 {
@@ -3250,20 +3463,9 @@ DataNodeCopyIn(char *data_row, int len, ExecNodes *exec_nodes, PGXCNodeHandle** 
 
 				if (primary_handle->inStart < primary_handle->inEnd)
 				{
-#ifdef XCP
-					ResponseCombiner combiner;
-					InitResponseCombiner(&combiner, 1, COMBINE_TYPE_NONE);
-					/*
-					 * Make sure there are zeroes in unused fields
-					 */
-					memset(&combiner, 0, sizeof(ScanState));
-					handle_response(primary_handle, &combiner);
-					if (!ValidateAndCloseCombiner(&combiner))
-#else
 					RemoteQueryState *combiner = CreateResponseCombiner(1, COMBINE_TYPE_NONE);
 					handle_response(primary_handle, combiner);
 					if (!ValidateAndCloseCombiner(combiner))
-#endif
 						return EOF;
 				}
 
@@ -3322,20 +3524,9 @@ DataNodeCopyIn(char *data_row, int len, ExecNodes *exec_nodes, PGXCNodeHandle** 
 
 				if (handle->inStart < handle->inEnd)
 				{
-#ifdef XCP
-					ResponseCombiner combiner;
-					InitResponseCombiner(&combiner, 1, COMBINE_TYPE_NONE);
-					/*
-					 * Make sure there are zeroes in unused fields
-					 */
-					memset(&combiner, 0, sizeof(ScanState));
-					handle_response(handle, &combiner);
-					if (!ValidateAndCloseCombiner(&combiner))
-#else
 					RemoteQueryState *combiner = CreateResponseCombiner(1, COMBINE_TYPE_NONE);
 					handle_response(handle, combiner);
 					if (!ValidateAndCloseCombiner(combiner))
-#endif
 						return EOF;
 				}
 
@@ -3389,26 +3580,18 @@ DataNodeCopyIn(char *data_row, int len, ExecNodes *exec_nodes, PGXCNodeHandle** 
 	}
 	return 0;
 }
-
-uint64
-DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* copy_file)
-{
-#ifdef XCP
-	ResponseCombiner combiner;
-#else
-	RemoteQueryState *combiner;
 #endif
-	int 		conn_count = list_length(exec_nodes->nodeList) == 0 ? NumDataNodes : list_length(exec_nodes->nodeList);
-	int 		count = 0;
-	bool 		need_tran;
-	List		*nodelist;
-	ListCell	*nodeitem;
+
+
+#ifdef XCP
+uint64
+DataNodeCopyOut(PGXCNodeHandle** copy_connections,
+							  int conn_count, FILE* copy_file)
+{
+	ResponseCombiner combiner;
+	int 		i;
 	uint64		processed;
 
-	nodelist = exec_nodes->nodeList;
-	need_tran = !autocommit || conn_count > 1;
-
-#ifdef XCP
 	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_SUM);
 	/*
 	 * Make sure there are zeroes in unused fields
@@ -3418,30 +3601,18 @@ DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* 
 	/* If there is an existing file where to copy data, pass it to combiner */
 	if (copy_file)
 		combiner.copy_file = copy_file;
-#else
-	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_SUM);
-	combiner->processed = 0;
- 	/* If there is an existing file where to copy data, pass it to combiner */
- 	if (copy_file)
-		combiner->copy_file = copy_file;
-#endif
 
-	foreach(nodeitem, exec_nodes->nodeList)
+	for(i = 0; i < conn_count; i++)
 	{
-		PGXCNodeHandle *handle = copy_connections[count];
-		count++;
+		PGXCNodeHandle *handle = copy_connections[i];
 
-		if (handle && handle->state == DN_CONNECTION_STATE_COPY_OUT)
+		if (handle->state == DN_CONNECTION_STATE_COPY_OUT)
 		{
 			int read_status = 0;
 			/* H message has been consumed, continue to manage data row messages */
 			while (read_status >= 0 && handle->state == DN_CONNECTION_STATE_COPY_OUT) /* continue to read as long as there is data */
 			{
-#ifdef XCP
 				if (handle_response(handle, &combiner) == RESPONSE_EOF)
-#else
-				if (handle_response(handle,combiner) == RESPONSE_EOF)
-#endif
 				{
 					/* read some extra-data */
 					read_status = pgxc_node_read_data(handle, true);
@@ -3461,19 +3632,71 @@ DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* 
 		}
 	}
 
-#ifdef XCP
 	processed = combiner.processed;
 
 	if (!ValidateAndCloseCombiner(&combiner))
 	{
 		if (autocommit && !PersistentConnections)
 			release_handles();
-		pfree(copy_connections);
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("Unexpected response from the data nodes when combining, request type %d", combiner.request_type)));
 	}
+
+	return processed;
+}
 #else
+uint64
+DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* copy_file)
+{
+	RemoteQueryState *combiner;
+	int 		conn_count = list_length(exec_nodes->nodeList) == 0 ? NumDataNodes : list_length(exec_nodes->nodeList);
+	int 		count = 0;
+	bool 		need_tran;
+	List		*nodelist;
+	ListCell	*nodeitem;
+	uint64		processed;
+
+	nodelist = exec_nodes->nodeList;
+	need_tran = !autocommit || conn_count > 1;
+
+	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_SUM);
+	combiner->processed = 0;
+ 	/* If there is an existing file where to copy data, pass it to combiner */
+ 	if (copy_file)
+		combiner->copy_file = copy_file;
+
+	foreach(nodeitem, exec_nodes->nodeList)
+	{
+		PGXCNodeHandle *handle = copy_connections[count];
+		count++;
+
+		if (handle && handle->state == DN_CONNECTION_STATE_COPY_OUT)
+		{
+			int read_status = 0;
+			/* H message has been consumed, continue to manage data row messages */
+			while (read_status >= 0 && handle->state == DN_CONNECTION_STATE_COPY_OUT) /* continue to read as long as there is data */
+			{
+				if (handle_response(handle,combiner) == RESPONSE_EOF)
+				{
+					/* read some extra-data */
+					read_status = pgxc_node_read_data(handle, true);
+					if (read_status < 0)
+						ereport(ERROR,
+								(errcode(ERRCODE_CONNECTION_FAILURE),
+								 errmsg("unexpected EOF on datanode connection")));
+					else
+						/*
+						 * Set proper connection status - handle_response
+						 * has changed it to DN_CONNECTION_STATE_QUERY
+						 */
+						handle->state = DN_CONNECTION_STATE_COPY_OUT;
+				}
+				/* There is no more data that can be read from connection */
+			}
+		}
+	}
+
 	processed = combiner->processed;
 
 	if (!ValidateAndCloseCombiner(combiner))
@@ -3485,14 +3708,14 @@ DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* 
  				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("Unexpected response from the data nodes when combining, request type %d", combiner->request_type)));
 	}
-#endif
 
 	return processed;
 }
+#endif
 
 #ifdef XCP
 void
-DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_dn_index)
+DataNodeCopyFinish(int conn_count, PGXCNodeHandle** connections)
 #else
 void
 DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_dn_index, CombineType combine_type)
@@ -3507,6 +3730,7 @@ DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_dn_index, Comb
 #endif
 	bool 		error = false;
 	struct timeval *timeout = NULL; /* wait forever */
+#ifndef XCP
 	PGXCNodeHandle *connections[NumDataNodes];
 	PGXCNodeHandle *primary_handle = NULL;
 	int 		conn_count = 0;
@@ -3530,19 +3754,10 @@ DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_dn_index, Comb
 		if (primary_handle->state == DN_CONNECTION_STATE_COPY_IN || primary_handle->state == DN_CONNECTION_STATE_COPY_OUT)
 			error = DataNodeCopyEnd(primary_handle, false);
 
-#ifdef XCP
-		InitResponseCombiner(&combiner, 1, COMBINE_TYPE_NONE);
-		/*
-		 * Make sure there are zeroes in unused fields
-		 */
-		memset(&combiner, 0, sizeof(ScanState));
-		error = (pgxc_node_receive_responses(1, &primary_handle, timeout, &combiner) != 0) || error;
-		error = !ValidateAndCloseCombiner(&combiner) || error;
-#else
 		combiner = CreateResponseCombiner(conn_count + 1, combine_type);
 		error = (pgxc_node_receive_responses(1, &primary_handle, timeout, combiner) != 0) || error;
-#endif
 	}
+#endif
 
 	for (i = 0; i < conn_count; i++)
 	{
@@ -5685,14 +5900,23 @@ PGXCNodeGetNodeList(char *nodestring)
  *
  * In a COPY TO, send to all datanodes PG_HEADER for a COPY TO in binary mode.
  */
+#ifdef XCP
+int
+DataNodeCopyInBinaryForAll(char *msg_buf, int len, int conn_count,
+									  PGXCNodeHandle** connections)
+#else
 int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_connections)
+#endif
 {
 	int 		i;
+#ifndef XCP
 	int 		conn_count = 0;
 	PGXCNodeHandle *connections[NumDataNodes];
+#endif
 	int msgLen = 4 + len + 1;
 	int nLen = htonl(msgLen);
 
+#ifndef XCP
 	for (i = 0; i < NumDataNodes; i++)
 	{
 		PGXCNodeHandle *handle = copy_connections[i];
@@ -5702,6 +5926,7 @@ int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_con
 
 		connections[conn_count++] = handle;
 	}
+#endif
 
 	for (i = 0; i < conn_count; i++)
 	{
@@ -6711,7 +6936,7 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 			/*
 			 * Make sure local node is in execution list
 			 */
-			if (list_member_int(remotestate->execNodes, PGXCNodeId))
+			if (list_member_int(remotestate->execNodes, PGXCNodeId-1))
 			{
 				list_free(remotestate->execNodes);
 				remotestate->execNodes = NIL;
@@ -6757,8 +6982,11 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 			remotestate->locator = createLocator(node->distributionType,
 												 RELATION_ACCESS_INSERT,
 												 distributionType,
-												 node->distributionNodes);
-			remotestate->dest_nodes = (int *) palloc(NumDataNodes * sizeof(int));
+												 LOCATOR_LIST_LIST,
+												 0,
+												 (void *) node->distributionNodes,
+												 (void **) &remotestate->dest_nodes,
+												 false);
 		}
 		else
 			remotestate->locator = NULL;
@@ -7289,6 +7517,8 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 	}
 
 	CloseCombiner(combiner);
+	if (node->locator)
+		freeLocator(node->locator);
 	pfree(node);
 }
 #endif

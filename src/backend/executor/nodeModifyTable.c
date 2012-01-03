@@ -993,14 +993,18 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	foreach(l, node->plans)
 	{
 #ifdef PGXC
+#ifndef XCP
 		Plan *remoteplan = NULL;
+#endif
 #endif
 
 		subplan = (Plan *) lfirst(l);
 
 #ifdef PGXC
+#ifndef XCP
 		if (node->remote_plans)
 			remoteplan = list_nth(node->remote_plans, i);
+#endif
 #endif
 
 		/*
@@ -1023,6 +1027,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		mtstate->mt_plans[i] = ExecInitNode(subplan, estate, eflags);
 
 #ifdef PGXC
+#ifndef XCP
 		if (remoteplan)
 		{
 			/*
@@ -1031,6 +1036,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			 */
 			mtstate->mt_remoterels[i] = ExecInitNode(remoteplan, estate, eflags);
 		}
+#endif
 #endif
 
 		resultRelInfo++;

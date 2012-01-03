@@ -24,7 +24,6 @@ extern DestReceiver *CreateProducerDestReceiver(void);
 extern void SetProducerDestReceiverParams(DestReceiver *self,
 							  AttrNumber distKey,
 							  Locator *locator,
-							  int *consMap,
 							  SharedQueue squeue);
 extern DestReceiver *SetSelfConsumerDestReceiver(DestReceiver *self,
 							DestReceiver *consumer);

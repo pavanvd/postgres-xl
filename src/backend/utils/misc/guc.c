@@ -2494,16 +2494,6 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 #endif /* PGXC */
-#ifdef XCP
-	{
-		{"parentnode", PGC_BACKEND, CONN_AUTH,
-			gettext_noop("Sets the number of Postgres-XC remote data node"),
-			NULL
-		},
-		&parentPGXCNode,
-		0, 0, INT_MAX, NULL, NULL
-	},
-#endif /* XCP */
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
@@ -3169,6 +3159,17 @@ static struct config_string ConfigureNamesString[] =
 		NULL, NULL, NULL
 	},
 #endif
+#ifdef XCP
+	{
+		{"parentnode", PGC_BACKEND, CONN_AUTH,
+			gettext_noop("Sets the name of StormDB parent data node"),
+			NULL
+		},
+		&parentPGXCNode,
+		NULL,
+		NULL, NULL, NULL
+	},
+#endif /* XCP */
 	{
 		{"ssl_ciphers", PGC_POSTMASTER, CONN_AUTH_SECURITY,
 			gettext_noop("Sets the list of allowed SSL ciphers."),

@@ -243,16 +243,24 @@ extern void	PGXCNodeImplicitCommitPrepared(GlobalTransactionId prepare_xid,
 extern char *PGXCNodeGetNodeList(char *nodestring);
 
 /* Copy command just involves Datanodes */
+#ifdef XCP
+extern Locator* DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
+								  Oid partType, bool is_from);
+extern int DataNodeCopyIn(char *data_row, int len, int conn_count,
+						  PGXCNodeHandle** copy_connections);
+extern uint64 DataNodeCopyOut(PGXCNodeHandle** copy_connections,
+							  int conn_count, FILE* copy_file);
+extern void DataNodeCopyFinish(int conn_count, PGXCNodeHandle** connections);
+extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, int conn_count,
+									  PGXCNodeHandle** connections);
+#else
 extern PGXCNodeHandle** DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_from);
 extern int DataNodeCopyIn(char *data_row, int len, ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections);
 extern uint64 DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* copy_file);
-#ifdef XCP
-extern void DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_data_node);
-#else
 extern void DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_dn_index, CombineType combine_type);
+extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_connections);
 #endif
 extern bool DataNodeCopyEnd(PGXCNodeHandle *handle, bool is_error);
-extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_connections);
 
 #ifndef XCP
 extern int ExecCountSlotsRemoteQuery(RemoteQuery *node);
@@ -269,7 +277,7 @@ extern void ExecReScanRemoteSubplan(RemoteSubplanState *node);
 extern void ExecRemoteUtility(RemoteQuery *node);
 
 extern bool	is_data_node_ready(PGXCNodeHandle * conn);
- 
+
 #ifdef XCP
 extern int handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner);
 #else

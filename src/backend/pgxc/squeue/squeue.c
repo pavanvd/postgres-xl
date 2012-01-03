@@ -24,9 +24,11 @@
 
 #include "miscadmin.h"
 #include "access/gtm.h"
+#include "catalog/pgxc_node.h"
 #include "executor/executor.h"
 #include "pgxc/nodemgr.h"
 #include "pgxc/pgxc.h"
+#include "pgxc/pgxcnode.h"
 #include "pgxc/squeue.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
@@ -83,7 +85,7 @@ typedef struct SQueueHeader
 	char		sq_key[SQUEUE_KEYSIZE]; /* Hash entry key should be at the
 								 * beginning of the hash entry */
 	int			sq_pid; 		/* Process id of the producer session */
-	int			sq_node; 		/* Node id of the producer parent */
+	int			sq_nodeid;		/* Node id of the producer parent */
 	SQueueSync *sq_sync;        /* Associated sinchronization objects */
 	bool		stat_finish;
 	long		stat_paused;
@@ -232,20 +234,10 @@ SharedQueueShmemSize(void)
  * while consumers do that on execution time. When some node is a producer and
  * not a consumer, all remote processes are trying to bind to the queue, and
  * first bound is becoming a producer.
- * The myIndex and consMap parameters are binding results. If caller process
- * binds to the queue as a producer it must provide an initialized array with
- * at least maxN items, all they should be set to SQ_CONS_NONE, where maxN is
- * largest value from the consNodes list. When dispatching tuples the producer
- * should determine destination node N and refer consMap[N], if value is
- * SQ_CONS_NONE it should discard tuple, if value is SQ_CONS_SELF it should
- * return the tuple, otherwise it should invoke SharedQueueWrite using the
- * value as a consumerIdx. If myindex is not null the function will return -1.
- * If caller process binds to the queue as a consumer it must provide myindex,
- * and use returned value as a consumerIdx in the subsequent SharedQueueRead
- * invocations.
- * If it is not known if caller will be producer or consumer it should provide
- * both myindex and consMap, and act as a producer if myindex is -1 or as a
- * consumer otherwise.
+ * The myindex and consMap parameters are binding results. If caller process
+ * is bound to the query as a producer myindex is set to -1 and index of the each
+ * consumer is written to the consMap array in the same order as they are listed
+ * in the consNodes. For the producer node SQ_CONS_SELF if written.
  */
 SharedQueue
 SharedQueueBind(const char *sqname, List *consNodes,
@@ -253,8 +245,11 @@ SharedQueueBind(const char *sqname, List *consNodes,
 {
 	bool		found;
 	SharedQueue sq;
+	int 		selfid;  /* Node Id of the parent data node */
 
 	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
+
+	selfid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE, PGXC_NODE_DATANODE);
 
 	sq = (SharedQueue) hash_search(SharedQueues, sqname, HASH_ENTER, &found);
 	if (!found)
@@ -266,12 +261,12 @@ SharedQueueBind(const char *sqname, List *consNodes,
 
 		Assert(consMap);
 
-		elog(LOG, "Bind node %d to squeue of step %s as a producer",
+		elog(LOG, "Bind node %s to squeue of step %s as a producer",
 			 PGXC_PARENT_NODE, sqname);
 
 		/* Initialize the shared queue */
 		sq->sq_pid = MyProcPid;
-		sq->sq_node = PGXC_PARENT_NODE;
+		sq->sq_nodeid = selfid;
 		sq->stat_finish = false;
 		sq->stat_paused = 0;
 		/*
@@ -291,24 +286,23 @@ SharedQueueBind(const char *sqname, List *consNodes,
 		}
 
 		i = 0;
+		sq->sq_nconsumers = 0;
 		foreach(lc, consNodes)
 		{
-			ConsState  *cstate = &(sq->sq_consumers[i]);
+			ConsState  *cstate = &(sq->sq_consumers[sq->sq_nconsumers]);
 			int			nodeid = lfirst_int(lc);
-
-			Assert(consMap[nodeid-1] == SQ_CONS_NONE);
 
 			/*
 			 * Producer won't go to shared queue to hand off tuple to itself,
 			 * so we do not need to create queue for that entry
 			 */
-			if (nodeid == PGXC_PARENT_NODE)
+			if (nodeid == selfid)
 			{
-				consMap[nodeid-1] = SQ_CONS_SELF;
+				consMap[i++] = SQ_CONS_SELF;
 				continue;
 			}
 
-			consMap[nodeid-1] = i++;
+			consMap[i++] = sq->sq_nconsumers++;
 			cstate->cs_pid = 0; /* not yet known */
 			cstate->cs_node = nodeid;
 			cstate->cs_ntuples = 0;
@@ -323,8 +317,6 @@ SharedQueueBind(const char *sqname, List *consNodes,
 			cstate->stat_buff_reads = 0;
 			cstate->stat_buff_returns = 0;
 		}
-		/* i is now set to the actual number of consumers */
-		sq->sq_nconsumers = i;
 
 		Assert(sq->sq_nconsumers > 0);
 
@@ -353,7 +345,7 @@ SharedQueueBind(const char *sqname, List *consNodes,
 		/* Producer should be different process */
 		Assert(sq->sq_pid != MyProcPid);
 
-		elog(LOG, "Bind node %d to squeue of step %s as a consumer of process %d", PGXC_PARENT_NODE, sqname, sq->sq_pid);
+		elog(LOG, "Bind node %s to squeue of step %s as a consumer of process %d", PGXC_PARENT_NODE, sqname, sq->sq_pid);
 
 		/* Sanity checks */
 		Assert(myindex);
@@ -365,7 +357,7 @@ SharedQueueBind(const char *sqname, List *consNodes,
 			int 		nodeid = lfirst_int(lc);
 			int			i;
 
-			if (nodeid == sq->sq_node)
+			if (nodeid == sq->sq_nodeid)
 			{
 				/*
 				 * This node is a producer, it should not be in the consumer
@@ -381,7 +373,7 @@ SharedQueueBind(const char *sqname, List *consNodes,
 				if (cstate->cs_node == nodeid)
 				{
 					nconsumers++;
-					if (nodeid == PGXC_PARENT_NODE)
+					if (nodeid == selfid)
 					{
 						/*
 						 * Current consumer queue is that from which current

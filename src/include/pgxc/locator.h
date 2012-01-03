@@ -102,17 +102,34 @@ typedef struct
 
 
 #ifdef XCP
+typedef enum
+{
+	LOCATOR_LIST_NONE,	/* locator returns integers in range 0..NodeCount-1,
+						 * value of nodeList ignored and can be NULL */
+	LOCATOR_LIST_INT,	/* nodeList is an integer array (int *), value from
+						 * the array is returned */
+	LOCATOR_LIST_OID,	/* node list is an array of Oids (Oid *), value from
+						 * the array is returned */
+	LOCATOR_LIST_POINTER,	/* node list is an array of pointers (void **),
+							 * value from the array is returned */
+	LOCATOR_LIST_LIST,	/* node list is a list, item type is determined by
+						 * list type (integer, oid or pointer). NodeCount
+						 * is ignored */
+} LocatorListType;
+
 typedef struct _Locator Locator;
 struct _Locator
 {
 	/*
 	 * Determine target nodes for value.
-	 * Resulting nodes are stored to the nodes array which must have enough space.
-	 * Function returns number of nodes written to the array.
+	 * Resulting nodes are stored to the results array.
+	 * Function returns number of node references written to the array.
 	 */
-	int			(*locateNodes) (Locator *self, Datum value, bool isnull,
-						int *nodes, int *primarynode);
+	int			(*locatefunc) (Locator *self, Datum value, bool isnull,
+								bool *hasprimary);
 	Oid			dataType; 		/* values of that type are passed to locateNodes function */
+	LocatorListType listType;
+	bool		primary;
 	/* locator-specific data */
 	/* XXX: move them into union ? */
 	int			roundRobinNode; /* for LOCATOR_TYPE_RROBIN */
@@ -120,15 +137,43 @@ struct _Locator
 	int 		valuelen; /* 1, 2 or 4 for LOCATOR_TYPE_MODULO */
 
 	int			nodeCount; /* How many nodes are in the map */
-	int			nodeMap[1]; /* map node index to NodeId */
+	void	   *nodeMap; /* map index to node reference according to listType */
+	void	   *results; /* array to output results */
 };
 
 
+/*
+ * Creates a structure holding necessary info to effectively determine nodes
+ * where a tuple should be stored.
+ * Locator does not allocate memory while working, all allocations are made at
+ * the creation time.
+ *
+ * Parameters:
+ *
+ *  locatorType - see LOCATOR_TYPE_* constants
+ *  accessType - see RelationAccessType enum
+ *  dataType - actual data type of values provided to determine nodes
+ *  listType - defines how nodeList parameter is interpreted, see
+ *			   LocatorListType enum for more details
+ *  nodeCount - number of nodes to distribute
+ *	nodeList - detailed info about relation nodes. Either List or array or NULL
+ *	result - returned address of the array where locator will output node
+ * 			 references. Type of array items (int, Oid or pointer (void *))
+ * 			 depends on listType.
+ *	primary - set to true if caller ever wants to determine primary node.
+ *            Primary node will be returned as the first element of the
+ *			  result array
+ */
 extern Locator *createLocator(char locatorType, RelationAccessType accessType,
-			  Oid dataType, List *nodeList);
-#define GET_NODES(locator, value, isnull, nodes, primarynode) \
-	(*(locator)->locateNodes) (locator, value, isnull, nodes, primarynode)
-#define LOCATOR_MAX_NODES(locator) (locator)->nodeCount
+			  Oid dataType, LocatorListType listType, int nodeCount,
+			  void *nodeList, void **result, bool primary);
+extern void freeLocator(Locator *locator);
+
+#define GET_NODES(locator, value, isnull, hasprimary) \
+	(*(locator)->locatefunc) (locator, value, isnull, hasprimary)
+#define getLocatorResults(locator) (locator)->results
+#define getLocatorNodeMap(locator) (locator)->nodeMap
+#define getLocatorNodeCount(locator) (locator)->nodeCount
 #endif
 
 /* Extern variables related to locations */
@@ -144,7 +189,9 @@ extern char *GetRelationHashColumn(RelationLocInfo *rel_loc_info);
 extern RelationLocInfo *GetRelationLocInfo(Oid relid);
 extern RelationLocInfo *CopyRelationLocInfo(RelationLocInfo *src_info);
 extern bool IsTableDistOnPrimary(RelationLocInfo *rel_loc_info);
+#ifndef XCP
 extern ExecNodes *GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeOfValueForDistCol, RelationAccessType accessType);
+#endif
 extern bool IsHashColumn(RelationLocInfo *rel_loc_info, char *part_col_name);
 extern bool IsHashColumnForRelId(Oid relid, char *part_col_name);
 extern int	GetRoundRobinNode(Oid relid);

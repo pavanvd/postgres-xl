@@ -338,7 +338,11 @@ static DNSServiceRef bonjour_sdref = NULL;
 
 #ifdef PGXC
 char			*PGXCNodeName = NULL;
+#ifdef XCP
+int			PGXCNodeId = 0;
+#else
 int			PGXCNodeId = -1;
+#endif
 #endif
 
 /*
@@ -484,7 +488,7 @@ static void ShmemBackendArrayRemove(Backend *bn);
 #endif   /* EXEC_BACKEND */
 
 #ifdef XCP
-int parentPGXCNode = 0;
+char *parentPGXCNode = NULL;
 #endif
 
 #ifdef PGXC
@@ -3432,6 +3436,9 @@ BackendStartup(Port *port)
 {
 	Backend    *bn;				/* for backend cleanup */
 	pid_t		pid;
+#ifdef XCP
+	PoolHandle *pool_handle;
+#endif
 
 	/*
 	 * Create backend data structure.  Better before the fork() so we can
@@ -3467,6 +3474,17 @@ BackendStartup(Port *port)
 	else
 		bn->child_slot = 0;
 
+#ifdef XCP
+	pool_handle = GetPoolManagerHandle();
+	if (pool_handle == NULL)
+	{
+		ereport(ERROR,
+			(errcode(ERRCODE_IO_ERROR),
+			 errmsg("Can not connect to pool manager")));
+		return STATUS_ERROR;
+	}
+#endif
+
 #ifdef EXEC_BACKEND
 	pid = backend_forkexec(port);
 #else							/* !EXEC_BACKEND */
@@ -3495,10 +3513,18 @@ BackendStartup(Port *port)
 		/* Perform additional initialization and collect startup packet */
 		BackendInitialize(port);
 
+#ifdef XCP
+		PoolManagerConnect(pool_handle, port->database_name, port->user_name);
+#endif
+
 		/* And run the backend */
 		proc_exit(BackendRun(port));
 	}
 #endif   /* EXEC_BACKEND */
+
+#ifdef XCP
+	PoolManagerCloseHandle(pool_handle);
+#endif
 
 	if (pid < 0)
 	{

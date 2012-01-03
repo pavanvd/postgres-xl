@@ -489,9 +489,11 @@ _outModifyTable(StringInfo str, ModifyTable *node)
 	WRITE_NODE_FIELD(returningLists);
 	WRITE_NODE_FIELD(rowMarks);
 	WRITE_INT_FIELD(epqParam);
-#ifdef PGXC	
+#ifdef PGXC
+#ifndef XCP
 	WRITE_NODE_FIELD(remote_plans);
-#endif	
+#endif
+#endif
 }
 
 static void

@@ -57,22 +57,18 @@ int		num_preferred_data_nodes = 0;
 Oid		preferred_data_node[MAX_PREFERRED_NODES];
 
 #ifdef XCP
-static int locate_replicated_all(Locator *self, Datum value, bool isnull,
-					  int *nodes, int *primarynode);
-static int locate_replicated_one(Locator *self, Datum value, bool isnull,
-					  int *nodes, int *primarynode);
-static int locate_roundrobin_insert(Locator *self, Datum value, bool isnull,
-					     int *nodes, int *primarynode);
-static int locate_roundrobin_select(Locator *self, Datum value, bool isnull,
-					     int *nodes, int *primarynode);
+static int locate_static(Locator *self, Datum value, bool isnull,
+			  bool *hasprimary);
+static int locate_roundrobin(Locator *self, Datum value, bool isnull,
+			  bool *hasprimary);
 static int locate_hash_insert(Locator *self, Datum value, bool isnull,
-						int *nodes, int *primarynode);
+			  bool *hasprimary);
 static int locate_hash_select(Locator *self, Datum value, bool isnull,
-						int *nodes, int *primarynode);
+			  bool *hasprimary);
 static int locate_modulo_insert(Locator *self, Datum value, bool isnull,
-						  int *nodes, int *primarynode);
+			  bool *hasprimary);
 static int locate_modulo_select(Locator *self, Datum value, bool isnull,
-						  int *nodes, int *primarynode);
+			  bool *hasprimary);
 #endif
 
 static const unsigned int xc_mod_m[] =
@@ -526,6 +522,8 @@ IsTableDistOnPrimary(RelationLocInfo *rel_loc_info)
 	return false;
 }
 
+
+#ifndef XCP
 /*
  * GetRelationNodes
  *
@@ -680,6 +678,7 @@ GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeO
 
 	return exec_nodes;
 }
+#endif
 
 
 /*
@@ -928,41 +927,212 @@ FreeRelationLocInfo(RelationLocInfo *relationLocInfo)
 #ifdef XCP
 Locator *
 createLocator(char locatorType, RelationAccessType accessType,
-			  Oid dataType, List *nodeList)
+			  Oid dataType, LocatorListType listType, int nodeCount,
+			  void *nodeList, void **result, bool primary)
 {
 	Locator    *locator;
 	ListCell   *lc;
-	int			i;
+	void 	   *nodeMap;
+	int 		i;
 
-	Assert(list_length(nodeList) > 0);
-	locator = (Locator *) palloc(sizeof(Locator) +
-								 (list_length(nodeList) - 1) * sizeof(int));
+	locator = (Locator *) palloc(sizeof(Locator));
 	locator->dataType = dataType;
-	i = 0;
-	foreach(lc, nodeList)
-		locator->nodeMap[i++] = lfirst_int(lc);
-	locator->nodeCount = list_length(nodeList);
+	locator->listType = listType;
+	locator->nodeCount = nodeCount;
+	/* Create node map */
+	switch (listType)
+	{
+		case LOCATOR_LIST_NONE:
+			/* No map, return indexes */
+			nodeMap = NULL;
+			break;
+		case LOCATOR_LIST_INT:
+			/* Copy integer array */
+			nodeMap = palloc(nodeCount * sizeof(int));
+			memcpy(nodeMap, nodeList, nodeCount * sizeof(int));
+			break;
+		case LOCATOR_LIST_OID:
+			/* Copy array of Oids */
+			nodeMap = palloc(nodeCount * sizeof(Oid));
+			memcpy(nodeMap, nodeList, nodeCount * sizeof(Oid));
+			break;
+		case LOCATOR_LIST_POINTER:
+			/* Copy array of Oids */
+			nodeMap = palloc(nodeCount * sizeof(void *));
+			memcpy(nodeMap, nodeList, nodeCount * sizeof(void *));
+			break;
+		case LOCATOR_LIST_LIST:
+			/* Create map from list */
+		{
+			List *l = (List *) nodeList;
+			locator->nodeCount = list_length(l);
+			if (IsA(l, IntList))
+			{
+				int *intptr;
+				nodeMap = palloc(locator->nodeCount * sizeof(int));
+				intptr = (int *) nodeMap;
+				foreach(lc, l)
+					*intptr++ = lfirst_int(lc);
+				locator->listType = LOCATOR_LIST_INT;
+			}
+			else if (IsA(l, OidList))
+			{
+				Oid *oidptr;
+				nodeMap = palloc(locator->nodeCount * sizeof(Oid));
+				oidptr = (Oid *) nodeMap;
+				foreach(lc, l)
+					*oidptr++ = lfirst_oid(lc);
+				locator->listType = LOCATOR_LIST_OID;
+			}
+			else if (IsA(l, List))
+			{
+				void **voidptr;
+				nodeMap = palloc(locator->nodeCount * sizeof(void *));
+				voidptr = (void **) nodeMap;
+				foreach(lc, l)
+					*voidptr++ = lfirst(lc);
+				locator->listType = LOCATOR_LIST_POINTER;
+			}
+			else
+			{
+				/* can not get here */
+				Assert(false);
+			}
+			break;
+		}
+	}
+	/*
+	 * Determine locatefunc, allocate results, set up parameters
+	 * specific to locator type
+	 */
 	switch (locatorType)
 	{
 		case LOCATOR_TYPE_REPLICATED:
 			if (accessType == RELATION_ACCESS_INSERT ||
 					accessType == RELATION_ACCESS_UPDATE)
-				locator->locateNodes = locate_replicated_all;
+			{
+				locator->locatefunc = locate_static;
+				if (nodeMap == NULL)
+				{
+					/* no map, prepare array with indexes */
+					int *intptr;
+					nodeMap = palloc(locator->nodeCount * sizeof(int));
+					intptr = (int *) nodeMap;
+					for (i = 0; i < locator->nodeCount; i++)
+						*intptr++ = i;
+				}
+				locator->nodeMap = nodeMap;
+				locator->results = nodeMap;
+			}
 			else
-				locator->locateNodes = locate_replicated_one;
+			{
+				locator->locatefunc = locate_roundrobin;
+				locator->nodeMap = nodeMap;
+				switch (locator->listType)
+				{
+					case LOCATOR_LIST_NONE:
+					case LOCATOR_LIST_INT:
+						locator->results = palloc(sizeof(int));
+						break;
+					case LOCATOR_LIST_OID:
+						locator->results = palloc(sizeof(Oid));
+						break;
+					case LOCATOR_LIST_POINTER:
+						locator->results = palloc(sizeof(void *));
+						break;
+					case LOCATOR_LIST_LIST:
+						/* Should never happen */
+						Assert(false);
+						break;
+				}
+				locator->roundRobinNode = -1;
+			}
 			break;
 		case LOCATOR_TYPE_RROBIN:
 			if (accessType == RELATION_ACCESS_INSERT)
-				locator->locateNodes = locate_roundrobin_insert;
+			{
+				locator->locatefunc = locate_roundrobin;
+				locator->nodeMap = nodeMap;
+				switch (locator->listType)
+				{
+					case LOCATOR_LIST_NONE:
+					case LOCATOR_LIST_INT:
+						locator->results = palloc(sizeof(int));
+						break;
+					case LOCATOR_LIST_OID:
+						locator->results = palloc(sizeof(Oid));
+						break;
+					case LOCATOR_LIST_POINTER:
+						locator->results = palloc(sizeof(void *));
+						break;
+					case LOCATOR_LIST_LIST:
+						/* Should never happen */
+						Assert(false);
+						break;
+				}
+				locator->roundRobinNode = -1;
+			}
 			else
-				locator->locateNodes = locate_roundrobin_select;
-			locator->roundRobinNode = -1;
+			{
+				locator->locatefunc = locate_static;
+				if (nodeMap == NULL)
+				{
+					/* no map, prepare array with indexes */
+					int *intptr;
+					nodeMap = palloc(locator->nodeCount * sizeof(int));
+					intptr = (int *) nodeMap;
+					for (i = 0; i < locator->nodeCount; i++)
+						*intptr++ = i;
+				}
+				locator->nodeMap = nodeMap;
+				locator->results = nodeMap;
+			}
 			break;
 		case LOCATOR_TYPE_HASH:
 			if (accessType == RELATION_ACCESS_INSERT)
-				locator->locateNodes = locate_hash_insert;
+			{
+				locator->locatefunc = locate_hash_insert;
+				locator->nodeMap = nodeMap;
+				switch (locator->listType)
+				{
+					case LOCATOR_LIST_NONE:
+					case LOCATOR_LIST_INT:
+						locator->results = palloc(sizeof(int));
+						break;
+					case LOCATOR_LIST_OID:
+						locator->results = palloc(sizeof(Oid));
+						break;
+					case LOCATOR_LIST_POINTER:
+						locator->results = palloc(sizeof(void *));
+						break;
+					case LOCATOR_LIST_LIST:
+						/* Should never happen */
+						Assert(false);
+						break;
+				}
+			}
 			else
-				locator->locateNodes = locate_hash_select;
+			{
+				locator->locatefunc = locate_hash_select;
+				locator->nodeMap = nodeMap;
+				switch (locator->listType)
+				{
+					case LOCATOR_LIST_NONE:
+					case LOCATOR_LIST_INT:
+						locator->results = palloc(locator->nodeCount * sizeof(int));
+						break;
+					case LOCATOR_LIST_OID:
+						locator->results = palloc(locator->nodeCount * sizeof(Oid));
+						break;
+					case LOCATOR_LIST_POINTER:
+						locator->results = palloc(locator->nodeCount * sizeof(void *));
+						break;
+					case LOCATOR_LIST_LIST:
+						/* Should never happen */
+						Assert(false);
+						break;
+				}
+			}
 
 			switch (dataType)
 			{
@@ -1034,9 +1204,49 @@ createLocator(char locatorType, RelationAccessType accessType,
 			break;
 		case LOCATOR_TYPE_MODULO:
 			if (accessType == RELATION_ACCESS_INSERT)
-				locator->locateNodes = locate_modulo_insert;
+			{
+				locator->locatefunc = locate_modulo_insert;
+				locator->nodeMap = nodeMap;
+				switch (locator->listType)
+				{
+					case LOCATOR_LIST_NONE:
+					case LOCATOR_LIST_INT:
+						locator->results = palloc(sizeof(int));
+						break;
+					case LOCATOR_LIST_OID:
+						locator->results = palloc(sizeof(Oid));
+						break;
+					case LOCATOR_LIST_POINTER:
+						locator->results = palloc(sizeof(void *));
+						break;
+					case LOCATOR_LIST_LIST:
+						/* Should never happen */
+						Assert(false);
+						break;
+				}
+			}
 			else
-				locator->locateNodes = locate_modulo_select;
+			{
+				locator->locatefunc = locate_modulo_select;
+				locator->nodeMap = nodeMap;
+				switch (locator->listType)
+				{
+					case LOCATOR_LIST_NONE:
+					case LOCATOR_LIST_INT:
+						locator->results = palloc(locator->nodeCount * sizeof(int));
+						break;
+					case LOCATOR_LIST_OID:
+						locator->results = palloc(locator->nodeCount * sizeof(Oid));
+						break;
+					case LOCATOR_LIST_POINTER:
+						locator->results = palloc(locator->nodeCount * sizeof(void *));
+						break;
+					case LOCATOR_LIST_LIST:
+						/* Should never happen */
+						Assert(false);
+						break;
+				}
+			}
 
 			switch (dataType)
 			{
@@ -1064,145 +1274,205 @@ createLocator(char locatorType, RelationAccessType accessType,
 			ereport(ERROR, (errmsg("Error: no such supported locator type: %c\n",
 								   locatorType)));
 	}
+
+	if (result)
+		*result = locator->results;
+
 	return locator;
 }
 
 
-static int
-locate_replicated_all(Locator *self, Datum value, bool isnull,
-					  int *nodes, int *primarynode)
+void
+freeLocator(Locator *locator)
 {
-	if (primarynode)
-	{
-		*primarynode = primary_data_node;
-		if (primary_data_node > 0)
-		{
-			if (self->roundRobinNode < 0)
-			{
-				int i, j;
-				for (i = 0, j = 0; i < self->nodeCount; i++)
-					if (self->nodeMap[i] == primary_data_node)
-						self->roundRobinNode = i;
-					else
-						nodes[j++] = self->nodeMap[i];
-				return j;
-			}
-			else
-			{
-				if (self->roundRobinNode > 0)
-					memcpy(nodes, self->nodeMap,
-						   self->roundRobinNode * sizeof(int));
-				if (self->roundRobinNode < self->nodeCount - 1)
-					memcpy(nodes + self->roundRobinNode,
-						   self->nodeMap + self->roundRobinNode + 1,
-						   (self->nodeCount - self->roundRobinNode - 1) * sizeof(int));
-				return self->nodeCount - 1;
-			}
-		}
-		/* if primary node is not configured fallthru and return all as
-		 * ordinary nodes */
-	}
-	memcpy(nodes, self->nodeMap, self->nodeCount * sizeof(int));
+	pfree(locator->nodeMap);
+	/*
+	 * locator->nodeMap and locator->results may point to the same memory,
+	 * do not free it twice
+	 */
+	if (locator->results != locator->nodeMap)
+		pfree(locator->results);
+	pfree(locator);
+}
+
+
+/*
+ * Each time return the same predefined results
+ */
+static int
+locate_static(Locator *self, Datum value, bool isnull,
+			  bool *hasprimary)
+{
+	/* TODO */
+	if (hasprimary)
+		*hasprimary = false;
 	return self->nodeCount;
 }
 
 
+/*
+ * Each time return one next node, in round robin manner
+ */
 static int
-locate_replicated_one(Locator *self, Datum value, bool isnull,
-					  int *nodes, int *primarynode)
+locate_roundrobin(Locator *self, Datum value, bool isnull,
+				  bool *hasprimary)
 {
-	if (primarynode)
+	/* TODO */
+	if (hasprimary)
+		*hasprimary = false;
+	if (++self->roundRobinNode >= self->nodeCount)
+		self->roundRobinNode = 0;
+	switch (self->listType)
 	{
-		*primarynode = primary_data_node;
-		if (primary_data_node > 0)
-			return 0;
-		/* if primary node is not configured fallthru and return one as an
-		 * ordinary node */
+		case LOCATOR_LIST_NONE:
+			((int *) self->results)[0] = self->roundRobinNode;
+			break;
+		case LOCATOR_LIST_INT:
+			((int *) self->results)[0] =
+					((int *) self->nodeMap)[self->roundRobinNode];
+			break;
+		case LOCATOR_LIST_OID:
+			((Oid *) self->results)[0] =
+					((Oid *) self->nodeMap)[self->roundRobinNode];
+			break;
+		case LOCATOR_LIST_POINTER:
+			((void **) self->results)[0] =
+					((void **) self->nodeMap)[self->roundRobinNode];
+			break;
+		case LOCATOR_LIST_LIST:
+			/* Should never happen */
+			Assert(false);
+			break;
 	}
-	if (++self->roundRobinNode >= self->nodeCount)
-		self->roundRobinNode = 0;
-	*nodes = self->nodeMap[self->roundRobinNode];
 	return 1;
 }
 
 
-static int
-locate_roundrobin_insert(Locator *self, Datum value, bool isnull,
-						 int *nodes, int *primarynode)
-{
-	if (primarynode)
-		*primarynode = 0;
-	if (++self->roundRobinNode >= self->nodeCount)
-		self->roundRobinNode = 0;
-	*nodes = self->nodeMap[self->roundRobinNode];
-	return 1;
-}
-
-
-static int
-locate_roundrobin_select(Locator *self, Datum value, bool isnull,
-						 int *nodes, int *primarynode)
-{
-	if (primarynode)
-		*primarynode = 0;
-	memcpy(nodes, self->nodeMap, self->nodeCount * sizeof(int));
-	return self->nodeCount;
-}
-
-
+/*
+ * Calculate hash from supplied value and use modulo by nodeCount as an index
+ */
 static int
 locate_hash_insert(Locator *self, Datum value, bool isnull,
-						int *nodes, int *primarynode)
+				   bool *hasprimary)
 {
-	int nErr;
-	if (primarynode)
-		*primarynode = 0;
+	int index;
+	if (hasprimary)
+		*hasprimary = false;
 	if (isnull)
-		*nodes = self->nodeMap[0];
+		index = 0;
 	else
 	{
 		unsigned int hash32;
 
 		hash32 = (unsigned int) DatumGetInt32(DirectFunctionCall1(self->hashfunc, value));
 
-		*nodes = self->nodeMap[compute_modulo(hash32, self->nodeCount)];
+		index = compute_modulo(hash32, self->nodeCount);
+	}
+	switch (self->listType)
+	{
+		case LOCATOR_LIST_NONE:
+			((int *) self->results)[0] = index;
+			break;
+		case LOCATOR_LIST_INT:
+			((int *) self->results)[0] = ((int *) self->nodeMap)[index];
+			break;
+		case LOCATOR_LIST_OID:
+			((Oid *) self->results)[0] = ((Oid *) self->nodeMap)[index];
+			break;
+		case LOCATOR_LIST_POINTER:
+			((void **) self->results)[0] = ((void **) self->nodeMap)[index];
+			break;
+		case LOCATOR_LIST_LIST:
+			/* Should never happen */
+			Assert(false);
+			break;
 	}
 	return 1;
 }
 
 
+/*
+ * Calculate hash from supplied value and use modulo by nodeCount as an index
+ * if value is NULL assume no hint and return all the nodes.
+ */
 static int
 locate_hash_select(Locator *self, Datum value, bool isnull,
-						int *nodes, int *primarynode)
+				   bool *hasprimary)
 {
-	int nErr;
-	if (primarynode)
-		*primarynode = 0;
+	if (hasprimary)
+		*hasprimary = false;
 	if (isnull)
 	{
-		memcpy(nodes, self->nodeMap, self->nodeCount * sizeof(int));
+		int i;
+		switch (self->listType)
+		{
+			case LOCATOR_LIST_NONE:
+				for (i = 0; i < self->nodeCount; i++)
+					((int *) self->results)[i] = i;
+				break;
+			case LOCATOR_LIST_INT:
+				memcpy(self->results, self->nodeMap,
+					   self->nodeCount * sizeof(int));
+				break;
+			case LOCATOR_LIST_OID:
+				memcpy(self->results, self->nodeMap,
+					   self->nodeCount * sizeof(Oid));
+				break;
+			case LOCATOR_LIST_POINTER:
+				memcpy(self->results, self->nodeMap,
+					   self->nodeCount * sizeof(void *));
+				break;
+			case LOCATOR_LIST_LIST:
+				/* Should never happen */
+				Assert(false);
+				break;
+		}
 		return self->nodeCount;
 	}
 	else
 	{
 		unsigned int hash32;
+		int 		 index;
 
 		hash32 = (unsigned int) DatumGetInt32(DirectFunctionCall1(self->hashfunc, value));
 
-		*nodes = self->nodeMap[compute_modulo(hash32, self->nodeCount)];
+		index = compute_modulo(hash32, self->nodeCount);
+		switch (self->listType)
+		{
+			case LOCATOR_LIST_NONE:
+				((int *) self->results)[0] = index;
+				break;
+			case LOCATOR_LIST_INT:
+				((int *) self->results)[0] = ((int *) self->nodeMap)[index];
+				break;
+			case LOCATOR_LIST_OID:
+				((Oid *) self->results)[0] = ((Oid *) self->nodeMap)[index];
+				break;
+			case LOCATOR_LIST_POINTER:
+				((void **) self->results)[0] = ((void **) self->nodeMap)[index];
+				break;
+			case LOCATOR_LIST_LIST:
+				/* Should never happen */
+				Assert(false);
+				break;
+		}
 		return 1;
 	}
 }
 
 
+/*
+ * Use modulo of supplied value by nodeCount as an index
+ */
 static int
 locate_modulo_insert(Locator *self, Datum value, bool isnull,
-						  int *nodes, int *primarynode)
+				   bool *hasprimary)
 {
-	if (primarynode)
-		*primarynode = 0;
+	int index;
+	if (hasprimary)
+		*hasprimary = false;
 	if (isnull)
-		*nodes = self->nodeMap[0];
+		index = 0;
 	else
 	{
 		unsigned int mod32;
@@ -1216,25 +1486,73 @@ locate_modulo_insert(Locator *self, Datum value, bool isnull,
 		else
 			mod32 = 0;
 
-		*nodes = self->nodeMap[compute_modulo(mod32, self->nodeCount)];
+		index = compute_modulo(mod32, self->nodeCount);
+	}
+	switch (self->listType)
+	{
+		case LOCATOR_LIST_NONE:
+			((int *) self->results)[0] = index;
+			break;
+		case LOCATOR_LIST_INT:
+			((int *) self->results)[0] = ((int *) self->nodeMap)[index];
+			break;
+		case LOCATOR_LIST_OID:
+			((Oid *) self->results)[0] = ((Oid *) self->nodeMap)[index];
+			break;
+		case LOCATOR_LIST_POINTER:
+			((void **) self->results)[0] = ((void **) self->nodeMap)[index];
+			break;
+		case LOCATOR_LIST_LIST:
+			/* Should never happen */
+			Assert(false);
+			break;
 	}
 	return 1;
 }
 
+
+/*
+ * Use modulo of supplied value by nodeCount as an index
+ * if value is NULL assume no hint and return all the nodes.
+ */
 static int
 locate_modulo_select(Locator *self, Datum value, bool isnull,
-						  int *nodes, int *primarynode)
+				   bool *hasprimary)
 {
-	if (primarynode)
-		*primarynode = 0;
+	if (hasprimary)
+		*hasprimary = false;
 	if (isnull)
 	{
-		memcpy(nodes, self->nodeMap, self->nodeCount * sizeof(int));
+		int i;
+		switch (self->listType)
+		{
+			case LOCATOR_LIST_NONE:
+				for (i = 0; i < self->nodeCount; i++)
+					((int *) self->results)[i] = i;
+				break;
+			case LOCATOR_LIST_INT:
+				memcpy(self->results, self->nodeMap,
+					   self->nodeCount * sizeof(int));
+				break;
+			case LOCATOR_LIST_OID:
+				memcpy(self->results, self->nodeMap,
+					   self->nodeCount * sizeof(Oid));
+				break;
+			case LOCATOR_LIST_POINTER:
+				memcpy(self->results, self->nodeMap,
+					   self->nodeCount * sizeof(void *));
+				break;
+			case LOCATOR_LIST_LIST:
+				/* Should never happen */
+				Assert(false);
+				break;
+		}
 		return self->nodeCount;
 	}
 	else
 	{
 		unsigned int mod32;
+		int 		 index;
 
 		if (self->valuelen == 4)
 			mod32 = (unsigned int) (GET_4_BYTES(value));
@@ -1245,7 +1563,27 @@ locate_modulo_select(Locator *self, Datum value, bool isnull,
 		else
 			mod32 = 0;
 
-		*nodes = self->nodeMap[compute_modulo(mod32, self->nodeCount)];
+		index = compute_modulo(mod32, self->nodeCount);
+
+		switch (self->listType)
+		{
+			case LOCATOR_LIST_NONE:
+				((int *) self->results)[0] = index;
+				break;
+			case LOCATOR_LIST_INT:
+				((int *) self->results)[0] = ((int *) self->nodeMap)[index];
+				break;
+			case LOCATOR_LIST_OID:
+				((Oid *) self->results)[0] = ((Oid *) self->nodeMap)[index];
+				break;
+			case LOCATOR_LIST_POINTER:
+				((void **) self->results)[0] = ((void **) self->nodeMap)[index];
+				break;
+			case LOCATOR_LIST_LIST:
+				/* Should never happen */
+				Assert(false);
+				break;
+		}
 		return 1;
 	}
 }

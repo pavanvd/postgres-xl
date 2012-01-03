@@ -259,14 +259,22 @@ scanloop:
 		else
 			*nodes = (Oid *) repalloc(*nodes, numnodes * sizeof(Oid));
 
+#ifdef XCP
+		(*nodes)[numnodes - 1] = HeapTupleGetOid(tuple);
+#else
 		(*nodes)[numnodes - 1] = get_pgxc_nodeoid(NameStr(nodeForm->node_name));
+#endif
 
 		/*
 		 * Save data related to preferred and primary node
 		 * Preferred and primaries use node Oids
 		 */
 		if (nodeForm->nodeis_primary)
+#ifdef XCP
+			primary_data_node = HeapTupleGetOid(tuple);
+#else
 			primary_data_node = get_pgxc_nodeoid(NameStr(nodeForm->node_name));
+#endif
 		if (nodeForm->nodeis_preferred)
 		{
 			preferred_data_node[num_preferred_data_nodes] =
@@ -534,6 +542,13 @@ PgxcNodeAlter(AlterNodeStmt *stmt)
 			node_type = PGXC_NODE_DATANODE;
 
 		/* Check type dependency */
+#ifndef XCP
+		/*
+		 * XCP:
+		 * Initially node identify itself as a Coordinator and this should be
+		 * changed for datanodes. In general, it should be safe to turn
+		 * Coordinator to Datanode and back
+		 */
 		if (node_type_old == PGXC_NODE_COORDINATOR &&
 			node_type == PGXC_NODE_DATANODE)
 			ereport(ERROR,
@@ -546,6 +561,7 @@ PgxcNodeAlter(AlterNodeStmt *stmt)
 					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("PGXC node %s: cannot alter Datanode to Coordinator",
 							node_name)));
+#endif
 	}
 
 	/* Update values for catalog entry */
