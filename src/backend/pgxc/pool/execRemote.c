@@ -1379,7 +1379,7 @@ FetchTuple(ResponseCombiner *combiner)
 		Assert(conn || combiner->tapenodes);
 		nodenum = conn ? PGXCNodeGetNodeId(conn->nodeoid, PGXC_NODE_DATANODE) :
 				combiner->tapenodes[combiner->current_conn];
-		Assert(nodenum > 0 && nodenum <= NumDataNodes);
+		Assert(nodenum >= 0 && nodenum < NumDataNodes);
 	}
 
 	/*
