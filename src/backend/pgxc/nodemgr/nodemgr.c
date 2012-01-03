@@ -27,6 +27,9 @@
 #include "pgxc/nodemgr.h"
 #include "pgxc/pgxc.h"
 
+#ifdef XCP
+int         MaxDataNodes = 16;
+#endif
 /* Global number of nodes */
 int         NumDataNodes = 2;
 int         NumCoords = 1;
@@ -380,6 +383,15 @@ PgxcNodeCreate(CreateNodeStmt *stmt)
 				 errmsg("PGXC node %s: Node type not specified",
 						node_name)));
 	}
+
+#ifdef XCP
+	if (node_type == PGXC_NODE_DATANODE && MaxDataNodes >= NumDataNodes)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("Too many datanodes, current value of max_data_nodes is %d",
+						MaxDataNodes)));
+
+#endif
 
 	/* Iterate through all attributes initializing nulls and values */
 	for (i = 0; i < Natts_pgxc_node; i++)

@@ -20,6 +20,10 @@
 #include "nodes/parsenodes.h"
 
 /* Global number of nodes */
+#ifdef XCP
+extern int  MaxDataNodes;
+#endif
+
 extern int  NumDataNodes;
 extern int  NumCoords;
 extern int  NumCoordSlaves;

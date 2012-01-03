@@ -553,6 +553,8 @@
 #persistent_datanode_connections = off	# Set persistent connection mode for pooler
 					# if set at on, connections taken for coordinator
 					# are not put back to pool
+#max_data_nodes = 16			# Max number of data nodes in the cluster
+					# (change requires restart)
 
 #------------------------------------------------------------------------------
 # GTM CONNECTION

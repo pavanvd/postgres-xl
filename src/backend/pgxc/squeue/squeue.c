@@ -50,7 +50,7 @@ typedef struct SQueueSync
 {
 	void 	   *queue; 			/* NULL if not assigned to any queue */
 	Latch 		sqs_producer_latch; /* the latch producer is waiting on */
-	ConsumerSync sqs_consumer_sync[0]; /* actual length is NumDataNodes-1 is
+	ConsumerSync sqs_consumer_sync[0]; /* actual length is MaxDataNodes-1 is
 										* not known on compile time */
 } SQueueSync;
 
@@ -107,7 +107,7 @@ static HTAB *SharedQueues = NULL;
 static void *SQueueSyncs;
 
 #define SQUEUE_SYNC_SIZE \
-	(sizeof(SQueueSync) + (NumDataNodes-1) * sizeof(ConsumerSync))
+	(sizeof(SQueueSync) + (MaxDataNodes-1) * sizeof(ConsumerSync))
 
 #define GET_SQUEUE_SYNC(idx) \
 	((SQueueSync *) (((char *) SQueueSyncs) + (idx) * SQUEUE_SYNC_SIZE))
@@ -179,6 +179,8 @@ SharedQueuesInit(void)
 	info.entrysize = SQUEUE_SIZE;
 	hash_flags = HASH_ELEM;
 
+	elog(LOG, "Shared Memory: init %d shared queues for %d datanodes", NUM_SQUEUES, MaxDataNodes);
+
 	SharedQueues = ShmemInitHash("Shared Queues", NUM_SQUEUES,
 								 NUM_SQUEUES, &info, hash_flags);
 
@@ -199,7 +201,7 @@ SharedQueuesInit(void)
 
 			sqs->queue = NULL;
 			InitSharedLatch(&sqs->sqs_producer_latch);
-			for (j = 0; j < NumDataNodes-1; j++)
+			for (j = 0; j < MaxDataNodes-1; j++)
 			{
 				InitSharedLatch(&sqs->sqs_consumer_sync[j].cs_latch);
 				sqs->sqs_consumer_sync[j].cs_lwlock = LWLockAssign();

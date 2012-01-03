@@ -62,6 +62,9 @@
 #include "nodes/nodes.h"
 #include "pgxc/poolmgr.h"
 #endif
+#ifdef XCP
+#include "pgxc/nodemgr.h"
+#endif
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
@@ -2491,6 +2494,18 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&GtmPort,
 		6666, 1, 65535,
+		NULL, NULL, NULL
+	},
+#endif /* PGXC */
+#ifdef XCP
+	{
+		{"max_data_nodes", PGC_POSTMASTER, DATA_NODES,
+			gettext_noop("Max number of data nodes in the cluster."),
+			gettext_noop("You can not create more then that number of the data nodes "
+						 "in the cluster.")
+		},
+		&MaxDataNodes,
+		16, 2, 65535,
 		NULL, NULL, NULL
 	},
 #endif /* PGXC */

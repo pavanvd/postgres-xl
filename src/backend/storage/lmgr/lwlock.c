@@ -187,8 +187,8 @@ NumLWLocks(void)
 
 #ifdef XCP
 	/* squeue.c needs one per consumer node in each shared queue.
-	 * Max number of consumers is NumDataNodes-1 */
-	numLocks += NUM_SQUEUES * (NumDataNodes-1);
+	 * Max number of consumers is MaxDataNodes-1 */
+	numLocks += NUM_SQUEUES * (MaxDataNodes-1);
 #endif
 
 	/*
