@@ -974,7 +974,15 @@ estate->es_result_remoterel = NULL;
 	 * Initialize the junk filter if needed.  SELECT queries need a filter if
 	 * there are any junk attrs in the top-level tlist.
 	 */
+#ifdef XCP
+	/*
+ 	 * We need to keep junk attrs in intermediate results, they may be needed
+	 * in upper level plans on the receiving side
+	 */
+	if (!IS_PGXC_DATANODE && operation == CMD_SELECT)
+#else
 	if (operation == CMD_SELECT)
+#endif
 	{
 		bool		junk_filter_needed = false;
 		ListCell   *tlist;
@@ -989,7 +997,6 @@ estate->es_result_remoterel = NULL;
 				break;
 			}
 		}
-
 
 		if (junk_filter_needed)
 		{
