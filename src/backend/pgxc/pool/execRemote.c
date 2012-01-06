@@ -3166,7 +3166,12 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 		pfree(connections);
 		return NULL;
 	}
-	return createLocator(rel_loc->locatorType,
+	/*
+	 * COPY TO do not use locator, it just takes connections from it.
+	 * So always use LOCATOR_TYPE_RROBIN to avoid errors because of not
+	 * defined partType if real locator type is HASH or MODULO
+	 */
+	return createLocator(is_from ? rel_loc->locatorType : LOCATOR_TYPE_RROBIN,
 					 is_from ? RELATION_ACCESS_INSERT : RELATION_ACCESS_READ,
 						 partType,
 						 LOCATOR_LIST_POINTER,
@@ -6483,11 +6488,6 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
 
 
 	/* clean up the buffer */
-	foreach(lc, combiner->rowBuffer)
-	{
-		RemoteDataRow dataRow = (RemoteDataRow) lfirst(lc);
-		pfree(dataRow->msg);
-	}
 	list_free_deep(combiner->rowBuffer);
 
 	/*
@@ -7290,10 +7290,9 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 
 			/*
 			 * Start transaction on data nodes if we are in explicit transaction
-			 * or going to use extended query protocol or write to multiple
-			 * data nodes
+			 * or write to multiple data nodes
 			 */
-			need_tran = !autocommit || plan->cursor ||
+			need_tran = !autocommit ||
 					(!is_read_only && list_length(node->execNodes) > 1);
 
 			/*
