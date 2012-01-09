@@ -3,7 +3,7 @@
  * poolutils.c
  *
  * Utilities for Postgres-XC pooler
- * 
+ *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
  *
@@ -100,9 +100,11 @@ pgxc_pool_reload(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_ACTIVE_SQL_TRANSACTION),
 				 errmsg("pgxc_pool_reload cannot run inside a transaction block")));
 
+#ifndef XCP
 	/* A datanode has no pooler active, so do not bother about that */
 	if (IS_PGXC_DATANODE)
 		PG_RETURN_BOOL(true);
+#endif
 
 	/* Take a lock on pooler to forbid any action during reload */
 	PoolManagerLock(true);
