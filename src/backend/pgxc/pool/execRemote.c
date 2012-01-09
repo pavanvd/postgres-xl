@@ -6524,6 +6524,17 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
 			REMOVE_CURR_CONN(combiner);
 			continue;
 		}
+
+		/*
+		 * Connection owner is different, so no our data pending at
+		 * the connection, nothing to read in.
+		 */
+		if (conn->combiner && conn->combiner != combiner)
+		{
+			REMOVE_CURR_CONN(combiner);
+			continue;
+		}
+
 		res = handle_response(conn, combiner);
 		if (res == RESPONSE_EOF)
 		{
