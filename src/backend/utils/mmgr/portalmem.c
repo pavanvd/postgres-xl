@@ -493,6 +493,13 @@ PortalDrop(Portal portal, bool isTopCommit)
 				(errcode(ERRCODE_INVALID_CURSOR_STATE),
 				 errmsg("cannot drop active portal \"%s\"", portal->name)));
 
+#ifdef XCP
+	/*
+	 * If portal is producing remove it from the list
+	 */
+	removeProducingPortal(portal);
+#endif
+
 	/*
 	 * Allow portalcmds.c to clean up the state it knows about, in particular
 	 * shutting down the executor if still active.	This step potentially runs
@@ -987,7 +994,13 @@ getProducingPortals(void)
 void
 addProducingPortal(Portal portal)
 {
+	MemoryContext save_context;
+
+	save_context = MemoryContextSwitchTo(PortalMemory);
+
 	producingPortals = lappend(producingPortals, portal);
+
+	MemoryContextSwitchTo(save_context);
 }
 
 
