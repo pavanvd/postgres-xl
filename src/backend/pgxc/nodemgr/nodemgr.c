@@ -385,7 +385,7 @@ PgxcNodeCreate(CreateNodeStmt *stmt)
 	}
 
 #ifdef XCP
-	if (node_type == PGXC_NODE_DATANODE && MaxDataNodes >= NumDataNodes)
+	if (node_type == PGXC_NODE_DATANODE && NumDataNodes >= MaxDataNodes)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("Too many datanodes, current value of max_data_nodes is %d",
