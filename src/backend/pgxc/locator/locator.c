@@ -287,6 +287,9 @@ IsHashDistributable(Oid col_type)
 	|| col_type == INTERVALOID
 	|| col_type == TIMETZOID
 	|| col_type == NUMERICOID
+#ifdef XCP
+	|| col_type == UUIDOID
+#endif
 	)
 		return true;
 
@@ -1196,6 +1199,9 @@ createLocator(char locatorType, RelationAccessType accessType,
 					break;
 				case NUMERICOID:
 					locator->hashfunc = hash_numeric;
+					break;
+				case UUIDOID:
+					locator->hashfunc = uuid_hash;
 					break;
 				default:
 					ereport(ERROR, (errmsg("Error: unsupported data type for HASH locator: %d\n",
