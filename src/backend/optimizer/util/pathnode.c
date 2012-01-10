@@ -1077,7 +1077,7 @@ not_allowed_join:
 			if (new_inner_key && new_outer_key)
 			{
 				int i;
-				for (i = 1; i <= NumDataNodes; i++)
+				for (i = 0; i < NumDataNodes; i++)
 					nodes = bms_add_member(nodes, i);
 			}
 			/*
