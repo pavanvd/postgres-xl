@@ -60,8 +60,8 @@
 
 static bool autocommit = true;
 static bool is_ddl = false;
-#ifndef XCP
 static bool implicit_force_autocommit = false;
+#ifndef XCP
 static bool temp_object_included = false;
 #endif
 static PGXCNodeHandle **write_node_list = NULL;
@@ -5462,9 +5462,9 @@ ExecRemoteUtility(RemoteQuery *node)
 #else
 	if (!force_autocommit)
 		is_ddl = true;
+#endif
 
 	implicit_force_autocommit = force_autocommit;
-#endif
 
 #ifdef XCP
 	remotestate = makeNode(RemoteQueryState);
@@ -6039,14 +6039,21 @@ ExecCloseRemoteStatement(const char *stmt_name, List *nodelist)
 bool
 PGXCNodeIsImplicit2PC(bool *prepare_local_coord)
 {
-	if (write_node_count > 1 && !MyXactAccessedTempRel)
+	/*
+	 * Postgres does not allow 2PC of transactions touched temporary objects
+	 * or with forcibly autocommitted commands, like VACUUM or CREATE DATABASE
+	 */
+	if (write_node_count > 1 && !MyXactAccessedTempRel &&
+			!implicit_force_autocommit)
 	{
-		*prepare_local_coord = true;
+		*prepare_local_coord = is_ddl;
+		implicit_force_autocommit = false;
 		return true;
 	}
 	else
 	{
 		*prepare_local_coord = false;
+		implicit_force_autocommit = false;
 		return false;
 	}
 }
