@@ -39,6 +39,10 @@
 #define RESPONSE_DATAROW 3
 #define RESPONSE_COPY 4
 #define RESPONSE_BARRIER_OK 5
+#ifdef XCP
+#define RESPONSE_ERROR 6
+#define RESPONSE_READY 10
+#endif
 
 typedef enum
 {
@@ -124,6 +128,7 @@ typedef struct RemoteQueryState
 	 */
 	ListCell  **tapemarks;
 	bool		merge_sort;             /* perform mergesort of node tuples */
+	bool		extended_query;         /* running extended query protocol */
 #endif
 	void	   *tuplesortstate;			/* for merge sort */
 	/* cursor support */

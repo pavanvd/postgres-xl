@@ -498,7 +498,7 @@ standard_ProcessUtility(Node *parsetree,
 						 * operation. This is convenient because we want to
 						 * hold on to the BarrierLock until local transaction
 						 * is committed too.
-						 *  
+						 *
 						 */
 						if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 							PGXCNodeCommitPrepared(stmt->gid);
@@ -1638,7 +1638,11 @@ standard_ProcessUtility(Node *parsetree,
 					/* Clean also remote Coordinators */
 					sprintf(query, "CLEAN CONNECTION TO ALL FOR DATABASE %s;", stmt->dbname);
 
+#ifdef XCP
+					ExecUtilityStmtOnNodes(query, NULL, true, EXEC_ON_ALL_NODES, false);
+#else
 					ExecUtilityStmtOnNodes(query, NULL, true, EXEC_ON_COORDS, false);
+#endif
 				}
 #endif
 
@@ -2166,11 +2170,20 @@ standard_ProcessUtility(Node *parsetree,
 			break;
 
 		case T_CleanConnStmt:
+#ifdef XCP
+			/*
+			 * First send command to other nodes via probably existing
+			 * connections, then clean local pooler
+			 */
+			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+			CleanConnection((CleanConnStmt *) parsetree);
+#else
 			Assert(IS_PGXC_COORDINATOR);
 			CleanConnection((CleanConnStmt *) parsetree);
-
 			if (IS_PGXC_COORDINATOR)
 				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_COORDS, false);
+#endif
 			break;
 #endif
 		default:

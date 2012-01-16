@@ -1563,8 +1563,13 @@ pgxc_node_send_query_extended(PGXCNodeHandle *handle, const char *query,
 	if (fetch_size >= 0)
 		if (pgxc_node_send_execute(handle, portal, fetch_size))
 			return EOF;
+#ifdef XCP
+	if (pgxc_node_send_flush(handle))
+		return EOF;
+#else
 	if (pgxc_node_send_sync(handle))
 		return EOF;
+#endif
 
 	return 0;
 }
@@ -1584,7 +1589,7 @@ pgxc_node_send_datanode_query(PGXCNodeHandle *handle, const char *query,
 	if (fetch_size >= 0)
 		if (pgxc_node_send_execute(handle, portal, fetch_size))
 			return EOF;
-	if (pgxc_node_send_sync(handle))
+	if (pgxc_node_send_flush(handle))
 		return EOF;
 
 	return 0;
@@ -1623,6 +1628,13 @@ pgxc_node_flush_read(PGXCNodeHandle *handle)
 	if (handle == NULL)
 		return;
 
+#ifdef XCP
+	/*
+	 * Before reading input send Sync to make sure
+	 * we will eventually receive ReadyForQuery
+	 */
+	pgxc_node_send_sync(handle);
+#endif
 	while(true)
 	{
 		is_ready = is_data_node_ready(handle);

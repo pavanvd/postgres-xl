@@ -2701,9 +2701,13 @@ AbortTransaction(void)
 	 * It is also necessary to check that node are not partially committed
 	 * in an implicit 2PC, correct handling is made below.
 	 */
+#ifdef XCP
+	if (!TransactionIdIsValid(s->globalCommitTransactionId))
+#else
 	if (IS_PGXC_COORDINATOR &&
 		!IsConnFromCoord() &&
 		!TransactionIdIsValid(s->globalCommitTransactionId))
+#endif
 	{
 		/*
 		 * Make sure this is rolled back on the DataNodes

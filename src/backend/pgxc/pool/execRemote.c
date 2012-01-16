@@ -60,8 +60,8 @@
 
 static bool autocommit = true;
 static bool is_ddl = false;
-static bool implicit_force_autocommit = false;
 #ifndef XCP
+static bool implicit_force_autocommit = false;
 static bool temp_object_included = false;
 #endif
 static PGXCNodeHandle **write_node_list = NULL;
@@ -274,6 +274,7 @@ CreateResponseCombiner(int node_count, CombineType combine_type)
 	combiner->tapenodes = NULL;
 #ifdef XCP
 	combiner->merge_sort = false;
+	combiner->extended_query = false;
 	combiner->tapemarks = NULL;
 	combiner->tuplesortstate = NULL;
 	combiner->cursor = NULL;
@@ -1031,6 +1032,8 @@ BufferConnection(PGXCNodeHandle *conn)
 	if (combiner == NULL || conn->state != DN_CONNECTION_STATE_QUERY)
 		return;
 
+	elog(LOG, "Buffer connection %u to step %s", conn->nodeoid, combiner->cursor);
+
 	/*
 	 * When BufferConnection is invoked CurrentContext is related to other
 	 * portal, which is trying to control the connection.
@@ -1070,7 +1073,7 @@ BufferConnection(PGXCNodeHandle *conn)
 	 * fetch_size parameter of last Execute message (PortalSuspended message)
 	 * or end of result set is reached (CommandComplete message)
 	 */
-	while (conn->state == DN_CONNECTION_STATE_QUERY)
+	while (true)
 	{
 		int res;
 
@@ -1114,8 +1117,8 @@ BufferConnection(PGXCNodeHandle *conn)
 
 		/*
 		 * End of result set is reached, so either set the pointer to the
-		 * connection to NULL (step with sort) or remove it from the list
-		 * (step without sort)
+		 * connection to NULL (combiner with sort) or remove it from the list
+		 * (combiner without sort)
 		 */
 		else if (res == RESPONSE_COMPLETE)
 		{
@@ -1128,10 +1131,12 @@ BufferConnection(PGXCNodeHandle *conn)
 			 * number was this connection, but we need this info to find proper
 			 * tuple in the buffer if we are doing merge sort. So store node
 			 * number in special array.
-			 * NB: We can not test combiner->tuplesortstate here, connection
-			 * may require buffering inside tuplesort_begin_merge - while
-			 * pre-read rows from the tapes, one of with may be a local
-			 * connection with RemoteSubplan in the tree.
+			 * NB: We can not test if combiner->tuplesortstate is set here:
+			 * connection may require buffering inside tuplesort_begin_merge
+			 * - while pre-read rows from the tapes, one of the tapes may be
+			 * the local connection with RemoteSubplan in the tree. The
+			 * combiner->tuplesortstate is set only after tuplesort_begin_merge
+			 * returns.
 			 */
 			if (combiner->merge_sort)
 			{
@@ -1149,14 +1154,35 @@ BufferConnection(PGXCNodeHandle *conn)
 				else
 					combiner->current_conn = 0;
 			}
+			/*
+			 * If combiner runs Simple Query Protocol we need to read in
+			 * ReadyForQuery. In case of Extended Query Protocol it is not
+			 * sent and we should quit.
+			 */
+			if (combiner->extended_query)
+				break;
 		}
-		/*
-		 * Before output RESPONSE_COMPLETE or PORTAL_SUSPENDED handle_response()
-		 * changes connection state to DN_CONNECTION_STATE_IDLE, breaking the
-		 * loop. We do not need to do anything specific in case of
-		 * PORTAL_SUSPENDED so skiping "else if" block for that case
-		 */
+		else if (res == RESPONSE_ERROR)
+		{
+			if (combiner->extended_query)
+			{
+				/*
+				 * Need to sync connection to enable receiving commands
+				 * by the datanode
+				 */
+				if (pgxc_node_send_sync(conn) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("Failed to fetch from data node")));
+			}
+		}
+		else if (res == RESPONSE_SUSPENDED || res == RESPONSE_READY)
+		{
+			/* Now it is OK to quit */
+			break;
+		}
 	}
+	Assert(conn->state != DN_CONNECTION_STATE_QUERY);
 	MemoryContextSwitchTo(oldcontext);
 	conn->combiner = NULL;
 }
@@ -1485,13 +1511,14 @@ FetchTuple(ResponseCombiner *combiner)
 		 * If current connection is idle it means portal on the data node is
 		 * suspended. Request more and try to get it
 		 */
-		if (conn->state == DN_CONNECTION_STATE_IDLE)
+		if (combiner->extended_query &&
+				conn->state == DN_CONNECTION_STATE_IDLE)
 		{
 			if (pgxc_node_send_execute(conn, combiner->cursor, 1000) != 0)
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to fetch from data node")));
-			if (pgxc_node_send_sync(conn) != 0)
+			if (pgxc_node_send_flush(conn) != 0)
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to fetch from data node")));
@@ -1534,6 +1561,44 @@ FetchTuple(ResponseCombiner *combiner)
 		}
 		else if (res == RESPONSE_COMPLETE)
 		{
+			/*
+			 * In case of Simple Query Protocol we should receive ReadyForQuery
+			 * before removing connection from the list. In case of Extended
+			 * Query Protocol we may remove connection right away.
+			 */
+			if (combiner->extended_query)
+			{
+				/* If we are doing merge sort clean current connection and return
+				 * NULL, otherwise remove current connection, move last in-place,
+				 * adjust current_conn and continue if it is not last connection */
+				if (combiner->merge_sort)
+				{
+					combiner->connections[combiner->current_conn] = NULL;
+					return NULL;
+				}
+				REMOVE_CURR_CONN(combiner);
+				if (combiner->conn_count > 0)
+					conn = combiner->connections[combiner->current_conn];
+				else
+					return NULL;
+			}
+		}
+		else if (res == RESPONSE_ERROR)
+		{
+			/*
+			 * If doing Extended Query Protocol we need to sync connection,
+			 * otherwise subsequent commands will be ignored.
+			 */
+			if (combiner->extended_query)
+			{
+				if (pgxc_node_send_sync(conn) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("Failed to fetch from data node")));
+			}
+		}
+		else if (res == RESPONSE_READY)
+		{
 			/* If we are doing merge sort clean current connection and return
 			 * NULL, otherwise remove current connection, move last in-place,
 			 * adjust current_conn and continue if it is not last connection */
@@ -1547,6 +1612,13 @@ FetchTuple(ResponseCombiner *combiner)
 				conn = combiner->connections[combiner->current_conn];
 			else
 				return NULL;
+		}
+		else if (res == RESPONSE_TUPDESC)
+		{
+			ExecSetSlotDescriptor(combiner->ss.ps.ps_ResultTupleSlot,
+								  combiner->tuple_desc);
+			/* Now slot is responsible for freeng the descriptor */
+			combiner->tuple_desc = NULL;
 		}
 		else
 		{
@@ -1746,6 +1818,14 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
 					i++;
 					break;
 				case RESPONSE_COMPLETE:
+#ifdef XCP
+					if (to_receive[i]->state != DN_CONNECTION_STATE_ERROR_FATAL)
+						/* Continue read until ReadyForQuery */
+						break;
+					/* fallthru */
+				case RESPONSE_READY:
+					/* fallthru */
+#endif
 				case RESPONSE_COPY:
 					/* Handling is done, do not track this connection */
 					count--;
@@ -1753,6 +1833,11 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
 					if (i < count)
 						to_receive[i] = to_receive[count];
 					break;
+#ifdef XCP
+				case RESPONSE_ERROR:
+					/* no handling needed, just wait for ReadyForQuery */
+					break;
+#endif
 				default:
 					/* Inconsistent responses */
 					add_error_message(to_receive[i], "Unexpected response from the data nodes");
@@ -1768,6 +1853,150 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
 	return 0;
 }
 
+int
+#ifdef XCP
+/*
+ * Read next message from the connection and update the combiner
+ * and connection state accordingly
+ * If we are in an error state we just consume the messages, and do not proxy
+ * Long term, we should look into cancelling executing statements
+ * and closing the connections.
+ * It returns if states need to be handled
+ * Return values:
+ * RESPONSE_EOF - need to receive more data for the connection
+ * RESPONSE_READY - got ReadyForQuery
+ * RESPONSE_COMPLETE - done with the connection, but not yet ready for query.
+ * Also this result is output in case of error
+ * RESPONSE_SUSPENDED - got PortalSuspended
+ * RESPONSE_TUPLEDESC - got tuple description
+ * RESPONSE_DATAROW - got data row
+ * RESPONSE_COPY - got copy response
+ * RESPONSE_BARRIER_OK - barrier command completed successfully
+ */
+handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
+{
+	char	   *msg;
+	int			msg_len;
+	char		msg_type;
+
+	for (;;)
+	{
+		/*
+		 * If we are in the process of shutting down, we
+		 * may be rolling back, and the buffer may contain other messages.
+		 * We want to avoid a procarray exception
+		 * as well as an error stack overflow.
+		 */
+		if (proc_exit_inprogress)
+			conn->state = DN_CONNECTION_STATE_ERROR_FATAL;
+
+		/*
+		 * Don't read from from the connection if there is a fatal error.
+		 * We still return RESPONSE_COMPLETE, not RESPONSE_ERROR, since
+		 * Handling of RESPONSE_ERROR assumes sending SYNC message, but
+		 * State DN_CONNECTION_STATE_ERROR_FATAL indicates connection is
+		 * not usable.
+		 */
+		if (conn->state == DN_CONNECTION_STATE_ERROR_FATAL)
+			return RESPONSE_COMPLETE;
+
+		/* No data available, exit */
+		if (!HAS_MESSAGE_BUFFERED(conn))
+			return RESPONSE_EOF;
+
+		Assert(conn->combiner == combiner || conn->combiner == NULL);
+
+		/* TODO handle other possible responses */
+		msg_type = get_message(conn, &msg_len, &msg);
+		switch (msg_type)
+		{
+			case '\0':			/* Not enough data in the buffer */
+				return RESPONSE_EOF;
+			case 'c':			/* CopyToCommandComplete */
+				HandleCopyOutComplete(combiner);
+				break;
+			case 'C':			/* CommandComplete */
+				HandleCommandComplete(combiner, msg, msg_len);
+				conn->combiner = NULL;
+				conn->state = DN_CONNECTION_STATE_IDLE;
+				return RESPONSE_COMPLETE;
+			case 'T':			/* RowDescription */
+#ifdef DN_CONNECTION_DEBUG
+				Assert(!conn->have_row_desc);
+				conn->have_row_desc = true;
+#endif
+				if (HandleRowDescription(combiner, msg, msg_len))
+					return RESPONSE_TUPDESC;
+				break;
+			case 'D':			/* DataRow */
+#ifdef DN_CONNECTION_DEBUG
+				Assert(conn->have_row_desc);
+#endif
+				/* Do not return if data row has not been actually handled */
+				if (HandleDataRow(combiner, msg, msg_len,
+						PGXCNodeGetNodeId(conn->nodeoid, PGXC_NODE_DATANODE)))
+					return RESPONSE_DATAROW;
+				break;
+			case 's':			/* PortalSuspended */
+				/* No activity is expected on the connection until next query */
+				conn->state = DN_CONNECTION_STATE_IDLE;
+				conn->combiner = NULL;
+				return RESPONSE_SUSPENDED;
+			case '1': /* ParseComplete */
+			case '2': /* BindComplete */
+			case '3': /* CloseComplete */
+			case 'n': /* NoData */
+				/* simple notifications, continue reading */
+				break;
+			case 'G': /* CopyInResponse */
+				conn->state = DN_CONNECTION_STATE_COPY_IN;
+				HandleCopyIn(combiner);
+				/* Done, return to caller to let it know the data can be passed in */
+				return RESPONSE_COPY;
+			case 'H': /* CopyOutResponse */
+				conn->state = DN_CONNECTION_STATE_COPY_OUT;
+				HandleCopyOut(combiner);
+				return RESPONSE_COPY;
+			case 'd': /* CopyOutDataRow */
+				conn->state = DN_CONNECTION_STATE_COPY_OUT;
+				HandleCopyDataRow(combiner, msg, msg_len);
+				break;
+			case 'E':			/* ErrorResponse */
+				HandleError(combiner, msg, msg_len);
+				return RESPONSE_ERROR;
+			case 'A':			/* NotificationResponse */
+			case 'N':			/* NoticeResponse */
+			case 'S':			/* SetCommandComplete */
+				/*
+				 * Ignore these to prevent multiple messages, one from each
+				 * node. Coordinator will send one for DDL anyway
+				 */
+				break;
+			case 'Z':			/* ReadyForQuery */
+				conn->transaction_status = msg[0];
+				conn->state = DN_CONNECTION_STATE_IDLE;
+				conn->combiner = NULL;
+#ifdef DN_CONNECTION_DEBUG
+				conn->have_row_desc = false;
+#endif
+				return RESPONSE_READY;
+
+			case 'b':
+				conn->state = DN_CONNECTION_STATE_IDLE;
+				return RESPONSE_BARRIER_OK;
+			case 'I':			/* EmptyQuery */
+			default:
+				/* sync lost? */
+				elog(WARNING, "Received unsupported message type: %c", msg_type);
+				conn->state = DN_CONNECTION_STATE_ERROR_FATAL;
+				/* stop reading */
+				return RESPONSE_COMPLETE;
+		}
+	}
+	/* never happen, but keep compiler quiet */
+	return RESPONSE_EOF;
+}
+#else
 /*
  * Read next message from the connection and update the combiner accordingly
  * If we are in an error state we just consume the messages, and do not proxy
@@ -1781,12 +2010,7 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
  * RESPONSE_COPY - got copy response
  * RESPONSE_BARRIER_OK - barrier command completed successfully
  */
-int
-#ifdef XCP
-handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
-#else
 handle_response(PGXCNodeHandle *conn, RemoteQueryState *combiner)
-#endif
 {
 	char		*msg;
 	int		msg_len;
@@ -1840,17 +2064,9 @@ handle_response(PGXCNodeHandle *conn, RemoteQueryState *combiner)
 #ifdef DN_CONNECTION_DEBUG
 				Assert(conn->have_row_desc);
 #endif
-#ifdef XCP
-				/* Do not return if data row has not been actually handled */
-				if (HandleDataRow(combiner, msg, msg_len,
-						PGXCNodeGetNodeId(conn->nodeoid, PGXC_NODE_DATANODE)))
-					return RESPONSE_DATAROW;
-				break;
-#else
 				HandleDataRow(combiner, msg, msg_len, PGXCNodeGetNodeId(conn->nodeoid,
 																		PGXC_NODE_DATANODE));
 				return RESPONSE_DATAROW;
-#endif
 			case 's':			/* PortalSuspended */
 				suspended = true;
 				break;
@@ -1926,6 +2142,7 @@ handle_response(PGXCNodeHandle *conn, RemoteQueryState *combiner)
 	/* never happen, but keep compiler quiet */
 	return RESPONSE_EOF;
 }
+#endif
 
 
 /*
@@ -2315,8 +2532,10 @@ pgxc_node_prepare(PGXCNodeAllHandles *pgxc_handles, char *gid)
 
 	/* Receive and Combine results from Datanodes and Coordinators */
 #ifdef XCP
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
 #else
 	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
 	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
@@ -2371,8 +2590,10 @@ finish:
 			result = ERROR_DATANODES_PREPARE;
 
 #ifdef XCP
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
 #else
 	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
 	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
@@ -2455,8 +2676,10 @@ pgxc_node_implicit_prepare(GlobalTransactionId prepare_xid,
 
 	/* Receive and Combine results from Datanodes and Coordinators */
 #ifdef XCP
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
 #else
 	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
 	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
@@ -2591,8 +2814,10 @@ pgxc_node_implicit_commit_prepared(GlobalTransactionId prepare_xid,
 
 	/* Receive and Combine results from Datanodes and Coordinators */
 #ifdef XCP
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
 #else
 	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
 	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
@@ -2739,8 +2964,10 @@ pgxc_node_commit_prepared(GlobalTransactionId gxid,
 		result = EOF;
 
 #ifdef XCP
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
 #else
 	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
 	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
@@ -2856,8 +3083,10 @@ pgxc_node_rollback_prepared(GlobalTransactionId gxid, GlobalTransactionId prepar
 		result = EOF;
 
 #ifdef XCP
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
 #else
 	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
 	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
@@ -2939,8 +3168,10 @@ pgxc_node_commit(PGXCNodeAllHandles *pgxc_handles)
 
 	/* Receive and Combine results from Datanodes and Coordinators */
 #ifdef XCP
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
 #else
 	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
 	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
@@ -3011,8 +3242,10 @@ pgxc_node_rollback(PGXCNodeAllHandles *pgxc_handles)
 
 	/* Receive and Combine results from Datanodes and Coordinators */
 #ifdef XCP
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
 #else
 	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
 	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
@@ -3058,7 +3291,7 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 		pfree(pgxc_handles);
 	}
 
-	need_tran = !autocommit || conn_count > 1;
+	need_tran = !autocommit || (is_from && conn_count > 1);
 
 	elog(DEBUG1, "autocommit = %s, conn_count = %d, need_tran = %s", autocommit ? "true" : "false", conn_count, need_tran ? "true" : "false");
 
@@ -3594,8 +3827,8 @@ DataNodeCopyOut(PGXCNodeHandle** copy_connections,
 							  int conn_count, FILE* copy_file)
 {
 	ResponseCombiner combiner;
-	int 		i;
 	uint64		processed;
+	bool 		error;
 
 	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_SUM);
 	/*
@@ -3607,39 +3840,11 @@ DataNodeCopyOut(PGXCNodeHandle** copy_connections,
 	if (copy_file)
 		combiner.copy_file = copy_file;
 
-	for(i = 0; i < conn_count; i++)
-	{
-		PGXCNodeHandle *handle = copy_connections[i];
-
-		if (handle->state == DN_CONNECTION_STATE_COPY_OUT)
-		{
-			int read_status = 0;
-			/* H message has been consumed, continue to manage data row messages */
-			while (read_status >= 0 && handle->state == DN_CONNECTION_STATE_COPY_OUT) /* continue to read as long as there is data */
-			{
-				if (handle_response(handle, &combiner) == RESPONSE_EOF)
-				{
-					/* read some extra-data */
-					read_status = pgxc_node_read_data(handle, true);
-					if (read_status < 0)
-						ereport(ERROR,
-								(errcode(ERRCODE_CONNECTION_FAILURE),
-								 errmsg("unexpected EOF on datanode connection")));
-					else
-						/*
-						 * Set proper connection status - handle_response
-						 * has changed it to DN_CONNECTION_STATE_QUERY
-						 */
-						handle->state = DN_CONNECTION_STATE_COPY_OUT;
-				}
-				/* There is no more data that can be read from connection */
-			}
-		}
-	}
+	error = (pgxc_node_receive_responses(conn_count, copy_connections, NULL, &combiner) != 0);
 
 	processed = combiner.processed;
 
-	if (!ValidateAndCloseCombiner(&combiner))
+	if (!ValidateAndCloseCombiner(&combiner) || error)
 	{
 		if (autocommit && !PersistentConnections)
 			release_handles();
@@ -5039,17 +5244,13 @@ ExecEndRemoteQuery(RemoteQueryState *node)
 
 	CloseCombiner(node);
 }
-#endif
+
 
 static void
 close_node_cursors(PGXCNodeHandle **connections, int conn_count, char *cursor)
 {
 	int i;
-#ifdef XCP
-	ResponseCombiner combiner;
-#else
 	RemoteQueryState *combiner;
-#endif
 
 	for (i = 0; i < conn_count; i++)
 	{
@@ -5065,15 +5266,7 @@ close_node_cursors(PGXCNodeHandle **connections, int conn_count, char *cursor)
 					 errmsg("Failed to close data node cursor")));
 	}
 
-#ifdef XCP
-	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
-	/*
-	 * Make sure there are zeroes in unused fields
-	 */
-	memset(&combiner, 0, sizeof(ScanState));
-#else
 	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_NONE);
-#endif
 
 	while (conn_count > 0)
 	{
@@ -5084,33 +5277,24 @@ close_node_cursors(PGXCNodeHandle **connections, int conn_count, char *cursor)
 		i = 0;
 		while (i < conn_count)
 		{
-#ifdef XCP
-			int res = handle_response(connections[i], &combiner);
-#else
 			int res = handle_response(connections[i], combiner);
-#endif
 			if (res == RESPONSE_EOF)
 			{
 				i++;
 			}
 			else if (res == RESPONSE_COMPLETE)
 			{
+				/* Done, connection is reade for query */
 				if (--conn_count > i)
 					connections[i] = connections[conn_count];
 			}
-			else
-			{
-				// Unexpected response, ignore?
-			}
+			/* Ignore other possible responses */
 		}
 	}
 
-#ifdef XCP
-	ValidateAndCloseCombiner(&combiner);
-#else
 	ValidateAndCloseCombiner(combiner);
-#endif
 }
+#endif
 
 
 /*
@@ -5273,10 +5457,14 @@ ExecRemoteUtility(RemoteQuery *node)
 	ExecDirectType		exec_direct_type = node->exec_direct_type;
 	int			i;
 
+#ifdef XCP
+	is_ddl |= (exec_type == EXEC_ON_ALL_NODES || exec_type == EXEC_ON_COORDS);
+#else
 	if (!force_autocommit)
 		is_ddl = true;
 
 	implicit_force_autocommit = force_autocommit;
+#endif
 
 #ifdef XCP
 	remotestate = makeNode(RemoteQueryState);
@@ -5331,7 +5519,7 @@ ExecRemoteUtility(RemoteQuery *node)
 					 errmsg("cannot run EXECUTE DIRECT with utility inside a transaction block")));
 	}
 
-	if (!is_read_only)
+	if (need_tran && !is_read_only)
 	{
 		register_write_nodes(dn_conn_count, pgxc_connections->datanode_handles);
 	}
@@ -5481,6 +5669,16 @@ ExecRemoteUtility(RemoteQuery *node)
 					i++;
 				}
 				else if (res == RESPONSE_COMPLETE)
+#ifdef XCP
+				{
+					/* Ignore, wait for ReadyForQuery */
+				}
+				else if (res == RESPONSE_ERROR)
+				{
+					/* Ignore, wait for ReadyForQuery */
+				}
+				else if (res == RESPONSE_READY)
+#endif
 				{
 					if (i < --dn_conn_count)
 						pgxc_connections->datanode_handles[i] =
@@ -5527,6 +5725,16 @@ ExecRemoteUtility(RemoteQuery *node)
 					i++;
 				}
 				else if (res == RESPONSE_COMPLETE)
+#ifdef XCP
+				{
+					/* Ignore, wait for ReadyForQuery */
+				}
+				else if (res == RESPONSE_ERROR)
+				{
+					/* Ignore, wait for ReadyForQuery */
+				}
+				else if (res == RESPONSE_READY)
+#endif
 				{
 					if (i < --co_conn_count)
 						pgxc_connections->coord_handles[i] =
@@ -5622,7 +5830,6 @@ PGXCNodeCleanAndRelease(int code, Datum arg)
 static int
 pgxc_node_receive_and_validate(const int conn_count, PGXCNodeHandle ** handles)
 {
-	struct timeval *timeout = NULL;
 	int result = 0;
 	ResponseCombiner combiner;
 
@@ -5636,7 +5843,7 @@ pgxc_node_receive_and_validate(const int conn_count, PGXCNodeHandle ** handles)
 	memset(&combiner, 0, sizeof(ScanState));
 
 	/* Receive responses */
-	result = pgxc_node_receive_responses(conn_count, handles, timeout, &combiner);
+	result = pgxc_node_receive_responses(conn_count, handles, NULL, &combiner);
 	if (result)
 		goto finish;
 
@@ -5796,15 +6003,22 @@ ExecCloseRemoteStatement(const char *stmt_name, List *nodelist)
 			{
 				i++;
 			}
+#ifdef XCP
+			else if (res == RESPONSE_READY ||
+					connections[i]->state == DN_CONNECTION_STATE_ERROR_FATAL)
+#else
 			else if (res == RESPONSE_COMPLETE)
+#endif
 			{
 				if (--conn_count > i)
 					connections[i] = connections[conn_count];
 			}
+#ifndef XCP
 			else
 			{
 				connections[i]->state = DN_CONNECTION_STATE_ERROR_FATAL;
 			}
+#endif
 		}
 	}
 
@@ -5821,6 +6035,22 @@ ExecCloseRemoteStatement(const char *stmt_name, List *nodelist)
  * Check if an Implicit 2PC is necessary for this transaction.
  * Check also if it is necessary to prepare transaction locally.
  */
+#ifdef XCP
+bool
+PGXCNodeIsImplicit2PC(bool *prepare_local_coord)
+{
+	if (write_node_count > 1 && !MyXactAccessedTempRel)
+	{
+		*prepare_local_coord = true;
+		return true;
+	}
+	else
+	{
+		*prepare_local_coord = false;
+		return false;
+	}
+}
+#else
 bool
 PGXCNodeIsImplicit2PC(bool *prepare_local_coord)
 {
@@ -5862,6 +6092,7 @@ PGXCNodeIsImplicit2PC(bool *prepare_local_coord)
 	 */
 	return (write_node_count > 1 || co_conn_count > 0 || total_count > 0);
 }
+#endif
 
 /*
  * Return the list of active nodes
@@ -6031,7 +6262,6 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 {
 	RemoteQueryState   *remotestate;
 	ResponseCombiner   *combiner;
-	TupleDesc 			typeInfo;
 
 	remotestate = makeNode(RemoteQueryState);
 	combiner = (ResponseCombiner *) remotestate;
@@ -6045,12 +6275,7 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 
 	ExecInitResultTupleSlot(estate, &combiner->ss.ps);
 	if (node->scan.plan.targetlist)
-	{
-		typeInfo = ExecTypeFromTL(node->scan.plan.targetlist, false);
-		ExecSetSlotDescriptor(combiner->ss.ps.ps_ResultTupleSlot, typeInfo);
-	}
-
-	combiner->ss.ps.ps_TupFromTlist = false;
+		ExecAssignResultTypeFromTL((PlanState *) remotestate);
 
 	/*
 	 * If there are parameters supplied, get them into a form to be sent to the
@@ -6117,6 +6342,8 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection, bool need_tran,
 		 */
 		if (step->cursor)
 			fetch = 1;
+
+		combiner->extended_query = true;
 
 		if (pgxc_node_send_query_extended(connection,
 							prepared ? NULL : step->sql_statement,
@@ -6270,9 +6497,6 @@ ExecRemoteQuery(RemoteQueryState *node)
 		/* See if we have a primary node, execute on it first before the others */
 		if (primaryconnection)
 		{
-			if (primaryconnection->state == DN_CONNECTION_STATE_QUERY)
-				BufferConnection(primaryconnection);
-
 			/* If explicit transaction is needed gxid is already sent */
 			if (!pgxc_start_command_on_connection(primaryconnection, need_tran, gxid,
 												timestamp, node, total_conn_count, snapshot))
@@ -6285,15 +6509,17 @@ ExecRemoteQuery(RemoteQueryState *node)
 			}
 			Assert(combiner->combine_type == COMBINE_TYPE_SAME);
 
+			pgxc_node_receive(1, &primaryconnection, NULL);
 			/* Make sure the command is completed on the primary node */
 			while (true)
 			{
-				int res;
-				pgxc_node_receive(1, &primaryconnection, NULL);
-				res = handle_response(primaryconnection, combiner);
-				if (res == RESPONSE_COMPLETE)
+				int res = handle_response(primaryconnection, combiner);
+				if (res == RESPONSE_READY)
 					break;
 				else if (res == RESPONSE_EOF)
+					pgxc_node_receive(1, &primaryconnection, NULL);
+				else if (res == RESPONSE_COMPLETE || res == RESPONSE_ERROR)
+				    /* Get ReadyForQuery */
 					continue;
 				else
 					ereport(ERROR,
@@ -6316,8 +6542,6 @@ ExecRemoteQuery(RemoteQueryState *node)
 
 		for (i = 0; i < regular_conn_count; i++)
 		{
-			if (connections[i]->state == DN_CONNECTION_STATE_QUERY)
-				BufferConnection(connections[i]);
 			/* If explicit transaction is needed gxid is already sent */
 			if (!pgxc_start_command_on_connection(connections[i], need_tran, gxid,
 												timestamp, node, total_conn_count, snapshot))
@@ -6340,99 +6564,9 @@ ExecRemoteQuery(RemoteQueryState *node)
 			memcpy(combiner->cursor_connections, connections, regular_conn_count * sizeof(PGXCNodeHandle *));
 		}
 
-		/*
-		 * Stop if all commands are completed or we got a data row and
-		 * initialized state node for subsequent invocations
-		 */
-		while (regular_conn_count > 0 && combiner->connections == NULL)
-		{
-			int i = 0;
-
-			if (pgxc_node_receive(regular_conn_count, connections, NULL))
-			{
-				pfree(connections);
-				if (primaryconnection)
-					pfree(primaryconnection);
-				if (combiner->cursor_connections)
-					pfree(combiner->cursor_connections);
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to read response from data nodes")));
-			}
-			/*
-			 * Handle input from the data nodes.
-			 * If we got a RESPONSE_DATAROW we can break handling to wrap
-			 * it into a tuple and return. Handling will be continued upon
-			 * subsequent invocations.
-			 * If we got 0, we exclude connection from the list. We do not
-			 * expect more input from it. In case of non-SELECT query we quit
-			 * the loop when all nodes finish their work and send ReadyForQuery
-			 * with empty connections array.
-			 * If we got EOF, move to the next connection, will receive more
-			 * data on the next iteration.
-			 */
-			while (i < regular_conn_count)
-			{
-				int res = handle_response(connections[i], combiner);
-				if (res == RESPONSE_EOF)
-				{
-					i++;
-				}
-				else if (res == RESPONSE_COMPLETE)
-				{
-					if (i < --regular_conn_count)
-						connections[i] = connections[regular_conn_count];
-				}
-				else if (res == RESPONSE_TUPDESC)
-				{
-					ExecSetSlotDescriptor(resultslot, combiner->tuple_desc);
-					/*
-					 * Now tuple table slot is responsible for freeing the
-					 * descriptor
-					 */
-					combiner->tuple_desc = NULL;
-					if (step->sort)
-					{
-						SimpleSort *sort = step->sort;
-
-						combiner->connections = connections;
-						combiner->conn_count = regular_conn_count;
-						/*
-						 * First message is already in the buffer
-						 * Further fetch will be under tuplesort control
-						 * If query does not produce rows tuplesort will not
-						 * be initialized
-						 */
-						combiner->tuplesortstate = tuplesort_begin_merge(
-											   resultslot->tts_tupleDescriptor,
-											   sort->numCols,
-											   sort->sortColIdx,
-											   sort->sortOperators,
-											   sort->collations,
-											   sort->nullsFirst,
-											   combiner,
-											   work_mem);
-						/*
-						 * Break the loop, do not wait for first row.
-						 * Tuplesort module want to control node it is
-						 * fetching rows from, while in this loop first
-						 * row would be got from random node
-						 */
-						break;
-					}
-				}
-				else if (res == RESPONSE_DATAROW)
-				{
-					/*
-					 * Got first data row, quit the loop
-					 */
-					combiner->connections = connections;
-					combiner->conn_count = regular_conn_count;
-					combiner->current_conn = i;
-					break;
-				}
-			}
-		}
+		combiner->connections = connections;
+		combiner->conn_count = regular_conn_count;
+		combiner->current_conn = 0;
 
 		if (combiner->cursor_count)
 		{
@@ -6443,6 +6577,27 @@ ExecRemoteQuery(RemoteQueryState *node)
 		}
 
 		node->query_Done = true;
+
+		if (step->sort)
+		{
+			SimpleSort *sort = step->sort;
+
+			/*
+			 * First message is already in the buffer
+			 * Further fetch will be under tuplesort control
+			 * If query does not produce rows tuplesort will not
+			 * be initialized
+			 */
+			combiner->tuplesortstate = tuplesort_begin_merge(
+								   resultslot->tts_tupleDescriptor,
+								   sort->numCols,
+								   sort->sortColIdx,
+								   sort->sortOperators,
+								   sort->collations,
+								   sort->nullsFirst,
+								   combiner,
+								   work_mem);
+		}
 	}
 
 	if (combiner->tuplesortstate)
@@ -7393,6 +7548,8 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 							 errmsg("Failed to send command to data nodes")));
 				}
 
+				combiner->extended_query = true;
+
 				/* Use Datanode Query Protocol */
 				if (pgxc_node_send_datanode_query(combiner->connections[i],
 												  node->subplanstr,
@@ -7475,6 +7632,11 @@ ExecReScanRemoteSubplan(RemoteSubplanState *node)
 {
 	ResponseCombiner *combiner = (ResponseCombiner *)node;
 
+	if (IS_PGXC_DATANODE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("Correlated subquery")));
+
 	/*
 	 * If we haven't queried remote nodes yet, just return. If outerplan'
 	 * chgParam is not NULL then it will be re-scanned by ExecProcNode,
@@ -7512,6 +7674,8 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 
 	if (outerPlanState(node))
 		ExecEndNode(outerPlanState(node));
+	if (node->locator)
+		freeLocator(node->locator);
 
 	/*
 	 * Clean up remote connections
@@ -7520,15 +7684,56 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 
 	if (combiner->cursor)
 	{
-		close_node_cursors(combiner->cursor_connections,
-						   combiner->cursor_count,
-						   combiner->cursor);
+		int i;
+		for (i = 0; i < combiner->cursor_count; i++)
+		{
+			PGXCNodeHandle *conn;
+
+			conn = combiner->cursor_connections[i];
+
+			CHECK_OWNERSHIP(conn, combiner);
+
+			if (pgxc_node_send_close(conn, false, combiner->cursor) != 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Failed to close data node cursor")));
+			if (pgxc_node_send_sync(conn) != 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Failed to close data node cursor")));
+		}
+
+		while (combiner->cursor_count > 0)
+		{
+			if (pgxc_node_receive(combiner->cursor_count,
+								  combiner->cursor_connections, NULL))
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Failed to close data node cursor")));
+			i = 0;
+			while (i < combiner->cursor_count)
+			{
+				int res = handle_response(combiner->cursor_connections[i],
+										  combiner);
+				if (res == RESPONSE_EOF)
+				{
+					i++;
+				}
+				else if (res == RESPONSE_READY)
+				{
+					/* Done, connection is reade for query */
+					if (--combiner->cursor_count > i)
+						combiner->cursor_connections[i] =
+								combiner->cursor_connections[combiner->cursor_count];
+				}
+				/* Ignore other possible responses */
+			}
+		}
+
 		combiner->cursor = NULL;
 	}
 
-	CloseCombiner(combiner);
-	if (node->locator)
-		freeLocator(node->locator);
+	ValidateAndCloseCombiner(combiner);
 	pfree(node);
 }
 #endif

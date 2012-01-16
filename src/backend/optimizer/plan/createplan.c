@@ -4114,13 +4114,20 @@ make_remotesubplan(PlannerInfo *root,
 		if (resultDistribution->distributionExpr)
 		{
 			ListCell   *lc;
+			Expr	   *expr;
+
+			/* XXX Is that correct to reference a column of different type? */
+			if (IsA(resultDistribution->distributionExpr, RelabelType))
+				expr = ((RelabelType *) resultDistribution->distributionExpr)->arg;
+			else
+				expr = (Expr *) resultDistribution->distributionExpr;
 
 			/* Find distribution expression in the target list */
 			foreach(lc, lefttree->targetlist)
 			{
 				TargetEntry *tle = (TargetEntry *) lfirst(lc);
 
-				if (equal(tle->expr, resultDistribution->distributionExpr))
+				if (equal(tle->expr, expr))
 				{
 					node->distributionKey = tle->resno;
 					break;
@@ -4132,7 +4139,7 @@ make_remotesubplan(PlannerInfo *root,
 				TargetEntry *newtle;
 
 				/* The expression is not found, need to add junk */
-				newtle = makeTargetEntry((Expr *) resultDistribution->distributionExpr,
+				newtle = makeTargetEntry(expr,
 										 list_length(lefttree->targetlist) + 1,
 									     NULL,
 										 true);
@@ -4149,6 +4156,8 @@ make_remotesubplan(PlannerInfo *root,
 					newtlist = lappend(newtlist, newtle);
 					lefttree = (Plan *) make_result(root, newtlist, NULL, lefttree);
 				}
+
+				node->distributionKey = newtle->resno;
 			}
 		}
 		tmpset = bms_copy(resultDistribution->nodes);
@@ -6337,7 +6346,7 @@ create_remoteinsert_plan(PlannerInfo *root, Plan *topplan)
 		Var			   *var;
 		Oid 		   *att_types;
 
-		
+
 		ttab = rt_fetch(resultRelationIndex, root->parse->rtable);
 
 		/* Bad relation ? */
@@ -6360,7 +6369,7 @@ create_remoteinsert_plan(PlannerInfo *root, Plan *topplan)
 		 * vary on each node
 		 */
 		if (IsTempTable(ttab->relid))
-			appendStringInfo(buf, "INSERT INTO %s (", 
+			appendStringInfo(buf, "INSERT INTO %s (",
 					quote_identifier(ttab->relname));
 		else
 			appendStringInfo(buf, "INSERT INTO %s.%s (", quote_identifier(nspname),
@@ -6430,7 +6439,7 @@ create_remoteinsert_plan(PlannerInfo *root, Plan *topplan)
 		fstep->exec_nodes->nodeList = NULL;
 		fstep->exec_nodes->en_relid = ttab->relid;
 		fstep->exec_nodes->accesstype = RELATION_ACCESS_INSERT;
-		
+
 		/*
 		 * For hash/modulo distributed tables, the target node must be selected
 		 * at the execution time based on the partition column value.
