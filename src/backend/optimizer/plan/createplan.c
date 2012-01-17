@@ -4270,7 +4270,7 @@ make_remotesubplan(PlannerInfo *root,
 				{
 					EquivalenceMember *em = (EquivalenceMember *) lfirst(j);
 
-					if (em->em_is_const || em->em_is_child)
+					if (em->em_is_const)
 						continue;
 
 					tle = tlist_member((Node *) em->em_expr, tlist);
@@ -4306,7 +4306,7 @@ make_remotesubplan(PlannerInfo *root,
 						List	   *exprvars;
 						ListCell   *k;
 
-						if (em->em_is_const || em->em_is_child)
+						if (em->em_is_const)
 							continue;
 						sortexpr = em->em_expr;
 						exprvars = pull_var_clause((Node *) sortexpr,
