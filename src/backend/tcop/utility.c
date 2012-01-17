@@ -1421,22 +1421,25 @@ standard_ProcessUtility(Node *parsetree,
 		case T_ViewStmt:		/* CREATE VIEW */
 			DefineView((ViewStmt *) parsetree, queryString);
 #ifdef PGXC
+#ifdef XCP
+			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+			{
+				ViewStmt *stmt = (ViewStmt *) parsetree;
+
+				if (stmt->view->relpersistence != RELPERSISTENCE_TEMP)
+					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_COORDS, false);
+			}
+#else
 			if (IS_PGXC_COORDINATOR)
 			{
-#ifdef XCP
 				/*
 				 * If view is temporary, no need to send this query to other
 				 * remote Coordinators
 				 */
-				ViewStmt *stmt = (ViewStmt *) parsetree;
-
-				if (stmt->view->relpersistence != RELPERSISTENCE_TEMP)
-					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
-#else
 				if (!ExecIsTempObjectIncluded())
 					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_COORDS, false);
-#endif
 			}
+#endif
 #endif
 			break;
 
@@ -2262,17 +2265,9 @@ ExecUtilityFindNodes(ObjectType object_type,
 		case OBJECT_VIEW:
 			/* Check if object is a temporary view */
 			if ((*is_temp = IsTempTable(relid)))
-#ifdef XCP
-				exec_type = EXEC_ON_DATANODES;
-#else
 				exec_type = EXEC_ON_NONE;
-#endif
 			else
-#ifdef XCP
-				exec_type = EXEC_ON_ALL_NODES;
-#else
 				exec_type = EXEC_ON_COORDS;
-#endif
 			break;
 
 		case OBJECT_INDEX:
