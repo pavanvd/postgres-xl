@@ -3273,6 +3273,7 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 	TimestampTz timestamp = GetCurrentGTMStartTimestamp();
 	Snapshot snapshot = GetActiveSnapshot();
 	int conn_count = list_length(nodelist);
+	Locator *result;
 
 	/* Get needed datanode connections */
 	if (!is_from && IsReplicated(rel_loc->locatorType))
@@ -3334,6 +3335,24 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 					 errmsg("Could not begin transaction on data nodes.")));
 	}
 
+	/*
+	 * COPY TO do not use locator, it just takes connections from it, and
+	 * we do not look up distribution data type in this case.
+	 * So always use LOCATOR_TYPE_RROBIN to avoid errors because of not
+	 * defined partType if real locator type is HASH or MODULO.
+	 * Create locator before sending down query, because createLocator may
+	 * fail and we leave with dirty connections.
+	 * If we get an error now datanode connection will be clean and error
+	 * handler will issue transaction abort.
+	 */
+	result = createLocator(is_from ? rel_loc->locatorType : LOCATOR_TYPE_RROBIN,
+					 is_from ? RELATION_ACCESS_INSERT : RELATION_ACCESS_READ,
+						 partType,
+						 LOCATOR_LIST_POINTER,
+						 conn_count,
+						 (void *) connections,
+						 NULL,
+						 false);
 
 	/* Send query to nodes */
 	for (i = 0; i < conn_count; i++)
@@ -3399,19 +3418,7 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 		pfree(connections);
 		return NULL;
 	}
-	/*
-	 * COPY TO do not use locator, it just takes connections from it.
-	 * So always use LOCATOR_TYPE_RROBIN to avoid errors because of not
-	 * defined partType if real locator type is HASH or MODULO
-	 */
-	return createLocator(is_from ? rel_loc->locatorType : LOCATOR_TYPE_RROBIN,
-					 is_from ? RELATION_ACCESS_INSERT : RELATION_ACCESS_READ,
-						 partType,
-						 LOCATOR_LIST_POINTER,
-						 conn_count,
-						 (void *) connections,
-						 NULL,
-						 false);
+	return result;
 }
 #else
 PGXCNodeHandle**
