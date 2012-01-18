@@ -2307,8 +2307,15 @@ ExecUtilityFindNodesRelkind(Oid relid, bool *is_temp)
 			break;
 
 		case RELKIND_RELATION:
+#ifdef XCP
+			if ((*is_temp = IsTempTable(relid)))
+				exec_type = EXEC_ON_DATANODES;
+			else
+				exec_type = EXEC_ON_ALL_NODES;
+#else
 			*is_temp = IsTempTable(relid);
 			exec_type = EXEC_ON_ALL_NODES;
+#endif
 			break;
 
 		case RELKIND_VIEW:
