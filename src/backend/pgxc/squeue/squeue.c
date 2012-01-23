@@ -327,7 +327,7 @@ SharedQueueBind(const char *sqname, List *consNodes,
 
 		heapPtr = (char *) sq;
 		/* Skip header */
-		heapPtr += SQUEUE_HDR_SIZE(i);
+		heapPtr += SQUEUE_HDR_SIZE(sq->sq_nconsumers);
 		for (i = 0; i < sq->sq_nconsumers; i++)
 		{
 			ConsState *cstate = &(sq->sq_consumers[i]);
@@ -336,6 +336,7 @@ SharedQueueBind(const char *sqname, List *consNodes,
 			cstate->cs_qlength = qsize;
 			heapPtr += qsize;
 		}
+		Assert(heapPtr <= ((char *) sq) + SQUEUE_SIZE);
 		if (myindex)
 			*myindex = -1;
 	}
