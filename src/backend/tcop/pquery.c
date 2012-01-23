@@ -22,6 +22,7 @@
 #include "miscadmin.h"
 #include "pg_trace.h"
 #ifdef XCP
+#include "catalog/pgxc_node.h"
 #include "executor/producerReceiver.h"
 #include "pgxc/nodemgr.h"
 #endif
@@ -558,12 +559,75 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 											None_Receiver,
 											params,
 											0);
+				if (queryDesc->plannedstmt->nParamExec > 0)
+				{
+					/*
+					 * We have a parameter set during execution of upper plan,
+					 * and there is high probability the other nodes will send
+					 * down different value for that plan, so we can not have
+					 * single producer serving all the nodes.
+					 * So we execute the plan locally and filter results
+					 * according to the distribution, do not set up the shared
+					 * queue.
+					 */
+					int 	   *consMap;
+					int 		len;
+					int 		selfid;  /* Node Id of the parent data node */
+					ListCell   *lc;
+					int 		i;
+					Locator	   *locator;
+					Oid			keytype;
+					DestReceiver *dest;
 
+					len = list_length(queryDesc->plannedstmt->distributionNodes);
+					consMap = (int *) palloc0(len * sizeof(int));
+					queryDesc->squeue = NULL;
+					queryDesc->myindex = -1;
+					selfid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE,
+													   PGXC_NODE_DATANODE);
+					i = 0;
+					foreach(lc, queryDesc->plannedstmt->distributionNodes)
+					{
+						if (selfid == lfirst_int(lc))
+						{
+							consMap[i] = SQ_CONS_SELF;
+							break;
+						}
+						i++;
+					}
+
+					/*
+					 * Call ExecutorStart to prepare the plan for execution
+					 */
+					ExecutorStart(queryDesc, eflags);
+
+					/*
+					 * Set up locator if result distribution is requested
+					 */
+					keytype = queryDesc->plannedstmt->distributionKey == InvalidAttrNumber ?
+							InvalidOid :
+							queryDesc->tupDesc->attrs[queryDesc->plannedstmt->distributionKey-1]->atttypid;
+					locator = createLocator(
+							queryDesc->plannedstmt->distributionType,
+							RELATION_ACCESS_INSERT,
+							keytype,
+							LOCATOR_LIST_INT,
+							len,
+							consMap,
+							NULL,
+							false);
+					dest = CreateDestReceiver(DestProducer);
+					SetProducerDestReceiverParams(dest,
+							queryDesc->plannedstmt->distributionKey,
+							locator, queryDesc->squeue);
+					queryDesc->dest = dest;
+				}
+				else
 				{
 					int 	   *consMap;
 					int 		len;
 
-					/* Distributed data requesteb, bind shared queue for data exchange */
+					/* Distributed data requested, bind shared queue for data exchange */
 					len = list_length(queryDesc->plannedstmt->distributionNodes);
 					consMap = (int *) palloc(len * sizeof(int));
 					queryDesc->squeue = SharedQueueBind(portal->name,
@@ -972,42 +1036,60 @@ PortalRun(Portal portal, long count, bool isTopLevel,
 				{
 					long		oldPos;
 
-					/* Make sure the producer is advancing */
-					while (count == 0 || nprocessed < count)
+					if (portal->queryDesc->squeue)
 					{
-						if (!portal->queryDesc->estate->es_finished)
-							AdvanceProducingPortal(portal);
-						/* make read pointer active */
-						tuplestore_select_read_pointer(portal->holdStore, 1);
-						/* perform reads */
-						nprocessed += RunFromStore(portal,
-												   ForwardScanDirection,
-										   count ? count - nprocessed : 0,
-												   dest);
-						/*
-						 * Switch back to the write pointer
-						 * We do not want to seek if the tuplestore operates
-						 * with a file, so copy pointer before.
-						 * Also advancing write pointer would allow to free some
-						 * memory.
-						 */
-						tuplestore_copy_read_pointer(portal->holdStore, 1, 0);
-						tuplestore_select_read_pointer(portal->holdStore, 0);
-						/* try to release occupied memory */
-						tuplestore_trim(portal->holdStore);
-						/* Break if we can not get more rows */
-						if (portal->queryDesc->estate->es_finished)
-							break;
+						/* Make sure the producer is advancing */
+						while (count == 0 || nprocessed < count)
+						{
+							if (!portal->queryDesc->estate->es_finished)
+								AdvanceProducingPortal(portal);
+							/* make read pointer active */
+							tuplestore_select_read_pointer(portal->holdStore, 1);
+							/* perform reads */
+							nprocessed += RunFromStore(portal,
+													   ForwardScanDirection,
+											   count ? count - nprocessed : 0,
+													   dest);
+							/*
+							 * Switch back to the write pointer
+							 * We do not want to seek if the tuplestore operates
+							 * with a file, so copy pointer before.
+							 * Also advancing write pointer would allow to free some
+							 * memory.
+							 */
+							tuplestore_copy_read_pointer(portal->holdStore, 1, 0);
+							tuplestore_select_read_pointer(portal->holdStore, 0);
+							/* try to release occupied memory */
+							tuplestore_trim(portal->holdStore);
+							/* Break if we can not get more rows */
+							if (portal->queryDesc->estate->es_finished)
+								break;
+						}
+						if (nprocessed > 0)
+							portal->atStart = false; /* OK to go backward now */
+						portal->atEnd = portal->queryDesc->estate->es_finished &&
+							tuplestore_ateof(portal->holdStore);
+						oldPos = portal->portalPos;
+						portal->portalPos += nprocessed;
+						/* portalPos doesn't advance when we fall off the end */
+						if (portal->portalPos < oldPos)
+							portal->posOverflow = true;
 					}
-					if (nprocessed > 0)
-						portal->atStart = false; /* OK to go backward now */
-					portal->atEnd = portal->queryDesc->estate->es_finished &&
-					    tuplestore_ateof(portal->holdStore);
-					oldPos = portal->portalPos;
-					portal->portalPos += nprocessed;
-					/* portalPos doesn't advance when we fall off the end */
-					if (portal->portalPos < oldPos)
-						portal->posOverflow = true;
+					else
+					{
+						DestReceiver *olddest;
+
+						Assert(portal->queryDesc->dest->mydest == DestProducer);
+						olddest = SetSelfConsumerDestReceiver(
+								portal->queryDesc->dest, dest);
+						/*
+						 * Now fetch desired portion of results.
+						 */
+						nprocessed = PortalRunSelect(portal, true, count,
+													 portal->queryDesc->dest);
+						SetSelfConsumerDestReceiver(
+								portal->queryDesc->dest, olddest);
+					}
 				}
 				else
 				{

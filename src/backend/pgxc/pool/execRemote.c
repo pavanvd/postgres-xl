@@ -7646,11 +7646,6 @@ ExecReScanRemoteSubplan(RemoteSubplanState *node)
 {
 	ResponseCombiner *combiner = (ResponseCombiner *)node;
 
-	if (IS_PGXC_DATANODE)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("Correlated subquery")));
-
 	/*
 	 * If we haven't queried remote nodes yet, just return. If outerplan'
 	 * chgParam is not NULL then it will be re-scanned by ExecProcNode,

@@ -87,7 +87,7 @@ producerReceiveSlot(TupleTableSlot *slot, DestReceiver *self)
 			(*myState->consumer->receiveSlot) (slot, myState->consumer);
 			myState->selfcount++;
 		}
-		else
+		else if (myState->squeue)
 		{
 			SharedQueueWrite(myState->squeue, consumerIdx, slot,
 							 &myState->tstores[consumerIdx], myState->tmpcxt);
@@ -191,8 +191,9 @@ SetProducerDestReceiverParams(DestReceiver *self,
 	myState->tmpcxt = NULL;
 	/* Create workspace */
 	myState->distNodes = (int *) getLocatorResults(locator);
-	myState->tstores = (Tuplestorestate **)
-		palloc0(NumDataNodes * sizeof(Tuplestorestate *));
+	if (squeue)
+		myState->tstores = (Tuplestorestate **)
+			palloc0(NumDataNodes * sizeof(Tuplestorestate *));
 }
 
 
