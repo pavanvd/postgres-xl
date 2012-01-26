@@ -2038,6 +2038,15 @@ cost_mergejoin(MergePath *path, PlannerInfo *root, SpecialJoinInfo *sjinfo)
 			 relation_byte_size(inner_path_rows, inner_path->parent->width) >
 			 (work_mem * 1024L))
 		path->materialize_inner = true;
+#ifdef XCP
+	/*
+	 * Even if innersortkeys are specified, we never add the Sort node on top
+	 * of RemoteSubplan, instead we set up internal sorter.
+	 * Since RemoteSubplan does not support mark/restore we must materialize it
+	 */
+	else if (inner_path->pathtype == T_RemoteSubplan)
+		path->materialize_inner = true;
+#endif
 	else
 		path->materialize_inner = false;
 
