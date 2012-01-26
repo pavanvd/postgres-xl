@@ -649,6 +649,7 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 
 	LWLockAcquire(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock, LW_EXCLUSIVE);
 
+	Assert(cstate->cs_ntuples >= 0);
 	while (cstate->cs_ntuples == 0)
 	{
 		if (cstate->cs_eof)
@@ -691,30 +692,54 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 /*
  * Mark specified consumer as closed discarding all input which may already be
  * in the queue.
+ * If consumerIdx is -1 the producer is cleaned up. Producer need to wait for
+ * consumers that have started their work - they may being cleaned at the
+ * moment. The consumers which have not ever started may be discarded.
  */
 void
 SharedQueueReset(SharedQueue squeue, int consumerIdx)
 {
-	ConsState  *cstate = &(squeue->sq_consumers[consumerIdx]);
 	SQueueSync *sqsync = squeue->sq_sync;
 
-	LWLockAcquire(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock, LW_EXCLUSIVE);
-
-	if (cstate->cs_ntuples != -1)
+	if (consumerIdx == -1)
 	{
-		/* Inform producer the consumer done the job */
-		cstate->cs_ntuples = -1;
-		/* no need notifications */
-		DisownLatch(&sqsync->sqs_consumer_sync[consumerIdx].cs_latch);
-		/*
-		 * notify the producer, it may be waiting while consumers
-		 * are finishing
-		 */
-		SetLatch(&sqsync->sqs_producer_latch);
-		elog(LOG, "Reset consumer");
-	}
+		int i;
 
-	LWLockRelease(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock);
+		/* check queue states */
+		for (i = 0; i < squeue->sq_nconsumers; i++)
+		{
+			ConsState *cstate = &squeue->sq_consumers[i];
+			LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock, LW_EXCLUSIVE);
+
+			if (cstate->cs_pid == 0)
+				cstate->cs_ntuples = -1;
+
+			LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
+			elog(LOG, "Reset producer");
+		}
+	}
+	else
+	{
+		ConsState  *cstate = &(squeue->sq_consumers[consumerIdx]);
+		LWLockAcquire(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock,
+					  LW_EXCLUSIVE);
+
+		if (cstate->cs_ntuples != -1)
+		{
+			/* Inform producer the consumer done the job */
+			cstate->cs_ntuples = -1;
+			/* no need notifications */
+			DisownLatch(&sqsync->sqs_consumer_sync[consumerIdx].cs_latch);
+			/*
+			 * notify the producer, it may be waiting while consumers
+			 * are finishing
+			 */
+			SetLatch(&sqsync->sqs_producer_latch);
+			elog(LOG, "Reset consumer");
+		}
+
+		LWLockRelease(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock);
+	}
 }
 
 
@@ -792,20 +817,29 @@ SharedQueueFinish(SharedQueue squeue, TupleDesc tupDesc,
 		 */
 		if (tuplestore[i])
 		{
-			nstores++;
-			if (QUEUE_FREE_SPACE(cstate) > cstate->cs_qlength / 2)
+			/* If the consumer was reset just destroy the tuplestore */
+			if (cstate->cs_ntuples == -1)
 			{
-				if (tmpslot == NULL)
-					tmpslot = MakeSingleTupleTableSlot(tupDesc);
-				if (SharedQueueDump(squeue, i, tmpslot, tuplestore[i]))
+				tuplestore_end(tuplestore[i]);
+				tuplestore[i] = NULL;
+			}
+			else
+			{
+				nstores++;
+				if (QUEUE_FREE_SPACE(cstate) > cstate->cs_qlength / 2)
 				{
-					tuplestore_end(tuplestore[i]);
-					tuplestore[i] = NULL;
-					cstate->cs_eof = true;
-					nstores--;
+					if (tmpslot == NULL)
+						tmpslot = MakeSingleTupleTableSlot(tupDesc);
+					if (SharedQueueDump(squeue, i, tmpslot, tuplestore[i]))
+					{
+						tuplestore_end(tuplestore[i]);
+						tuplestore[i] = NULL;
+						cstate->cs_eof = true;
+						nstores--;
+					}
+					/* Consumer may be sleeping, wake it up */
+					SetLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
 				}
-				/* Consumer may be sleeping, wake it up */
-				SetLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
 			}
 		}
 		else

@@ -274,6 +274,7 @@ PortalCleanup(Portal portal)
 #ifdef XCP
 				if (queryDesc->squeue)
 				{
+					SharedQueueReset(queryDesc->squeue, queryDesc->myindex);
 					/* If portal is producing it has an executor which should be
 					 * shut down */
 					if (queryDesc->myindex == -1)
@@ -290,7 +291,6 @@ PortalCleanup(Portal portal)
 					}
 					else
 					{
-						SharedQueueReset(queryDesc->squeue, queryDesc->myindex);
 						FreeQueryDesc(queryDesc);
 					}
 				}
@@ -313,6 +313,24 @@ PortalCleanup(Portal portal)
 			PG_END_TRY();
 			CurrentResourceOwner = saveResourceOwner;
 		}
+#ifdef XCP
+		/* Failed portal still may have active SQueue */
+		else if (queryDesc->squeue)
+		{
+			SharedQueueReset(queryDesc->squeue, queryDesc->myindex);
+			if (queryDesc->myindex == -1)
+			{
+				/* Remove from producers list if there */
+				removeProducingPortal(portal);
+				/*
+				 * Executor is invalid but we need to destroy the producer
+				 * receiver gracefully
+				 */
+				if (queryDesc->dest)
+					(*queryDesc->dest->rDestroy) (queryDesc->dest);
+			}
+		}
+#endif
 	}
 }
 
