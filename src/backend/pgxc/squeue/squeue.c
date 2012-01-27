@@ -186,9 +186,12 @@ SharedQueuesInit(void)
 
 	/*
 	 * Synchronization stuff is in separate structure because we need to
-	 * initialize all items now while under postmaster.
+	 * initialize all items now while in the postmaster.
+	 * The structure is actually an array, each array entry is assigned to
+	 * each instance of SharedQueue in use.
 	 */
-	SQueueSyncs = ShmemInitStruct("Shared Queues Sync", SQUEUE_SYNC_SIZE,
+	SQueueSyncs = ShmemInitStruct("Shared Queues Sync",
+								  SQUEUE_SYNC_SIZE * NUM_SQUEUES,
 								  &found);
 	if (!found)
 	{
@@ -214,12 +217,13 @@ SharedQueuesInit(void)
 Size
 SharedQueueShmemSize(void)
 {
-	Size size;
+	Size sq_size;
+	Size sqs_size;
 
-	size = mul_size(NUM_SQUEUES, SQUEUE_SIZE);
-	size = add_size(size, SQUEUE_SYNC_SIZE);
+	sq_size = mul_size(NUM_SQUEUES, SQUEUE_SIZE);
+	sqs_size = mul_size(NUM_SQUEUES, SQUEUE_SYNC_SIZE);
 
-	return size;
+	return add_size(sq_size, sqs_size);
 }
 
 
