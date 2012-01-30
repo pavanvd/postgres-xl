@@ -3843,4 +3843,54 @@ AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType rem
 
 	return result;
 }
+
+/*
+ * pgxc_direct_planner
+ * The routine tries to see if the statement can be completely evaluated on the
+ * datanodes. In such cases coordinator is not needed to evaluate the statement,
+ * and just acts as a proxy. A statement can be completely shipped to the remote
+ * node if every row of the result can be evaluated on a single datanode.
+ * For example:
+ *
+ * Only EXECUTE DIRECT statements are sent directly as of now
+ */
+PlannedStmt *
+pgxc_direct_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
+{
+	PlannedStmt *result;
+	RemoteQuery *query_step;
+
+	/* build the PlannedStmt result */
+	result = makeNode(PlannedStmt);
+
+	/* Try and set what we can */
+	result->commandType = query->commandType;
+	result->canSetTag = query->canSetTag;
+	result->utilityStmt = query->utilityStmt;
+	result->intoClause = query->intoClause;
+	result->rtable = query->rtable;
+
+	/* EXECUTE DIRECT statements have their RemoteQuery node already built when analyzing */
+	if (query->utilityStmt
+		&& IsA(query->utilityStmt, RemoteQuery))
+	{
+		RemoteQuery *stmt = (RemoteQuery *) query->utilityStmt;
+		if (stmt->exec_direct_type != EXEC_DIRECT_NONE)
+		{
+			query_step = stmt;
+			query->utilityStmt = NULL;
+			result->utilityStmt = NULL;
+		}
+	}
+
+	/* Optimize multi-node handling */
+	query_step->read_only = query->commandType == CMD_SELECT;
+
+	result->planTree = (Plan *) query_step;
+
+	query->qry_finalise_aggs = false;
+	query_step->scan.plan.targetlist = query->targetList;
+
+	return result;
+}
 #endif

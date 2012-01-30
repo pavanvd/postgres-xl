@@ -16,6 +16,7 @@
 #define LOCATOR_H
 
 #ifdef XCP
+#include "fmgr.h"
 #define LOCATOR_TYPE_COORDINATOR '\0'
 #endif
 #define LOCATOR_TYPE_REPLICATED 'R'
