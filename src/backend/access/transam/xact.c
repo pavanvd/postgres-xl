@@ -2124,7 +2124,11 @@ CommitTransaction(bool contact_gtm)
 	 *
 	 * This is called only if it is not necessary to prepare the nodes.
 	 */
+#ifdef XCP
+	if ((!PreparePGXCNodes || IsHoldableCursor) && contact_gtm)
+#else
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && (!PreparePGXCNodes || IsHoldableCursor) && contact_gtm)
+#endif
 	{
 		if (IsHoldableCursor)
 			PGXCNodeCommit(!PreparePGXCNodes);

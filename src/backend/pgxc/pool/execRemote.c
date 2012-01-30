@@ -2280,6 +2280,25 @@ GenerateBeginCommand(void)
 	else
 		read_only = "READ WRITE";
 
+#ifdef XCP
+	/*
+	 * Datanode should not send down statements that may modify the database.
+	 * Potgres assumes that all sessions under the same postmaster have
+	 * different xids. That causes problems with locks. Shared locks used when
+	 * reading still works fine. So, by always sending BEGIN READ ONLY down
+	 * over datanode-to-datanode connection we guarantee we do not fall into
+	 * the trouble.
+	 */
+// 	Commented out because it breaks the INSERT SELECT which skips the value
+//  for a column with default nextval(seq). The default is pushed down as an
+//  expression of tlist of the internal select subplan.
+//  We may make ExecRemoteSubplan evaluating tlists, and therefore pull it up.
+//  Evaluating tlists in ExecRemoteSubplan is in general seems to be a good
+//  idea, only source values will be sent around reducing network traffic.
+//	if (IS_PGXC_DATANODE)
+//		read_only = "READ ONLY";
+#endif
+
 	/* Now get the isolation_level for the transaction */
 	isolation_level = GetConfigOption("transaction_isolation", false);
 	if (strcmp(isolation_level, "default") == 0)
@@ -7464,16 +7483,33 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 			bool 			is_read_only;
 			bool			need_tran;
 
-
+			/*
+			 * Datanode should not send down statements that may modify
+			 * the database. Potgres assumes that all sessions under the same
+			 * postmaster have different xids. That causes problems with locks.
+			 * Shared locks used when reading still works fine.
+			 */
 			is_read_only = IS_PGXC_DATANODE ||
 					!IsA(outerPlan(plan), ModifyTable);
 
 			/*
-			 * Start transaction on data nodes if we are in explicit transaction
-			 * or write to multiple data nodes
+			 * We need to start explicit transaction on datanode connections
+			 * if we are going to use extended query protocol, which always
+			 * the case if we are executing RemoteSubplan.
+			 * That is because datanodes cursors are freed either explicitly
+			 * by CLOSE message or upon transaction end. So we should either
+			 * make sure the cursor is always closed or there is a transaction
+			 * that forces closing of all cursors.
+			 * For now we are closing cursors in ExecEndRemoteSubplan, but
+			 * executor is not finalized and ExecEnd... functions are not
+			 * invoked if an error is thrown during the execution.
+			 * We can handle the case if error is received from one of the
+			 * datanode connection we own, but we can not handle errors above
+			 * or in other branches of execution tree. So we just start
+			 * transaction here and in case of error datanode cursors will be
+			 * closed by upcoming ROLLBACK.
 			 */
-			need_tran = !autocommit ||
-					(!is_read_only && list_length(node->execNodes) > 1);
+			need_tran = true;
 
 			/*
 			 * Distribution of the subplan determines nodes we need to send

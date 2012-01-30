@@ -54,7 +54,7 @@ test: copy
 test: copyselect
 # This tests hangs server because errors are not handled properly in StormDB
 # in case of multi-step statements.
-#test: constraints
+test: constraints
 test: triggers
 test: create_misc
 test: create_aggregate
@@ -76,7 +76,7 @@ test: select_having
 # Test hangs because executor optimizes out a part of a plan on some nodes,
 # so results for some nodes are never consumed
 # The test may also contain correlated subqueries wich are currently broken
-#test: subselect
+test: subselect
 test: union
 test: case
 #aggregates with join, order by are crashing server, hence commented out for
@@ -98,11 +98,11 @@ test: namespace
 # statement_timeout does not work if blocked in exec_bindplan (?)
 #test: prepared_xacts
 # Optimization problem like in "subselect" test
-#test: privileges
+test: privileges
 test: security_label
 test: collate
 test: misc
-#test: rules
+test: rules
 test: select_views
 test: portals_p2
 test: foreign_key
@@ -148,9 +148,9 @@ test: stats
 # close cursors on nodes before throwing error to make sure SharedQueues
 # are closed. Uncaught error marks portal as failed and it does not clean up
 # the executor. 
-#test: xc_groupby
+test: xc_groupby
 test: xc_distkey
 # The same two issues as in xc_groupby
-#test: xc_having
+test: xc_having
 # Can not run multistep queries against temp tables
 #test: xc_temp

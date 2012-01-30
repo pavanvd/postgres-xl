@@ -396,11 +396,24 @@ SharedQueueBind(const char *sqname, List *consNodes,
 						Assert(cstate->cs_pid == 0);
 						/* make sure the queue is ready to read */
 						Assert(cstate->cs_qlength > 0);
-						Assert(cstate->cs_qreadpos == 0);
 						/*
-						 * Do not check cs_ntuples and cs_qwritepos - it is OK
-						 * if producer has already started writing.
+						 * Producer may start writing already, so we must not
+						 * change cstate->cs_ntuples if it is greater then 0.
+						 * That is OK and we continue normally in this case.
+						 * At the same time producer may get error and be reset,
+						 * in this case cstate->cs_ntuples will be set to -1 for
+						 * the consumer, as it is had not been bound yet.
+						 * Now we must complete binding and must prevent
+						 * producer unbind itself from the queue, so we should
+						 * reset cstate->cs_ntuples here, it will be set to -1
+						 * again during normal consumer process and therefore
+						 * allow unbind.
 						 */
+						if (cstate->cs_ntuples < 0)
+						{
+							Assert(cstate->cs_eof);
+							cstate->cs_ntuples = 0;
+						}
 						cstate->cs_pid = MyProcPid;
 						/* return found index */
 						*myindex = i;
@@ -715,9 +728,46 @@ SharedQueueReset(SharedQueue squeue, int consumerIdx)
 			ConsState *cstate = &squeue->sq_consumers[i];
 			LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock, LW_EXCLUSIVE);
 
+			/*
+			 * Discard all the tuples that may be in buffer and set the EOF
+			 * flag, so consumer may be finished immediately.
+			 */
+			cstate->cs_eof = true;
+			/*
+			 * If consumer has not been started mark it as finished, and do not
+			 * wait for connection which may never come.
+			 * That may happen during normal execution - if a Join on some node
+			 * found the outer subplan had not returned any tuple, so it did
+			 * not ever executed inner, that should be a consumer of this queue.
+			 * If this was the case producer being reset while executor is
+			 * finalizing, that is execution of all the nodes in the plan is
+			 * completed.
+			 * If producer reset is consequence of producer error there is a
+			 * race condition - producer may clean up and unbind the queue, then
+			 * session from other node may rebind the same subplan and become
+			 * a new producer. That should not be a problem - the error thrown
+			 * should eventually interrupt any processing and ROLLBACK will
+			 * remove all queues that may remain active.
+			 * If consumer arrive before unbind it is even better - it will try
+			 * to read immediately see the eof and quit.
+			 */
 			if (cstate->cs_pid == 0)
 				cstate->cs_ntuples = -1;
+			else
+			{
+				/*
+				 * The cstate->cs_ntuples may already be set to -1, do not
+				 * overwrite it!
+				 */
+				if (cstate->cs_ntuples > 0)
+					cstate->cs_ntuples = 0;
 
+				/* Not necessary, but it is checked in bind, keep consistent */
+				cstate->cs_qreadpos = cstate->cs_qwritepos = 0;
+
+				/* wake up consumer if it is sleeping */
+				SetLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
+			}
 			LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
 			elog(LOG, "Reset producer");
 		}
@@ -739,7 +789,7 @@ SharedQueueReset(SharedQueue squeue, int consumerIdx)
 			 * are finishing
 			 */
 			SetLatch(&sqsync->sqs_producer_latch);
-			elog(LOG, "Reset consumer");
+			elog(LOG, "Reset consumer %d", consumerIdx);
 		}
 
 		LWLockRelease(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock);
@@ -881,6 +931,11 @@ SharedQueueUnBind(SharedQueue squeue)
 {
 	SQueueSync *sqsync = squeue->sq_sync;
 
+	/*
+	 * We do not want late consumer jump in and bind to the queue being unbound
+	 */
+	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
+
 	/* loop while there are active consumers */
 	for (;;)
 	{
@@ -907,10 +962,16 @@ SharedQueueUnBind(SharedQueue squeue)
 		}
 		if (c_count == 0)
 			break;
+		/*
+		 * We are going to sleep, and if consumer want to bind it is welcome:
+		 * on the next iteration we will check consumer states from the scratch
+		 */
+		LWLockRelease(SQueuesLock);
 		elog(LOG, "Wait while %d squeue readers finishing", c_count);
 		/* wait for a notification */
 		WaitLatch(&sqsync->sqs_producer_latch, -1);
 		/* got notification, continue loop */
+		LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
 	}
 	elog(LOG, "Producer %s is done, there were %ld pauses", squeue->sq_key, squeue->stat_paused);
 
@@ -918,8 +979,6 @@ SharedQueueUnBind(SharedQueue squeue)
 	DisownLatch(&sqsync->sqs_producer_latch);
 
 	/* Now it is OK to remove hash table */
-	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
-
 	squeue->sq_sync = NULL;
 	sqsync->queue = NULL;
 	if (hash_search(SharedQueues, squeue->sq_key, HASH_REMOVE, NULL) != squeue)
