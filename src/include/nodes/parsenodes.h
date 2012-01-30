@@ -2484,6 +2484,7 @@ typedef struct AlterNodeStmt
 {
 	NodeTag		type;
 	char		*node_name;
+	bool		cluster;
 	List		*options;
 } AlterNodeStmt;
 

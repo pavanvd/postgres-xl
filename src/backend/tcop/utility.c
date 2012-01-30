@@ -2016,6 +2016,10 @@ standard_ProcessUtility(Node *parsetree,
 		 */
 		case T_AlterNodeStmt:
 			PgxcNodeAlter((AlterNodeStmt *) parsetree);
+#ifdef XCP
+			if (((AlterNodeStmt *) parsetree)->cluster)
+				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+#endif
 			break;
 
 		case T_CreateNodeStmt:

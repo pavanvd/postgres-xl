@@ -357,6 +357,7 @@ static void SplitColQualList(List *qualList,
 %type <defelt>	opt_binary opt_oids copy_delimiter
 
 %type <str>		DirectStmt CleanConnDbName CleanConnUserName
+%type <boolean>	OptCluster
 /* PGXC_END */
 %type <boolean> copy_from
 
@@ -8064,22 +8065,25 @@ pgxcnode_list:
 /*****************************************************************************
  *
  *		QUERY:
- *		ALTER NODE nodename WITH
+ *		ALTER [CLUSTER] NODE nodename WITH
  *				(
  *					[ TYPE = ('datanode' | 'coordinator') ],
  *					[ HOST = 'hostname'],
  *					[ PORT = portnum ],
  *					[ PRIMARY ],
  *					[ PREFERRED ]
- *				)
  *
+ *             If CLUSTER is mentioned, the command is executed on all nodes.
+ *             PS: We need to add this option on all other pertinent NODE ddl
+ *             operations too!)
  *****************************************************************************/
 
-AlterNodeStmt: ALTER NODE pgxcnode_name OptWith
+AlterNodeStmt: ALTER OptCluster NODE pgxcnode_name OptWith
 				{
 					AlterNodeStmt *n = makeNode(AlterNodeStmt);
-					n->node_name = $3;
-					n->options = $4;
+					n->cluster = $2;
+					n->node_name = $4;
+					n->options = $5;
 					$$ = (Node *)n;
 				}
 		;
@@ -8128,6 +8132,10 @@ DropNodeGroupStmt: DROP NODE GROUP_P pgxcgroup_name
 					n->group_name = $4;
 					$$ = (Node *)n;
 				}
+		;
+
+OptCluster:    CLUSTER                     	{ $$ = TRUE; }
+		  | /* EMPTY */        				{ $$ = FALSE; }
 		;
 
 /* PGXC_END */
