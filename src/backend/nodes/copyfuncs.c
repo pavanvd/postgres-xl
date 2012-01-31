@@ -4077,6 +4077,18 @@ _copyBarrierStmt(BarrierStmt *from)
 
 	return newnode;
 }
+
+#ifdef XCP
+static PauseClusterStmt *
+_copyPauseClusterStmt(PauseClusterStmt *from)
+{
+	PauseClusterStmt *newnode = makeNode(PauseClusterStmt);
+
+	COPY_SCALAR_FIELD(pause);
+
+	return newnode;
+}
+#endif
 #endif
 
 /*
@@ -4708,6 +4720,11 @@ copyObject(void *from)
 		case T_BarrierStmt:
 			retval = _copyBarrierStmt(from);
 			break;
+#ifdef XCP
+		case T_PauseClusterStmt:
+			retval = _copyPauseClusterStmt(from);
+			break;
+#endif
 #endif
 		case T_CreateSchemaStmt:
 			retval = _copyCreateSchemaStmt(from);

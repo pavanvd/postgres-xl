@@ -357,6 +357,7 @@ typedef enum NodeTag
 	T_CheckPointStmt,
 #ifdef PGXC
 	T_BarrierStmt,
+	T_PauseClusterStmt,
 #endif
 	T_CreateSchemaStmt,
 	T_AlterDatabaseStmt,

@@ -76,6 +76,7 @@ typedef enum LWLockId
 	BarrierLock,
 #endif
 #ifdef XCP
+	ClusterLock,
 	SQueuesLock,
 #endif
 	RelationMappingLock,

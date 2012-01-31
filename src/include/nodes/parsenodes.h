@@ -2456,6 +2456,16 @@ typedef struct VacuumStmt
 
 #ifdef PGXC
 /*
+ * ---------------------------
+ *  	Pause Cluster Statement
+ */
+typedef struct PauseClusterStmt
+{
+	NodeTag		type;
+	bool		pause;			/* will be false to unpause */
+} PauseClusterStmt;
+
+/*
  * ----------------------
  *      Barrier Statement
  */

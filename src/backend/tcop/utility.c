@@ -75,6 +75,7 @@
 #include "utils/lsyscache.h"
 #include "pgxc/poolutils.h"
 #ifdef XCP
+#include "pgxc/pause.h"
 #include "access/transam.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -2009,6 +2010,12 @@ standard_ProcessUtility(Node *parsetree,
 			RequestBarrier(((BarrierStmt *) parsetree)->id, completionTag);
 			break;
 
+#ifdef XCP
+		case T_PauseClusterStmt:
+			RequestClusterPause(((PauseClusterStmt *) parsetree)->pause, completionTag);
+			break;
+#endif
+
 		/*
 		 * Node DDL is an operation local to Coordinator.
 		 * In case of a new node being created in the cluster,
@@ -3160,6 +3167,12 @@ CreateCommandTag(Node *parsetree)
 		case T_DropGroupStmt:
 			tag = "DROP NODE GROUP";
 			break;
+
+#ifdef XCP
+		case T_PauseClusterStmt:
+			tag = "PAUSE/UNPAUSE CLUSTER";
+			break;
+#endif
 #endif
 
 		case T_ReindexStmt:

@@ -224,7 +224,7 @@ static void SplitColQualList(List *qualList,
 		DeallocateStmt PrepareStmt ExecuteStmt
 		DropOwnedStmt ReassignOwnedStmt
 		AlterTSConfigurationStmt AlterTSDictionaryStmt
-		BarrierStmt AlterNodeStmt CreateNodeStmt DropNodeStmt
+		BarrierStmt PauseStmt AlterNodeStmt CreateNodeStmt DropNodeStmt
 		CreateNodeGroupStmt DropNodeGroupStmt
 
 %type <node>	select_no_parens select_with_parens select_clause
@@ -556,7 +556,7 @@ static void SplitColQualList(List *qualList,
 	OBJECT_P OF OFF OFFSET OIDS ON ONLY OPERATOR OPTION OPTIONS OR
 	ORDER OUT_P OUTER_P OVER OVERLAPS OVERLAY OWNED OWNER
 
-	PARSER PARTIAL PARTITION PASSING PASSWORD PLACING PLANS POSITION
+	PARSER PARTIAL PARTITION PASSING PASSWORD PAUSE PLACING PLANS POSITION
 /* PGXC_BEGIN */
 	PRECEDING PRECISION PREFERRED PRESERVE PREPARE PREPARED PRIMARY
 /* PGXC_END */
@@ -584,7 +584,7 @@ static void SplitColQualList(List *qualList,
 	TRUNCATE TRUSTED TYPE_P
 
 	UNBOUNDED UNCOMMITTED UNENCRYPTED UNION UNIQUE UNKNOWN UNLISTEN UNLOGGED
-	UNTIL UPDATE USER USING
+	UNPAUSE UNTIL UPDATE USER USING
 
 	VACUUM VALID VALIDATE VALIDATOR VALUE_P VALUES VARCHAR VARIADIC VARYING
 	VERBOSE VERSION_P VIEW VOLATILE
@@ -795,6 +795,7 @@ stmt :
 			| LoadStmt
 			| LockStmt
 			| NotifyStmt
+			| PauseStmt
 			| PrepareStmt
 			| ReassignOwnedStmt
 			| ReindexStmt
@@ -8008,6 +8009,20 @@ opt_name_list:
 
 
 /* PGXC_BEGIN */
+PauseStmt: PAUSE CLUSTER
+				{
+					PauseClusterStmt *n = makeNode(PauseClusterStmt);
+					n->pause = true;
+					$$ = (Node *)n;
+				}
+			| UNPAUSE CLUSTER
+				{
+					PauseClusterStmt *n = makeNode(PauseClusterStmt);
+					n->pause = false;
+					$$ = (Node *)n;
+				}
+			;
+
 BarrierStmt: CREATE BARRIER opt_barrier_id
 				{
 					BarrierStmt *n = makeNode(BarrierStmt);
@@ -12362,6 +12377,9 @@ unreserved_keyword:
 			| PARTITION
 			| PASSING
 			| PASSWORD
+/* PGXC_BEGIN */
+			| PAUSE
+/* PGXC_END */
 			| PLANS
 			| PRECEDING
 /* PGXC_BEGIN */
@@ -12450,6 +12468,9 @@ unreserved_keyword:
 			| UNKNOWN
 			| UNLISTEN
 			| UNLOGGED
+/* PGXC_BEGIN */
+			| UNPAUSE
+/* PGXC_END */
 			| UNTIL
 			| UPDATE
 			| VACUUM
