@@ -54,6 +54,15 @@ typedef struct SQueueSync
 										* not known on compile time */
 } SQueueSync;
 
+/* Both producer and consumer are working */
+#define CONSUMER_ACTIVE 0
+/* Producer have finished work successfully and waits for consumer */
+#define CONSUMER_EOF 1
+/* Producer encountered error and waits for consumer to disconnect */
+#define CONSUMER_ERROR 2
+/* Consumer is finished with the query, OK to unbind */
+#define CONSUMER_DONE 3
+
 
 /* State of a single consumer */
 typedef struct
@@ -66,8 +75,7 @@ typedef struct
 	 * because it never sent over network followed by tuple bytes.
 	 */
 	int			cs_ntuples; 	/* Number of tuples in the queue */
-	bool		cs_eof;		 	/* Producer is done, no new rows expected
-								 * for the consumer */
+	int			cs_status;	 	/* See CONSUMER_* defines above */
 	char	   *cs_qstart;		/* Where consumer queue begins */
 	int			cs_qlength;		/* The size of the consumer queue */
 	int			cs_qreadpos;	/* The read position in the consumer queue */
@@ -178,8 +186,6 @@ SharedQueuesInit(void)
 	info.keysize = SQUEUE_KEYSIZE;
 	info.entrysize = SQUEUE_SIZE;
 	hash_flags = HASH_ELEM;
-
-	elog(LOG, "Shared Memory: init %d shared queues for %d datanodes", NUM_SQUEUES, MaxDataNodes);
 
 	SharedQueues = ShmemInitHash("Shared Queues", NUM_SQUEUES,
 								 NUM_SQUEUES, &info, hash_flags);
@@ -312,7 +318,7 @@ SharedQueueBind(const char *sqname, List *consNodes,
 			cstate->cs_pid = 0; /* not yet known */
 			cstate->cs_node = nodeid;
 			cstate->cs_ntuples = 0;
-			cstate->cs_eof = false;
+			cstate->cs_status = CONSUMER_ACTIVE;
 			cstate->cs_qstart = 0;
 			cstate->cs_qlength = 0;
 			cstate->cs_qreadpos = 0;
@@ -396,24 +402,32 @@ SharedQueueBind(const char *sqname, List *consNodes,
 						Assert(cstate->cs_pid == 0);
 						/* make sure the queue is ready to read */
 						Assert(cstate->cs_qlength > 0);
-						/*
-						 * Producer may start writing already, so we must not
-						 * change cstate->cs_ntuples if it is greater then 0.
-						 * That is OK and we continue normally in this case.
-						 * At the same time producer may get error and be reset,
-						 * in this case cstate->cs_ntuples will be set to -1 for
-						 * the consumer, as it is had not been bound yet.
-						 * Now we must complete binding and must prevent
-						 * producer unbind itself from the queue, so we should
-						 * reset cstate->cs_ntuples here, it will be set to -1
-						 * again during normal consumer process and therefore
-						 * allow unbind.
-						 */
-						if (cstate->cs_ntuples < 0)
+						if (cstate->cs_status == CONSUMER_DONE)
 						{
-							Assert(cstate->cs_eof);
-							cstate->cs_ntuples = 0;
+							/*
+							 * Producer probably failed and denied connection of
+							 * the consumer that have not yet connected by the
+							 * moment of failure. At the same time the queue is
+							 * not yet unbound, otherwise we would not find it.
+							 * Consumer should not bind to that query. Release
+							 * the locks and report error.
+							 */
+							LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
+							LWLockRelease(SQueuesLock);
+							ereport(ERROR,
+									(errcode(ERRCODE_INTERNAL_ERROR),
+									 errmsg("producer is failed")));
 						}
+						/*
+						 * Any other status is acceptable. Normally it would be
+						 * ACTIVE. If producer have had only few rows to emit
+						 * and it is already done the status would be EOF, ERROR
+						 * should not be set here, since if producer failed
+						 * while consumer is not yet connected the status would
+						 * be set to DONE. If even it is set to ERROR subsequent
+						 * read will turn it into DONE.
+						 */
+						/* Set up the consumer */
 						cstate->cs_pid = MyProcPid;
 						/* return found index */
 						*myindex = i;
@@ -446,8 +460,8 @@ SharedQueueDump(SharedQueue squeue, int consumerIdx,
 {
 	ConsState  *cstate = &(squeue->sq_consumers[consumerIdx]);
 
-	/* discard stored data if consumer is closed */
-	if (cstate->cs_ntuples < 0)
+	/* discard stored data if consumer is not active */
+	if (cstate->cs_status != CONSUMER_ACTIVE)
 	{
 		tuplestore_clear(tuplestore);
 		return true;
@@ -628,7 +642,7 @@ SharedQueueWrite(SharedQueue squeue, int consumerIdx,
 	else
 	{
 		/* do not supply data to closed consumer */
-		if (cstate->cs_ntuples >= 0)
+		if (cstate->cs_status == CONSUMER_ACTIVE)
 		{
 			/* write out the data */
 			QUEUE_WRITE(cstate, sizeof(int), (char *) &datarow->msglen);
@@ -666,11 +680,15 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 
 	LWLockAcquire(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock, LW_EXCLUSIVE);
 
-	Assert(cstate->cs_ntuples >= 0);
+	Assert(cstate->cs_status != CONSUMER_DONE);
 	while (cstate->cs_ntuples == 0)
 	{
-		if (cstate->cs_eof)
+		if (cstate->cs_status == CONSUMER_EOF)
 		{
+			/* Inform producer the consumer have done the job */
+			cstate->cs_status = CONSUMER_DONE;
+			/* no need to receive notifications */
+			DisownLatch(&sqsync->sqs_consumer_sync[consumerIdx].cs_latch);
 			/* producer done the job and no more rows expected, clean up */
 			LWLockRelease(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock);
 			ExecClearTuple(slot);
@@ -682,6 +700,23 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 			elog(LOG, "EOF reached while reading from squeue, exiting");
 			return;
 		}
+		else if (cstate->cs_status == CONSUMER_ERROR)
+		{
+			/*
+			 * There was a producer error while waiting.
+			 * Release all the locks and report problem to the caller.
+			 */
+			LWLockRelease(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock);
+			/*
+			 * Reporting error will cause transaction rollback and clean up of
+			 * all portals. We can not mark the portal so it does not access
+			 * the queue so we should hold it for now. We should prevent queue
+			 * unbound in between.
+			 */
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("producer is failed")));
+		}
 		/* Prepare waiting on empty buffer */
 		ResetLatch(&sqsync->sqs_consumer_sync[consumerIdx].cs_latch);
 		LWLockRelease(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock);
@@ -690,7 +725,6 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 		/* got the notification, restore lock and try again */
 		LWLockAcquire(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock, LW_EXCLUSIVE);
 	}
-
 	/* have at least one row, read it in and store to slot */
 	QUEUE_READ(cstate, sizeof(int), (char *) (&datalen));
 	datarow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + datalen);
@@ -729,11 +763,6 @@ SharedQueueReset(SharedQueue squeue, int consumerIdx)
 			LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock, LW_EXCLUSIVE);
 
 			/*
-			 * Discard all the tuples that may be in buffer and set the EOF
-			 * flag, so consumer may be finished immediately.
-			 */
-			cstate->cs_eof = true;
-			/*
 			 * If consumer has not been started mark it as finished, and do not
 			 * wait for connection which may never come.
 			 * That may happen during normal execution - if a Join on some node
@@ -741,36 +770,48 @@ SharedQueueReset(SharedQueue squeue, int consumerIdx)
 			 * not ever executed inner, that should be a consumer of this queue.
 			 * If this was the case producer being reset while executor is
 			 * finalizing, that is execution of all the nodes in the plan is
-			 * completed.
-			 * If producer reset is consequence of producer error there is a
+			 * completed, or in case of error - if producer caught error while
+			 * starting up or soon after start.
+			 * If producer reset is consequence of a producer error there is a
 			 * race condition - producer may clean up and unbind the queue, then
 			 * session from other node may rebind the same subplan and become
 			 * a new producer. That should not be a problem - the error thrown
 			 * should eventually interrupt any processing and ROLLBACK will
 			 * remove all queues that may remain active.
-			 * If consumer arrive before unbind it is even better - it will try
-			 * to read immediately see the eof and quit.
+			 * If consumer will be trying to bind before it will be rejected
+			 * and report error immediately.
 			 */
 			if (cstate->cs_pid == 0)
-				cstate->cs_ntuples = -1;
+			{
+				cstate->cs_status = CONSUMER_DONE;
+				elog(LOG, "Consumer %d of producer %s should not bind", i, squeue->sq_key);
+			}
 			else
 			{
 				/*
-				 * The cstate->cs_ntuples may already be set to -1, do not
-				 * overwrite it!
+				 * If producer being reset before it is reached the end of
+				 * result set, so consumer do not have all available rows and
+				 * should report error if caller try to read.
+				 * If consumer is reset without reading error is not reported
+				 * whatever status is set.
 				 */
-				if (cstate->cs_ntuples > 0)
+				if (cstate->cs_status != CONSUMER_EOF &&
+						cstate->cs_status != CONSUMER_DONE)
+				{
+					elog(LOG, "Consumer %d of producer %s is cancelled", i, squeue->sq_key);
+					cstate->cs_status = CONSUMER_ERROR;
+					/* discard tuples which may already be in the queue */
 					cstate->cs_ntuples = 0;
+					/* keep consistent with cs_ntuples*/
+					cstate->cs_qreadpos = cstate->cs_qwritepos = 0;
 
-				/* Not necessary, but it is checked in bind, keep consistent */
-				cstate->cs_qreadpos = cstate->cs_qwritepos = 0;
-
-				/* wake up consumer if it is sleeping */
-				SetLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
+					/* wake up consumer if it is sleeping */
+					SetLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
+				}
 			}
 			LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
-			elog(LOG, "Reset producer");
 		}
+		elog(LOG, "Reset producer %s", squeue->sq_key);
 	}
 	else
 	{
@@ -778,18 +819,18 @@ SharedQueueReset(SharedQueue squeue, int consumerIdx)
 		LWLockAcquire(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock,
 					  LW_EXCLUSIVE);
 
-		if (cstate->cs_ntuples != -1)
+		if (cstate->cs_status != CONSUMER_DONE)
 		{
-			/* Inform producer the consumer done the job */
-			cstate->cs_ntuples = -1;
-			/* no need notifications */
+			/* Inform producer the consumer have done the job */
+			cstate->cs_status = CONSUMER_DONE;
+			/* no need to receive notifications */
 			DisownLatch(&sqsync->sqs_consumer_sync[consumerIdx].cs_latch);
 			/*
 			 * notify the producer, it may be waiting while consumers
 			 * are finishing
 			 */
 			SetLatch(&sqsync->sqs_producer_latch);
-			elog(LOG, "Reset consumer %d", consumerIdx);
+			elog(LOG, "Reset consumer %d of %s", consumerIdx, squeue->sq_key);
 		}
 
 		LWLockRelease(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock);
@@ -802,7 +843,7 @@ SharedQueueReset(SharedQueue squeue, int consumerIdx)
  * Determine if producer can safely pause work.
  * The producer can pause if all consumers have enough data to read while
  * producer is sleeping.
- * Obvoius criteria is the producer can not pause if at least one queue is empty.
+ * Obvoius case when the producer can not pause if at least one queue is empty.
  */
 bool
 SharedQueueCanPause(SharedQueue squeue)
@@ -810,24 +851,24 @@ SharedQueueCanPause(SharedQueue squeue)
 	SQueueSync *sqsync = squeue->sq_sync;
 	bool 		result = true;
 	int 		usedspace;
-	int 		ncons;
+	int			ncons;
 	int 		i;
 
 	usedspace = 0;
 	ncons = 0;
 	for (i = 0; result && (i < squeue->sq_nconsumers); i++)
 	{
+		ConsState *cstate = &(squeue->sq_consumers[i]);
 		LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock, LW_SHARED);
-
-		/* can not pause if some queue is empty */
-		result = (squeue->sq_consumers[i].cs_ntuples != 0);
 		/*
-		 * negative cs_ntuples means consumer is finished the work, we do not
-		 * count these queues
+		 * Count only consumers that may be blocked.
+		 * If producer has finished scanning and pushing local buffers some
+		 * consumers may be finished already.
 		 */
-		if (squeue->sq_consumers[i].cs_ntuples > 0)
+		if (cstate->cs_status == CONSUMER_ACTIVE)
 		{
-			ConsState *cstate = &(squeue->sq_consumers[i]);
+			/* can not pause if some queue is empty */
+			result = (cstate->cs_ntuples > 0);
 			usedspace += (cstate->cs_qwritepos > cstate->cs_qreadpos ?
 							  cstate->cs_qwritepos - cstate->cs_qreadpos :
 							  cstate->cs_qlength + cstate->cs_qwritepos
@@ -838,9 +879,8 @@ SharedQueueCanPause(SharedQueue squeue)
 	}
 	/*
 	 * Pause only if average consumer queue is full more then on half.
-	 * Also avoid division by zero if all consumers finished their work.
 	 */
-	if (result && ncons > 0)
+	if (result)
 		result = (usedspace / ncons > squeue->sq_consumers[0].cs_qlength / 2);
 	if (result)
 		squeue->stat_paused++;
@@ -871,8 +911,8 @@ SharedQueueFinish(SharedQueue squeue, TupleDesc tupDesc,
 		 */
 		if (tuplestore[i])
 		{
-			/* If the consumer was reset just destroy the tuplestore */
-			if (cstate->cs_ntuples == -1)
+			/* If the consumer is not reading just destroy the tuplestore */
+			if (cstate->cs_status != CONSUMER_ACTIVE)
 			{
 				tuplestore_end(tuplestore[i]);
 				tuplestore[i] = NULL;
@@ -880,6 +920,11 @@ SharedQueueFinish(SharedQueue squeue, TupleDesc tupDesc,
 			else
 			{
 				nstores++;
+				/*
+				 * Attempt to dump tuples from the store require tuple slot
+				 * allocation, that is not a cheap operation, so proceed if
+				 * target queue has enough space.
+				 */
 				if (QUEUE_FREE_SPACE(cstate) > cstate->cs_qlength / 2)
 				{
 					if (tmpslot == NULL)
@@ -888,7 +933,7 @@ SharedQueueFinish(SharedQueue squeue, TupleDesc tupDesc,
 					{
 						tuplestore_end(tuplestore[i]);
 						tuplestore[i] = NULL;
-						cstate->cs_eof = true;
+						cstate->cs_status = CONSUMER_EOF;
 						nstores--;
 					}
 					/* Consumer may be sleeping, wake it up */
@@ -899,9 +944,9 @@ SharedQueueFinish(SharedQueue squeue, TupleDesc tupDesc,
 		else
 		{
 			/* it set eof if not yet set */
-			if (!cstate->cs_eof)
+			if (cstate->cs_status == CONSUMER_ACTIVE)
 			{
-				cstate->cs_eof = true;
+				cstate->cs_status = CONSUMER_EOF;
 				SetLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
 			}
 		}
@@ -948,7 +993,7 @@ SharedQueueUnBind(SharedQueue squeue)
 			ConsState *cstate = &squeue->sq_consumers[i];
 			LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock, LW_EXCLUSIVE);
 			/* is consumer working yet ? */
-			if (cstate->cs_ntuples >= 0)
+			if (cstate->cs_status != CONSUMER_DONE)
 			{
 				c_count++;
 				/* producer will continue waiting */

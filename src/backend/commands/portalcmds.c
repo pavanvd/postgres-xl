@@ -294,7 +294,7 @@ PortalCleanup(Portal portal)
 						FreeQueryDesc(queryDesc);
 					}
 				}
-				else
+				else if (portal->strategy != PORTAL_DISTRIBUTED)
 				{
 #endif
 				ExecutorFinish(queryDesc);

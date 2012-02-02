@@ -820,16 +820,10 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 		if (queryDesc && queryDesc->squeue)
 		{
 			/*
-			 * Reset shared queue here, it will not available in PortalCleanup.
+			 * Associate the query desc with the portal so it is unbound upon
+			 * transaction end.
 			 */
-			SharedQueueReset(queryDesc->squeue, queryDesc->myindex);
-
-			/*
-			 * Unbind queue if it is bound as a producer. The function may wait
-			 * for a good moment to unbind if some consumer is connected.
-			 */
-			if (queryDesc->myindex == -1)
-				SharedQueueUnBind(queryDesc->squeue);
+			portal->queryDesc = queryDesc;
 		}
 #endif
 
@@ -1139,11 +1133,15 @@ PortalRun(Portal portal, long count, bool isTopLevel,
 
 						/*
 						 * if the tuple is null, then we assume there is nothing
-						 * more to process so we just end the loop...
+						 * more to process so we end the loop...
+						 * Also if null tuple is returned the squeue is reset
+						 * already, we want to prevent resetting it again
 						 */
 						if (TupIsNull(slot))
+						{
+							queryDesc->squeue = NULL;
 							break;
-
+						}
 						/*
 						 * Send the tuple
 						 */
