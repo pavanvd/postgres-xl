@@ -1860,8 +1860,8 @@ get_any_handle(List *datanodelist)
 	/* sanity check */
 	Assert(list_length(datanodelist) > 0);
 
-	/* i is just a counter; node is incremented inside the loop */
-	for (i = 0, node = load_balancer; i < NumDataNodes; i++)
+	/* loop through local datanode handles */
+	for (i = 0, node = load_balancer; i < NumDataNodes; i++, node++)
 	{
 		/* At the moment node is an index in the array, and we may need to wrap it */
 		if (node >= NumDataNodes)
@@ -1869,40 +1869,26 @@ get_any_handle(List *datanodelist)
 		/* See if handle is already used */
 		if (dn_handles[node].sock != NO_SOCKET)
 		{
-			/*
-			 * It's time to convert index into 1-based node number.
-			 * On next iteration it will be the next index.
-			 */
-			node++;
 			foreach(lc1, datanodelist)
 			{
 				if (lfirst_int(lc1) == node)
 				{
 					/*
-					 * The node is in the list of requested nodes, return it
-					 * But remember last returned value to return different next
-					 * time, for load balancing
+					 * The node is in the list of requested nodes,
+					 * set load_balancer for next time and return the handle
 					 */
-					load_balancer = node;
-
-					/* We have incremented node, now it is node number, not index */
-					return &dn_handles[node - 1];
+					load_balancer = node + 1;
+					return &dn_handles[node];
 				}
 			}
-		}
-		else
-		{
-			/* We skip the handle this time but should increment index */
-			node++;
 		}
 	}
 
 	/*
 	 * None of requested nodes is in use, need to get one from the pool.
-	 * Peek up one.
+	 * Choose one.
 	 */
-	/* i is just a counter; node is incremented inside the loop */
-	for (i = 0, node = load_balancer; i < NumDataNodes; i++)
+	for (i = 0, node = load_balancer; i < NumDataNodes; i++, node++)
 	{
 		/* At the moment node is an index in the array, and we may need to wrap it */
 		if (node >= NumDataNodes)
@@ -1910,17 +1896,12 @@ get_any_handle(List *datanodelist)
 		/* Look only at empty slots, we have already checked existing handles */
 		if (dn_handles[node].sock == NO_SOCKET)
 		{
-			/*
-			 * It's time to convert index into 1-based node number.
-			 * On next iteration it will be the next index.
-			 */
-			node++;
 			foreach(lc1, datanodelist)
 			{
 				if (lfirst_int(lc1) == node)
 				{
 					/* The node is requested */
-					List   *allocate = lappend_int(NIL, node);
+					List   *allocate = list_make1_int(node);
 					int    *fds = PoolManagerGetConnections(allocate, NIL);
 
 					if (!fds)
@@ -1930,19 +1911,16 @@ get_any_handle(List *datanodelist)
 								 errmsg("Failed to get pooled connections")));
 					}
 
-					pgxc_node_init(&dn_handles[node - 1], fds[0]);
+					pgxc_node_init(&dn_handles[node], fds[0]);
 					datanode_count++;
 
-					load_balancer = node;
-					/* We have incremented node, now it is node number, not index */
-					return &dn_handles[node - 1];
+					/*
+					 * set load_balancer for next time and return the handle
+					 */
+					load_balancer = node + 1;
+					return &dn_handles[node];
 				}
 			}
-		}
-		else
-		{
-			/* We skip the handle but should increment index */
-			node++;
 		}
 	}
 
