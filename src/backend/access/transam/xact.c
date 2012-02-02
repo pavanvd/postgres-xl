@@ -27,6 +27,9 @@
 /* PGXC_COORD */
 #include "gtm/gtm_c.h"
 #include "pgxc/execRemote.h"
+#ifdef XCP
+#include "pgxc/pause.h"
+#endif
 /* PGXC_DATANODE */
 #include "postmaster/autovacuum.h"
 #endif
@@ -2283,6 +2286,16 @@ CommitTransaction(bool contact_gtm)
 		 */
 		PGXCNodeImplicitCommitPrepared(xid, s->globalCommitTransactionId, implicitgid, true);
 	}
+
+#ifdef XCP
+	/* If the cluster lock was held at commit time, keep it locked! */
+	if (cluster_ex_lock_held)
+	{
+		elog(DEBUG2, "PAUSE CLUSTER still held at commit");
+		/*if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+			RequestClusterPause(false, NULL);*/
+	}
+#endif
 #endif
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
@@ -2719,6 +2732,15 @@ AbortTransaction(void)
 		 */
 		PGXCNodeRollback();
 	}
+#ifdef XCP
+	if (cluster_ex_lock_held && IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		elog(DEBUG2, "PAUSE CLUSTER lock released due to rollback/abort");
+		LWLockAcquire(ClusterLock, LW_SHARED);
+		RequestClusterPause(false, NULL);
+		LWLockRelease(ClusterLock);
+	}
+#endif
 #endif
 
 	/*

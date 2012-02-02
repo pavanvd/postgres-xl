@@ -231,7 +231,7 @@ stat_log()
  * multiple connections as well as state information
  */
 #ifdef XCP
-static void
+void
 InitResponseCombiner(ResponseCombiner *combiner, int node_count,
 					   CombineType combine_type)
 #else
@@ -896,7 +896,7 @@ validate_combiner(RemoteQueryState *combiner)
  * Close combiner and free allocated memory, if it is not needed
  */
 #ifdef XCP
-static void
+void
 CloseCombiner(ResponseCombiner *combiner)
 {
 	if (combiner->connections)

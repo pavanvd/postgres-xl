@@ -2330,7 +2330,7 @@ transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
 
 		nodeIndex = PGXCNodeGetNodeId(nodeoid, get_pgxc_nodetype(nodeoid));
 
-		if (nodeIndex == PGXCNodeId && is_coordinator)
+		if (nodeIndex == (PGXCNodeId - 1) && is_coordinator)
 			is_local = true;
 	}
 

@@ -299,6 +299,9 @@ extern void HandleCmdComplete(CmdType commandType, CombineTag *combine, const ch
 		BufferConnection(conn)
 
 extern TupleTableSlot *FetchTuple(ResponseCombiner *combiner);
+extern void InitResponseCombiner(ResponseCombiner *combiner, int node_count,
+					   CombineType combine_type);
+extern void CloseCombiner(ResponseCombiner *combiner);
 #else
 extern bool FetchTuple(RemoteQueryState *combiner, TupleTableSlot *slot);
 #endif

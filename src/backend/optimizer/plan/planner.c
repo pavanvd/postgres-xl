@@ -176,6 +176,10 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		ereport(ERROR,
 				(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
 				 (errmsg("INTO clause not yet supported"))));
+
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && parse->utilityStmt &&
+			IsA(parse->utilityStmt, RemoteQuery))
+		return pgxc_direct_planner(parse, cursorOptions, boundParams);
 #endif
 
 	/* Cursor options may come from caller or from DECLARE CURSOR stmt */

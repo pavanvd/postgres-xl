@@ -89,6 +89,9 @@
 #include "nodes/nodes.h"
 #include "pgxc/poolmgr.h"
 #include "pgxc/pgxcnode.h"
+#ifdef XCP
+#include "pgxc/pause.h"
+#endif
 #include "commands/copy.h"
 /* PGXC_DATANODE */
 #include "access/transam.h"
@@ -4113,6 +4116,9 @@ PostgresMain(int argc, char *argv[], const char *username)
 	sigjmp_buf	local_sigjmp_buf;
 	volatile bool send_ready_for_query = true;
 
+#ifdef XCP
+	volatile bool	cluster_lock_held = false;
+#endif /* XCP */
 #ifdef PGXC /* PGXC_DATANODE */
 	/* Snapshot info */
 	int 			xmin;
@@ -4400,6 +4406,9 @@ PostgresMain(int argc, char *argv[], const char *username)
 	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
 	CurrentResourceOwner = NULL;
 
+	/* if we exit, try to release cluster lock properly */
+	on_shmem_exit(PGXCCleanClusterLock, 0);
+
 	/* If we exit, first try and clean connections and send to pool */
 	on_proc_exit (PGXCNodeCleanAndRelease, 0);
 #else
@@ -4551,6 +4560,14 @@ PostgresMain(int argc, char *argv[], const char *username)
 		/* We don't have a transaction command open anymore */
 		xact_started = false;
 
+#ifdef XCP
+		/* The ClusterLock should have been released by now */
+		cluster_lock_held = false;
+
+		/* AbortTransaction() should have cleared up this too */
+		cluster_ex_lock_held = false;
+#endif /* XCP */
+
 		/* Now we can allow interrupts again */
 		RESUME_INTERRUPTS();
 	}
@@ -4662,6 +4679,28 @@ PostgresMain(int argc, char *argv[], const char *username)
 		 */
 		if (ignore_till_sync && firstchar != EOF)
 			continue;
+
+#ifdef XCP
+		/*
+		 * Acquire the ClusterLock before starting query processing. Error
+		 * processing as well process exit does lwlock cleanup, so nothing
+		 * special is needed in those cases, thankfully :)
+		 *
+		 * If we are inside a transaction block, this lock will be already held
+		 * when the transaction began
+		 *
+		 * If the session has invoked a PAUSE CLUSTER earlier, then this lock
+		 * will be held already in exclusive mode. No need to lock in that case
+		 *
+		 * In case of error handling, the lock would have been released. We do
+		 * not take this lock again till the end of the transaction block
+		 */
+		if (!cluster_ex_lock_held && !cluster_lock_held && !IsAbortedTransactionBlockState())
+		{
+			LWLockAcquire(ClusterLock, LW_SHARED);
+			cluster_lock_held = true;
+		}
+#endif /* XCP */
 
 		switch (firstchar)
 		{
@@ -5006,6 +5045,25 @@ PostgresMain(int argc, char *argv[], const char *username)
 						 errmsg("invalid frontend message type %d",
 								firstchar)));
 		}
+
+#ifdef XCP
+		/*
+		 * If the connection is going idle, release the cluster lock. However
+		 * if the session had invoked a PAUSE CLUSTER earlier, then wait for a
+		 * subsequent UNPAUSE to release this lock
+		 */
+		if (!IsAbortedTransactionBlockState() && !IsTransactionOrTransactionBlock()
+							&& cluster_lock_held && !cluster_ex_lock_held)
+		{
+			/*
+			 * Users can do ROLLBACK, in which case lock will be released. Check
+			 * if so too
+			 */
+			if (LWLockHeldByMe(ClusterLock))
+				LWLockRelease(ClusterLock);
+			cluster_lock_held = false;
+		}
+#endif /* XCP */
 	}							/* end of input-reading loop */
 
 	/* can't get here because the above loop never exits */

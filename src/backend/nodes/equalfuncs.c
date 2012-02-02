@@ -2533,6 +2533,18 @@ _equalBarrierStmt(BarrierStmt *a, BarrierStmt *b)
 	COMPARE_STRING_FIELD(id);
 	return true;
 }
+
+#ifdef XCP
+/*
+ * Lock Cluster stuff
+ */
+static bool
+_equalPauseClusterStmt(PauseClusterStmt *a, PauseClusterStmt *b)
+{
+	COMPARE_SCALAR_FIELD(pause);
+	return true;
+}
+#endif
 #endif
 
 /*
@@ -3010,6 +3022,11 @@ equal(void *a, void *b)
 		case T_BarrierStmt:
 			retval = _equalBarrierStmt(a, b);
 			break;
+#ifdef XCP
+		case T_PauseClusterStmt:
+			retval = _equalPauseClusterStmt(a, b);
+			break;
+#endif
 #endif
 		case T_CreateSchemaStmt:
 			retval = _equalCreateSchemaStmt(a, b);
