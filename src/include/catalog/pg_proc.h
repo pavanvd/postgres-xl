@@ -4348,6 +4348,10 @@ DATA(insert OID = 3201 ( pgxc_pool_reload	PGNSP PGUID 12 1 0 0 f f f t f v 0 0 1
 DESCR("reload connection information in pooler and reload server sessions");
 DATA(insert OID = 3122 ( pgxc_node_str		PGNSP PGUID 12 1 0 0 f f f t f s 0 0 19 "" _null_ _null_ _null_ _null_ pgxc_node_str _null_ _null_ _null_ ));
 DESCR("get the name of the node");
+#ifdef XCP
+DATA(insert OID = 3202 ( stormdb_promote_standby	PGNSP PGUID 12 1 0 0 f f f t f v 0 0 2278 "" _null_ _null_ _null_ _null_ stormdb_promote_standby _null_ _null_ _null_ ));
+DESCR("touch trigger file on a standby machine to end replication");
+#endif
 #endif
 
 /*

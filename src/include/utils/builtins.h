@@ -1127,6 +1127,11 @@ extern Datum pg_cursor(PG_FUNCTION_ARGS);
 /* backend/pgxc/pool/poolutils.c */
 extern Datum pgxc_pool_check(PG_FUNCTION_ARGS);
 extern Datum pgxc_pool_reload(PG_FUNCTION_ARGS);
+
+#ifdef XCP
+/* backend/pgxc/cluster/stormutils.c */
+extern Datum stormdb_promote_standby(PG_FUNCTION_ARGS);
+#endif
 #endif
 
 #endif   /* BUILTINS_H */
