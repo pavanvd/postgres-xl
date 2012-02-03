@@ -39,6 +39,7 @@ stormdb_promote_standby(PG_FUNCTION_ARGS)
 				(errmsg("could not create trigger file"),
 				 errdetail("The trigger file path was: %s",
 						   trigger_file)));
+	fclose(fp);
 
 	PG_RETURN_VOID();
 }
