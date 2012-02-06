@@ -118,6 +118,50 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 								(errmsg("Partition column can't be updated in current version"))));
 
 					distribution->distributionExpr = (Node *) keyTle->expr;
+					/*
+					 * We can restrict the distribution if the expression
+					 * is evaluated to a constant
+					 */
+					if (command_type == CMD_INSERT)
+					{
+						Oid 	keytype;
+						Const  *constExpr = NULL;
+
+						keytype = exprType(distribution->distributionExpr);
+						constExpr = (Const *) eval_const_expressions(root,
+												distribution->distributionExpr);
+						if (IsA(constExpr, Const) &&
+								constExpr->consttype == keytype)
+						{
+							List 	   *nodeList = NIL;
+							Bitmapset  *tmpset = bms_copy(distribution->nodes);
+							Bitmapset  *restrict = NULL;
+							Locator    *locator;
+							int		   *nodenums;
+							int 		i, count;
+
+							while((i = bms_first_member(tmpset)) >= 0)
+								nodeList = lappend_int(nodeList, i);
+							bms_free(tmpset);
+
+							locator = createLocator(distribution->distributionType,
+													RELATION_ACCESS_INSERT,
+													keytype,
+													LOCATOR_LIST_LIST,
+													0,
+													(void *) nodeList,
+													(void **) &nodenums,
+													false);
+							count = GET_NODES(locator, constExpr->constvalue,
+											  constExpr->constisnull, NULL);
+
+							for (i = 0; i < count; i++)
+								restrict = bms_add_member(restrict, nodenums[i]);
+							distribution->restrictNodes = restrict;
+							list_free(nodeList);
+							freeLocator(locator);
+						}
+					}
 				}
 
 				/*
