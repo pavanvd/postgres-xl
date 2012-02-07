@@ -892,35 +892,60 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_RemoteSubplan:
 			{
 				RemoteSubplan  *rsubplan = (RemoteSubplan *) plan;
-				bool 			replicated;
-				replicated = IsReplicated(rsubplan->distributionType);
 				/* print out destination nodes */
 				if (es->format == EXPLAIN_FORMAT_TEXT)
 				{
-					bool 			first = true;
-					ListCell 	   *lc;
-
-					foreach(lc, rsubplan->nodeList)
+					if (rsubplan->nodeList)
 					{
-						if (first)
+						bool 			first = true;
+						ListCell 	   *lc;
+						foreach(lc, rsubplan->nodeList)
 						{
-							appendStringInfo(es->str, " on %s (%d",
-											 replicated ? "any" : "all",
-											 lfirst_int(lc));
-							first = false;
+							if (first)
+							{
+								appendStringInfo(es->str, " on %s (%d",
+												 rsubplan->execOnAll ? "all" : "any",
+												 lfirst_int(lc));
+								first = false;
+							}
+							else
+								appendStringInfo(es->str, ",%d", lfirst_int(lc));
 						}
-						else
-							appendStringInfo(es->str, ",%d", lfirst_int(lc));
+						appendStringInfoChar(es->str, ')');
 					}
-					appendStringInfoChar(es->str, ')');
+					else
+					{
+						appendStringInfo(es->str, " on local node");
+					}
+					if (rsubplan->distributionNodes)
+					{
+						bool 			first = true;
+						ListCell 	   *lc;
+						foreach(lc, rsubplan->distributionNodes)
+						{
+							if (first)
+							{
+								appendStringInfo(es->str,
+												 " distribute results on (%d",
+												 lfirst_int(lc));
+								first = false;
+							}
+							else
+								appendStringInfo(es->str, ",%d", lfirst_int(lc));
+						}
+						appendStringInfoChar(es->str, ')');
+					}
 				}
 				else
 				{
 					ExplainPropertyText("Replicated",
-										replicated ? "yes" : "no",
+										rsubplan->execOnAll ? "no" : "yes",
 										es);
 					ExplainPropertyList("Node List",
 										((RemoteSubplan *) plan)->nodeList,
+										es);
+					ExplainPropertyList("Result Nodes",
+										((RemoteSubplan *) plan)->distributionNodes,
 										es);
 				}
 			}

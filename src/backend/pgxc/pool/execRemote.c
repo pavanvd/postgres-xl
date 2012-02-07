@@ -1367,6 +1367,10 @@ FetchTuple(ResponseCombiner *combiner)
 			int		i;
 
 			slot = ExecProcNode(outerPlanState(combiner));
+			/* If locator is not defined deliver all the results */
+			if (planstate->locator == NULL)
+				return slot;
+
 			/*
 			 * If NULL tuple is returned we done with the subplan, finish it up and
 			 * return NULL
@@ -1374,7 +1378,7 @@ FetchTuple(ResponseCombiner *combiner)
 			if (TupIsNull(slot))
 				return NULL;
 
-			/* Get pertitioning value */
+			/* Get partitioning value if defined */
 			if (plan->distributionKey != InvalidAttrNumber)
 				value = slot_getattr(slot, plan->distributionKey, &isnull);
 
@@ -1382,6 +1386,7 @@ FetchTuple(ResponseCombiner *combiner)
 			numnodes = GET_NODES(planstate->locator, value, isnull, NULL);
 			for (i = 0; i < numnodes; i++)
 			{
+				/* Deliver the node */
 				if (planstate->dest_nodes[i] == PGXCNodeId-1)
 					return slot;
 			}
