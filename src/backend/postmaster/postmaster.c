@@ -1142,7 +1142,13 @@ PostmasterMain(int argc, char *argv[])
 				(errcode(ERRCODE_IO_ERROR),
 				 errmsg("Can not register Coordinator on GTM")));
 	}
+
+#ifdef XCP
+	/* We will not register a DATA NODE on GTM */
+	if (0)
+#else
 	if (IS_PGXC_DATANODE)
+#endif
 	{
 		if (RegisterGTM(GTM_NODE_DATANODE, PostPortNumber, userDoption) < 0)
 			ereport(FATAL,

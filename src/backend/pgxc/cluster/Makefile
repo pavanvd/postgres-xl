@@ -12,6 +12,6 @@ subdir = src/backend/pgxc/cluster
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = pause.o
+OBJS = pause.o stormutils.o
 
 include $(top_srcdir)/src/backend/common.mk
