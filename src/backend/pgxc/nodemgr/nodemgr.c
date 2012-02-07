@@ -5,7 +5,7 @@
  *	  Support concerns CREATE/ALTER/DROP on NODE object.
  *
  * Copyright (c) 1996-2010, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  *-------------------------------------------------------------------------
  */
@@ -17,6 +17,7 @@
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/pgxc_node.h"
+#include "commands/defrem.h"
 #include "nodes/parsenodes.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
@@ -39,9 +40,9 @@ int         NumCoords = 1;
  * This includes check on option values.
  */
 static void
-check_options(List *options, DefElem **dhost,
-			DefElem **dport, DefElem **dtype,
-			DefElem **is_primary, DefElem **is_preferred)
+check_node_options(const char *node_name, List *options, char **node_host,
+			int *node_port, char *node_type, 
+			bool *is_primary, bool *is_preferred)
 {
 	ListCell   *option;
 
@@ -57,111 +58,41 @@ check_options(List *options, DefElem **dhost,
 
 		if (strcmp(defel->defname, "port") == 0)
 		{
-			int port_value;
+			*node_port = defGetTypeLength(defel);
 
-			if (*dport)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
-
-			/* Value is mandatory */
-			if (!defel->arg)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("port value is not specified")));
-
-			*dport = defel;
-
-			/* Value type check */
-			if (!IsA(defel->arg, Integer))
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("port value is not an integer")));
-
-			port_value = intVal(defel->arg);
-			if (port_value < 1 || port_value > 65535)
+			if (*node_port < 1 || *node_port > 65535)
 				ereport(ERROR,
 						(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 						 errmsg("port value is out of range")));
-
 		}
 		else if (strcmp(defel->defname, "host") == 0)
 		{
-			if (*dhost)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
-
-			/* Value is mandatory */
-			if (!defel->arg)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("host value is not specified")));
-
-			/* Value type check */
-			if (!IsA(defel->arg, String))
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("host value is not a string")));
-
-			*dhost = defel;
+			*node_host = defGetString(defel);
 		}
 		else if (strcmp(defel->defname, "type") == 0)
 		{
-			char *nodetype;
+			char *type_loc;
 
-			if (*dtype)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+			type_loc = defGetString(defel);
 
-			*dtype = defel;
-
-			/* Value is mandatory */
-			if (!defel->arg)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("type value is not specified")));
-
-			/* Value type check */
-			if (!IsA(defel->arg, String))
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("type value is not a string")));
-
-			nodetype = strVal(defel->arg);
-			if (strcmp(nodetype, "coordinator") != 0 &&
-				strcmp(nodetype, "datanode") != 0)
+			if (strcmp(type_loc, "coordinator") != 0 &&
+				strcmp(type_loc, "datanode") != 0)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("type value is incorrect, specify 'coordinator or 'datanode'")));
+
+			if (strcmp(type_loc, "coordinator") == 0)
+				*node_type = PGXC_NODE_COORDINATOR;
+			else
+				*node_type = PGXC_NODE_DATANODE;
 		}
 		else if (strcmp(defel->defname, "primary") == 0)
 		{
-			if (*is_primary)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
-
-			if (defel->arg)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("a value cannot be specified with primary")));
-
-			*is_primary = defel;
+			*is_primary = defGetBoolean(defel);
 		}
 		else if (strcmp(defel->defname, "preferred") == 0)
 		{
-			if (*is_preferred)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
-			if (defel->arg)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("a value cannot be specified with preferred")));
-
-			*is_preferred = defel;
+			*is_preferred = defGetBoolean(defel);
 		}
 		else
 		{
@@ -170,6 +101,40 @@ check_options(List *options, DefElem **dhost,
 					 errmsg("incorrect option: %s", defel->defname)));
 		}
 	}
+
+	/* Checks on primary and preferred nodes */
+	if (*is_primary && *node_type != PGXC_NODE_DATANODE)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("PGXC node %s: cannot be a primary node, it has to be a Datanode",
+						node_name)));
+	if (*is_primary && OidIsValid(primary_data_node))
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("PGXC node %s: two nodes cannot be primary",
+						node_name)));
+
+	if (*is_preferred && *node_type != PGXC_NODE_DATANODE)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("PGXC node %s: cannot be a preferred node, it has to be a Datanode",
+						node_name)));
+
+	/* Node type check */
+	if (*node_type == PGXC_NODE_NONE)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("PGXC node %s: Node type not specified",
+						node_name)));
+
+#ifdef XCP
+	if (node_type == PGXC_NODE_DATANODE && NumDataNodes >= MaxDataNodes)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("Too many datanodes, current value of max_data_nodes is %d",
+						MaxDataNodes)));
+
+#endif
 }
 
 /* --------------------------------
@@ -307,19 +272,14 @@ PgxcNodeCreate(CreateNodeStmt *stmt)
 	HeapTuple	htup;
 	bool		nulls[Natts_pgxc_node];
 	Datum		values[Natts_pgxc_node];
-	const char	*node_name = stmt->node_name;
+	const char *node_name = stmt->node_name;
 	int		i;
-	/* Options */
-	DefElem		*dhost = NULL;
-	DefElem		*dport = NULL;
-	DefElem		*dtype = NULL;
-	DefElem		*is_primary = NULL;
-	DefElem		*is_preferred = NULL;
-	const char	*node_host = NULL;
-	char		node_type;
-	int			node_port;
-	bool		nodeis_primary = false;
-	bool		nodeis_preferred = false;
+	/* Options with default values */
+	char	   *node_host = NULL;
+	char		node_type = PGXC_NODE_NONE;
+	int			node_port = 0;
+	bool		is_primary = false;
+	bool		is_preferred = false;
 
 	/* Only a DB administrator can add nodes */
 	if (!superuser())
@@ -334,96 +294,42 @@ PgxcNodeCreate(CreateNodeStmt *stmt)
 				 errmsg("PGXC Node %s: object already defined",
 						node_name)));
 
+	/* Check length of node name */
+	if (strlen(node_name) > PGXC_NODENAME_LENGTH)
+		ereport(ERROR,
+                (errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+                 errmsg("Node name \"%s\" is too long",
+                        node_name)));
+
 	/* Filter options */
-	check_options(stmt->options, &dhost,
-				&dport, &dtype,
+	check_node_options(node_name, stmt->options, &node_host,
+				&node_port, &node_type,
 				&is_primary, &is_preferred);
 
-	/* Then assign default values if necessary */
-	if (dport)
+	/*
+	 * Then assign default values if necessary
+	 * First for port.
+	 */
+	if (node_port == 0)
 	{
-		node_port = intVal(dport->arg);
-	}
-	else
-	{
-		/* Apply default */
 		node_port = 5432;
 		elog(LOG, "PGXC node %s: Applying default port value: %d",
 			 node_name, node_port);
 	}
 
-	/* For host */
-	if (dhost)
+	/* Then apply default value for host */
+	if (!node_host)
 	{
-		node_host = strVal(dhost->arg);
-	}
-	else
-	{
-		/* Apply default */
 		node_host = strdup("localhost");
 		elog(LOG, "PGXC node %s: Applying default host value: %s",
 			 node_name, node_host);
 	}
-
-	/* For node type */
-	if (dtype)
-	{
-		char *loc;
-		loc = strVal(dtype->arg);
-		if (strcmp(loc, "coordinator") == 0)
-			node_type = PGXC_NODE_COORDINATOR;
-		else
-			node_type = PGXC_NODE_DATANODE;
-	}
-	else
-	{
-		/* Type not specified? */
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("PGXC node %s: Node type not specified",
-						node_name)));
-	}
-
-#ifdef XCP
-	if (node_type == PGXC_NODE_DATANODE && NumDataNodes >= MaxDataNodes)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("Too many datanodes, current value of max_data_nodes is %d",
-						MaxDataNodes)));
-
-#endif
 
 	/* Iterate through all attributes initializing nulls and values */
 	for (i = 0; i < Natts_pgxc_node; i++)
 	{
 		nulls[i]  = false;
 		values[i] = (Datum) 0;
-	}
-
-	if (is_primary)
-	{
-		if (node_type != PGXC_NODE_DATANODE)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					errmsg("PGXC node %s: cannot be a primary node, it has to be a Datanode",
-							node_name)));
-
-		if (OidIsValid(primary_data_node))
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					errmsg("PGXC node %s: two nodes cannot be primary",
-							node_name)));
-		nodeis_primary = true;
-	}
-
-	if (is_preferred)
-	{
-		if (node_type != PGXC_NODE_DATANODE)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					errmsg("PGXC node %s: cannot be a preferred node, it has to be a Datanode",
-							node_name)));
-		nodeis_preferred = true;
 	}
 
 	/*
@@ -439,8 +345,8 @@ PgxcNodeCreate(CreateNodeStmt *stmt)
 	values[Anum_pgxc_node_type - 1] = CharGetDatum(node_type);
 	values[Anum_pgxc_node_port - 1] = Int32GetDatum(node_port);
 	values[Anum_pgxc_node_host - 1] = DirectFunctionCall1(namein, CStringGetDatum(node_host));
-	values[Anum_pgxc_node_is_primary - 1] = BoolGetDatum(nodeis_primary);
-	values[Anum_pgxc_node_is_preferred - 1] = BoolGetDatum(nodeis_preferred);
+	values[Anum_pgxc_node_is_primary - 1] = BoolGetDatum(is_primary);
+	values[Anum_pgxc_node_is_preferred - 1] = BoolGetDatum(is_preferred);
 
 	htup = heap_form_tuple(pgxcnodesrel->rd_att, values, nulls);
 
@@ -460,17 +366,12 @@ PgxcNodeCreate(CreateNodeStmt *stmt)
 void
 PgxcNodeAlter(AlterNodeStmt *stmt)
 {
-	DefElem		*dhost = NULL;
-	DefElem		*dport = NULL;
-	DefElem		*dtype = NULL;
-	DefElem		*is_primary = NULL;
-	DefElem		*is_preferred = NULL;
-	const char	*node_name = stmt->node_name;
-	const char	*node_host = NULL;
-	char		node_type = PGXC_NODE_NONE;
-	int			node_port = 0;
-	bool		nodeis_preferred = false;
-	bool		nodeis_primary = false;
+	const char *node_name = stmt->node_name;
+	char	   *node_host;
+	char		node_type, node_type_old;
+	int			node_port;
+	bool		is_preferred;
+	bool		is_primary;
 	HeapTuple	oldtup, newtup;
 	Oid			nodeOid = get_pgxc_nodeoid(node_name);
 	Relation	rel;
@@ -499,113 +400,59 @@ PgxcNodeAlter(AlterNodeStmt *stmt)
 	if (!HeapTupleIsValid(oldtup))
 		elog(ERROR, "cache lookup failed for object %u", nodeOid);
 
+	/*
+	 * check_options performs some internal checks on option values
+	 * so set up values.
+	 */
+	node_host = get_pgxc_nodehost(nodeOid);
+	node_port = get_pgxc_nodeport(nodeOid);
+	is_preferred = is_pgxc_nodepreferred(nodeOid);
+	is_primary = is_pgxc_nodeprimary(nodeOid);
+	node_type = get_pgxc_nodetype(nodeOid);
+	node_type_old = node_type;
+
 	/* Filter options */
-	check_options(stmt->options, &dhost,
-				&dport, &dtype,
+	check_node_options(node_name, stmt->options, &node_host,
+				&node_port, &node_type,
 				&is_primary, &is_preferred);
 
-	/* Host value */
-	if (dhost)
-		node_host = strVal(dhost->arg);
-
-	/* Port value */
-	if (dport)
-		node_port = intVal(dport->arg);
-
-	/* Primary node */
-	if (is_primary)
-	{
-		if (get_pgxc_nodetype(nodeOid) != PGXC_NODE_DATANODE)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					errmsg("PGXC node %s: cannot be a primary node, it has to be a Datanode",
-							node_name)));
-
-		if (OidIsValid(primary_data_node))
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					errmsg("PGXC node %s: two nodes cannot be primary",
-							node_name)));
-		nodeis_primary = true;
-	}
-
-	/* Preferred node */
-	if (is_preferred)
-	{
-		if (get_pgxc_nodetype(nodeOid) != PGXC_NODE_DATANODE)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					errmsg("PGXC node %s: cannot be a preferred node, it has to be a Datanode",
-							node_name)));
-		nodeis_preferred = true;
-	}
-
-	/* For node type */
-	if (dtype)
-	{
-		char *loc;
-		Form_pgxc_node loctup = (Form_pgxc_node) GETSTRUCT(oldtup);
-		char node_type_old = loctup->node_type;
-
-		loc = strVal(dtype->arg);
-		if (strcmp(loc, "coordinator") == 0)
-			node_type = PGXC_NODE_COORDINATOR;
-		else
-			node_type = PGXC_NODE_DATANODE;
-
-		/* Check type dependency */
+	/* Check type dependency */
 #ifndef XCP
-		/*
-		 * XCP:
-		 * Initially node identify itself as a Coordinator and this should be
-		 * changed for datanodes. In general, it should be safe to turn
-		 * Coordinator to Datanode and back
-		 */
-		if (node_type_old == PGXC_NODE_COORDINATOR &&
-			node_type == PGXC_NODE_DATANODE)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("PGXC node %s: cannot alter Coordinator to Datanode",
-							node_name)));
-		else if (node_type_old == PGXC_NODE_DATANODE &&
-				 node_type == PGXC_NODE_COORDINATOR)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("PGXC node %s: cannot alter Datanode to Coordinator",
-							node_name)));
+	/*
+	 * XCP:
+	 * Initially node identify itself as a Coordinator and this should be
+	 * changed for datanodes. In general, it should be safe to turn
+	 * Coordinator to Datanode and back
+	 */
+	if (node_type_old == PGXC_NODE_COORDINATOR &&
+		node_type == PGXC_NODE_DATANODE)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("PGXC node %s: cannot alter Coordinator to Datanode",
+						node_name)));
+	else if (node_type_old == PGXC_NODE_DATANODE &&
+			 node_type == PGXC_NODE_COORDINATOR)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("PGXC node %s: cannot alter Datanode to Coordinator",
+						node_name)));
 #endif
-	}
 
 	/* Update values for catalog entry */
 	MemSet(new_record, 0, sizeof(new_record));
 	MemSet(new_record_nulls, false, sizeof(new_record_nulls));
 	MemSet(new_record_repl, false, sizeof(new_record_repl));
-	if (node_port > 0)
-	{
-		new_record[Anum_pgxc_node_port - 1] = Int32GetDatum(node_port);
-		new_record_repl[Anum_pgxc_node_port - 1] = true;
-	}
-	if (node_host)
-	{
-		new_record[Anum_pgxc_node_host - 1] =
-			DirectFunctionCall1(namein, CStringGetDatum(node_host));
-		new_record_repl[Anum_pgxc_node_host - 1] = true;
-	}
-	if (node_type != PGXC_NODE_NONE)
-	{
-		new_record[Anum_pgxc_node_type - 1] = CharGetDatum(node_type);
-		new_record_repl[Anum_pgxc_node_type - 1] = true;
-	}
-	if (is_primary)
-	{
-		new_record[Anum_pgxc_node_is_primary - 1] = BoolGetDatum(nodeis_primary);
-		new_record_repl[Anum_pgxc_node_is_primary - 1] = true;
-	}
-	if (is_preferred)
-	{
-		new_record[Anum_pgxc_node_is_preferred - 1] = BoolGetDatum(nodeis_preferred);
-		new_record_repl[Anum_pgxc_node_is_preferred - 1] = true;
-	}
+	new_record[Anum_pgxc_node_port - 1] = Int32GetDatum(node_port);
+	new_record_repl[Anum_pgxc_node_port - 1] = true;
+	new_record[Anum_pgxc_node_host - 1] = 
+		DirectFunctionCall1(namein, CStringGetDatum(node_host));
+	new_record_repl[Anum_pgxc_node_host - 1] = true;
+	new_record[Anum_pgxc_node_type - 1] = CharGetDatum(node_type);
+	new_record_repl[Anum_pgxc_node_type - 1] = true;
+	new_record[Anum_pgxc_node_is_primary - 1] = BoolGetDatum(is_primary);
+	new_record_repl[Anum_pgxc_node_is_primary - 1] = true;
+	new_record[Anum_pgxc_node_is_preferred - 1] = BoolGetDatum(is_preferred);
+	new_record_repl[Anum_pgxc_node_is_preferred - 1] = true;
 
 	/* Update relation */
 	newtup = heap_modify_tuple(oldtup, RelationGetDescr(rel),

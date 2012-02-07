@@ -11,7 +11,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  * $PostgreSQL: pgsql/src/include/c.h,v 1.234 2009/01/01 17:23:55 momjian Exp $
  *
@@ -125,6 +125,15 @@ typedef struct GTM_StartupPacket {
 	GTM_PGXCNodeType		sp_remotetype;
 	bool					sp_ispostmaster;
 } GTM_StartupPacket;
+
+typedef enum GTM_PortLastCall
+{
+	GTM_LastCall_NONE = 0,
+	GTM_LastCall_SEND,
+	GTM_LastCall_RECV,
+	GTM_LastCall_READ,
+	GTM_LastCall_WRITE
+} GTM_PortLastCall;
 
 #define InvalidGlobalTransactionId		((GlobalTransactionId) 0)
 

@@ -16,7 +16,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  * $PostgreSQL: pgsql/src/interfaces/libpq/pqexpbuffer.c,v 1.25 2008/11/26 00:26:23 tgl Exp $
  *
@@ -139,7 +139,7 @@ resetGTMPQExpBuffer(PQExpBuffer str)
 {
 	if (str)
 	{
-		if (str->data != oom_buffer)
+		if (str->data && str->data != oom_buffer)
 		{
 			str->len = 0;
 			str->data[0] = '\0';

@@ -334,8 +334,11 @@ const char *const config_type_names[] =\
 #define GTM_OPTNAME_DATA_DIR			"data_dir"
 #define GTM_OPTNAME_ERR_WAIT_COUNT		"err_wait_count"
 #define GTM_OPTNAME_ERR_WAIT_INTERVAL	"err_wait_interval"
-#define GTM_OPTNAME_ERR_WAIT_OPT		"err_wait_opt"
+#define GTM_OPTNAME_ERR_WAIT_IDLE		"err_wait_idle"
 #define GTM_OPTNAME_ERROR_REPORTER		"error_reporter"
+#define GTM_OPTNAME_CONNECT_RETRY_COUNT "gtm_connect_retry_count"
+#define GTM_OPTNAME_CONNECT_RETRY_IDLE  "gtm_connect_retry_idle"
+#define GTM_OPTNAME_CONNECT_RETRY_INTERVAL "gtm_connect_retry_interval"
 #define GTM_OPTNAME_GTM_HOST			"gtm_host"
 #define GTM_OPTNAME_GTM_PORT			"gtm_port"
 #define GTM_OPTNAME_KEEPALIVES_IDLE		"keepalives_idle"
@@ -348,6 +351,7 @@ const char *const config_type_names[] =\
 #define GTM_OPTNAME_PORT				"port"
 #define GTM_OPTNAME_STARTUP				"startup"
 #define GTM_OPTNAME_STATUS_READER		"status_reader"
+#define GTM_OPTNAME_SYNCHRONOUS_BACKUP	"synchronous_backup"
 #define GTM_OPTNAME_WORKER_THREADS		"worker_threads"
 
 

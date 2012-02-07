@@ -603,12 +603,7 @@ redistribute_path(Path *subpath, char distributionType,
 	pathnode->path.pathtype = T_RemoteSubplan;
 	pathnode->path.parent = rel;
 	pathnode->path.pathkeys = subpath->pathkeys;
-    /*
-	 * If distributionType has special value LOCATOR_TYPE_COORDINATOR ('\0')
-	 * Distribution will be NULL representing any node of the cluster either
-     * a Coordinator or a DataNode.
-	 */
-	if (distributionType)
+ 	if (distributionType != LOCATOR_TYPE_NONE)
 	{
 		Distribution   *distribution;
 
@@ -1140,11 +1135,11 @@ not_allowed_join:
 	 * top of each subpath to provide access to joined result sets.
 	 */
 	pathnode->innerjoinpath = redistribute_path(pathnode->innerjoinpath,
-												LOCATOR_TYPE_COORDINATOR,
+												LOCATOR_TYPE_NONE,
 												NULL,
 												NULL);
 	pathnode->outerjoinpath = redistribute_path(pathnode->outerjoinpath,
-												LOCATOR_TYPE_COORDINATOR,
+												LOCATOR_TYPE_NONE,
 												NULL,
 												NULL);
 }
@@ -1515,7 +1510,7 @@ create_append_path(RelOptInfo *rel, List *subpaths)
 		{
 			subpath = (Path *) lfirst(l);
 			if (subpath->distribution)
-				subpath = redistribute_path(subpath, LOCATOR_TYPE_COORDINATOR,
+				subpath = redistribute_path(subpath, LOCATOR_TYPE_NONE,
 											NULL, NULL);
 			newsubpaths = lappend(newsubpaths, subpath);
 		}
@@ -1616,7 +1611,7 @@ create_merge_append_path(PlannerInfo *root,
 		{
 			subpath = (Path *) lfirst(l);
 			if (subpath->distribution)
-				subpath = redistribute_path(subpath, LOCATOR_TYPE_COORDINATOR,
+				subpath = redistribute_path(subpath, LOCATOR_TYPE_NONE,
 											NULL, NULL);
 			newsubpaths = lappend(newsubpaths, subpath);
 		}

@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  *
  * IDENTIFICATION
@@ -443,6 +443,10 @@ ProcessGetSnapshotCommandMulti(Port *myport, StringInfo message)
 	if (myport->remote_type != GTM_NODE_GTM_PROXY)
 		pq_flush(myport);
 
+#if 0
+	/* Do not need this portion because this command does not change
+	 * internal status.
+	 */
 	if (GetMyThreadInfo->thr_conn->standby)
 	{
 		int _rc;
@@ -468,6 +472,7 @@ retry:
 
 		elog(LOG, "snapshot_get_multi() rc=%d done.", _rc);
 	}
+#endif
 
 	return;
 }

@@ -321,7 +321,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	result->invalItems = glob->invalItems;
 	result->nParamExec = list_length(glob->paramlist);
 #ifdef XCP
-	result->distributionType = LOCATOR_TYPE_SINGLE;
+	result->distributionType = LOCATOR_TYPE_NONE;
 	result->distributionKey = InvalidAttrNumber;
 	result->distributionNodes = NULL;
 #endif

@@ -7,7 +7,7 @@
  *
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  *
  * IDENTIFICATION
@@ -360,8 +360,8 @@ IsHashColumnForRelId(Oid relid, char *part_col_name)
 bool
 IsDistColumnForRelId(Oid relid, char *part_col_name)
 {
-bool bRet;
-RelationLocInfo *rel_loc_info;
+	bool bRet;
+	RelationLocInfo *rel_loc_info;
 
 	rel_loc_info = GetRelationLocInfo(relid);
 	bRet = false;
@@ -546,11 +546,12 @@ IsTableDistOnPrimary(RelationLocInfo *rel_loc_info)
  * The returned List is a copy, so it should be freed when finished.
  */
 ExecNodes *
-GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeOfValueForDistCol, RelationAccessType accessType)
+GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol,
+				bool isValueNull, Oid typeOfValueForDistCol,
+				RelationAccessType accessType)
 {
 	ExecNodes	*exec_nodes;
 	long		hashValue;
-	int		nError;
 	int		modulo;
 	int		nodeIndex;
 	int		k;
@@ -586,6 +587,15 @@ GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeO
 			}
 			else
 			{
+				/*
+				 * In case there are nodes defined in location info, initialize node list
+				 * with a default node being the first node in list.
+				 * This node list may be changed if a better one is found afterwards.
+				 */
+				if (rel_loc_info->nodeList)
+					exec_nodes->nodeList = lappend_int(NULL,
+													   linitial_int(rel_loc_info->nodeList));
+
 				if (accessType == RELATION_ACCESS_READ_FOR_UPDATE &&
 					IsTableDistOnPrimary(rel_loc_info))
 				{
@@ -597,7 +607,7 @@ GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeO
 					exec_nodes->nodeList = lappend_int(NULL,
 						   PGXCNodeGetNodeId(primary_data_node, PGXC_NODE_DATANODE));
 				}
-				else if (num_preferred_data_nodes >= 0)
+				else if (num_preferred_data_nodes > 0)
 				{
 					ListCell *item;
 
@@ -616,15 +626,7 @@ GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeO
 					}
 				}
 
-				/*
-				 * In case there are nodes defined here,
-				 * Enforce the use of one.
-				 */
-				if (rel_loc_info->nodeList)
-					exec_nodes->nodeList = lappend_int(NULL,
-													   linitial_int(rel_loc_info->nodeList));
-
-				/* read from just one of them. Use round robin mechanism */
+				/* If nothing found just read from one of them. Use round robin mechanism */
 				if (exec_nodes->nodeList == NULL)
 					exec_nodes->nodeList = lappend_int(NULL,
 													   GetRoundRobinNode(rel_loc_info->relid));
@@ -633,21 +635,22 @@ GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeO
 
 		case LOCATOR_TYPE_HASH:
 		case LOCATOR_TYPE_MODULO:
-			hashValue = compute_hash(typeOfValueForDistCol, valueForDistCol,
-									 &nError, rel_loc_info->locatorType);
-			if (nError == 0)
+			if (!isValueNull)
 			{
+				hashValue = compute_hash(typeOfValueForDistCol, valueForDistCol,
+										 rel_loc_info->locatorType);
 				modulo = compute_modulo(abs(hashValue), list_length(rel_loc_info->nodeList));
 				nodeIndex = get_node_from_modulo(modulo, rel_loc_info->nodeList);
 				exec_nodes->nodeList = lappend_int(NULL, nodeIndex);
 			}
 			else
+			{
 				if (accessType == RELATION_ACCESS_INSERT)
 					/* Insert NULL to first node*/
 					exec_nodes->nodeList = lappend_int(NULL, linitial_int(rel_loc_info->nodeList));
 				else
 					exec_nodes->nodeList = list_concat(exec_nodes->nodeList, rel_loc_info->nodeList);
-
+			}
 			break;
 
 		case LOCATOR_TYPE_SINGLE:
@@ -926,6 +929,21 @@ FreeRelationLocInfo(RelationLocInfo *relationLocInfo)
 	}
 }
 
+/*
+ * Free the contents of the ExecNodes expression */
+void
+FreeExecNodes(ExecNodes **exec_nodes)
+{
+	ExecNodes *tmp_en = *exec_nodes;
+
+	/* Nothing to do */
+	if (!tmp_en)
+		return;
+	list_free(tmp_en->primarynodelist);
+	list_free(tmp_en->nodeList);
+	pfree(tmp_en);
+	*exec_nodes = NULL;
+}
 
 #ifdef XCP
 Locator *

@@ -7,7 +7,7 @@
  *
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  * IDENTIFICATION
  *	  $$
@@ -2530,7 +2530,7 @@ PGXCNodeGetNodeOid(int nodeid, char node_type)
 			return InvalidOid;
 	}
 
-	return handles[nodeid - 1].nodeoid;
+	return handles[nodeid].nodeoid;
 }
 
 /*
@@ -2566,4 +2566,3 @@ PGXCNodeGetNodeIdFromName(char *node_name, char node_type)
 
 	return PGXCNodeGetNodeId(nodeoid, node_type);
 }
-

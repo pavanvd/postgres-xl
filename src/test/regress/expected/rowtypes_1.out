@@ -101,8 +101,8 @@ select * from people;
  (Joe,Blow,Jr) | 01-10-1984
 (1 row)
 
--- PGXCTODO: This test case makes a server crash due to query deparsing in planner
--- insert into quadtable (f1, q.c1.r, q.c2.i) values(44,55,66);
+--- PGXCTODO: This test case makes a server crash due to query deparsing in planner
+--- insert into quadtable (f1, q.c1.r, q.c2.i) values(44,55,66);
 select * from quadtable order by f1, q;
  f1 |             q             
 ----+---------------------------

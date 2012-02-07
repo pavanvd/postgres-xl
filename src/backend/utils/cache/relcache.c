@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  *
  * IDENTIFICATION
@@ -4544,8 +4544,14 @@ RelationCacheInitFileRemove(void)
 		if (strspn(de->d_name, "0123456789") == strlen(de->d_name))
 		{
 			/* Scan the tablespace dir for per-database dirs */
+#ifdef PGXC
+			/* Postgres-XC tablespaces include node name in path */
+			snprintf(path, sizeof(path), "%s/%s/%s_%s",
+					 tblspcdir, de->d_name, TABLESPACE_VERSION_DIRECTORY, PGXCNodeName);
+#else
 			snprintf(path, sizeof(path), "%s/%s/%s",
 					 tblspcdir, de->d_name, TABLESPACE_VERSION_DIRECTORY);
+#endif
 			RelationCacheInitFileRemoveInDir(path);
 		}
 	}

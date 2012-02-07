@@ -5,7 +5,7 @@
  *
  *
  * Portions Copyright (c) 1996-2010  PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  * src/include/pgxc/nodemgr.h
  *
@@ -18,6 +18,8 @@
 #define NODEMGR_H
 
 #include "nodes/parsenodes.h"
+
+#define PGXC_NODENAME_LENGTH	64
 
 /* Global number of nodes */
 #ifdef XCP

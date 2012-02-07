@@ -12,7 +12,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  * src/include/nodes/parsenodes.h
  *
@@ -158,10 +158,11 @@ typedef struct Query
 #ifdef PGXC
 	/* need this info for PGXC Planner, may be temporary */
 	char	   *sql_statement;	/* original query */
-	ExecNodes  *execNodes;	/* execute nodes */
+	ExecNodes  *execNodes;		/* execute nodes */
 	bool		qry_finalise_aggs;	/* used for queries intended for datanodes,
-									 * should datanode finalise the aggregagtes?
-									 */
+									 * should datanode finalise the aggregates? */
+	bool		is_local;		/* enforce query execution on local node
+								 * this is used by EXECUTE DIRECT especially. */
 #endif
 } Query;
 
@@ -694,6 +695,9 @@ typedef enum RTEKind
 	RTE_FUNCTION,				/* function in FROM */
 	RTE_VALUES,					/* VALUES (<exprlist>), (<exprlist>), ... */
 	RTE_CTE						/* common table expr (WITH list element) */
+#ifdef PGXC
+	,RTE_REMOTE_DUMMY			/* RTEs created by remote plan reduction */
+#endif /* PGXC */
 } RTEKind;
 
 typedef struct RangeTblEntry
@@ -2745,7 +2749,6 @@ typedef struct AlterTSConfigurationStmt
 typedef struct ExecDirectStmt
 {
 	NodeTag		type;
-	bool		coordinator;
 	List		*node_names;
 	char		*query;
 } ExecDirectStmt;

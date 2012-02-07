@@ -8048,11 +8048,11 @@ opt_barrier_id:
  *
  *		CREATE NODE nodename WITH
  *				(
- *					[ TYPE = ('datanode' | 'coordinator') ],
- *					[ HOST = 'hostname'],
- *					[ PORT = portnum ],
- *					[ PRIMARY ],
- *					[ PREFERRED ]
+ *					[ TYPE = ('datanode' | 'coordinator'), ]
+ *					[ HOST = 'hostname', ]
+ *					[ PORT = portnum, ]
+ *					[ PRIMARY [ = boolean ], ]
+ *					[ PREFERRED [ = boolean ] ]
  *				)
  *
  *****************************************************************************/
@@ -8082,11 +8082,12 @@ pgxcnode_list:
  *		QUERY:
  *		ALTER [CLUSTER] NODE nodename WITH
  *				(
- *					[ TYPE = ('datanode' | 'coordinator') ],
- *					[ HOST = 'hostname'],
- *					[ PORT = portnum ],
- *					[ PRIMARY ],
- *					[ PREFERRED ]
+ *					[ TYPE = ('datanode' | 'coordinator'), ]
+ *					[ HOST = 'hostname', ]
+ *					[ PORT = portnum, ]
+ *					[ PRIMARY [ = boolean ], ]
+ *					[ PREFERRED [ = boolean ], ]
+ *				)
  *
  *             If CLUSTER is mentioned, the command is executed on all nodes.
  *             PS: We need to add this option on all other pertinent NODE ddl
@@ -8240,24 +8241,15 @@ explain_option_arg:
 /*****************************************************************************
  *
  *		QUERY:
- *				EXECUTE DIRECT ON (COORDINATOR nodename, ... | NODE nodename, ...) query
+ *				EXECUTE DIRECT ON (nodename, ...) query
  *
  *****************************************************************************/
 
-ExecDirectStmt: EXECUTE DIRECT ON COORDINATOR pgxcnode_list DirectStmt
+ExecDirectStmt: EXECUTE DIRECT ON pgxcnode_list DirectStmt
 				{
 					ExecDirectStmt *n = makeNode(ExecDirectStmt);
-					n->coordinator = TRUE;
-					n->node_names = $5;
-					n->query = $6;
-					$$ = (Node *)n;
-				}
-				| EXECUTE DIRECT ON NODE pgxcnode_list DirectStmt
-				{
-					ExecDirectStmt *n = makeNode(ExecDirectStmt);
-					n->coordinator = FALSE;
-					n->node_names = $5;
-					n->query = $6;
+					n->node_names = $4;
+					n->query = $5;
 					$$ = (Node *)n;
 				}
 		;

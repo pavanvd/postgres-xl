@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  *
  * IDENTIFICATION
@@ -1936,6 +1936,11 @@ _readRangeTblEntry(void)
 			READ_NODE_FIELD(ctecoltypmods);
 			READ_NODE_FIELD(ctecolcollations);
 			break;
+#ifdef PGXC
+		case RTE_REMOTE_DUMMY:
+			/* Nothing to do */
+			break;
+#endif /* PGXC */
 		default:
 			elog(ERROR, "unrecognized RTE kind: %d",
 				 (int) local_node->rtekind);

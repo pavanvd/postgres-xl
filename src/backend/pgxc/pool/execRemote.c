@@ -6,7 +6,7 @@
  *
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  * IDENTIFICATION
  *	  $$
@@ -4299,28 +4299,26 @@ get_exec_connections(RemoteQueryState *planstate,
 											   planstate->ss.ps.ps_ExprContext,
 											   &isnull,
 											   NULL);
-				if (!isnull)
+				RelationLocInfo *rel_loc_info = GetRelationLocInfo(exec_nodes->en_relid);
+				/* PGXCTODO what is the type of partvalue here */
+				ExecNodes *nodes = GetRelationNodes(rel_loc_info,
+													partvalue,
+													isnull,
+													exprType((Node *) exec_nodes->en_expr),
+													exec_nodes->accesstype);
+				if (nodes)
 				{
-					RelationLocInfo *rel_loc_info = GetRelationLocInfo(exec_nodes->en_relid);
-					/* PGXCTODO what is the type of partvalue here */
-					ExecNodes *nodes = GetRelationNodes(rel_loc_info,
-														partvalue,
-														exprType((Node *) exec_nodes->en_expr),
-														exec_nodes->accesstype);
-					if (nodes)
-					{
-						nodelist = nodes->nodeList;
-						primarynode = nodes->primarynodelist;
-						pfree(nodes);
-					}
-					FreeRelationLocInfo(rel_loc_info);
+					nodelist = nodes->nodeList;
+					primarynode = nodes->primarynodelist;
+					pfree(nodes);
 				}
+				FreeRelationLocInfo(rel_loc_info);
 			}
 		}
 		else if (OidIsValid(exec_nodes->en_relid))
 		{
 			RelationLocInfo *rel_loc_info = GetRelationLocInfo(exec_nodes->en_relid);
-			ExecNodes *nodes = GetRelationNodes(rel_loc_info, 0, InvalidOid, exec_nodes->accesstype);
+			ExecNodes *nodes = GetRelationNodes(rel_loc_info, 0, true, InvalidOid, exec_nodes->accesstype);
 
 			/* Use the obtained list for given table */
 			if (nodes)
@@ -4609,10 +4607,13 @@ do_query(RemoteQueryState *node)
 		PGXCNodeHandle *new_connections[total_conn_count];
 		int 		new_count = 0;
 
-		if (primaryconnection && primaryconnection->transaction_status != 'T')
+		if (primaryconnection &&
+			primaryconnection->transaction_status != 'T' &&
+			primaryconnection->state != DN_CONNECTION_STATE_QUERY)
 			new_connections[new_count++] = primaryconnection;
 		for (i = 0; i < regular_conn_count; i++)
-			if (connections[i]->transaction_status != 'T')
+			if (connections[i]->transaction_status != 'T' &&
+				connections[i]->state != DN_CONNECTION_STATE_QUERY)
 				new_connections[new_count++] = connections[i];
 
 		if (new_count && pgxc_node_begin(new_count, new_connections, gxid))
@@ -6251,19 +6252,20 @@ ExecIsTempObjectIncluded(void)
 }
 
 /*
- * Insert given tuple in the remote relation. We use extended query protocol
+ * Execute given tuple in the remote relation. We use extended query protocol
  * to avoid repeated planning of the query. So we must pass the column values
  * as parameters while executing the query.
+ * This is used by queries using a remote query planning of standard planner.
  */
 void
-ExecRemoteInsert(Relation resultRelationDesc,
-				 RemoteQueryState *resultRemoteRel,
-				 TupleTableSlot *slot)
+ExecRemoteQueryStandard(Relation resultRelationDesc,
+						RemoteQueryState *resultRemoteRel,
+						TupleTableSlot *slot)
 {
 	ExprContext		*econtext = resultRemoteRel->ss.ps.ps_ExprContext;
 
 	/*
-	 * Use data row returned by the previus step as a parameters for
+	 * Use data row returned by the previous step as a parameters for
 	 * the main query.
 	 */
 	if (!TupIsNull(slot))

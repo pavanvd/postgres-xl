@@ -44,8 +44,10 @@
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #ifdef PGXC
+#ifndef XCP
 #include "pgxc/execRemote.h"
 #include "pgxc/pgxc.h"
+#endif
 #endif
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
@@ -173,7 +175,7 @@ ExecInsert(TupleTableSlot *slot,
 	Oid			newId;
 	List	   *recheckIndexes = NIL;
 #ifdef PGXC
-#ifndef PGXC
+#ifndef XCP
 	PlanState  *resultRemoteRel = NULL;
 #endif
 #endif
@@ -190,7 +192,7 @@ ExecInsert(TupleTableSlot *slot,
 	resultRelInfo = estate->es_result_relation_info;
 	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 #ifdef PGXC
-#ifndef PGXC
+#ifndef XCP
 	resultRemoteRel = estate->es_result_remoterel;
 #endif
 #endif
@@ -245,10 +247,10 @@ ExecInsert(TupleTableSlot *slot,
 			ExecConstraints(resultRelInfo, slot, estate);
 
 #ifdef PGXC
-#ifndef PGXC
+#ifndef XCP
 		if (IS_PGXC_COORDINATOR && resultRemoteRel)
 		{
-			ExecRemoteInsert(resultRelationDesc, (RemoteQueryState *)resultRemoteRel, slot);
+			ExecRemoteQueryStandard(resultRelationDesc, (RemoteQueryState *)resultRemoteRel, slot);
 		}
 		else
 #endif
@@ -319,12 +321,22 @@ ExecDelete(ItemPointer tupleid,
 	HTSU_Result result;
 	ItemPointerData update_ctid;
 	TransactionId update_xmax;
+#ifdef PGXC
+#ifndef XCP
+	PlanState  *resultRemoteRel = NULL;
+#endif
+#endif
 
 	/*
 	 * get information on the (current) result relation
 	 */
 	resultRelInfo = estate->es_result_relation_info;
 	resultRelationDesc = resultRelInfo->ri_RelationDesc;
+#ifdef PGXC
+#ifndef XCP
+	resultRemoteRel = estate->es_result_remoterel;
+#endif
+#endif
 
 	/* BEFORE ROW DELETE Triggers */
 	if (resultRelInfo->ri_TrigDesc &&
@@ -369,6 +381,16 @@ ExecDelete(ItemPointer tupleid,
 		 * mode transactions.
 		 */
 ldelete:;
+#ifdef PGXC
+#ifndef XCP
+		if (IS_PGXC_COORDINATOR && resultRemoteRel)
+		{
+			ExecRemoteQueryStandard(resultRelationDesc, (RemoteQueryState *)resultRemoteRel, planSlot);
+		}
+		else
+		{
+#endif
+#endif
 		result = heap_delete(resultRelationDesc, tupleid,
 							 &update_ctid, &update_xmax,
 							 estate->es_output_cid,
@@ -420,6 +442,12 @@ ldelete:;
 		 * take care of it later.  We can't delete index tuples immediately
 		 * anyway, since the tuple is still visible to other transactions.
 		 */
+
+#ifdef PGXC
+#ifndef XCP
+		}
+#endif
+#endif
 	}
 
 	if (canSetTag)
@@ -507,6 +535,11 @@ ExecUpdate(ItemPointer tupleid,
 	ItemPointerData update_ctid;
 	TransactionId update_xmax;
 	List	   *recheckIndexes = NIL;
+#ifdef PGXC
+#ifndef XCP
+	PlanState  *resultRemoteRel = NULL;
+#endif
+#endif
 
 	/*
 	 * abort the operation if not running transactions
@@ -525,6 +558,11 @@ ExecUpdate(ItemPointer tupleid,
 	 */
 	resultRelInfo = estate->es_result_relation_info;
 	resultRelationDesc = resultRelInfo->ri_RelationDesc;
+#ifdef PGXC
+#ifndef XCP
+	resultRemoteRel = estate->es_result_remoterel;
+#endif
+#endif
 
 	/* BEFORE ROW UPDATE Triggers */
 	if (resultRelInfo->ri_TrigDesc &&
@@ -576,6 +614,16 @@ lreplace:;
 		if (resultRelationDesc->rd_att->constr)
 			ExecConstraints(resultRelInfo, slot, estate);
 
+#ifdef PGXC
+#ifndef XCP
+		if (IS_PGXC_COORDINATOR && resultRemoteRel)
+		{
+			ExecRemoteQueryStandard(resultRelationDesc, (RemoteQueryState *)resultRemoteRel, planSlot);
+		}
+		else
+		{
+#endif
+#endif
 		/*
 		 * replace the heap tuple
 		 *
@@ -649,6 +697,11 @@ lreplace:;
 		if (resultRelInfo->ri_NumIndices > 0 && !HeapTupleIsHeapOnly(tuple))
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
 												   estate);
+#ifdef PGXC
+#ifndef XCP
+		}
+#endif
+#endif
 	}
 
 	if (canSetTag)
@@ -732,7 +785,7 @@ ExecModifyTable(ModifyTableState *node)
 	ResultRelInfo *resultRelInfo;
 	PlanState  *subplanstate;
 #ifdef PGXC
-#ifndef PGXC
+#ifndef XCP
 	PlanState  *remoterelstate;
 	PlanState  *saved_resultRemoteRel;
 #endif
@@ -766,7 +819,7 @@ ExecModifyTable(ModifyTableState *node)
 	resultRelInfo = node->resultRelInfo + node->mt_whichplan;
 	subplanstate = node->mt_plans[node->mt_whichplan];
 #ifdef PGXC
-#ifndef PGXC
+#ifndef XCP
 	remoterelstate = node->mt_remoterels[node->mt_whichplan];
 #endif
 #endif
@@ -781,14 +834,14 @@ ExecModifyTable(ModifyTableState *node)
 	 */
 	saved_resultRelInfo = estate->es_result_relation_info;
 #ifdef PGXC
-#ifndef PGXC
+#ifndef XCP
 	saved_resultRemoteRel = estate->es_result_remoterel;
 #endif
 #endif
 
 	estate->es_result_relation_info = resultRelInfo;
 #ifdef PGXC
-#ifndef PGXC
+#ifndef XCP
 	estate->es_result_remoterel = remoterelstate;
 #endif
 #endif
@@ -818,7 +871,7 @@ ExecModifyTable(ModifyTableState *node)
 				resultRelInfo++;
 				subplanstate = node->mt_plans[node->mt_whichplan];
 #ifdef PGXC
-#ifndef PGXC
+#ifndef XCP
 				remoterelstate = node->mt_plans[node->mt_whichplan];
 #endif
 #endif
@@ -911,7 +964,7 @@ ExecModifyTable(ModifyTableState *node)
 	/* Restore es_result_relation_info before exiting */
 	estate->es_result_relation_info = saved_resultRelInfo;
 #ifdef PGXC
-#ifndef PGXC
+#ifndef XCP
 	estate->es_result_remoterel = saved_resultRemoteRel;
 #endif
 #endif
@@ -968,7 +1021,9 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 	mtstate->mt_plans = (PlanState **) palloc0(sizeof(PlanState *) * nplans);
 #ifdef PGXC
+#ifndef XCP
 	mtstate->mt_remoterels = (PlanState **) palloc0(sizeof(PlanState *) * nplans);
+#endif
 #endif
 	mtstate->resultRelInfo = estate->es_result_relations + node->resultRelIndex;
 	mtstate->mt_arowmarks = (List **) palloc0(sizeof(List *) * nplans);

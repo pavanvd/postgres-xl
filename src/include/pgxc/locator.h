@@ -4,7 +4,7 @@
  *		Externally declared locator functions
  *
  *
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  *
  * IDENTIFICATION
@@ -17,7 +17,6 @@
 
 #ifdef XCP
 #include "fmgr.h"
-#define LOCATOR_TYPE_COORDINATOR '\0'
 #endif
 #define LOCATOR_TYPE_REPLICATED 'R'
 #define LOCATOR_TYPE_HASH 'H'
@@ -27,6 +26,9 @@
 #define LOCATOR_TYPE_CUSTOM 'C'
 #define LOCATOR_TYPE_MODULO 'M'
 #define LOCATOR_TYPE_NONE 'O'
+#define LOCATOR_TYPE_DISTRIBUTED 'D'	/* for distributed table without specific
+										 * scheme, e.g. result of JOIN of
+										 * replicated and distributed table */
 
 /* Maximum number of preferred datanodes that can be defined in cluster */
 #define MAX_PREFERRED_NODES 64
@@ -42,7 +44,11 @@
 #define IsLocatorReplicated(x) (x == LOCATOR_TYPE_REPLICATED)
 #define IsLocatorColumnDistributed(x) (x == LOCATOR_TYPE_HASH || \
 									   x == LOCATOR_TYPE_RROBIN || \
-									   x == LOCATOR_TYPE_MODULO)
+									   x == LOCATOR_TYPE_MODULO || \
+									   x == LOCATOR_TYPE_DISTRIBUTED)
+#define IsLocatorDistributedByValue(x) (x == LOCATOR_TYPE_HASH || \
+										x == LOCATOR_TYPE_MODULO || \
+										x == LOCATOR_TYPE_RANGE)
 #endif
 
 #include "nodes/primnodes.h"
@@ -191,7 +197,9 @@ extern RelationLocInfo *GetRelationLocInfo(Oid relid);
 extern RelationLocInfo *CopyRelationLocInfo(RelationLocInfo *src_info);
 extern bool IsTableDistOnPrimary(RelationLocInfo *rel_loc_info);
 #ifndef XCP
-extern ExecNodes *GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol, Oid typeOfValueForDistCol, RelationAccessType accessType);
+extern ExecNodes *GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol,
+									bool isValueNull, Oid typeOfValueForDistCol,
+									RelationAccessType accessType);
 #endif
 extern bool IsHashColumn(RelationLocInfo *rel_loc_info, char *part_col_name);
 extern bool IsHashColumnForRelId(Oid relid, char *part_col_name);
@@ -210,5 +218,6 @@ extern bool IsModuloColumn(RelationLocInfo *rel_loc_info, char *part_col_name);
 extern bool IsModuloColumnForRelId(Oid relid, char *part_col_name);
 extern char *GetRelationDistColumn(RelationLocInfo * rel_loc_info);
 extern bool IsDistColumnForRelId(Oid relid, char *part_col_name);
+extern void FreeExecNodes(ExecNodes **exec_nodes);
 
 #endif   /* LOCATOR_H */

@@ -6,7 +6,7 @@
  *
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group ?
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  * IDENTIFICATION
  *	  $$
@@ -181,5 +181,7 @@ extern int	pgxc_all_handles_send_query(PGXCNodeAllHandles *pgxc_handles, const c
 extern char get_message(PGXCNodeHandle *conn, int *len, char **msg);
 
 extern void add_error_message(PGXCNodeHandle * handle, const char *message);
+
+extern Datum pgxc_execute_on_nodes(int numnodes, Oid *nodelist, char *query);
 
 #endif

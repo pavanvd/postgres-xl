@@ -21,7 +21,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  * IDENTIFICATION
  *	  $PostgreSQL: pgsql/src/interfaces/libpq/fe-misc.c,v 1.137 2008/12/11 07:34:09 petere Exp $
@@ -582,8 +582,11 @@ gtmpqReadData(GTM_Conn *conn)
 retry3:
 	nread = recv(conn->sock, conn->inBuffer + conn->inEnd,
 						  conn->inBufSize - conn->inEnd, 0);
+	conn->last_call = GTM_LastCall_RECV;
 	if (nread < 0)
 	{
+		conn->last_errno = SOCK_ERRNO;
+
 		if (SOCK_ERRNO == EINTR)
 			goto retry3;
 		/* Some systems return EAGAIN/EWOULDBLOCK for no data */
@@ -604,6 +607,9 @@ retry3:
 				   "could not receive data from server:\n");
 		return -1;
 	}
+	else
+		conn->last_errno = 0;
+
 	if (nread > 0)
 	{
 		conn->inEnd += nread;
@@ -668,8 +674,10 @@ retry3:
 retry4:
 	nread = recv(conn->sock, conn->inBuffer + conn->inEnd,
 						  conn->inBufSize - conn->inEnd, 0);
+	conn->last_call = GTM_LastCall_RECV;
 	if (nread < 0)
 	{
+		conn->last_errno = SOCK_ERRNO;
 		if (SOCK_ERRNO == EINTR)
 			goto retry4;
 		/* Some systems return EAGAIN/EWOULDBLOCK for no data */
@@ -690,6 +698,8 @@ retry4:
 				   "could not receive data from server: \n");
 		return -1;
 	}
+	else
+		conn->last_errno = 0;
 	if (nread > 0)
 	{
 		conn->inEnd += nread;
@@ -741,9 +751,11 @@ gtmpqSendSome(GTM_Conn *conn, int len)
 		int			sent;
 
 		sent = send(conn->sock, ptr, len, 0);
+		conn->last_call = GTM_LastCall_SEND;
 
 		if (sent < 0)
 		{
+			conn->last_errno = SOCK_ERRNO;
 			/*
 			 * Anything except EAGAIN/EWOULDBLOCK/EINTR is trouble. If it's
 			 * EPIPE or ECONNRESET, assume we've lost the backend connection
@@ -795,6 +807,7 @@ gtmpqSendSome(GTM_Conn *conn, int len)
 			ptr += sent;
 			len -= sent;
 			remaining -= sent;
+			conn->last_errno = 0;
 		}
 
 		if (len > 0)

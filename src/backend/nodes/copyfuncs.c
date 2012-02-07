@@ -13,7 +13,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  * IDENTIFICATION
  *	  src/backend/nodes/copyfuncs.c
@@ -1008,7 +1008,6 @@ _copyExecDirect(ExecDirectStmt *from)
 {
 	ExecDirectStmt *newnode = makeNode(ExecDirectStmt);
 
-	COPY_SCALAR_FIELD(coordinator);
 	COPY_NODE_FIELD(node_names);
 	COPY_STRING_FIELD(query);
 

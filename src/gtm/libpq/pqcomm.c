@@ -29,7 +29,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  *	$PostgreSQL: pgsql/src/backend/libpq/pqcomm.c,v 1.198 2008/01/01 19:45:49 momjian Exp $
  *
@@ -97,9 +97,9 @@
 /* Where the Unix socket file is */
 static char sock_path[MAXGTMPATH];
 
-static int         tcp_keepalives_idle;
-static int         tcp_keepalives_interval;
-static int         tcp_keepalives_count;
+extern int         tcp_keepalives_idle;
+extern int         tcp_keepalives_interval;
+extern int         tcp_keepalives_count;
 
 
 /*
@@ -509,9 +509,11 @@ pq_recvbuf(Port *myport)
 
 		r = recv(myport->sock, myport->PqRecvBuffer + myport->PqRecvLength,
 						PQ_BUFFER_SIZE - myport->PqRecvLength, 0);
+		myport->last_call = GTM_LastCall_RECV;
 
 		if (r < 0)
 		{
+			myport->last_errno = errno;
 			if (errno == EINTR)
 				continue;		/* Ok if interrupted */
 
@@ -525,6 +527,8 @@ pq_recvbuf(Port *myport)
 					 errmsg("could not receive data from client: %m")));
 			return EOF;
 		}
+		else
+			myport->last_errno = 0;
 		if (r == 0)
 		{
 			/*
@@ -820,9 +824,11 @@ internal_flush(Port *myport)
 		int			r;
 
 		r = send(myport->sock, bufptr, bufend - bufptr, 0);
+		myport->last_call = GTM_LastCall_SEND;
 
 		if (r <= 0)
 		{
+			myport->last_errno = errno;
 			if (errno == EINTR)
 				continue;		/* Ok if we were interrupted */
 
@@ -850,6 +856,8 @@ internal_flush(Port *myport)
 			myport->PqSendPointer = 0;
 			return EOF;
 		}
+		else
+			myport->last_errno = 0;
 
 		last_reported_send_errno = 0;	/* reset after any successful send */
 		bufptr += r;

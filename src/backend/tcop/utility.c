@@ -7,7 +7,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
  *
  *
  * IDENTIFICATION
@@ -350,6 +350,9 @@ ProcessUtility(Node *parsetree,
 			   ParamListInfo params,
 			   bool isTopLevel,
 			   DestReceiver *dest,
+#ifdef PGXC
+			   bool	sentToRemote,
+#endif /* PGXC */
 			   char *completionTag)
 {
 	Assert(queryString != NULL);	/* required as of 8.4 */
@@ -361,10 +364,18 @@ ProcessUtility(Node *parsetree,
 	 */
 	if (ProcessUtility_hook)
 		(*ProcessUtility_hook) (parsetree, queryString, params,
-								isTopLevel, dest, completionTag);
+								isTopLevel, dest,
+#ifdef PGXC
+								sentToRemote,
+#endif /* PGXC */
+								completionTag);
 	else
 		standard_ProcessUtility(parsetree, queryString, params,
-								isTopLevel, dest, completionTag);
+								isTopLevel, dest,
+#ifdef PGXC
+								sentToRemote,
+#endif /* PGXC */
+								completionTag);
 }
 
 void
@@ -373,6 +384,9 @@ standard_ProcessUtility(Node *parsetree,
 						ParamListInfo params,
 						bool isTopLevel,
 						DestReceiver *dest,
+#ifdef PGXC
+						bool sentToRemote,
+#endif /* PGXC */
 						char *completionTag)
 {
 	bool operation_local = false;
@@ -629,7 +643,7 @@ standard_ProcessUtility(Node *parsetree,
 		case T_CreateSchemaStmt:
 #ifdef PGXC
 			CreateSchemaCommand((CreateSchemaStmt *) parsetree,
-								queryString, isTopLevel);
+								queryString, sentToRemote);
 #else
 			CreateSchemaCommand((CreateSchemaStmt *) parsetree,
 								queryString);
@@ -704,9 +718,10 @@ standard_ProcessUtility(Node *parsetree,
 				}
 
 				/*
-				 * Add a RemoteQuery node for a query at top level on a remote Coordinator
+				 * Add a RemoteQuery node for a query at top level on a remote
+				 * Coordinator, if not already done so
 				 */
-				if (isTopLevel)
+				if (!sentToRemote)
 				{
 #ifdef XCP
 					stmts = AddRemoteQueryNode(stmts, queryString, is_temp ? EXEC_ON_DATANODES : EXEC_ON_ALL_NODES);
@@ -771,6 +786,9 @@ standard_ProcessUtility(Node *parsetree,
 									   params,
 									   false,
 									   None_Receiver,
+#ifdef PGXC
+									   true,
+#endif /* PGXC */
 									   NULL);
 					}
 
@@ -782,23 +800,29 @@ standard_ProcessUtility(Node *parsetree,
 			break;
 
 		case T_CreateTableSpaceStmt:
-#ifdef PGXC
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("Postgres-XC does not support TABLESPACE yet"),
-					 errdetail("The feature is not currently supported")));
-#endif
 			PreventTransactionChain(isTopLevel, "CREATE TABLESPACE");
 			CreateTableSpace((CreateTableSpaceStmt *) parsetree);
+#ifdef PGXC
+			if (IS_PGXC_COORDINATOR)
+				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+#endif
 			break;
 
 		case T_DropTableSpaceStmt:
 			PreventTransactionChain(isTopLevel, "DROP TABLESPACE");
 			DropTableSpace((DropTableSpaceStmt *) parsetree);
+#ifdef PGXC
+			if (IS_PGXC_COORDINATOR)
+				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+#endif
 			break;
 
 		case T_AlterTableSpaceOptionsStmt:
 			AlterTableSpaceOptions((AlterTableSpaceOptionsStmt *) parsetree);
+#ifdef PGXC
+			if (IS_PGXC_COORDINATOR)
+				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+#endif
 			break;
 
 		case T_CreateExtensionStmt:
@@ -1172,9 +1196,10 @@ standard_ProcessUtility(Node *parsetree,
 												queryString);
 #ifdef PGXC
 				/*
-				 * Add a RemoteQuery node for a query at top level on a remote Coordinator
+				 * Add a RemoteQuery node for a query at top level on a remote
+				 * Coordinator, if not already done so
 				 */
-				if (isTopLevel)
+				if (!sentToRemote)
 				{
 					bool is_temp = false;
 					AlterTableStmt *stmt = (AlterTableStmt *) parsetree;
@@ -1209,6 +1234,9 @@ standard_ProcessUtility(Node *parsetree,
 									   params,
 									   false,
 									   None_Receiver,
+#ifdef PGXC
+									   true,
+#endif /* PGXC */
 									   NULL);
 					}
 
