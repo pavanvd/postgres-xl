@@ -77,7 +77,9 @@ static Query *transformExplainStmt(ParseState *pstate,
 					 ExplainStmt *stmt);
 #ifdef PGXC
 static Query *transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt);
+#ifndef XCP
 static bool IsExecDirectUtilityStmt(Node *node);
+#endif
 #endif
 
 static void transformLockingClause(ParseState *pstate, Query *qry,
@@ -2432,6 +2434,7 @@ transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
 		}
 	}
 
+#ifndef XCP
 	/*
 	 * Features not yet supported
 	 * DML can be launched without errors but this could compromise data
@@ -2457,6 +2460,7 @@ transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("EXECUTE DIRECT cannot execute locally this utility query")));
 	}
+#endif
 
 	/* Build Execute Node list, there is a unique node for the time being */
 	step->exec_nodes->nodeList = lappend_int(step->exec_nodes->nodeList, nodeIndex);
@@ -2469,6 +2473,7 @@ transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
 	return result;
 }
 
+#ifndef XCP
 /*
  * Check if given node is authorized to go through EXECUTE DURECT
  */
@@ -2497,6 +2502,7 @@ IsExecDirectUtilityStmt(Node *node)
 
 	return res;
 }
+#endif
 #endif
 
 /*
