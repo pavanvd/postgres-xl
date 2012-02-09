@@ -1478,47 +1478,51 @@ create_append_path(RelOptInfo *rel, List *subpaths)
 	 * Append down to the data nodes. If not, perform "coordinator" Append.
 	 */
 
-	/* Take distribution of the first node */
-	l = list_head(subpaths);
-	subpath = (Path *) lfirst(l);
-	distribution = copyObject(subpath->distribution);
-	/*
-	 * Check remaining subpaths, if all distributions equal to the first set
-	 * it as a distribution of the Append path; otherwise make up coordinator
-	 * Append
-	 */
-	while ((l = lnext(l)))
+	/* Special case of the dummy relation, if the subpaths list is empty */
+	if (subpaths)
 	{
+		/* Take distribution of the first node */
+		l = list_head(subpaths);
 		subpath = (Path *) lfirst(l);
-
-		if (distribution && equal(distribution, subpath->distribution))
-		{
-			if (subpath->distribution->restrictNodes)
-				distribution->restrictNodes = bms_union(
-						distribution->restrictNodes,
-						subpath->distribution->restrictNodes);
-		}
-		else
-		{
-			break;
-		}
-	}
-	if (l)
-	{
-		List *newsubpaths = NIL;
-		foreach(l, subpaths)
+		distribution = copyObject(subpath->distribution);
+		/*
+		 * Check remaining subpaths, if all distributions equal to the first set
+		 * it as a distribution of the Append path; otherwise make up coordinator
+		 * Append
+		 */
+		while ((l = lnext(l)))
 		{
 			subpath = (Path *) lfirst(l);
-			if (subpath->distribution)
-				subpath = redistribute_path(subpath, LOCATOR_TYPE_NONE,
-											NULL, NULL);
-			newsubpaths = lappend(newsubpaths, subpath);
+
+			if (distribution && equal(distribution, subpath->distribution))
+			{
+				if (subpath->distribution->restrictNodes)
+					distribution->restrictNodes = bms_union(
+							distribution->restrictNodes,
+							subpath->distribution->restrictNodes);
+			}
+			else
+			{
+				break;
+			}
 		}
-		subpaths = newsubpaths;
-		pathnode->path.distribution = NULL;
+		if (l)
+		{
+			List *newsubpaths = NIL;
+			foreach(l, subpaths)
+			{
+				subpath = (Path *) lfirst(l);
+				if (subpath->distribution)
+					subpath = redistribute_path(subpath, LOCATOR_TYPE_NONE,
+												NULL, NULL);
+				newsubpaths = lappend(newsubpaths, subpath);
+			}
+			subpaths = newsubpaths;
+			pathnode->path.distribution = NULL;
+		}
+		else
+			pathnode->path.distribution = distribution;
 	}
-	else
-		pathnode->path.distribution = distribution;
 #endif
 	pathnode->subpaths = subpaths;
 
