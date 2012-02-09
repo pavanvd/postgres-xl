@@ -901,39 +901,24 @@ ExplainNode(PlanState *planstate, List *ancestors,
 						ListCell 	   *lc;
 						foreach(lc, rsubplan->nodeList)
 						{
+							char *nodename = get_pgxc_nodename(
+									PGXCNodeGetNodeOid(lfirst_int(lc), 
+													   PGXC_NODE_DATANODE));
 							if (first)
 							{
-								appendStringInfo(es->str, " on %s (%d",
+								appendStringInfo(es->str, " on %s (%s",
 												 rsubplan->execOnAll ? "all" : "any",
-												 lfirst_int(lc));
+												 nodename);
 								first = false;
 							}
 							else
-								appendStringInfo(es->str, ",%d", lfirst_int(lc));
+								appendStringInfo(es->str, ",%s", nodename);
 						}
 						appendStringInfoChar(es->str, ')');
 					}
 					else
 					{
 						appendStringInfo(es->str, " on local node");
-					}
-					if (rsubplan->distributionNodes)
-					{
-						bool 			first = true;
-						ListCell 	   *lc;
-						foreach(lc, rsubplan->distributionNodes)
-						{
-							if (first)
-							{
-								appendStringInfo(es->str,
-												 " distribute results on (%d",
-												 lfirst_int(lc));
-								first = false;
-							}
-							else
-								appendStringInfo(es->str, ",%d", lfirst_int(lc));
-						}
-						appendStringInfoChar(es->str, ')');
 					}
 				}
 				else
@@ -1139,6 +1124,32 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			/* Remote query */
 			ExplainRemoteQuery((RemoteQuery *)plan, planstate, ancestors, es);
 			show_scan_qual(plan->qual, "Coordinator quals", planstate, ancestors, es);
+			break;
+#endif
+#ifdef XCP
+		case T_RemoteSubplan:
+			if (list_length(((RemoteSubplan *)plan)->distributionNodes) > 0)
+			{
+				bool 			first = true;
+				ListCell 	   *lc;
+				appendStringInfoSpaces(es->str, es->indent * 2);
+				foreach(lc, ((RemoteSubplan *)plan)->distributionNodes)
+				{
+					char *nodename = get_pgxc_nodename(PGXCNodeGetNodeOid(
+										lfirst_int(lc), PGXC_NODE_DATANODE));
+					if (first)
+					{
+						appendStringInfo(es->str,
+										 "Distribute results on %c(%s",
+									 ((RemoteSubplan *)plan)->distributionType,
+										 nodename);
+						first = false;
+					}
+					else
+						appendStringInfo(es->str, ",%s", nodename);
+				}
+				appendStringInfo(es->str, ")\n");
+			}
 			break;
 #endif
 		case T_BitmapHeapScan:
