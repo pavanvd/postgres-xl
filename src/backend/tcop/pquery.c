@@ -559,17 +559,25 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 											None_Receiver,
 											params,
 											0);
-				if (queryDesc->plannedstmt->nParamExec > 0)
+				/*
+				 * If parent node have sent down parameters, and at least one
+				 * of them is PARAM_EXEC we should avoid "single execution"
+				 * model. All parent nodes deliver the same values for 
+				 * PARAM_EXTERN since these values are provided by client and
+				 * they are not changed during the query execution. 
+				 * On the conrary, values of PARAM_EXEC are results of execution
+				 * on the parent node and in general diferent parents send to
+				 * this node different values and executions are not equivalent.
+				 * Since PARAM_EXECs are always at the end of the list we just
+				 * need to check last item to figure out if there are any 
+				 * PARAM_EXECs.
+				 * NB: Check queryDesc->plannedstmt->nParamExec > 0 is incorrect
+				 * here since queryDesc->plannedstmt->nParamExec may be used 
+				 * just to allocate space for them and no actual values passed.
+				 */
+				if (queryDesc->plannedstmt->nParamRemote > 0 &&
+						queryDesc->plannedstmt->remoteparams[queryDesc->plannedstmt->nParamRemote-1].paramkind == PARAM_EXEC)
 				{
-					/*
-					 * We have a parameter set during execution of upper plan,
-					 * and there is high probability the other nodes will send
-					 * down different value for that plan, so we can not have
-					 * single producer serving all the nodes.
-					 * So we execute the plan locally and filter results
-					 * according to the distribution, do not set up the shared
-					 * queue.
-					 */
 					int 	   *consMap;
 					int 		len;
 					int 		selfid;  /* Node Id of the parent data node */

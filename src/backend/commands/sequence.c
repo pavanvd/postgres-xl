@@ -692,7 +692,12 @@ nextval_internal(Oid relid)
 	page = BufferGetPage(buf);
 
 #ifdef PGXC  /* PGXC_COORD */
+#ifdef XCP
+	/* Allow nextval executed on datanodes */
+	if (!is_temp)
+#else
 	if (IS_PGXC_COORDINATOR && !is_temp)
+#endif
 	{
 		char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
 
@@ -946,8 +951,13 @@ currval_oid(PG_FUNCTION_ARGS)
 						RelationGetRelationName(seqrel))));
 
 #ifdef PGXC
+#ifdef XCP
+	/* Allow to execute on datanodes */
+	if (seqrel->rd_backend != MyBackendId)
+#else
 	if (IS_PGXC_COORDINATOR &&
 		seqrel->rd_backend != MyBackendId)
+#endif
 	{
 		char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
 
@@ -1065,7 +1075,12 @@ do_setval(Oid relid, int64 next, bool iscalled)
 	}
 
 #ifdef PGXC
+#ifdef XCP
+	/* Allow to execute on datanodes */
+	if (!is_temp)
+#else
 	if (IS_PGXC_COORDINATOR && !is_temp)
+#endif
 	{
 		char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
 

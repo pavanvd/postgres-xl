@@ -4107,9 +4107,32 @@ make_remotesubplan(PlannerInfo *root,
 	}
 	else
 	{
-		/* execute on local datanode only */
-		node->nodeList = NIL;
-		node->execOnAll = false;
+		/* 
+		 * Prepare single execution of replicated subplan. Choose one node from
+		 * the execution node list, preferrably the node is also a member of 
+		 * the list of result nodes, so later all node executors contact the 
+		 * same node to get tuples
+		 */
+		tmpset = NULL;
+		if (resultDistribution && !bms_is_empty(resultDistribution->nodes))
+			tmpset = bms_copy(resultDistribution->nodes);
+		if (bms_is_empty(tmpset))
+		{
+			/* 
+			 * neither target nor result nodes are defined, looks like 
+			 * coordinator only query. OK to execute locally
+			 */
+			node->nodeList = NIL;
+			node->execOnAll = false;
+		}
+		else
+		{
+			/* get one node TODO: load balancing */
+			nodenum = bms_first_member(tmpset);
+			node->nodeList = list_make1_int(nodenum);
+			node->execOnAll = true;
+		}
+		bms_free(tmpset);
 	}
 	plan->targetlist = lefttree->targetlist;
 	/* We do not need to merge sort if only one node is yielding tuples */
