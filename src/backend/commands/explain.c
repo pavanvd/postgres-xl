@@ -711,7 +711,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 #ifdef XCP
 		case T_RemoteSubplan:
-			pname = "Remote Subquery Scan";
+			pname = sname = "Remote Subquery Scan";
 			break;
 #endif /* XCP */
 		case T_Material:
@@ -892,18 +892,27 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_RemoteSubplan:
 			{
 				RemoteSubplan  *rsubplan = (RemoteSubplan *) plan;
+				List *nodeNameList = NIL;
+				ListCell *lc;
+
+				foreach(lc, rsubplan->nodeList)
+				{
+					char *nodename = get_pgxc_nodename(
+							PGXCNodeGetNodeOid(lfirst_int(lc),
+											   PGXC_NODE_DATANODE));
+					nodeNameList = lappend(nodeNameList, nodename);
+				}
+
 				/* print out destination nodes */
 				if (es->format == EXPLAIN_FORMAT_TEXT)
 				{
-					if (rsubplan->nodeList)
+					if (nodeNameList)
 					{
 						bool 			first = true;
 						ListCell 	   *lc;
-						foreach(lc, rsubplan->nodeList)
+						foreach(lc, nodeNameList)
 						{
-							char *nodename = get_pgxc_nodename(
-									PGXCNodeGetNodeOid(lfirst_int(lc), 
-													   PGXC_NODE_DATANODE));
+							char *nodename = (char *) lfirst(lc);
 							if (first)
 							{
 								appendStringInfo(es->str, " on %s (%s",
@@ -926,12 +935,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					ExplainPropertyText("Replicated",
 										rsubplan->execOnAll ? "no" : "yes",
 										es);
-					ExplainPropertyList("Node List",
-										((RemoteSubplan *) plan)->nodeList,
-										es);
-					ExplainPropertyList("Result Nodes",
-										((RemoteSubplan *) plan)->distributionNodes,
-										es);
+					ExplainPropertyList("Node List", nodeNameList, es);
 				}
 			}
 			break;
@@ -1128,27 +1132,36 @@ ExplainNode(PlanState *planstate, List *ancestors,
 #endif
 #ifdef XCP
 		case T_RemoteSubplan:
-			if (list_length(((RemoteSubplan *)plan)->distributionNodes) > 0)
 			{
-				bool 			first = true;
-				ListCell 	   *lc;
-				appendStringInfoSpaces(es->str, es->indent * 2);
-				foreach(lc, ((RemoteSubplan *)plan)->distributionNodes)
+				RemoteSubplan  *rsubplan = (RemoteSubplan *) plan;
+
+				/* print out destination nodes */
+				if (es->format == EXPLAIN_FORMAT_TEXT)
 				{
-					char *nodename = get_pgxc_nodename(PGXCNodeGetNodeOid(
-										lfirst_int(lc), PGXC_NODE_DATANODE));
-					if (first)
+					if (list_length(rsubplan->distributionNodes) > 0)
 					{
-						appendStringInfo(es->str,
-										 "Distribute results on %c(%s",
-									 ((RemoteSubplan *)plan)->distributionType,
-										 nodename);
-						first = false;
+						char 		label[24];
+						AttrNumber 	dkey = rsubplan->distributionKey;
+						sprintf(label, "Distribute results by %c",
+								rsubplan->distributionType);
+						if (dkey == InvalidAttrNumber)
+						{
+							appendStringInfoSpaces(es->str, es->indent * 2);
+							appendStringInfo(es->str, "%s\n", label);
+						}
+						else
+						{
+							TargetEntry *tle = NULL;
+							if (plan->targetlist)
+								tle = (TargetEntry *) list_nth(plan->targetlist,
+															   dkey-1);
+							if (IsA(tle, TargetEntry))
+								show_expression((Node *) tle->expr, label,
+												planstate, ancestors,
+												false, es);
+						}
 					}
-					else
-						appendStringInfo(es->str, ",%s", nodename);
 				}
-				appendStringInfo(es->str, ")\n");
 			}
 			break;
 #endif
