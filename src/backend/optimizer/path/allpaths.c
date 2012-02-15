@@ -36,7 +36,9 @@
 #include "parser/parse_clause.h"
 #include "parser/parsetree.h"
 #ifdef PGXC
-#ifndef XCP
+#ifdef XCP
+#include "nodes/makefuncs.h"
+#else
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_class.h"
 #include "pgxc/pgxc.h"
@@ -719,6 +721,9 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	double		tuple_fraction;
 	PlannerInfo *subroot;
 	List	   *pathkeys;
+#ifdef XCP
+	Distribution *distribution;
+#endif
 
 	/*
 	 * Must copy the Query so that planning doesn't mess up the RTE contents
@@ -811,7 +816,35 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	pathkeys = convert_subquery_pathkeys(root, rel, subroot->query_pathkeys);
 
 	/* Generate appropriate path */
+#ifdef XCP
+	if (subroot->distribution && subroot->distribution->distributionExpr)
+	{
+		ListCell *lc;
+		/*
+		 * The distribution expression from the subplan's tlist, but it should
+		 * be from the rel, need conversion.
+		 */
+		distribution = makeNode(Distribution);
+		distribution->distributionType = subroot->distribution->distributionType;
+		distribution->nodes = bms_copy(subroot->distribution->nodes);
+		distribution->restrictNodes = bms_copy(subroot->distribution->restrictNodes);
+		foreach(lc, rel->subplan->targetlist)
+		{
+			TargetEntry *tle = (TargetEntry *) lfirst(lc);
+			if (equal(tle->expr, subroot->distribution->distributionExpr))
+			{
+				distribution->distributionExpr = (Node *)
+						makeVarFromTargetEntry(rel->relid, tle);
+				break;
+			}
+		}
+	}
+	else
+		distribution = subroot->distribution;
+	add_path(rel, create_subqueryscan_path(rel, pathkeys, distribution));
+#else
 	add_path(rel, create_subqueryscan_path(rel, pathkeys));
+#endif
 
 	/* Select cheapest path (pretty easy in this case...) */
 	set_cheapest(rel);

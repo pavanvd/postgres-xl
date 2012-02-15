@@ -47,7 +47,7 @@ static void restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
 static Path *redistribute_path(Path *subpath, char distributionType,
 				  Bitmapset *nodes, Node* distributionExpr);
 static void set_scanpath_distribution(PlannerInfo *root, RelOptInfo *rel, Path *pathnode);
-static void set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode);
+static List *set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode);
 #endif
 
 /*****************************************************************************
@@ -619,24 +619,56 @@ redistribute_path(Path *subpath, char distributionType,
 	pathnode->subpath = subpath;
 	cost_remote_subplan((Path *) pathnode, subpath->startup_cost,
 						subpath->total_cost, subpath->parent->tuples,
-						subpath->parent->width);
+						subpath->parent->width,
+						IsReplicated(distributionType) ?
+								bms_num_members(nodes) : 1);
 	return (Path *) pathnode;
+}
+
+
+static JoinPath *
+flatCopyJoinPath(JoinPath *pathnode)
+{
+	JoinPath   *newnode;
+	size_t 		size = 0;
+	switch(nodeTag(pathnode))
+	{
+		case T_NestPath:
+			size = sizeof(NestPath);
+			break;
+		case T_MergePath:
+			size = sizeof(MergePath);
+			break;
+		case T_HashPath:
+			size = sizeof(HashPath);
+			break;
+		default:
+			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(pathnode));
+			break;
+	}
+	newnode = (JoinPath *) palloc(size);
+	memcpy(newnode, pathnode, size);
+	return newnode;
 }
 
 
 /*
  * Analyze join parameters and set distribution of the join node.
+ * If there are possible alternate distributions the respective pathes are
+ * returned as a list so caller can cost all of them and choose cheapest to
+ * continue.
  */
-static void
+static List *
 set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 {
-	Distribution *innerd = pathnode->innerjoinpath->distribution;
-	Distribution *outerd = pathnode->outerjoinpath->distribution;
-	Distribution *targetd;
+	Distribution   *innerd = pathnode->innerjoinpath->distribution;
+	Distribution   *outerd = pathnode->outerjoinpath->distribution;
+	Distribution   *targetd;
+	List		   *alternate = NIL;
 
 	/* Catalog join */
 	if (innerd == NULL && outerd == NULL)
-		return;
+		return NIL;
 
 	/*
 	 * If both subpaths are distributed by replication, the resulting
@@ -668,7 +700,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 		targetd->nodes = common;
 		targetd->restrictNodes = NULL;
 		pathnode->path.distribution = targetd;
-		return;
+		return alternate;
 	}
 
 	/*
@@ -695,7 +727,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 		targetd->restrictNodes = bms_copy(outerd->restrictNodes);
 		targetd->distributionExpr = outerd->distributionExpr;
 		pathnode->path.distribution = targetd;
-		return;
+		return alternate;
 	}
 
 
@@ -721,7 +753,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 		targetd->restrictNodes = bms_copy(innerd->restrictNodes);
 		targetd->distributionExpr = innerd->distributionExpr;
 		pathnode->path.distribution = targetd;
-		return;
+		return alternate;
 	}
 
 
@@ -822,13 +854,13 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 							if (equal(var, emvar))
 							{
 								targetd->distributionExpr = (Node *) var;
-								return;
+								return alternate;
 							}
 						}
 					}
 					/* Not found, take any */
 					targetd->distributionExpr = innerd->distributionExpr;
-					return;
+					return alternate;
 				}
 			}
 			/*
@@ -871,7 +903,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 					else
 						targetd->distributionExpr = outerd->distributionExpr;
 
-					return;
+					return alternate;
 				}
 			}
 		}
@@ -881,6 +913,63 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 	 * If we could not determine the distribution redistribute the subpathes.
 	 */
 not_allowed_join:
+	/*
+	 * If redistribution is required, sometimes the cheapest path would be if
+	 * one of the subplan is replicated. If replication of any or all subplans
+	 * is possible, return resulting plans as alternates. Try to distribute all
+	 * by has as main variant.
+	 */
+
+	/* These join types allow replicated inner */
+	if (pathnode->jointype == JOIN_INNER ||
+			pathnode->jointype == JOIN_LEFT ||
+			pathnode->jointype == JOIN_SEMI ||
+			pathnode->jointype == JOIN_ANTI)
+	{
+		/*
+		 * Since we discard all alternate pathes except one it is OK if all they
+		 * reference the same objects
+		 */
+		JoinPath *altpath = flatCopyJoinPath(pathnode);
+		/* Redistribute inner subquery */
+		altpath->innerjoinpath = redistribute_path(
+				altpath->innerjoinpath,
+				LOCATOR_TYPE_REPLICATED,
+				bms_copy(outerd->nodes),
+				NULL);
+		targetd = makeNode(Distribution);
+		targetd->distributionType = outerd->distributionType;
+		targetd->nodes = bms_copy(outerd->nodes);
+		targetd->restrictNodes = bms_copy(outerd->restrictNodes);
+		targetd->distributionExpr = outerd->distributionExpr;
+		altpath->path.distribution = targetd;
+		alternate = lappend(alternate, altpath);
+	}
+
+	/* These join types allow replicated outer */
+	if (pathnode->jointype == JOIN_INNER ||
+			pathnode->jointype == JOIN_RIGHT)
+	{
+		/*
+		 * Since we discard all alternate pathes except one it is OK if all they
+		 * reference the same objects
+		 */
+		JoinPath *altpath = flatCopyJoinPath(pathnode);
+		/* Redistribute inner subquery */
+		altpath->outerjoinpath = redistribute_path(
+				altpath->outerjoinpath,
+				LOCATOR_TYPE_REPLICATED,
+				bms_copy(innerd->nodes),
+				NULL);
+		targetd = makeNode(Distribution);
+		targetd->distributionType = innerd->distributionType;
+		targetd->nodes = bms_copy(innerd->nodes);
+		targetd->restrictNodes = bms_copy(innerd->restrictNodes);
+		targetd->distributionExpr = innerd->distributionExpr;
+		altpath->path.distribution = targetd;
+		alternate = lappend(alternate, altpath);
+	}
+
 	/*
 	 * Redistribute subplans to make them compatible.
 	 * If any of the subplans is a coordinator subplan skip this stuff and do
@@ -1088,6 +1177,10 @@ not_allowed_join:
 				nodes = bms_copy(innerd->nodes);
 			}
 
+			/*
+			 * Redistribute join by hash, and, if jointype allows, create
+			 * alternate path where inner subplan is distributed by replication
+			 */
 			if (new_inner_key)
 			{
 				/* Redistribute inner subquery */
@@ -1097,6 +1190,10 @@ not_allowed_join:
 						nodes,
 						(Node *) new_inner_key);
 			}
+			/*
+			 * Redistribute join by hash, and, if jointype allows, create
+			 * alternate path where outer subplan is distributed by replication
+			 */
 			if (new_outer_key)
 			{
 				/* Redistribute outer subquery */
@@ -1107,30 +1204,34 @@ not_allowed_join:
 						(Node *) new_outer_key);
 			}
 			targetd = makeNode(Distribution);
-			targetd->distributionType = innerd->distributionType;
+			targetd->distributionType = LOCATOR_TYPE_HASH;
 			targetd->nodes = nodes;
 			targetd->restrictNodes = NULL;
 			pathnode->path.distribution = targetd;
 			/*
 			 * In case of outer join distribution key should not refer
 			 * distribution key of nullable part.
+			 * NB: we should not refer innerd and outerd here, subpathes are
+			 * redistributed already
 			 */
 			if (pathnode->jointype == JOIN_FULL)
 				/* both parts are nullable */
 				targetd->distributionExpr = NULL;
 			else if (pathnode->jointype == JOIN_RIGHT)
-				targetd->distributionExpr = innerd->distributionExpr;
+				targetd->distributionExpr =
+						pathnode->innerjoinpath->distribution->distributionExpr;
 			else
-				targetd->distributionExpr = outerd->distributionExpr;
+				targetd->distributionExpr =
+						pathnode->outerjoinpath->distribution->distributionExpr;
 
-			return;
+			return alternate;
 		}
 	}
 
 	/*
-	 * Build cartesian product, not hasheable restrictions.
+	 * Build cartesian product, if no hasheable restrictions is found.
 	 * Perform coordinator join in such cases. If this join would be a part of
-     * larger join it will be handled as replicated.
+     * larger join, it will be handled as replicated.
 	 * To do that leave join distribution NULL and place a RemoteSubPath node on
 	 * top of each subpath to provide access to joined result sets.
 	 */
@@ -1142,6 +1243,7 @@ not_allowed_join:
 												LOCATOR_TYPE_NONE,
 												NULL,
 												NULL);
+	return alternate;
 }
 #endif
 
@@ -2295,13 +2397,15 @@ distinct_col_search(int colno, List *colnos, List *opids)
  *	  returning the pathnode.
  */
 Path *
-create_subqueryscan_path(RelOptInfo *rel, List *pathkeys)
+create_subqueryscan_path(RelOptInfo *rel, List *pathkeys,
+									  Distribution *distribution)
 {
 	Path	   *pathnode = makeNode(Path);
 
 	pathnode->pathtype = T_SubqueryScan;
 	pathnode->parent = rel;
 	pathnode->pathkeys = pathkeys;
+	pathnode->distribution = distribution;
 
 	cost_subqueryscan(pathnode, rel);
 
@@ -2472,6 +2576,10 @@ create_nestloop_path(PlannerInfo *root,
 					 List *pathkeys)
 {
 	NestPath   *pathnode = makeNode(NestPath);
+#ifdef XCP
+	List	   *alternate;
+	ListCell   *lc;
+#endif
 
 	pathnode->path.pathtype = T_NestLoop;
 	pathnode->path.parent = joinrel;
@@ -2482,10 +2590,21 @@ create_nestloop_path(PlannerInfo *root,
 	pathnode->path.pathkeys = pathkeys;
 
 #ifdef XCP
-	set_joinpath_distribution(root, pathnode);
+	alternate = set_joinpath_distribution(root, pathnode);
 #endif
 	cost_nestloop(pathnode, root, sjinfo);
-
+#ifdef XCP
+	/*
+	 * Calculate costs of all alternates and return cheapest path
+	 */
+	foreach(lc, alternate)
+	{
+		NestPath *altpath = (NestPath *) lfirst(lc);
+		cost_nestloop(altpath, root, sjinfo);
+		if (altpath->path.total_cost < pathnode->path.total_cost)
+			pathnode = altpath;
+	}
+#endif
 	return pathnode;
 }
 
@@ -2520,6 +2639,10 @@ create_mergejoin_path(PlannerInfo *root,
 					  List *innersortkeys)
 {
 	MergePath  *pathnode = makeNode(MergePath);
+#ifdef XCP
+	List	   *alternate;
+	ListCell   *lc;
+#endif
 
 	/*
 	 * If the given paths are already well enough ordered, we can skip doing
@@ -2544,9 +2667,21 @@ create_mergejoin_path(PlannerInfo *root,
 	pathnode->innersortkeys = innersortkeys;
 	/* pathnode->materialize_inner will be set by cost_mergejoin */
 #ifdef XCP
-	set_joinpath_distribution(root, (JoinPath *) pathnode);
+	alternate = set_joinpath_distribution(root, (JoinPath *) pathnode);
 #endif
 	cost_mergejoin(pathnode, root, sjinfo);
+#ifdef XCP
+	/*
+	 * Calculate costs of all alternates and return cheapest path
+	 */
+	foreach(lc, alternate)
+	{
+		MergePath *altpath = (MergePath *) lfirst(lc);
+		cost_mergejoin(altpath, root, sjinfo);
+		if (altpath->jpath.path.total_cost < pathnode->jpath.path.total_cost)
+			pathnode = altpath;
+	}
+#endif
 
 	return pathnode;
 }
@@ -2575,6 +2710,10 @@ create_hashjoin_path(PlannerInfo *root,
 					 List *hashclauses)
 {
 	HashPath   *pathnode = makeNode(HashPath);
+#ifdef XCP
+	List	   *alternate;
+	ListCell   *lc;
+#endif
 
 	pathnode->jpath.path.pathtype = T_HashJoin;
 	pathnode->jpath.path.parent = joinrel;
@@ -2599,9 +2738,21 @@ create_hashjoin_path(PlannerInfo *root,
 	/* cost_hashjoin will fill in pathnode->num_batches */
 
 #ifdef XCP
-	set_joinpath_distribution(root, (JoinPath *) pathnode);
+	alternate = set_joinpath_distribution(root, (JoinPath *) pathnode);
 #endif
 	cost_hashjoin(pathnode, root, sjinfo);
+#ifdef XCP
+	/*
+	 * Calculate costs of all alternates and return cheapest path
+	 */
+	foreach(lc, alternate)
+	{
+		HashPath *altpath = (HashPath *) lfirst(lc);
+		cost_hashjoin(altpath, root, sjinfo);
+		if (altpath->jpath.path.total_cost < pathnode->jpath.path.total_cost)
+			pathnode = altpath;
+	}
+#endif
 
 	return pathnode;
 }

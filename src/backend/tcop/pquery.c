@@ -542,6 +542,8 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 		{
 #ifdef XCP
 			case PORTAL_DISTRIBUTED:
+				/* No special ability is needed */
+				eflags = 0;
 				/* Must set snapshot before starting executor. */
 				if (snapshot)
 					PushActiveSnapshot(snapshot);

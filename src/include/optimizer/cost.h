@@ -133,7 +133,7 @@ extern void cost_qual_eval_node(QualCost *cost, Node *qual, PlannerInfo *root);
 #ifdef XCP
 extern void cost_remote_subplan(Path *path,
 			  Cost input_startup_cost, Cost input_total_cost,
-			  double tuples, int width);
+			  double tuples, int width, int replication);
 #endif
 extern void set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel);
 extern void set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,

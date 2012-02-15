@@ -390,7 +390,16 @@ make_subplan(PlannerInfo *root, Query *orig_subquery, SubLinkType subLinkType,
 							root,
 							false, tuple_fraction,
 							&subroot);
-
+#ifdef XCP
+	if (subroot->distribution)
+	{
+		plan = (Plan *) make_remotesubplan(subroot,
+										   plan,
+										   NULL,
+										   subroot->distribution,
+										   subroot->query_pathkeys);
+	}
+#endif
 	/* And convert to SubPlan or InitPlan format. */
 	result = build_subplan(root, plan,
 						   subroot->parse->rtable, subroot->rowMarks,
@@ -975,6 +984,16 @@ SS_process_ctes(PlannerInfo *root)
 								root,
 								cte->cterecursive, 0.0,
 								&subroot);
+#ifdef XCP
+		if (subroot->distribution)
+		{
+			plan = (Plan *) make_remotesubplan(subroot,
+											   plan,
+											   NULL,
+											   subroot->distribution,
+											   subroot->query_pathkeys);
+		}
+#endif
 
 		/*
 		 * Make a SubPlan node for it.	This is just enough unlike

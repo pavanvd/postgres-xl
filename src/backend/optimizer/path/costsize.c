@@ -3590,7 +3590,7 @@ page_size(double tuples, int width)
 void
 cost_remote_subplan(Path *path,
 			  Cost input_startup_cost, Cost input_total_cost,
-			  double tuples, int width)
+			  double tuples, int width, int replication)
 {
 	Cost		startup_cost = input_startup_cost + remote_query_cost;
 	Cost		run_cost = input_total_cost - input_startup_cost;
@@ -3603,7 +3603,7 @@ cost_remote_subplan(Path *path,
 	/*
 	 * Estimate cost of sending data over network
 	 */
-	run_cost += network_byte_cost * tuples * width;
+	run_cost += network_byte_cost * tuples * width * replication;
 
 	path->startup_cost = startup_cost;
 	path->total_cost = startup_cost + run_cost;

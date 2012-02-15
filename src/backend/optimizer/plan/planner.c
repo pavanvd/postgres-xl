@@ -110,7 +110,11 @@ static void get_column_info_for_window(PlannerInfo *root, WindowClause *wc,
 						   int *ordNumCols,
 						   AttrNumber **ordColIdx,
 						   Oid **ordOperators);
-
+#ifdef XCP
+static Plan *grouping_distribution(PlannerInfo *root, Plan *plan,
+					  int numGroupCols, AttrNumber *groupColIdx,
+					  List *current_pathkeys, Distribution **distribution);
+#endif
 
 /*****************************************************************************
  *
@@ -241,6 +245,14 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	/* primary planning entry point (may recurse for subqueries) */
 	top_plan = subquery_planner(glob, parse, NULL,
 								false, tuple_fraction, &root);
+#ifdef XCP
+	if (root->distribution)
+	{
+		top_plan = (Plan *) make_remotesubplan(root, top_plan, NULL,
+											   root->distribution,
+											   root->query_pathkeys);
+	}
+#endif
 
 	/*
 	 * If creating a plan for a scrollable cursor, make sure it can run
@@ -662,16 +674,6 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 											 returningLists,
 											 rowMarks,
 											 SS_assign_special_param(root));
-#ifdef XCP
-			if (root->distribution)
-			{
-				plan = (Plan *) make_remotesubplan(root,
-												   plan,
-												   NULL,
-												   root->distribution,
-												   NIL);
-			}
-#endif
 		}
 	}
 
@@ -874,6 +876,12 @@ inheritance_planner(PlannerInfo *root)
 		if (is_dummy_plan(subplan))
 			continue;
 
+#ifdef XCP
+		/* Gather distributed data for coordinator table */
+		if (root->distribution == NULL && subroot.distribution != NULL)
+			subplan = (Plan *) make_remotesubplan(root, subplan, NULL,
+												  subroot.distribution, NULL);
+#endif
 		/* Save rtable from first rel for use below */
 		if (subplans == NIL)
 			rtable = subroot.parse->rtable;
@@ -983,7 +991,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	bool		use_hashed_distinct = false;
 	bool		tested_hashed_distinct = false;
 #ifdef XCP
-	Distribution *distribution = NULL;
+	Distribution *distribution = NULL; /* distribution of the result_plan */
 #endif
 
 	/* Tweak caller-supplied tuple_fraction if have LIMIT/OFFSET */
@@ -1338,15 +1346,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			result_plan = create_plan(root, best_path);
 			current_pathkeys = best_path->pathkeys;
 #ifdef XCP
-			if (best_path->distribution)
-			{
-				result_plan = (Plan *) make_remotesubplan(root,
-														  result_plan,
-														  NULL,
-													  best_path->distribution,
-														  current_pathkeys);
-				distribution = best_path->distribution;
-			}
+			distribution = best_path->distribution;
 #endif
 
 			/* Detect if we'll need an explicit sort for grouping */
@@ -1444,10 +1444,10 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			if (use_hashed_grouping)
 			{
 #ifdef XCP
-				/*
-				 * Aggregation is finalized on Coordinador
-				 */
-				distribution = NULL;
+				result_plan = grouping_distribution(root, result_plan,
+													numGroupCols, groupColIdx,
+													current_pathkeys,
+													&distribution);
 #endif
 				/* Hashed aggregate plan --- no sort needed */
 				result_plan = (Plan *) make_agg(root,
@@ -1480,13 +1480,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 				/* Plain aggregate plan --- sort if needed */
 				AggStrategy aggstrategy;
 
-#ifdef XCP
-				/*
-				 * Aggregation is finalized on Coordinador
-				 */
-				distribution = NULL;
-#endif
-
 				if (parse->groupClause)
 				{
 					if (need_sort_for_grouping)
@@ -1512,6 +1505,12 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 					current_pathkeys = NIL;
 				}
 
+#ifdef XCP
+				result_plan = grouping_distribution(root, result_plan,
+													numGroupCols, groupColIdx,
+													current_pathkeys,
+													&distribution);
+#endif
 				result_plan = (Plan *) make_agg(root,
 												tlist,
 												(List *) parse->havingQual,
@@ -1542,6 +1541,12 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 					current_pathkeys = root->group_pathkeys;
 				}
 
+#ifdef XCP
+				result_plan = grouping_distribution(root, result_plan,
+													numGroupCols, groupColIdx,
+													current_pathkeys,
+													&distribution);
+#endif
 				result_plan = (Plan *) make_group(root,
 												  tlist,
 												  (List *) parse->havingQual,
@@ -1566,10 +1571,9 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 				 * first place.
 				 */
 #ifdef XCP
-				/*
-				 * The Coordinator-only plan node
-				 */
-				distribution = NULL;
+				result_plan = grouping_distribution(root, result_plan, 0, NULL,
+													current_pathkeys,
+													&distribution);
 #endif
 				result_plan = (Plan *) make_result(root,
 												   tlist,
@@ -1752,13 +1756,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		double		dNumDistinctRows;
 		long		numDistinctRows;
 
-#ifdef XCP
-		/*
-		 * Distinct is performed on Coordinador
-		 */
-		distribution = NULL;
-#endif
-
 		/*
 		 * If there was grouping or aggregation, use the current number of
 		 * rows as the estimated number of DISTINCT rows (ie, assume the
@@ -1796,6 +1793,14 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 
 		if (use_hashed_distinct)
 		{
+#ifdef XCP
+			result_plan = grouping_distribution(root, result_plan,
+											list_length(parse->distinctClause),
+								   extract_grouping_cols(parse->distinctClause,
+													  result_plan->targetlist),
+												current_pathkeys,
+												&distribution);
+#endif
 			/* Hashed aggregate plan --- no sort needed */
 			result_plan = (Plan *) make_agg(root,
 											result_plan->targetlist,
@@ -1852,6 +1857,14 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 															   -1.0);
 			}
 
+#ifdef XCP
+			result_plan = grouping_distribution(root, result_plan,
+											list_length(parse->distinctClause),
+								   extract_grouping_cols(parse->distinctClause,
+													  result_plan->targetlist),
+												current_pathkeys,
+												&distribution);
+#endif
 			result_plan = (Plan *) make_unique(result_plan,
 											   parse->distinctClause);
 			result_plan->plan_rows = dNumDistinctRows;
@@ -1899,6 +1912,16 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	 */
 	if (parse->limitCount || parse->limitOffset)
 	{
+#ifdef XCP
+		/* We should put Limit on top of distributed results */
+		if (distribution)
+		{
+			result_plan = (Plan *)
+					make_remotesubplan(root, result_plan, NULL,
+									   distribution, current_pathkeys);
+			distribution = NULL;
+		}
+#endif
 		result_plan = (Plan *) make_limit(result_plan,
 										  parse->limitOffset,
 										  parse->limitCount,
@@ -1920,8 +1943,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	{
 		if (equal(root->distribution, distribution))
 		{
-			Plan *remotesubplan;
-			Plan *parentplan;
 			/*
 			 * Source tuple will be needed on the same node where it is
 			 * produced, so if it is known some node does not yield tuples
@@ -1932,26 +1953,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			 */
 			root->distribution->restrictNodes =
 					bms_copy(distribution->restrictNodes);
-
-			parentplan = NULL;
-			remotesubplan = result_plan;
-			/*
-			 * Some nodes like Sort or Material may be above the
-			 * RemoteSubplan node, we need to lookup.
-			 */
-			while (!IsA(remotesubplan, RemoteSubplan))
-			{
-				parentplan = remotesubplan;
-				remotesubplan = remotesubplan->lefttree;
-				Assert(remotesubplan);
-			}
-
-			if (parentplan)
-				/* Not topmost node, just throw it  off of the chain */
-				parentplan->lefttree = remotesubplan->lefttree;
-			else
-				/* Topmost node, just point result_plan on the next plan */
-				result_plan = result_plan->lefttree;
 		}
 		else
 		{
@@ -2045,6 +2046,13 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 														  distribution,
 														  NULL);
 		}
+	}
+	else
+	{
+		/*
+		 * Inform caller about distribution of the subplan
+		 */
+		root->distribution = distribution;
 	}
 #endif
 
@@ -3455,3 +3463,37 @@ plan_cluster_use_sort(Oid tableOid, Oid indexOid)
 
 	return (seqScanAndSortPath.total_cost < indexScanPath->path.total_cost);
 }
+
+
+#ifdef XCP
+/*
+ * Grouping preserves distribution if distribution key is the
+ * first grouping key or if distribution is replicated.
+ * In these cases aggregation is fully pushed down to nodes.
+ * Otherwise we need 2-phase aggregation so put remote subplan
+ * on top of the result_plan. When adding result agg on top of
+ * RemoteSubplan first aggregation phase will be pushed down
+ * automatically.
+ */
+static Plan *
+grouping_distribution(PlannerInfo *root, Plan *plan,
+					  int numGroupCols, AttrNumber *groupColIdx,
+					  List *current_pathkeys, Distribution **distribution)
+{
+	if (*distribution &&
+			!IsReplicated((*distribution)->distributionType) &&
+			(numGroupCols == 0 ||
+					(*distribution)->distributionExpr == NULL ||
+					!equal(((TargetEntry *)list_nth(plan->targetlist, groupColIdx[0]-1))->expr,
+						   (*distribution)->distributionExpr)))
+	{
+		Plan *result_plan;
+		result_plan = (Plan *) make_remotesubplan(root, plan, NULL,
+												  *distribution,
+												  current_pathkeys);
+		*distribution = NULL;
+		return result_plan;
+	}
+	return plan;
+}
+#endif

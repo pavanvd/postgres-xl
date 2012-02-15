@@ -28,6 +28,10 @@
 #include "access/sysattr.h"
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
+#ifdef XCP
+#include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
+#endif
 #include "optimizer/prep.h"
 #include "optimizer/subselect.h"
 #include "optimizer/tlist.h"

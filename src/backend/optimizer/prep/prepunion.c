@@ -224,6 +224,16 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 								   root,
 								   false, tuple_fraction,
 								   &subroot);
+#ifdef XCP
+		if (subroot->distribution)
+		{
+			subplan = (Plan *) make_remotesubplan(subroot,
+												  subplan,
+												  NULL,
+												  subroot->distribution,
+												  subroot->query_pathkeys);
+		}
+#endif
 
 		/*
 		 * Estimate number of groups if caller wants it.  If the subquery used
