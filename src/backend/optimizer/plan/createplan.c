@@ -4075,12 +4075,31 @@ make_remotesubplan(PlannerInfo *root,
 				node->distributionKey = newtle->resno;
 			}
 		}
+		/*
+		 * The distributionNodes describes result distribution
+		 */
 		tmpset = bms_copy(resultDistribution->nodes);
 		node->distributionNodes = NIL;
 		while ((nodenum = bms_first_member(tmpset)) >= 0)
 			node->distributionNodes = lappend_int(node->distributionNodes,
 												  nodenum);
 		bms_free(tmpset);
+		/*
+		 * The distributionRestrict defines the set of nodes where results are
+		 * actually shipped. These are the nodes where upper level step
+		 * is executed.
+		 */
+		if (resultDistribution->restrictNodes)
+		{
+			tmpset = bms_copy(resultDistribution->restrictNodes);
+			node->distributionRestrict = NIL;
+			while ((nodenum = bms_first_member(tmpset)) >= 0)
+				node->distributionRestrict =
+						lappend_int(node->distributionRestrict, nodenum);
+			bms_free(tmpset);
+		}
+		else
+			node->distributionRestrict = list_copy(node->distributionNodes);
 	}
 	else
 	{
@@ -4107,30 +4126,31 @@ make_remotesubplan(PlannerInfo *root,
 	}
 	else
 	{
-		/* 
+		/*
 		 * Prepare single execution of replicated subplan. Choose one node from
-		 * the execution node list, preferrably the node is also a member of 
-		 * the list of result nodes, so later all node executors contact the 
+		 * the execution node list, preferrably the node is also a member of
+		 * the list of result nodes, so later all node executors contact the
 		 * same node to get tuples
 		 */
 		tmpset = NULL;
-		if (resultDistribution && !bms_is_empty(resultDistribution->nodes))
-			tmpset = bms_copy(resultDistribution->nodes);
-		if (bms_is_empty(tmpset))
-		{
-			/* 
-			 * neither target nor result nodes are defined, looks like 
-			 * coordinator only query. OK to execute locally
-			 */
-			node->nodeList = NIL;
-			node->execOnAll = false;
-		}
+		if (!bms_is_empty(resultDistribution->restrictNodes))
+			tmpset = bms_copy(resultDistribution->restrictNodes);
 		else
+			tmpset = bms_copy(resultDistribution->nodes);
+		/*
+		 * If result goes on single node execute subplan locally
+		 */
+		if (bms_num_members(tmpset) > 1)
 		{
-			/* get one node TODO: load balancing */
+			/* get one execution node TODO: load balancing */
 			nodenum = bms_first_member(tmpset);
 			node->nodeList = list_make1_int(nodenum);
 			node->execOnAll = true;
+		}
+		else
+		{
+			node->nodeList = NIL;
+			node->execOnAll = false;
 		}
 		bms_free(tmpset);
 	}

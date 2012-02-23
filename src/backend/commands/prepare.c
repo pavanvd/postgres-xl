@@ -568,6 +568,7 @@ StorePreparedStatement(const char *stmt_name,
 						stmt_name)));
 
 #ifdef PGXC
+#ifndef XCP
 	if (IS_PGXC_COORDINATOR)
 	{
 		ListCell	*lc;
@@ -590,6 +591,7 @@ StorePreparedStatement(const char *stmt_name,
 										param_types_copy, n);
 		}
 	}
+#endif
 #endif
 
 	/* Create a plancache entry */

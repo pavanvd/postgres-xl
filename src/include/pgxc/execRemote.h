@@ -225,6 +225,8 @@ typedef struct RemoteStmt
 	AttrNumber	distributionKey;
 
 	List	   *distributionNodes;
+
+	List	   *distributionRestrict;
 } RemoteStmt;
 #endif
 
@@ -275,6 +277,7 @@ extern TupleTableSlot* ExecRemoteQuery(RemoteQueryState *step);
 extern void ExecEndRemoteQuery(RemoteQueryState *step);
 #ifdef XCP
 extern RemoteSubplanState *ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags);
+extern void ExecFinishInitRemoteSubplan(RemoteSubplanState *node);
 extern TupleTableSlot* ExecRemoteSubplan(RemoteSubplanState *node);
 extern void ExecEndRemoteSubplan(RemoteSubplanState *node);
 extern void ExecReScanRemoteSubplan(RemoteSubplanState *node);
@@ -293,10 +296,13 @@ extern void HandleCmdComplete(CmdType commandType, CombineTag *combine, const ch
 
 #ifdef XCP
 #define CHECK_OWNERSHIP(conn, node) \
-	if ((conn)->state == DN_CONNECTION_STATE_QUERY && \
-			(conn)->combiner && \
-			(conn)->combiner != (ResponseCombiner *) (node)) \
-		BufferConnection(conn)
+	do { \
+		if ((conn)->state == DN_CONNECTION_STATE_QUERY && \
+				(conn)->combiner && \
+				(conn)->combiner != (ResponseCombiner *) (node)) \
+			BufferConnection(conn); \
+		(conn)->combiner = (ResponseCombiner *) (node); \
+	} while(0)
 
 extern TupleTableSlot *FetchTuple(ResponseCombiner *combiner);
 extern void InitResponseCombiner(ResponseCombiner *combiner, int node_count,

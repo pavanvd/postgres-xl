@@ -55,7 +55,10 @@
 #define EXEC_FLAG_BACKWARD		0x0004	/* need backward scan */
 #define EXEC_FLAG_MARK			0x0008	/* need mark/restore */
 #define EXEC_FLAG_SKIP_TRIGGERS 0x0010	/* skip AfterTrigger calls */
-
+#ifdef XCP
+/* distributed executor may never execute the plan on this node  */
+#define EXEC_FLAG_SUBPLAN		0x0020
+#endif
 
 /*
  * ExecEvalExpr was formerly a function containing a switch statement;
@@ -214,6 +217,9 @@ extern DestReceiver *CreateIntoRelDestReceiver(void);
  * prototypes from functions in execProcnode.c
  */
 extern PlanState *ExecInitNode(Plan *node, EState *estate, int eflags);
+#ifdef XCP
+extern void ExecFinishInitProcNode(PlanState *node);
+#endif
 extern TupleTableSlot *ExecProcNode(PlanState *node);
 extern Node *MultiExecProcNode(PlanState *node);
 extern void ExecEndNode(PlanState *node);

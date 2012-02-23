@@ -3078,6 +3078,7 @@ _readRemoteSubplan(void)
 	READ_CHAR_FIELD(distributionType);
 	READ_INT_FIELD(distributionKey);
 	READ_NODE_FIELD(distributionNodes);
+	READ_NODE_FIELD(distributionRestrict);
 	READ_NODE_FIELD(nodeList);
 	READ_BOOL_FIELD(execOnAll);
 	READ_NODE_FIELD(sort);
@@ -3147,6 +3148,7 @@ _readRemoteStmt(void)
 	READ_CHAR_FIELD(distributionType);
 	READ_INT_FIELD(distributionKey);
 	READ_NODE_FIELD(distributionNodes);
+	READ_NODE_FIELD(distributionRestrict);
 
 	READ_DONE();
 }

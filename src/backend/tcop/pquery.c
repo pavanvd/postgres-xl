@@ -324,7 +324,7 @@ ChoosePortalStrategy(List *stmts)
 			PlannedStmt *pstmt = (PlannedStmt *) stmt;
 
 #ifdef XCP
-			if (pstmt->distributionNodes)
+			if (list_length(pstmt->distributionRestrict) > 1)
 				return PORTAL_DISTRIBUTED;
 #endif
 
@@ -564,17 +564,17 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 				/*
 				 * If parent node have sent down parameters, and at least one
 				 * of them is PARAM_EXEC we should avoid "single execution"
-				 * model. All parent nodes deliver the same values for 
+				 * model. All parent nodes deliver the same values for
 				 * PARAM_EXTERN since these values are provided by client and
-				 * they are not changed during the query execution. 
+				 * they are not changed during the query execution.
 				 * On the conrary, values of PARAM_EXEC are results of execution
 				 * on the parent node and in general diferent parents send to
 				 * this node different values and executions are not equivalent.
 				 * Since PARAM_EXECs are always at the end of the list we just
-				 * need to check last item to figure out if there are any 
+				 * need to check last item to figure out if there are any
 				 * PARAM_EXECs.
 				 * NB: Check queryDesc->plannedstmt->nParamExec > 0 is incorrect
-				 * here since queryDesc->plannedstmt->nParamExec may be used 
+				 * here since queryDesc->plannedstmt->nParamExec may be used
 				 * just to allocate space for them and no actual values passed.
 				 */
 				if (queryDesc->plannedstmt->nParamRemote > 0 &&
@@ -599,10 +599,9 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 					foreach(lc, queryDesc->plannedstmt->distributionNodes)
 					{
 						if (selfid == lfirst_int(lc))
-						{
 							consMap[i] = SQ_CONS_SELF;
-							break;
-						}
+						else
+							consMap[i] = SQ_CONS_NONE;
 						i++;
 					}
 
@@ -641,8 +640,9 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 					len = list_length(queryDesc->plannedstmt->distributionNodes);
 					consMap = (int *) palloc(len * sizeof(int));
 					queryDesc->squeue = SharedQueueBind(portal->name,
-									queryDesc->plannedstmt->distributionNodes,
-									&queryDesc->myindex, consMap);
+								queryDesc->plannedstmt->distributionRestrict,
+								queryDesc->plannedstmt->distributionNodes,
+								&queryDesc->myindex, consMap);
 					if (queryDesc->myindex == -1)
 					{
 						/* producer */

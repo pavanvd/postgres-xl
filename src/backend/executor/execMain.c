@@ -947,6 +947,16 @@ estate->es_result_remoterel = NULL;
 		sp_eflags = eflags & EXEC_FLAG_EXPLAIN_ONLY;
 		if (bms_is_member(i, plannedstmt->rewindPlanIDs))
 			sp_eflags |= EXEC_FLAG_REWIND;
+#ifdef XCP
+		/*
+		 * Distributed executor may never execute that plan because referencing
+		 * subplan is executed on remote node, so we may save some resources.
+		 * At the moment only RemoteSubplan is aware of this flag, it is
+		 * skipping sending down subplan.
+		 * ExecInitSubPlan takes care about finishing initialization.
+		 */
+		sp_eflags |= EXEC_FLAG_SUBPLAN;
+#endif
 
 		subplanstate = ExecInitNode(subplan, estate, sp_eflags);
 

@@ -81,7 +81,11 @@ producerReceiveSlot(TupleTableSlot *slot, DestReceiver *self)
 	{
 		int consumerIdx = myState->distNodes[i];
 
-		if (consumerIdx == SQ_CONS_SELF)
+		if (consumerIdx == SQ_CONS_NONE)
+		{
+			continue;
+		}
+		else if (consumerIdx == SQ_CONS_SELF)
 		{
 			Assert(myState->consumer);
 			(*myState->consumer->receiveSlot) (slot, myState->consumer);

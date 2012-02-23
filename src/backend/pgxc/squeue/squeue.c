@@ -238,6 +238,8 @@ SharedQueueShmemSize(void)
  *    Bind to the shared queue specified by sqname. Function searches the queue
  * by the name in the SharedQueue hash table.
  * The consNodes int list identifies the consumers of the current step.
+ * The distNodes int list describes result distribution of the current step.
+ * The consNodes should be a subset of distNodes.
  * The function is automatically determine if caller is a producer or a consumer
  * in the current step caller may rely on the function to pick up random process
  * to be a producer.
@@ -248,12 +250,14 @@ SharedQueueShmemSize(void)
  * first bound is becoming a producer.
  * The myindex and consMap parameters are binding results. If caller process
  * is bound to the query as a producer myindex is set to -1 and index of the each
- * consumer is written to the consMap array in the same order as they are listed
- * in the consNodes. For the producer node SQ_CONS_SELF if written.
+ * consumer (order number in the consNodes) is stored to the consMap array at
+ * the position of the node in the distNodes. For the producer node SQ_CONS_SELF
+ * is stored, nodes from distNodes list which are not members of consNodes are
+ * represented as SQ_CONS_NONE.
  */
 SharedQueue
 SharedQueueBind(const char *sqname, List *consNodes,
-								   int *myindex, int *consMap)
+								   List *distNodes, int *myindex, int *consMap)
 {
 	bool		found;
 	SharedQueue sq;
@@ -299,35 +303,51 @@ SharedQueueBind(const char *sqname, List *consNodes,
 
 		i = 0;
 		sq->sq_nconsumers = 0;
-		foreach(lc, consNodes)
+		foreach(lc, distNodes)
 		{
-			ConsState  *cstate = &(sq->sq_consumers[sq->sq_nconsumers]);
 			int			nodeid = lfirst_int(lc);
 
 			/*
 			 * Producer won't go to shared queue to hand off tuple to itself,
-			 * so we do not need to create queue for that entry
+			 * so we do not need to create queue for that entry.
 			 */
 			if (nodeid == selfid)
 			{
+				/* Producer must be in the consNodes list */
+				Assert(list_member_int(consNodes, nodeid));
 				consMap[i++] = SQ_CONS_SELF;
-				continue;
 			}
-
-			consMap[i++] = sq->sq_nconsumers++;
-			cstate->cs_pid = 0; /* not yet known */
-			cstate->cs_node = nodeid;
-			cstate->cs_ntuples = 0;
-			cstate->cs_status = CONSUMER_ACTIVE;
-			cstate->cs_qstart = 0;
-			cstate->cs_qlength = 0;
-			cstate->cs_qreadpos = 0;
-			cstate->cs_qwritepos = 0;
-			cstate->stat_writes = 0;
-			cstate->stat_reads = 0;
-			cstate->stat_buff_writes = 0;
-			cstate->stat_buff_reads = 0;
-			cstate->stat_buff_returns = 0;
+			/*
+			 * This node may connect as a consumer, store consumer id to the map
+			 * and initialize consumer queue
+			 */
+			else if (list_member_int(consNodes, nodeid))
+			{
+				ConsState  *cstate = &(sq->sq_consumers[sq->sq_nconsumers]);
+				consMap[i++] = sq->sq_nconsumers++;
+				cstate->cs_pid = 0; /* not yet known */
+				cstate->cs_node = nodeid;
+				cstate->cs_ntuples = 0;
+				cstate->cs_status = CONSUMER_ACTIVE;
+				cstate->cs_qstart = 0;
+				cstate->cs_qlength = 0;
+				cstate->cs_qreadpos = 0;
+				cstate->cs_qwritepos = 0;
+				cstate->stat_writes = 0;
+				cstate->stat_reads = 0;
+				cstate->stat_buff_writes = 0;
+				cstate->stat_buff_reads = 0;
+				cstate->stat_buff_returns = 0;
+			}
+			/*
+			 * Consumer from this node won't ever connect as upper level step
+			 * is not executed on the node. Discard resuls that may go to that
+			 * node, if any.
+			 */
+			else
+			{
+				consMap[i++] = SQ_CONS_NONE;
+			}
 		}
 
 		Assert(sq->sq_nconsumers > 0);
@@ -363,7 +383,7 @@ SharedQueueBind(const char *sqname, List *consNodes,
 		/* Sanity checks */
 		Assert(myindex);
 		*myindex = -1;
-		/* Ensure the passed in consumer list is the same as in the queue */
+		/* Ensure the passed in consumer list matches the queue */
 		nconsumers = 0;
 		foreach (lc, consNodes)
 		{
@@ -373,13 +393,13 @@ SharedQueueBind(const char *sqname, List *consNodes,
 			if (nodeid == sq->sq_nodeid)
 			{
 				/*
-				 * This node is a producer, it should not be in the consumer
-				 * list
+				 * This node is a producer it should be in the consumer list,
+				 * but no consumer queue for it
 				 */
 				continue;
 			}
 
-			/* find specified node in the consumer lists */
+			/* find consumer queue for the node */
 			for (i = 0; i < sq->sq_nconsumers; i++)
 			{
 				ConsState *cstate = &(sq->sq_consumers[i]);
@@ -392,7 +412,7 @@ SharedQueueBind(const char *sqname, List *consNodes,
 						 * Current consumer queue is that from which current
 						 * session will be sending out data rows.
 						 * Initialize the queue to let producer know we are
-						 * here and reme.
+						 * here and runnng.
 						 */
 						SQueueSync *sqsync = sq->sq_sync;
 
@@ -402,30 +422,28 @@ SharedQueueBind(const char *sqname, List *consNodes,
 						Assert(cstate->cs_pid == 0);
 						/* make sure the queue is ready to read */
 						Assert(cstate->cs_qlength > 0);
-						if (cstate->cs_status == CONSUMER_DONE)
+						/* verify status */
+						if (cstate->cs_status == CONSUMER_ERROR ||
+								cstate->cs_status == CONSUMER_DONE)
 						{
 							/*
-							 * Producer probably failed and denied connection of
-							 * the consumer that have not yet connected by the
-							 * moment of failure. At the same time the queue is
-							 * not yet unbound, otherwise we would not find it.
-							 * Consumer should not bind to that query. Release
-							 * the locks and report error.
+							 * Producer failed by the time the consumer connect.
+							 * Change status to "Done" to allow producer unbind
+							 * and report problem to the parent.
 							 */
+							cstate->cs_status = CONSUMER_DONE;
+							/* Producer may be waiting for status change */
+							SetLatch(&sqsync->sqs_producer_latch);
 							LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
 							LWLockRelease(SQueuesLock);
 							ereport(ERROR,
 									(errcode(ERRCODE_INTERNAL_ERROR),
-									 errmsg("producer is failed")));
+									 errmsg("producer error")));
 						}
 						/*
 						 * Any other status is acceptable. Normally it would be
 						 * ACTIVE. If producer have had only few rows to emit
-						 * and it is already done the status would be EOF, ERROR
-						 * should not be set here, since if producer failed
-						 * while consumer is not yet connected the status would
-						 * be set to DONE. If even it is set to ERROR subsequent
-						 * read will turn it into DONE.
+						 * and it is already done the status would be EOF.
 						 */
 						/* Set up the consumer */
 						cstate->cs_pid = MyProcPid;
@@ -715,7 +733,7 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 			 */
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("producer is failed")));
+					 errmsg("producer error")));
 		}
 		/* Prepare waiting on empty buffer */
 		ResetLatch(&sqsync->sqs_consumer_sync[consumerIdx].cs_latch);
@@ -744,8 +762,9 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
  * Mark specified consumer as closed discarding all input which may already be
  * in the queue.
  * If consumerIdx is -1 the producer is cleaned up. Producer need to wait for
- * consumers that have started their work - they may being cleaned at the
- * moment. The consumers which have not ever started may be discarded.
+ * consumers before releasing the queue, so if there are yet active consumers,
+ * they are notified about the problem and they should disconnect from the
+ * queue as soon as possible.
  */
 void
 SharedQueueReset(SharedQueue squeue, int consumerIdx)
@@ -763,51 +782,24 @@ SharedQueueReset(SharedQueue squeue, int consumerIdx)
 			LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock, LW_EXCLUSIVE);
 
 			/*
-			 * If consumer has not been started mark it as finished, and do not
-			 * wait for connection which may never come.
-			 * That may happen during normal execution - if a Join on some node
-			 * found the outer subplan had not returned any tuple, so it did
-			 * not ever executed inner, that should be a consumer of this queue.
-			 * If this was the case producer being reset while executor is
-			 * finalizing, that is execution of all the nodes in the plan is
-			 * completed, or in case of error - if producer caught error while
-			 * starting up or soon after start.
-			 * If producer reset is consequence of a producer error there is a
-			 * race condition - producer may clean up and unbind the queue, then
-			 * session from other node may rebind the same subplan and become
-			 * a new producer. That should not be a problem - the error thrown
-			 * should eventually interrupt any processing and ROLLBACK will
-			 * remove all queues that may remain active.
-			 * If consumer will be trying to bind before it will be rejected
-			 * and report error immediately.
+			 * If producer being reset before it is reached the end of the
+			 * result set, that means consumer probably would not get all
+			 * the rows and it should report error if the consumer's parent ever
+			 * try to read. No need to raise error if consumer is just closed.
+			 * If consumer is done already we do not need to change the status.
 			 */
-			if (cstate->cs_pid == 0)
+			if (cstate->cs_status != CONSUMER_EOF &&
+					cstate->cs_status != CONSUMER_DONE)
 			{
-				cstate->cs_status = CONSUMER_DONE;
-				elog(LOG, "Consumer %d of producer %s should not bind", i, squeue->sq_key);
-			}
-			else
-			{
-				/*
-				 * If producer being reset before it is reached the end of
-				 * result set, so consumer do not have all available rows and
-				 * should report error if caller try to read.
-				 * If consumer is reset without reading error is not reported
-				 * whatever status is set.
-				 */
-				if (cstate->cs_status != CONSUMER_EOF &&
-						cstate->cs_status != CONSUMER_DONE)
-				{
-					elog(LOG, "Consumer %d of producer %s is cancelled", i, squeue->sq_key);
-					cstate->cs_status = CONSUMER_ERROR;
-					/* discard tuples which may already be in the queue */
-					cstate->cs_ntuples = 0;
-					/* keep consistent with cs_ntuples*/
-					cstate->cs_qreadpos = cstate->cs_qwritepos = 0;
+				elog(LOG, "Consumer %d of producer %s is cancelled", i, squeue->sq_key);
+				cstate->cs_status = CONSUMER_ERROR;
+				/* discard tuples which may already be in the queue */
+				cstate->cs_ntuples = 0;
+				/* keep consistent with cs_ntuples*/
+				cstate->cs_qreadpos = cstate->cs_qwritepos = 0;
 
-					/* wake up consumer if it is sleeping */
-					SetLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
-				}
+				/* wake up consumer if it is sleeping */
+				SetLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
 			}
 			LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
 		}
@@ -976,11 +968,6 @@ SharedQueueUnBind(SharedQueue squeue)
 {
 	SQueueSync *sqsync = squeue->sq_sync;
 
-	/*
-	 * We do not want late consumer jump in and bind to the queue being unbound
-	 */
-	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
-
 	/* loop while there are active consumers */
 	for (;;)
 	{
@@ -1007,23 +994,18 @@ SharedQueueUnBind(SharedQueue squeue)
 		}
 		if (c_count == 0)
 			break;
-		/*
-		 * We are going to sleep, and if consumer want to bind it is welcome:
-		 * on the next iteration we will check consumer states from the scratch
-		 */
-		LWLockRelease(SQueuesLock);
 		elog(LOG, "Wait while %d squeue readers finishing", c_count);
 		/* wait for a notification */
 		WaitLatch(&sqsync->sqs_producer_latch, -1);
 		/* got notification, continue loop */
-		LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
 	}
 	elog(LOG, "Producer %s is done, there were %ld pauses", squeue->sq_key, squeue->stat_paused);
 
+	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
 	/* All is done, clean up */
 	DisownLatch(&sqsync->sqs_producer_latch);
 
-	/* Now it is OK to remove hash table */
+	/* Now it is OK to remove hash table entry */
 	squeue->sq_sync = NULL;
 	sqsync->queue = NULL;
 	if (hash_search(SharedQueues, squeue->sq_key, HASH_REMOVE, NULL) != squeue)
@@ -1031,4 +1013,141 @@ SharedQueueUnBind(SharedQueue squeue)
 
 	LWLockRelease(SQueuesLock);
 	elog(LOG, "Finalized squeue");
+}
+
+
+/*
+ * If queue with specified name still exists set mark respective consumer as
+ * "Done". Due to executor optimization consumer may never connect the queue,
+ * and should allow producer to finish it up if it is known the consumer will
+ * never connect.
+ */
+void
+SharedQueueRelease(const char *sqname)
+{
+	bool		found;
+	SharedQueue sq;
+
+	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
+
+	sq = (SharedQueue) hash_search(SharedQueues, sqname, HASH_FIND, &found);
+	if (found)
+	{
+		SQueueSync *sqsync = sq->sq_sync;
+		int 		myid;  /* Node Id of the parent data node */
+		int			i;
+
+		Assert(sqsync && sqsync->queue == sq);
+		myid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE, PGXC_NODE_DATANODE);
+		/*
+		 * that is the producer, change status of active consumers to error,
+		 * wait while they finishing and unbind
+		 */
+		if (sq->sq_nodeid == myid)
+		{
+			/*
+			 * Since producer is the only process that may unbind shared queue
+			 * we may release the lock and allow other processes to bind and
+			 * unbind other shared queues.
+			 */
+			LWLockRelease(SQueuesLock);
+			while (true)
+			{
+				int ncons = 0;
+				/* find specified node in the consumer lists */
+				for (i = 0; i < sq->sq_nconsumers; i++)
+				{
+					ConsState *cstate = &(sq->sq_consumers[i]);
+
+					LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock,
+								  LW_EXCLUSIVE);
+					/*
+					 * Producer's queue may be unbound in SharedQueueRelease,
+					 * only in case of error. So if consumer is not yet
+					 * connected we may not wait for it - either it will try to
+					 * connect meantime or bind new shared queue or never
+					 * connect at all - there will be transaction rollback and
+					 * cleanup.
+					 */
+					if (cstate->cs_pid == 0)
+					{
+						cstate->cs_status = CONSUMER_DONE;
+					}
+					else if (cstate->cs_status != CONSUMER_DONE)
+					{
+						ncons++;
+						/* will go sleep */
+						ResetLatch(&sqsync->sqs_producer_latch);
+						if (cstate->cs_status == CONSUMER_ACTIVE)
+						{
+							/* Inform consumer about the problem */
+							cstate->cs_status = CONSUMER_ERROR;
+							SetLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
+							elog(LOG, "Set error on consumer %d of %s", i, sqname);
+						}
+					}
+					LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
+				}
+				if (ncons > 0)
+				{
+					elog(LOG, "Wait while %d squeue readers finishing", ncons);
+					/* wait for a notification */
+					WaitLatch(&sqsync->sqs_producer_latch, -1);
+				}
+				else
+					break;
+			}
+			LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
+			DisownLatch(&sqsync->sqs_producer_latch);
+			/* Now it is OK to remove hash table entry */
+			sq->sq_sync = NULL;
+			sqsync->queue = NULL;
+			if (hash_search(SharedQueues, sqname, HASH_REMOVE, NULL) != sq)
+				elog(PANIC, "Shared queue data corruption");
+			elog(LOG, "Finalized and unbound squeue %s", sqname);
+		}
+		else
+		{
+			/* find specified node in the consumer lists */
+			for (i = 0; i < sq->sq_nconsumers; i++)
+			{
+				ConsState *cstate = &(sq->sq_consumers[i]);
+				if (cstate->cs_node == myid)
+				{
+					LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock,
+								  LW_EXCLUSIVE);
+					if (cstate->cs_status != CONSUMER_DONE)
+					{
+						/* Inform producer the consumer have done the job */
+						cstate->cs_status = CONSUMER_DONE;
+						/* no need to receive notifications */
+						DisownLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
+						/*
+						 * notify the producer, it may be waiting while
+						 * consumers are finishing
+						 */
+						SetLatch(&sqsync->sqs_producer_latch);
+						elog(LOG, "Release consumer %d of %s", i, sqname);
+					}
+					LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
+				}
+			}
+		}
+	}
+	LWLockRelease(SQueuesLock);
+}
+
+
+/*
+ * Called when the backend is ending.
+ */
+void
+SharedQueuesCleanup(int code, Datum arg)
+{
+	/*
+	 * Release all registered prepared statements.
+	 * If a shared queue name is associated with the statement this queue will
+	 * be released.
+	 */
+	DropAllPreparedStatements();
 }

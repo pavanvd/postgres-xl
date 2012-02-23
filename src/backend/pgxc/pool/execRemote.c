@@ -100,8 +100,6 @@ static int	pgxc_node_receive_and_validate(const int conn_count,
 #endif
 static void clear_write_node_list(void);
 
-static void close_node_cursors(PGXCNodeHandle **connections, int conn_count, char *cursor);
-
 static PGXCNodeAllHandles *pgxc_get_all_transaction_nodes(PGXCNode_HandleRequested status_requested);
 static bool pgxc_start_command_on_connection(PGXCNodeHandle *connection,
 					bool need_tran, GlobalTransactionId gxid, TimestampTz timestamp,
@@ -109,6 +107,7 @@ static bool pgxc_start_command_on_connection(PGXCNodeHandle *connection,
 #ifndef XCP
 static bool ExecRemoteQueryInnerPlan(RemoteQueryState *node);
 static TupleTableSlot * RemoteQueryNext(RemoteQueryState *node);
+static void close_node_cursors(PGXCNodeHandle **connections, int conn_count, char *cursor);
 #endif
 static char *GenerateBeginCommand(void);
 
@@ -1531,7 +1530,6 @@ FetchTuple(ResponseCombiner *combiner)
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to fetch from data node")));
-			conn->combiner = combiner;
 		}
 
 		/* read messages */
@@ -3273,6 +3271,19 @@ pgxc_node_rollback(PGXCNodeAllHandles *pgxc_handles)
 #else
 	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
 	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
+#endif
+
+#ifdef XCP
+	/*
+	 * If we rollback because of error there could be prepared subplans, so
+	 * clean them all up. If no subplans the command will do nothing.
+	 */
+	if (pgxc_all_handles_send_query(pgxc_handles, "DEALLOCATE ALL", false))
+		result = EOF;
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
+	if (result == 0)
+		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
 #endif
 
 	return result;
@@ -5613,7 +5624,7 @@ ExecRemoteUtility(RemoteQuery *node)
 			PGXCNodeHandle *conn = pgxc_connections->datanode_handles[i];
 
 #ifdef XCP
-			CHECK_OWNERSHIP(conn, node);
+			CHECK_OWNERSHIP(conn, combiner);
 #else
 			if (conn->state == DN_CONNECTION_STATE_QUERY)
 				BufferConnection(conn);
@@ -5837,8 +5848,10 @@ PGXCNodeCleanAndRelease(int code, Datum arg)
 		RollbackTranGTM((GlobalTransactionId) GetCurrentTransactionIdIfAny());
 	}
 
+#ifndef XCP
 	/* Clean up prepared transactions before releasing connections */
 	DropAllPreparedStatements();
+#endif
 
 	/* Release data node connections */
 	release_handles();
@@ -7201,10 +7214,9 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 	/*
 	 * Encode subplan if it will be sent to remote nodes
 	 */
-	if (node->nodeList && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+	if (remotestate->execNodes && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 	{
 		ParamListInfo ext_params;
-
 		/* Encode plan if we are going to execute it on other nodes */
 		rstmt.type = T_RemoteStmt;
 		rstmt.planTree = outerPlan(node);
@@ -7312,21 +7324,149 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 		rstmt.distributionKey = node->distributionKey;
 		rstmt.distributionType = node->distributionType;
 		rstmt.distributionNodes = node->distributionNodes;
+		rstmt.distributionRestrict = node->distributionRestrict;
 
 		set_portable_output(true);
 		remotestate->subplanstr = nodeToString(&rstmt);
 		set_portable_output(false);
+
+		/*
+		 * Connect to remote nodes and send down subplan
+		 */
+		if (!(eflags & EXEC_FLAG_SUBPLAN))
+			ExecFinishInitRemoteSubplan(remotestate);
 	}
 	remotestate->bound = false;
 	/*
 	 * It does not makes sense to merge sort if there is only one tuple source.
 	 * By the contract it is already sorted
 	 */
-	if (node->sort && list_length(remotestate->execNodes) > 1)
+	if (node->sort && remotestate->execOnAll &&
+			list_length(remotestate->execNodes) > 1)
 		combiner->merge_sort = true;
 
 	return remotestate;
 }
+
+
+void
+ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
+{
+	ResponseCombiner   *combiner = (ResponseCombiner *) node;
+	RemoteSubplan  	   *plan = (RemoteSubplan *) combiner->ss.ps.plan;
+	Oid        		   *paramtypes = NULL;
+	PGXCNodeHandle	  **new_connections;
+	int 				new_count = 0;
+	GlobalTransactionId gxid;
+	Snapshot			snapshot;
+	TimestampTz 		timestamp;
+	int 				i;
+
+	/*
+	 * Name is required to store plan as a statement
+	 */
+	Assert(plan->cursor);
+
+	/* If it is alreaty fully initialized nothing to do */
+	if (combiner->connections)
+		return;
+
+	/* local only or explain only execution */
+	if (node->subplanstr == NULL)
+		return;
+
+	/*
+	 * Acquire connections and send down subplan where it will be stored
+	 * as a prepared statement.
+	 * That does not require transaction id or snapshot, so does not send them
+	 * here, postpone till bind.
+	 */
+	if (node->execOnAll)
+	{
+		PGXCNodeAllHandles *pgxc_connections;
+		pgxc_connections = get_handles(node->execNodes, NIL, false);
+		combiner->conn_count = pgxc_connections->dn_conn_count;
+		combiner->connections = pgxc_connections->datanode_handles;
+		combiner->current_conn = 0;
+		pfree(pgxc_connections);
+	}
+	else
+	{
+		combiner->connections = (PGXCNodeHandle **) palloc(sizeof(PGXCNodeHandle *));
+		combiner->connections[0] = get_any_handle(node->execNodes);
+		combiner->conn_count = 1;
+		combiner->current_conn = 0;
+	}
+	/*
+	 * Check if data node connections are in transaction and start
+	 * transactions on nodes where it is not started
+	 */
+	new_connections = (PGXCNodeHandle **)
+			palloc(combiner->conn_count * sizeof(PGXCNodeHandle *));
+
+	for (i = 0; i < combiner->conn_count; i++)
+		if (combiner->connections[i]->transaction_status != 'T')
+			new_connections[new_count++] = combiner->connections[i];
+
+	gxid = GetCurrentGlobalTransactionId();
+	if (!GlobalTransactionIdIsValid(gxid))
+	{
+		combiner->conn_count = 0;
+		pfree(combiner->connections);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("Failed to get next transaction ID")));
+	}
+	if (new_count &&
+			pgxc_node_begin(new_count, new_connections, gxid))
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("Could not begin transaction on data nodes.")));
+	pfree(new_connections);
+	/* extract parameter data types */
+	if (node->nParamRemote > 0)
+	{
+		paramtypes = (Oid *) palloc(node->nParamRemote * sizeof(Oid));
+		for (i = 0; i < node->nParamRemote; i++)
+			paramtypes[i] = node->remoteparams[i].paramtype;
+	}
+	/* send down subplan */
+	snapshot = GetActiveSnapshot();
+	timestamp = GetCurrentGTMStartTimestamp();
+
+	for (i = 0; i < combiner->conn_count; i++)
+	{
+		if (pgxc_node_send_timestamp(combiner->connections[i], timestamp))
+		{
+			combiner->conn_count = 0;
+			pfree(combiner->connections);
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to send command to data nodes")));
+		}
+		if (snapshot && pgxc_node_send_snapshot(combiner->connections[i], snapshot))
+		{
+			combiner->conn_count = 0;
+			pfree(combiner->connections);
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to send command to data nodes")));
+		}
+
+		pgxc_node_send_plan(combiner->connections[i], plan->cursor,
+							"Remote Subplan", node->subplanstr,
+							node->nParamRemote, paramtypes);
+		if (pgxc_node_flush(combiner->connections[i]))
+		{
+			combiner->conn_count = 0;
+			pfree(combiner->connections);
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to send subplan to data nodes")));
+		}
+	}
+}
+
 
 static void
 append_param_data(StringInfo buf, Oid ptype, Datum value, bool isnull)
@@ -7368,6 +7508,7 @@ append_param_data(StringInfo buf, Oid ptype, Datum value, bool isnull)
 		appendBinaryStringInfo(buf, pstring, len);
 	}
 }
+
 
 static int encode_parameters(int nparams, RemoteParam *remoteparams,
 							 PlanState *planstate, char** result)
@@ -7449,9 +7590,8 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 										 &paramdata);
 
 		/*
-		 * May be query is already prepared on the data nodes, in this case
-		 * just re-bind it, otherwise get connections, prepare them and send
-		 * down subplan
+		 * The subplan being rescanned, need to restore connections and
+		 * re-bind the portal
 		 */
 		if (combiner->cursor)
 		{
@@ -7466,12 +7606,15 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 				PGXCNodeHandle *conn = combiner->connections[i];
 
 				CHECK_OWNERSHIP(conn, combiner);
-				if (pgxc_node_send_datanode_query(conn,
-												  NULL, /* query is already sent */
-												  combiner->cursor,
-												  paramlen,
-												  paramdata,
-												  fetch) != 0)
+				/* close previous cursor */
+				pgxc_node_send_close(conn, false, combiner->cursor);
+				/* rebind */
+				pgxc_node_send_bind(conn, combiner->cursor, combiner->cursor,
+									paramlen, paramdata);
+				/* execute */
+				pgxc_node_send_execute(conn, combiner->cursor, fetch);
+				/* submit */
+				if (pgxc_node_send_flush(conn))
 				{
 					combiner->conn_count = 0;
 					pfree(combiner->connections);
@@ -7483,120 +7626,41 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 		}
 		else if (node->execNodes)
 		{
-			GlobalTransactionId gxid = InvalidGlobalTransactionId;
-			Snapshot		snapshot = GetActiveSnapshot();
-			TimestampTz 	timestamp = GetCurrentGTMStartTimestamp();
 			int 			i;
 			bool 			is_read_only;
-			bool			need_tran;
+
+			/*
+			 * There are prepared statement, connections should be already here
+			 */
+			Assert(combiner->conn_count > 0);
 
 			/*
 			 * Datanode should not send down statements that may modify
 			 * the database. Potgres assumes that all sessions under the same
-			 * postmaster have different xids. That causes problems with locks.
-			 * Shared locks used when reading still works fine.
+			 * postmaster have different xids. That may cause a locking problem.
+			 * Shared locks acquired for reading still work fine.
 			 */
 			is_read_only = IS_PGXC_DATANODE ||
 					!IsA(outerPlan(plan), ModifyTable);
-
-			/*
-			 * We need to start explicit transaction on datanode connections
-			 * if we are going to use extended query protocol, which always
-			 * the case if we are executing RemoteSubplan.
-			 * That is because datanodes cursors are freed either explicitly
-			 * by CLOSE message or upon transaction end. So we should either
-			 * make sure the cursor is always closed or there is a transaction
-			 * that forces closing of all cursors.
-			 * For now we are closing cursors in ExecEndRemoteSubplan, but
-			 * executor is not finalized and ExecEnd... functions are not
-			 * invoked if an error is thrown during the execution.
-			 * We can handle the case if error is received from one of the
-			 * datanode connection we own, but we can not handle errors above
-			 * or in other branches of execution tree. So we just start
-			 * transaction here and in case of error datanode cursors will be
-			 * closed by upcoming ROLLBACK.
-			 */
-			need_tran = true;
-
-			/*
-			 * Distribution of the subplan determines nodes we need to send
-			 * the subplan to.
-			 * If distribution type is REPLICATED we need only one of the
-			 * specified nodes.
-			 */
-			if (node->execOnAll)
-			{
-				PGXCNodeAllHandles *pgxc_connections;
-				pgxc_connections = get_handles(node->execNodes, NIL, false);
-				combiner->conn_count = pgxc_connections->dn_conn_count;
-				combiner->connections = pgxc_connections->datanode_handles;
-				combiner->current_conn = 0;
-				pfree(pgxc_connections);
-			}
-			else
-			{
-				combiner->connections = (PGXCNodeHandle **) palloc(sizeof(PGXCNodeHandle *));
-				combiner->connections[0] = get_any_handle(node->execNodes);
-				combiner->conn_count = 1;
-				combiner->current_conn = 0;
-			}
-
-			gxid = GetCurrentGlobalTransactionId();
-
-			if (!GlobalTransactionIdIsValid(gxid))
-			{
-				combiner->conn_count = 0;
-				pfree(combiner->connections);
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to get next transaction ID")));
-			}
 
 			if (!is_read_only)
 				register_write_nodes(combiner->conn_count,
 									 combiner->connections);
 
-			if (need_tran)
-			{
-				/*
-				 * Check if data node connections are in transaction and start
-				 * transactions on nodes where it is not started
-				 */
-				PGXCNodeHandle *new_connections[combiner->conn_count];
-				int 		new_count = 0;
-
-				for (i = 0; i < combiner->conn_count; i++)
-					if (combiner->connections[i]->transaction_status != 'T')
-						new_connections[new_count++] = combiner->connections[i];
-
-				if (new_count &&
-						pgxc_node_begin(new_count, new_connections, gxid))
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Could not begin transaction on data nodes.")));
-			}
+			combiner->extended_query = true;
 
 			for (i = 0; i < combiner->conn_count; i++)
 			{
 				CHECK_OWNERSHIP(combiner->connections[i], combiner);
-				/* If explicit transaction is needed gxid is already sent */
-				if (pgxc_node_send_gxid(combiner->connections[i], gxid))
-				{
-					combiner->conn_count = 0;
-					pfree(combiner->connections);
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to send command to data nodes")));
-				}
-				if (pgxc_node_send_timestamp(combiner->connections[i], timestamp))
-				{
-					combiner->conn_count = 0;
-					pfree(combiner->connections);
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to send command to data nodes")));
-				}
-				if (snapshot && pgxc_node_send_snapshot(combiner->connections[i], snapshot))
+
+				/* bind */
+				pgxc_node_send_bind(combiner->connections[i], plan->cursor,
+									plan->cursor, paramlen, paramdata);
+				/* execute */
+				pgxc_node_send_execute(combiner->connections[i], plan->cursor,
+									   fetch);
+				/* submit */
+				if (pgxc_node_send_flush(combiner->connections[i]))
 				{
 					combiner->conn_count = 0;
 					pfree(combiner->connections);
@@ -7605,36 +7669,13 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 							 errmsg("Failed to send command to data nodes")));
 				}
 
-				combiner->extended_query = true;
-
-				/* Use Datanode Query Protocol */
-				if (pgxc_node_send_datanode_query(combiner->connections[i],
-												  node->subplanstr,
-												  plan->cursor,
-												  paramlen,
-												  paramdata,
-												  fetch	// fetch size
-												 ) != 0)
-				{
-					combiner->conn_count = 0;
-					pfree(combiner->connections);
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to send command to data nodes")));
-				}
-
-				combiner->connections[i]->combiner = combiner;
 			}
-
-			if (plan->cursor)
-			{
-				combiner->cursor = plan->cursor;
-				combiner->cursor_count = combiner->conn_count;
-				combiner->cursor_connections = (PGXCNodeHandle **) palloc(
-							combiner->conn_count * sizeof(PGXCNodeHandle *));
-				memcpy(combiner->cursor_connections, combiner->connections,
-							combiner->conn_count * sizeof(PGXCNodeHandle *));
-			}
+			combiner->cursor = plan->cursor;
+			combiner->cursor_count = combiner->conn_count;
+			combiner->cursor_connections = (PGXCNodeHandle **) palloc(
+						combiner->conn_count * sizeof(PGXCNodeHandle *));
+			memcpy(combiner->cursor_connections, combiner->connections,
+						combiner->conn_count * sizeof(PGXCNodeHandle *));
 		}
 
 		if (combiner->merge_sort)
@@ -7704,7 +7745,7 @@ ExecReScanRemoteSubplan(RemoteSubplanState *node)
 		ExecReScan(outerPlanState(node));
 
 	/*
-	 * Clean up remote connections
+	 * Consume any possible pending input
 	 */
 	pgxc_connections_cleanup(combiner);
 
@@ -7713,7 +7754,7 @@ ExecReScanRemoteSubplan(RemoteSubplanState *node)
 	combiner->description_count = 0;
 
 	/*
-	 * Force query is re-executed with new parameters
+	 * Force query is re-bound with new parameters
 	 */
 	node->bound = false;
 }
@@ -7723,6 +7764,8 @@ void
 ExecEndRemoteSubplan(RemoteSubplanState *node)
 {
 	ResponseCombiner *combiner = (ResponseCombiner *)node;
+	RemoteSubplan    *plan = (RemoteSubplan *) combiner->ss.ps.plan;
+	int i;
 
 	if (outerPlanState(node))
 		ExecEndNode(outerPlanState(node));
@@ -7730,13 +7773,20 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 		freeLocator(node->locator);
 
 	/*
-	 * Clean up remote connections
+	 * Consume any possible pending input
 	 */
-	pgxc_connections_cleanup(combiner);
+	if (node->bound)
+		pgxc_connections_cleanup(combiner);
 
+	/*
+	 * Close portals. While cursors_connections exist there are open portals
+	 */
 	if (combiner->cursor)
 	{
-		int i;
+		/* Restore connections where there are active statements */
+		combiner->conn_count = combiner->cursor_count;
+		memcpy(combiner->connections, combiner->cursor_connections,
+					combiner->cursor_count * sizeof(PGXCNodeHandle *));
 		for (i = 0; i < combiner->cursor_count; i++)
 		{
 			PGXCNodeHandle *conn;
@@ -7749,40 +7799,65 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to close data node cursor")));
-			if (pgxc_node_send_sync(conn) != 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to close data node cursor")));
 		}
-
-		while (combiner->cursor_count > 0)
-		{
-			if (pgxc_node_receive(combiner->cursor_count,
-								  combiner->cursor_connections, NULL))
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to close data node cursor")));
-			i = 0;
-			while (i < combiner->cursor_count)
-			{
-				int res = handle_response(combiner->cursor_connections[i],
-										  combiner);
-				if (res == RESPONSE_EOF)
-				{
-					i++;
-				}
-				else if (res == RESPONSE_READY)
-				{
-					/* Done, connection is reade for query */
-					if (--combiner->cursor_count > i)
-						combiner->cursor_connections[i] =
-								combiner->cursor_connections[combiner->cursor_count];
-				}
-				/* Ignore other possible responses */
-			}
-		}
-
+		/* The cursor stuff is not needed */
 		combiner->cursor = NULL;
+		combiner->cursor_count = 0;
+		pfree(combiner->cursor_connections);
+		combiner->cursor_connections = NULL;
+	}
+
+	/* Close statements, even if they never were bound */
+	for (i = 0; i < combiner->conn_count; i++)
+	{
+		PGXCNodeHandle *conn;
+
+		conn = combiner->connections[i];
+
+		CHECK_OWNERSHIP(conn, combiner);
+
+		if (pgxc_node_send_close(conn, true, plan->cursor) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to close data node statement")));
+		/* Send SYNC and wait for ReadyForQuery */
+		if (pgxc_node_send_sync(conn) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to synchronize data node")));
+		/*
+		 * Formally connection is not in QUERY state, we set the state to read
+		 * CloseDone and ReadyForQuery responses. Upon receiving ReadyForQuery
+		 * state will be changed back to IDLE and conn->coordinator will be
+		 * cleared.
+		 */
+		conn->state = DN_CONNECTION_STATE_QUERY;
+	}
+
+	while (combiner->conn_count > 0)
+	{
+		if (pgxc_node_receive(combiner->conn_count,
+							  combiner->connections, NULL))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to close remote subplan")));
+		i = 0;
+		while (i < combiner->conn_count)
+		{
+			int res = handle_response(combiner->connections[i], combiner);
+			if (res == RESPONSE_EOF)
+			{
+				i++;
+			}
+			else if (res == RESPONSE_READY)
+			{
+				/* Done, connection is reade for query */
+				if (--combiner->conn_count > i)
+					combiner->connections[i] =
+							combiner->connections[combiner->conn_count];
+			}
+			/* Ignore other possible responses */
+		}
 	}
 
 	ValidateAndCloseCombiner(combiner);

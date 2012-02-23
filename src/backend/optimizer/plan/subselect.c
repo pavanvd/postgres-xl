@@ -398,6 +398,12 @@ make_subplan(PlannerInfo *root, Query *orig_subquery, SubLinkType subLinkType,
 										   NULL,
 										   subroot->distribution,
 										   subroot->query_pathkeys);
+		/*
+		 * SS_finalize_plan has already been run on the subplan,
+		 * so we have to copy parameter info to wrapper plan node.
+		 */
+		plan->extParam = bms_copy(plan->lefttree->extParam);
+		plan->allParam = bms_copy(plan->lefttree->allParam);
 	}
 #endif
 	/* And convert to SubPlan or InitPlan format. */
@@ -992,6 +998,12 @@ SS_process_ctes(PlannerInfo *root)
 											   NULL,
 											   subroot->distribution,
 											   subroot->query_pathkeys);
+			/*
+			 * SS_finalize_plan has already been run on the subplan,
+			 * so we have to copy parameter info to wrapper plan node.
+			 */
+			plan->extParam = bms_copy(plan->lefttree->extParam);
+			plan->allParam = bms_copy(plan->lefttree->allParam);
 		}
 #endif
 

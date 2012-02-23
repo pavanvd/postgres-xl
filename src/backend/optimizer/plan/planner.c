@@ -1944,12 +1944,10 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		if (equal(root->distribution, distribution))
 		{
 			/*
-			 * Source tuple will be needed on the same node where it is
+			 * Source tuple will be consumed on the same node where it is
 			 * produced, so if it is known some node does not yield tuples
-			 * we do not want to run modify table on these nodes at all.
-			 * So just copy the restriction. Also, we need to remove topmost
-			 * RemoteSubplan node - upper level plan is already distributed
-			 * properly.
+			 * we do not want to execute subquery on these nodes at all.
+			 * So just copy the restriction.
 			 */
 			root->distribution->restrictNodes =
 					bms_copy(distribution->restrictNodes);

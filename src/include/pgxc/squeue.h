@@ -29,14 +29,17 @@
 #define SQUEUE_KEYSIZE (64)
 
 #define SQ_CONS_SELF -1
+#define SQ_CONS_NONE -2
 
 typedef struct SQueueHeader *SharedQueue;
 
 extern Size SharedQueueShmemSize(void);
 extern void SharedQueuesInit(void);
 extern SharedQueue SharedQueueBind(const char *sqname, List *consNodes,
-				int *myindex, int *consMap);
+				List *distNodes, int *myindex, int *consMap);
 extern void SharedQueueUnBind(SharedQueue squeue);
+extern void SharedQueueRelease(const char *sqname);
+extern void SharedQueuesCleanup(int code, Datum arg);
 
 extern int	SharedQueueFinish(SharedQueue squeue, TupleDesc tupDesc,
 				  Tuplestorestate **tuplestore);

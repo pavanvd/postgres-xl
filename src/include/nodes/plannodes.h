@@ -79,6 +79,7 @@ typedef struct PlannedStmt
 	char		distributionType;
 	AttrNumber  distributionKey;
 	List	   *distributionNodes;
+	List	   *distributionRestrict;
 #endif
 } PlannedStmt;
 

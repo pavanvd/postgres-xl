@@ -142,6 +142,7 @@ typedef struct
 	char 		distributionType;
 	AttrNumber	distributionKey;
 	List 	   *distributionNodes;
+	List 	   *distributionRestrict;
 	List 	   *nodeList;
 	bool 		execOnAll;
 	SimpleSort *sort;

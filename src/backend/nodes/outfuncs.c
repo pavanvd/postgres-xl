@@ -1292,6 +1292,7 @@ _outRemoteSubplan(StringInfo str, RemoteSubplan *node)
 	WRITE_CHAR_FIELD(distributionType);
 	WRITE_INT_FIELD(distributionKey);
 	WRITE_NODE_FIELD(distributionNodes);
+	WRITE_NODE_FIELD(distributionRestrict);
 	WRITE_NODE_FIELD(nodeList);
 	WRITE_BOOL_FIELD(execOnAll);
 	WRITE_NODE_FIELD(sort);
@@ -1339,6 +1340,7 @@ _outRemoteStmt(StringInfo str, RemoteStmt *node)
 	WRITE_CHAR_FIELD(distributionType);
 	WRITE_INT_FIELD(distributionKey);
 	WRITE_NODE_FIELD(distributionNodes);
+	WRITE_NODE_FIELD(distributionRestrict);
 }
 
 static void

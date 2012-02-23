@@ -660,6 +660,11 @@ ExecInitSubPlan(SubPlan *subplan, PlanState *parent)
 	sstate->planstate = (PlanState *) list_nth(estate->es_subplanstates,
 											   subplan->plan_id - 1);
 
+#ifdef XCP
+	/* subplan is referenced on local node, finish initialization */
+	ExecFinishInitProcNode(sstate->planstate);
+#endif
+
 	/* Initialize subexpressions */
 	sstate->testexpr = ExecInitExpr((Expr *) subplan->testexpr, parent);
 	sstate->args = (List *) ExecInitExpr((Expr *) subplan->args, parent);

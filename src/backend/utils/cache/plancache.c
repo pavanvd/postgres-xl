@@ -62,6 +62,9 @@
 #ifdef PGXC
 #include "commands/prepare.h"
 #include "pgxc/execRemote.h"
+#ifdef XCP
+#include "pgxc/squeue.h"
+#endif
 
 
 static void release_datanode_statements(Plan *plannode);
@@ -414,6 +417,18 @@ DropCachedPlan(CachedPlanSource *plansource)
 	/* Remove it from the list */
 	cached_plans_list = list_delete_ptr(cached_plans_list, plansource);
 
+#ifdef XCP
+	/* Release SharedQueue if still held */
+	if (plansource->plan && list_length(plansource->plan->stmt_list) == 1)
+	{
+		PlannedStmt *pstmt;
+
+		pstmt = (PlannedStmt *) linitial(plansource->plan->stmt_list);
+		if (IsA(pstmt, PlannedStmt) && pstmt->pname)
+			SharedQueueRelease(pstmt->pname);
+	}
+#endif
+
 	/* Decrement child CachePlan's refcount and drop if no longer needed */
 	if (plansource->plan)
 		ReleaseCachedPlan(plansource->plan, false);
@@ -507,6 +522,19 @@ RevalidateCachedPlan(CachedPlanSource *plansource, bool useResOwner)
 		ReleaseCachedPlan(plan, false);
 		plan = NULL;
 	}
+
+#ifdef XCP
+	if (!plan && !plansource->raw_parse_tree)
+	{
+		/*
+		 * No parse tree available, probably this is a subplan sent from
+		 * coordinator. Coordinator may catch this error and replan whole query
+		 */
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("can not revalidate cached plan")));
+	}
+#endif
 
 	/*
 	 * Build a new plan if needed.

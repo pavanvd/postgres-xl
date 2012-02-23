@@ -1193,6 +1193,87 @@ pgxc_node_send_parse(PGXCNodeHandle * handle, const char* statement,
 }
 
 
+#ifdef XCP
+/*
+ * Send PLAN message down to the Data node
+ */
+int
+pgxc_node_send_plan(PGXCNodeHandle * handle, const char *statement,
+					const char *query, const char *planstr,
+					short num_params, Oid *param_types)
+{
+	int			stmtLen;
+	int			queryLen;
+	int			planLen;
+	int 		paramTypeLen;
+	int			msgLen;
+	char	  **paramTypes = (char **)palloc(sizeof(char *) * num_params);
+	int			i;
+
+	/* Invalid connection state, return error */
+	if (handle->state != DN_CONNECTION_STATE_IDLE)
+		return EOF;
+
+	/* statement name size (do not allow NULL) */
+	stmtLen = strlen(statement) + 1;
+	/* source query size (do not allow NULL) */
+	queryLen = strlen(query) + 1;
+	/* query plan size (do not allow NULL) */
+	planLen = strlen(planstr) + 1;
+	/* 2 bytes for number of parameters, preceding the type names */
+	paramTypeLen = 2;
+	/* find names of the types of parameters */
+	for (i = 0; i < num_params; i++)
+	{
+		paramTypes[i] = format_type_be(param_types[i]);
+		paramTypeLen += strlen(paramTypes[i]) + 1;
+	}
+	/* size + pnameLen + queryLen + parameters */
+	msgLen = 4 + queryLen + stmtLen + planLen + paramTypeLen;
+
+	/* msgType + msgLen */
+	if (ensure_out_buffer_capacity(handle->outEnd + 1 + msgLen, handle) != 0)
+	{
+		add_error_message(handle, "out of memory");
+		return EOF;
+	}
+
+	handle->outBuffer[handle->outEnd++] = 'p';
+	/* size */
+	msgLen = htonl(msgLen);
+	memcpy(handle->outBuffer + handle->outEnd, &msgLen, 4);
+	handle->outEnd += 4;
+	/* statement name */
+	memcpy(handle->outBuffer + handle->outEnd, statement, stmtLen);
+	handle->outEnd += stmtLen;
+	/* source query */
+	memcpy(handle->outBuffer + handle->outEnd, query, queryLen);
+	handle->outEnd += queryLen;
+	/* query plan */
+	memcpy(handle->outBuffer + handle->outEnd, planstr, planLen);
+	handle->outEnd += planLen;
+	/* parameter types */
+	*((short *)(handle->outBuffer + handle->outEnd)) = htons(num_params);
+	handle->outEnd += sizeof(num_params);
+	/*
+	 * instead of parameter ids we should send parameter names (qualified by
+	 * schema name if required). The OIDs of types can be different on
+	 * datanodes.
+	 */
+	for (i = 0; i < num_params; i++)
+	{
+		int plen = strlen(paramTypes[i]) + 1;
+		memcpy(handle->outBuffer + handle->outEnd, paramTypes[i], plen);
+		handle->outEnd += plen;
+		pfree(paramTypes[i]);
+	}
+	pfree(paramTypes);
+
+ 	return 0;
+}
+#endif
+
+
 /*
  * Send BIND message down to the Data node
  */
@@ -1272,89 +1353,6 @@ pgxc_node_send_bind(PGXCNodeHandle * handle, const char *portal,
 
  	return 0;
 }
-
-
-#ifdef XCP
-/*
- * Send BINDPLAN message down to the Data node
- */
-int
-pgxc_node_send_bindplan(PGXCNodeHandle * handle, const char *portal,
-						const char *planstr, int paramlen, char *params)
-{
-	int			pnameLen;
-	int			planLen;
-	int 		paramCodeLen;
-	int 		paramValueLen;
-	int 		paramOutLen;
-	int			msgLen;
-
-	/* Invalid connection state, return error */
-	if (handle->state != DN_CONNECTION_STATE_IDLE)
-		return EOF;
-
-	/* portal name size (allow NULL) */
-	pnameLen = portal ? strlen(portal) + 1 : 1;
-	/* query plan size */
-	planLen = planstr ? strlen(planstr) + 1 : 1;
-	/* size of parameter codes array (always empty for now) */
-	paramCodeLen = 2;
-	/* size of parameter values array, 2 if no params */
-	paramValueLen = paramlen ? paramlen : 2;
-	/* size of output parameter codes array (always empty for now) */
-	paramOutLen = 2;
-	/* size + pnameLen + queryLen + parameters */
-	msgLen = 4 + pnameLen + planLen + paramCodeLen + paramValueLen + paramOutLen;
-
-	/* msgType + msgLen */
-	if (ensure_out_buffer_capacity(handle->outEnd + 1 + msgLen, handle) != 0)
-	{
-		add_error_message(handle, "out of memory");
-		return EOF;
-	}
-
-	handle->outBuffer[handle->outEnd++] = 'p';
-	/* size */
-	msgLen = htonl(msgLen);
-	memcpy(handle->outBuffer + handle->outEnd, &msgLen, 4);
-	handle->outEnd += 4;
-	/* portal name */
-	if (portal)
-	{
-		memcpy(handle->outBuffer + handle->outEnd, portal, pnameLen);
-		handle->outEnd += pnameLen;
-	}
-	else
-		handle->outBuffer[handle->outEnd++] = '\0';
-	/* query plan */
-	if (planstr)
-	{
-		memcpy(handle->outBuffer + handle->outEnd, planstr, planLen);
-		handle->outEnd += planLen;
-	}
-	else
-		handle->outBuffer[handle->outEnd++] = '\0';
-	/* parameter codes (none) */
-	handle->outBuffer[handle->outEnd++] = 0;
-	handle->outBuffer[handle->outEnd++] = 0;
-	/* parameter values */
-	if (paramlen)
-	{
-		memcpy(handle->outBuffer + handle->outEnd, params, paramlen);
-		handle->outEnd += paramlen;
-	}
-	else
-	{
-		handle->outBuffer[handle->outEnd++] = 0;
-		handle->outBuffer[handle->outEnd++] = 0;
-	}
-	/* output parameter codes (none) */
-	handle->outBuffer[handle->outEnd++] = 0;
-	handle->outBuffer[handle->outEnd++] = 0;
-
- 	return 0;
-}
-#endif
 
 
 /*
@@ -1439,8 +1437,6 @@ pgxc_node_send_close(PGXCNodeHandle * handle, bool is_statement,
 	}
 	else
 		handle->outBuffer[handle->outEnd++] = '\0';
-
-	handle->state = DN_CONNECTION_STATE_QUERY;
 
  	return 0;
 }
@@ -1573,28 +1569,6 @@ pgxc_node_send_query_extended(PGXCNodeHandle *handle, const char *query,
 
 	return 0;
 }
-
-
-#ifdef XCP
-/*
- * Send series of Datanode Query protocol messages to the data node
- */
-int
-pgxc_node_send_datanode_query(PGXCNodeHandle *handle, const char *query,
-							  const char *portal, int paramlen, char *params,
-							  int fetch_size)
-{
-	if (pgxc_node_send_bindplan(handle, portal, query, paramlen, params))
-		return EOF;
-	if (fetch_size >= 0)
-		if (pgxc_node_send_execute(handle, portal, fetch_size))
-			return EOF;
-	if (pgxc_node_send_flush(handle))
-		return EOF;
-
-	return 0;
-}
-#endif
 
 
 /*

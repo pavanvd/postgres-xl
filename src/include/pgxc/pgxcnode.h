@@ -156,11 +156,9 @@ extern int	pgxc_node_send_query_extended(PGXCNodeHandle *handle, const char *que
 							  int paramlen, char *params,
 							  bool send_describe, int fetch_size);
 #ifdef XCP
-extern int	pgxc_node_send_bindplan(PGXCNodeHandle * handle, const char *portal,
-						const char *planstr, int paramlen, char *params);
-extern int  pgxc_node_send_datanode_query(PGXCNodeHandle *handle, const char *query,
-							  const char *portal, int paramlen, char *params,
-							  int fetch_size);
+extern int  pgxc_node_send_plan(PGXCNodeHandle * handle, const char *statement,
+					const char *query, const char *planstr,
+					short num_params, Oid *param_types);
 #endif
 extern int	pgxc_node_send_gxid(PGXCNodeHandle * handle, GlobalTransactionId gxid);
 extern int	pgxc_node_send_snapshot(PGXCNodeHandle * handle, Snapshot snapshot);

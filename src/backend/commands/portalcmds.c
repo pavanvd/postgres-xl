@@ -274,16 +274,16 @@ PortalCleanup(Portal portal)
 #ifdef XCP
 				if (queryDesc->squeue)
 				{
-					SharedQueueReset(queryDesc->squeue, queryDesc->myindex);
 					/* If portal is producing it has an executor which should be
 					 * shut down */
 					if (queryDesc->myindex == -1)
 					{
-						/* Remove from producers list if there */
+						/* Remove from producers list if still there */
 						removeProducingPortal(portal);
 						/* executor may be finished already */
 						if (!queryDesc->estate->es_finished)
 							ExecutorFinish(queryDesc);
+						/* That may wait until consumers are disconnected */
 						if (queryDesc->dest)
 							(*queryDesc->dest->rDestroy) (queryDesc->dest);
 						ExecutorEnd(queryDesc);
@@ -291,6 +291,8 @@ PortalCleanup(Portal portal)
 					}
 					else
 					{
+						/* Mark as disconnected */
+						SharedQueueReset(queryDesc->squeue, queryDesc->myindex);
 						FreeQueryDesc(queryDesc);
 					}
 				}

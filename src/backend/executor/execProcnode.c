@@ -354,6 +354,38 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 }
 
 
+#ifdef XCP
+/*
+ * The subplan is referenced on local node, finish initialization
+ */
+void
+ExecFinishInitProcNode(PlanState *node)
+{
+	TupleTableSlot *result;
+
+	/* Exit if we reached leaf of the tree */
+	if (node == NULL)
+		return;
+
+	switch (nodeTag(node))
+	{
+		case T_RemoteSubplanState:
+			ExecFinishInitRemoteSubplan((RemoteSubplanState *) node);
+			break;
+
+		default:
+			/*
+			 * XXX Implement functions for different plan node types, for now
+			 * try to traverse the plan tree
+			 */
+			ExecFinishInitProcNode(node->lefttree);
+			ExecFinishInitProcNode(node->righttree);
+			break;
+	}
+}
+#endif
+
+
 /* ----------------------------------------------------------------
  *		ExecProcNode
  *
