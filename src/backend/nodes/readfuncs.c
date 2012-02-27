@@ -3291,6 +3291,22 @@ _readPlanRowMark(void)
 	READ_DONE();
 }
 
+/*
+ * _readLockRows
+ */
+static LockRows *
+_readLockRows(void)
+{
+	READ_LOCALS(LockRows);
+
+	READ_PLAN_FIELDS();
+
+	READ_NODE_FIELD(rowMarks);
+	READ_INT_FIELD(epqParam);
+
+	READ_DONE();
+}
+
 #endif /* XCP */
 
 
@@ -3497,6 +3513,8 @@ parseNodeString(void)
 		return_value = _readNestLoopParam();
 	else if (MATCH("PLANROWMARK", 11))
 		return_value = _readPlanRowMark();
+	else if (MATCH("LOCKROWS", 8))
+		return_value = _readLockRows();
 #endif
 	else
 	{
