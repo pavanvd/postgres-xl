@@ -946,6 +946,46 @@ FreeExecNodes(ExecNodes **exec_nodes)
 }
 
 #ifdef XCP
+/*
+ * Determine value length in bytes for specified type for a module locator.
+ * Return -1 if module locator is not supported for the type.
+ */
+static int
+modulo_value_len(Oid dataType)
+{
+	HeapTuple	tuple;
+	Form_pg_type typeForm;
+	int 		valuelen;
+
+	tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(dataType));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for type %u", dataType);
+	typeForm = (Form_pg_type) GETSTRUCT(tuple);
+
+	if (typeForm->typbyval)
+	{
+		switch (typeForm->typlen)
+		{
+			case 1:
+				valuelen = 1;
+				break;
+			case 2:
+			case 3:
+				valuelen = 2;
+				break;
+			case 4:
+			default:
+				valuelen = 4;
+				break;
+		}
+	}
+	else
+		valuelen = -1;
+
+	ReleaseSysCache(tuple);
+	return valuelen;
+}
+
 Locator *
 createLocator(char locatorType, RelationAccessType accessType,
 			  Oid dataType, LocatorListType listType, int nodeCount,
@@ -1272,27 +1312,10 @@ createLocator(char locatorType, RelationAccessType accessType,
 				}
 			}
 
-			switch (dataType)
-			{
-				case INT8OID: /* just ignore high bits */
-				case OIDOID:
-				case INT4OID:
-				case ABSTIMEOID:
-				case RELTIMEOID:
-				case DATEOID:
-					locator->valuelen = 4;
-					break;
-				case INT2OID:
-					locator->valuelen = 2;
-					break;
-				case BOOLOID:
-				case CHAROID:
-					locator->valuelen = 1;
-					break;
-				default:
-					ereport(ERROR, (errmsg("Error: unsupported data type for MODULO locator: %d\n",
-									   dataType)));
-			}
+			locator->valuelen = modulo_value_len(dataType);
+			if (locator->valuelen == -1)
+				ereport(ERROR, (errmsg("Error: unsupported data type for MODULO locator: %d\n",
+								   dataType)));
 			break;
 		default:
 			ereport(ERROR, (errmsg("Error: no such supported locator type: %c\n",
