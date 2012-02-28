@@ -6711,9 +6711,6 @@ ExecRemoteQuery(RemoteQueryState *node)
 static void
 pgxc_connections_cleanup(ResponseCombiner *combiner)
 {
-	ListCell *lc;
-
-
 	/* clean up the buffer */
 	list_free_deep(combiner->rowBuffer);
 
@@ -7268,37 +7265,56 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 			int i;
 			int paramno;
 
+			/* Allocate enough space */
 			rstmt.remoteparams = (RemoteParam *) palloc(rstmt.nParamRemote *
 														sizeof(RemoteParam));
+			paramno = 0;
 			if (ext_params)
 			{
 				for (i = 0; i < ext_params->numParams; i++)
 				{
-					rstmt.remoteparams[i].paramkind = PARAM_EXTERN;
-					rstmt.remoteparams[i].paramid = i + 1;
-					rstmt.remoteparams[i].paramtype =
-							ext_params->params[i].ptype;
+					ParamExternData *param = &ext_params->params[i];
+					/*
+					 * If parameter type is not yet defined but can be defined
+					 * do that
+					 */
+					if (!OidIsValid(param->ptype) && ext_params->paramFetch)
+						(*ext_params->paramFetch) (ext_params, i + 1);
+					/*
+					 * If parameter type is still not defined assume it is
+					 * unused
+					 */
+					if (!OidIsValid(param->ptype))
+						continue;
+
+					rstmt.remoteparams[paramno].paramkind = PARAM_EXTERN;
+					rstmt.remoteparams[paramno].paramid = i + 1;
+					rstmt.remoteparams[paramno].paramtype = param->ptype;
+					paramno++;
 				}
+				/* store actual number of parameters */
+				rstmt.nParamRemote = paramno;
 			}
-			else
-				i = 0;
 
 			if (!bms_is_empty(node->scan.plan.allParam))
 			{
 				Bitmapset *defineParams = NULL;
 				tmpset = bms_copy(node->scan.plan.allParam);
-				while ((paramno = bms_first_member(tmpset)) >= 0)
+				while ((i = bms_first_member(tmpset)) >= 0)
 				{
 					ParamExecData *prmdata;
 
-					prmdata = &(estate->es_param_exec_vals[paramno]);
-					rstmt.remoteparams[i].paramkind = PARAM_EXEC;
-					rstmt.remoteparams[i].paramid = paramno;
-					rstmt.remoteparams[i].paramtype = prmdata->ptype;
+					prmdata = &(estate->es_param_exec_vals[i]);
+					rstmt.remoteparams[paramno].paramkind = PARAM_EXEC;
+					rstmt.remoteparams[paramno].paramid = i;
+					rstmt.remoteparams[paramno].paramtype = prmdata->ptype;
+					/* Will scan plan tree to find out data type of the param */
 					if (prmdata->ptype == InvalidOid)
-						defineParams = bms_add_member(defineParams, paramno);
-					i++;
+						defineParams = bms_add_member(defineParams, i);
+					paramno++;
 				}
+				/* store actual number of parameters */
+				rstmt.nParamRemote = paramno;
 				bms_free(tmpset);
 				if (!bms_is_empty(defineParams))
 				{
@@ -7316,23 +7332,23 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 					 */
 					if (!all_found)
 					{
-						int j = 0;
 						for (i = 0; i < rstmt.nParamRemote; i++)
 						{
-							if (rstmt.remoteparams[i].paramkind != PARAM_EXEC ||
-									!bms_is_member(rstmt.remoteparams[i].paramid,
-												   context.defineParams))
+							if (rstmt.remoteparams[i].paramkind == PARAM_EXEC &&
+									bms_is_member(rstmt.remoteparams[i].paramid,
+												  context.defineParams))
 							{
-								if (i == j)
-									rstmt.remoteparams[j] = rstmt.remoteparams[i];
-								j++;
+								/* Copy last parameter inplace */
+								rstmt.nParamRemote--;
+								if (i < rstmt.nParamRemote)
+									rstmt.remoteparams[i] =
+										rstmt.remoteparams[rstmt.nParamRemote];
+								/* keep current in the same position */
+								i--;
 							}
 						}
 					}
-					rstmt.nParamRemote -= bms_num_members(context.defineParams);
 					bms_free(context.defineParams);
-//					if (!all_found)
-//						elog(ERROR, "Failed to determine internal parameter data type");
 				}
 			}
 			remotestate->nParamRemote = rstmt.nParamRemote;
