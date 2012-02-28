@@ -45,7 +45,8 @@ static Oid	distinct_col_search(int colno, List *colnos, List *opids);
 static void restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
 								  Path *pathnode);
 static Path *redistribute_path(Path *subpath, char distributionType,
-				  Bitmapset *nodes, Node* distributionExpr);
+				  Bitmapset *nodes, Bitmapset *restrictNodes,
+				  Node* distributionExpr);
 static void set_scanpath_distribution(PlannerInfo *root, RelOptInfo *rel, Path *pathnode);
 static List *set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode);
 #endif
@@ -594,7 +595,8 @@ set_scanpath_distribution(PlannerInfo *root, RelOptInfo *rel, Path *pathnode)
  */
 static Path *
 redistribute_path(Path *subpath, char distributionType,
-				  Bitmapset *nodes, Node* distributionExpr)
+				  Bitmapset *nodes, Bitmapset *restrictNodes,
+				  Node* distributionExpr)
 {
 	RelOptInfo	   *rel = subpath->parent;
 	RemoteSubPath  *pathnode;
@@ -610,7 +612,7 @@ redistribute_path(Path *subpath, char distributionType,
 		distribution = makeNode(Distribution);
 		distribution->distributionType = distributionType;
 		distribution->nodes = nodes;
-		distribution->restrictNodes = NULL;
+		distribution->restrictNodes = restrictNodes;
 		distribution->distributionExpr = distributionExpr;
 		pathnode->path.distribution = distribution;
 	}
@@ -936,6 +938,7 @@ not_allowed_join:
 				altpath->innerjoinpath,
 				LOCATOR_TYPE_REPLICATED,
 				bms_copy(outerd->nodes),
+				bms_copy(outerd->restrictNodes),
 				NULL);
 		targetd = makeNode(Distribution);
 		targetd->distributionType = outerd->distributionType;
@@ -960,6 +963,7 @@ not_allowed_join:
 				altpath->outerjoinpath,
 				LOCATOR_TYPE_REPLICATED,
 				bms_copy(innerd->nodes),
+				bms_copy(innerd->restrictNodes),
 				NULL);
 		targetd = makeNode(Distribution);
 		targetd->distributionType = innerd->distributionType;
@@ -1156,6 +1160,7 @@ not_allowed_join:
 		if (preferred)
 		{
 			Bitmapset *nodes = NULL;
+			Bitmapset *restrictNodes = NULL;
 
 			/* If we redistribute both parts do join on all nodes ... */
 			if (new_inner_key && new_outer_key)
@@ -1171,10 +1176,12 @@ not_allowed_join:
 			else if (new_inner_key)
 			{
 				nodes = bms_copy(outerd->nodes);
+				restrictNodes = bms_copy(outerd->restrictNodes);
 			}
 			else /*if (new_outer_key)*/
 			{
 				nodes = bms_copy(innerd->nodes);
+				restrictNodes = bms_copy(innerd->restrictNodes);
 			}
 
 			/*
@@ -1188,6 +1195,7 @@ not_allowed_join:
 						pathnode->innerjoinpath,
 						LOCATOR_TYPE_HASH,
 						nodes,
+						restrictNodes,
 						(Node *) new_inner_key);
 			}
 			/*
@@ -1201,6 +1209,7 @@ not_allowed_join:
 						pathnode->outerjoinpath,
 						LOCATOR_TYPE_HASH,
 						nodes,
+						restrictNodes,
 						(Node *) new_outer_key);
 			}
 			targetd = makeNode(Distribution);
@@ -1238,9 +1247,11 @@ not_allowed_join:
 	pathnode->innerjoinpath = redistribute_path(pathnode->innerjoinpath,
 												LOCATOR_TYPE_NONE,
 												NULL,
+												NULL,
 												NULL);
 	pathnode->outerjoinpath = redistribute_path(pathnode->outerjoinpath,
 												LOCATOR_TYPE_NONE,
+												NULL,
 												NULL,
 												NULL);
 	return alternate;
@@ -1616,7 +1627,7 @@ create_append_path(RelOptInfo *rel, List *subpaths)
 				subpath = (Path *) lfirst(l);
 				if (subpath->distribution)
 					subpath = redistribute_path(subpath, LOCATOR_TYPE_NONE,
-												NULL, NULL);
+												NULL, NULL, NULL);
 				newsubpaths = lappend(newsubpaths, subpath);
 			}
 			subpaths = newsubpaths;
@@ -1718,7 +1729,7 @@ create_merge_append_path(PlannerInfo *root,
 			subpath = (Path *) lfirst(l);
 			if (subpath->distribution)
 				subpath = redistribute_path(subpath, LOCATOR_TYPE_NONE,
-											NULL, NULL);
+											NULL, NULL, NULL);
 			newsubpaths = lappend(newsubpaths, subpath);
 		}
 		subpaths = newsubpaths;
