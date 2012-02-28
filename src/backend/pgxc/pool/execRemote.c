@@ -750,6 +750,24 @@ HandleError(RemoteQueryState *combiner, char *msg_body, size_t len)
 	 * ReadyForQuery is received, so we just store the error message.
 	 * If multiple connections return errors only first one is reported.
 	 */
+#ifdef XCP
+	/*
+	 * The producer error may me hiding primary error, so if previously received
+	 * error is a producer error allow it to be overwritten.
+	 */
+	if (combiner->errorMessage == NULL ||
+			MAKE_SQLSTATE(combiner->errorCode[0], combiner->errorCode[1],
+						  combiner->errorCode[2], combiner->errorCode[3],
+						  combiner->errorCode[4]) == ERRCODE_PRODUCER_ERROR)
+	{
+		combiner->errorMessage = pstrdup(message);
+		/* Error Code is exactly 5 significant bytes */
+		if (code)
+			memcpy(combiner->errorCode, code, 5);
+		if (detail)
+			combiner->errorDetail = pstrdup(detail);
+	}
+#else
 	if (!combiner->errorMessage)
 	{
 		combiner->errorMessage = pstrdup(message);
@@ -762,6 +780,7 @@ HandleError(RemoteQueryState *combiner, char *msg_body, size_t len)
 	{
 		combiner->errorDetail = pstrdup(detail);
 	}
+#endif
 
 	/*
 	 * If data node have sent ErrorResponse it will never send CommandComplete.

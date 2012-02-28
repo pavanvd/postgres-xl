@@ -437,7 +437,7 @@ SharedQueueBind(const char *sqname, List *consNodes,
 							LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
 							LWLockRelease(SQueuesLock);
 							ereport(ERROR,
-									(errcode(ERRCODE_INTERNAL_ERROR),
+									(errcode(ERRCODE_PRODUCER_ERROR),
 									 errmsg("producer error")));
 						}
 						/*
@@ -732,7 +732,7 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 			 * unbound in between.
 			 */
 			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
+					(errcode(ERRCODE_PRODUCER_ERROR),
 					 errmsg("producer error")));
 		}
 		/* Prepare waiting on empty buffer */
