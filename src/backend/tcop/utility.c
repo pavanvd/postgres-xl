@@ -1571,13 +1571,18 @@ standard_ProcessUtility(Node *parsetree,
 			if (IS_PGXC_COORDINATOR)
 			{
 				CreateSeqStmt *stmt = (CreateSeqStmt *) parsetree;
-				bool is_temp = stmt->sequence->relpersistence == RELPERSISTENCE_TEMP;
 
-				/* Set temporary object flag in pooler */
-				if (is_temp)
-					PoolManagerSetCommand(POOL_CMD_TEMP, NULL);
+				/* In case this query is related to a SERIAL execution, just bypass */
+				if (!stmt->is_serial)
+				{
+					bool is_temp = stmt->sequence->relpersistence == RELPERSISTENCE_TEMP;
 
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, is_temp);
+					/* Set temporary object flag in pooler */
+					if (is_temp)
+						PoolManagerSetCommand(POOL_CMD_TEMP, NULL);
+
+					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, is_temp);
+				}
 			}
 #endif
 			break;
@@ -1588,14 +1593,19 @@ standard_ProcessUtility(Node *parsetree,
 			if (IS_PGXC_COORDINATOR)
 			{
 				AlterSeqStmt *stmt = (AlterSeqStmt *) parsetree;
-				bool		  is_temp;
-				RemoteQueryExecType exec_type;
 
-				exec_type = ExecUtilityFindNodes(OBJECT_SEQUENCE,
-												 RangeVarGetRelid(stmt->sequence, false),
-												 &is_temp);
+				/* In case this query is related to a SERIAL execution, just bypass */
+				if (!stmt->is_serial)
+				{
+					bool		  is_temp;
+					RemoteQueryExecType exec_type;
 
-				ExecUtilityStmtOnNodes(queryString, NULL, false, exec_type, is_temp);
+					exec_type = ExecUtilityFindNodes(OBJECT_SEQUENCE,
+													 RangeVarGetRelid(stmt->sequence, false),
+													 &is_temp);
+
+					ExecUtilityStmtOnNodes(queryString, NULL, false, exec_type, is_temp);
+				}
 			}
 #endif
 			break;
@@ -1811,17 +1821,19 @@ standard_ProcessUtility(Node *parsetree,
 				VariableSetStmt *stmt = (VariableSetStmt *) parsetree;
 				/*
 				 * If command is local and we are not in a transaction block do NOT
-				 * send this query to backend nodes
+				 * send this query to backend nodes, it is just bypassed by the backend.
 				 */
-				if (!stmt->is_local || !IsTransactionBlock())
+				if (stmt->is_local)
 				{
-					PoolCommandType command_type;
-					if (stmt->is_local)
-						command_type = POOL_CMD_LOCAL_SET;
-					else
-						command_type = POOL_CMD_GLOBAL_SET;
-
-					if (PoolManagerSetCommand(command_type, queryString) < 0)
+					if (IsTransactionBlock())
+					{
+						if (PoolManagerSetCommand(POOL_CMD_LOCAL_SET, queryString) < 0)
+							elog(ERROR, "Postgres-XC: ERROR SET query");
+					}
+				}
+				else
+				{
+					if (PoolManagerSetCommand(POOL_CMD_GLOBAL_SET, queryString) < 0)
 						elog(ERROR, "Postgres-XC: ERROR SET query");
 				}
 			}
@@ -2003,14 +2015,18 @@ standard_ProcessUtility(Node *parsetree,
 
 		case T_ConstraintsSetStmt:
 			AfterTriggerSetState((ConstraintsSetStmt *) parsetree);
-
+#ifdef PGXC
 			/*
-			 * PGXCTODO: SET CONSTRAINT management
-			 * This can just be done inside a transaction block,
-			 * so just launch it on all the Datanodes.
-			 * For the time being only IMMEDIATE constraints are supported
-			 * so this is not really useful...
+			 * Let the pooler manage the statement, SET CONSTRAINT can just be used
+			 * inside a transaction block, hence it has no effect outside that, so use
+			 * it as a local one.
 			 */
+			if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && IsTransactionBlock())
+			{
+				if (PoolManagerSetCommand(POOL_CMD_LOCAL_SET, queryString) < 0)
+					elog(ERROR, "Postgres-XC: ERROR SET query");
+			}
+#endif
 			break;
 
 		case T_CheckPointStmt:

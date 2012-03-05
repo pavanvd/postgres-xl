@@ -52,8 +52,6 @@ test: create_function_2
 test: create_cast
 test: copy
 test: copyselect
-# This tests hangs server because errors are not handled properly in StormDB
-# in case of multi-step statements.
 test: constraints
 test: triggers
 test: create_misc
@@ -73,9 +71,6 @@ test: select_distinct
 test: select_distinct_on
 test: select_implicit
 test: select_having
-# Test hangs because executor optimizes out a part of a plan on some nodes,
-# so results for some nodes are never consumed
-# The test may also contain correlated subqueries wich are currently broken
 test: subselect
 test: union
 test: case
@@ -97,7 +92,6 @@ test: delete
 test: namespace
 # statement_timeout does not work if blocked in exec_bindplan (?)
 #test: prepared_xacts
-# Optimization problem like in "subselect" test
 test: privileges
 test: security_label
 test: collate
@@ -118,18 +112,13 @@ test: window
 test: xmlmap
 test: functional_deps
 test: advisory_lock
-# Problem with passing parameters into a plpgsql function
-#test: plancache
+test: plancache
 test: limit
-# Problem with passing down parameters, unable to determine 
-# parameter types 
-#test: plpgsql
+test: plpgsql
 test: copy2
 test: temp
 test: domain
-# Problem with passing down parameters, unable to determine 
-# parameter types 
-#test: rangefuncs
+test: rangefuncs
 test: prepare
 test: without_oid
 test: conversion
@@ -143,17 +132,9 @@ test: largeobject
 test: with
 test: xml
 test: stats
-# Two issues: if inner query of a MergeJoin is a RemoteSubplan it should be 
-# wrapped by a Result node to support Mark/Restore; RemoteSubquery should
-# close cursors on nodes before throwing error to make sure SharedQueues
-# are closed. Uncaught error marks portal as failed and it does not clean up
-# the executor. 
 test: xc_groupby
 test: xc_distkey
-# The same two issues as in xc_groupby
 test: xc_having
 test: xc_temp
 test: xc_remote
 test: xc_node
-test: xc_FQS
-test: xc_FQS_join

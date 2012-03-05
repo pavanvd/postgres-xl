@@ -21,7 +21,7 @@ as select 'v_'||t from test1;
 --
 -- Test COPY table TO
 --
-copy test1 to stdout;
+copy (select * from test1 order by 1) to stdout;
 --
 -- This should fail
 --
@@ -49,7 +49,7 @@ copy (select * from test1) (t,id) to stdout;
 --
 -- Test JOIN
 --
-copy (select * from test1 join test2 using (id)) to stdout;
+copy (select * from test1 join test2 using (id) order by 1) to stdout;
 --
 -- Test UNION SELECT
 --
@@ -65,7 +65,7 @@ copy (select t from test1 where id = 1) to stdout csv header force quote t;
 --
 -- Test psql builtins, plain table
 --
-\copy test1 to stdout
+\copy (select * from test1 order by 1) to stdout
 --
 -- This should fail
 --

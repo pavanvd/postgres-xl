@@ -929,22 +929,6 @@ FreeRelationLocInfo(RelationLocInfo *relationLocInfo)
 	}
 }
 
-/*
- * Free the contents of the ExecNodes expression */
-void
-FreeExecNodes(ExecNodes **exec_nodes)
-{
-	ExecNodes *tmp_en = *exec_nodes;
-
-	/* Nothing to do */
-	if (!tmp_en)
-		return;
-	list_free(tmp_en->primarynodelist);
-	list_free(tmp_en->nodeList);
-	pfree(tmp_en);
-	*exec_nodes = NULL;
-}
-
 #ifdef XCP
 /*
  * Determine value length in bytes for specified type for a module locator.

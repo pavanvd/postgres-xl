@@ -71,7 +71,7 @@ static bool analyze_node_string(char *nodestring,
 								List **datanodelist,
 								List **coordlist);
 static int	pgxc_node_begin(int conn_count, PGXCNodeHandle ** connections,
-				GlobalTransactionId gxid);
+				GlobalTransactionId gxid, char node_type);
 static int	pgxc_node_commit(PGXCNodeAllHandles * pgxc_handles);
 static int	pgxc_node_rollback(PGXCNodeAllHandles * pgxc_handles);
 static int	pgxc_node_prepare(PGXCNodeAllHandles * pgxc_handles, char *gid);
@@ -2338,7 +2338,7 @@ GenerateBeginCommand(void)
  */
 static int
 pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
-				GlobalTransactionId gxid)
+				GlobalTransactionId gxid, char node_type)
 {
 	int			i;
 	struct timeval *timeout = NULL;
@@ -2348,6 +2348,8 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 	RemoteQueryState *combiner;
 #endif
 	TimestampTz timestamp = GetCurrentGTMStartTimestamp();
+	int 			con[conn_count];
+	int				j = 0;
 
 	/* Send BEGIN */
 	for (i = 0; i < conn_count; i++)
@@ -2369,6 +2371,8 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 		/* Send the BEGIN TRANSACTION command and check for errors */
 		if (pgxc_node_send_query(connections[i], GenerateBeginCommand()))
 			return EOF;
+
+		con[j++] = PGXCNodeGetNodeId(connections[i]->nodeoid, node_type);
 	}
 
 #ifdef XCP
@@ -2383,7 +2387,8 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 		return EOF;
 
 	/* Verify status */
-	return ValidateAndCloseCombiner(&combiner) ? 0 : EOF;
+	if (!ValidateAndCloseCombiner(&combiner))
+		return EOF;
 #else
 	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_NONE);
 
@@ -2392,8 +2397,29 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 		return EOF;
 
 	/* Verify status */
-	return ValidateAndCloseCombiner(combiner) ? 0 : EOF;
+	if (!ValidateAndCloseCombiner(combiner))
+		return EOF;
 #endif
+
+	/* 
+	 * Ask pooler to send commands (if any) to nodes involved in transaction to alter the 
+	 * behavior of current transaction. This fires all transaction level commands before
+	 * issuing any DDL, DML or SELECT within the current transaction block.
+	 */
+	if (GetCurrentLocalParamStatus())
+	{
+		int res;
+		if (node_type == PGXC_NODE_DATANODE)
+			res = PoolManagerSendLocalCommand(j, con, 0, NULL);
+		else
+			res = PoolManagerSendLocalCommand(0, NULL, j, con);
+
+		if (res != 0)
+			return EOF;
+	}
+
+	/* No problem, let's get going */
+	return 0;
 }
 
 /* Clears the write node list */
@@ -2684,6 +2710,15 @@ PGXCNodeImplicitPrepare(GlobalTransactionId prepare_xid, char *gid)
 	}
 
 	res = pgxc_node_implicit_prepare(prepare_xid, pgxc_connections, gid);
+	if (res < 0)
+	{
+		/* Rollback if it got prepared on some nodes, 
+		 * otherwise cluster might freeze because of locks held
+		 */
+		GlobalTransactionId commit_xid = InvalidGlobalTransactionId;
+
+		pgxc_node_rollback_prepared(commit_xid, prepare_xid, pgxc_connections, gid);
+	}
 
 finish:
 	if (!autocommit)
@@ -2834,9 +2869,9 @@ pgxc_node_implicit_commit_prepared(GlobalTransactionId prepare_xid,
 								   bool is_commit)
 {
 	char	buffer[256];
-	int		result = 0;
-	int		co_conn_count = pgxc_handles->co_conn_count;
-	int		dn_conn_count = pgxc_handles->dn_conn_count;
+	int	result = 0;
+	int	co_conn_count = pgxc_handles->co_conn_count;
+	int	dn_conn_count = pgxc_handles->dn_conn_count;
 
 	if (is_commit)
 		sprintf(buffer, "COMMIT PREPARED '%s'", gid);
@@ -2988,10 +3023,10 @@ pgxc_node_commit_prepared(GlobalTransactionId gxid,
 						  PGXCNodeAllHandles *pgxc_handles,
 						  char *gid)
 {
-	int result = 0;
-	int co_conn_count = pgxc_handles->co_conn_count;
-	int dn_conn_count = pgxc_handles->dn_conn_count;
-	char        *buffer = (char *) palloc0(18 + strlen(gid) + 1);
+	int	result = 0;
+	int	co_conn_count = pgxc_handles->co_conn_count;
+	int	dn_conn_count = pgxc_handles->dn_conn_count;
+	char	*buffer = (char *) palloc0(18 + strlen(gid) + 1);
 
 	/* GXID has been piggybacked when gid data has been received from GTM */
 	sprintf(buffer, "COMMIT PREPARED '%s'", gid);
@@ -3107,13 +3142,14 @@ static int
 pgxc_node_rollback_prepared(GlobalTransactionId gxid, GlobalTransactionId prepared_gxid,
 							PGXCNodeAllHandles *pgxc_handles, char *gid)
 {
-	int result = 0;
-	int dn_conn_count = pgxc_handles->dn_conn_count;
-	int co_conn_count = pgxc_handles->co_conn_count;
-	char		*buffer = (char *) palloc0(20 + strlen(gid) + 1);
+	int	result = 0;
+	int	dn_conn_count = pgxc_handles->dn_conn_count;
+	int	co_conn_count = pgxc_handles->co_conn_count;
+	char	*buffer = (char *) palloc0(20 + strlen(gid) + 1);
 
 	/* Datanodes have reset after prepared state, so get a new gxid */
-	gxid = BeginTranGTM(NULL);
+	if (!GlobalTransactionIdIsValid(gxid))
+		gxid = BeginTranGTM(NULL);
 
 	sprintf(buffer, "ROLLBACK PREPARED '%s'", gid);
 
@@ -3197,9 +3233,9 @@ static int
 pgxc_node_commit(PGXCNodeAllHandles *pgxc_handles)
 {
 	char		buffer[256];
-	int			result = 0;
-	int			co_conn_count = pgxc_handles->co_conn_count;
-	int			dn_conn_count = pgxc_handles->dn_conn_count;
+	int		result = 0;
+	int		co_conn_count = pgxc_handles->co_conn_count;
+	int		dn_conn_count = pgxc_handles->dn_conn_count;
 
 	strcpy(buffer, "COMMIT");
 
@@ -3383,7 +3419,7 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 			if (connections[i]->transaction_status != 'T')
 				new_connections[new_count++] = connections[i];
 
-		if (new_count && pgxc_node_begin(new_count, new_connections, gxid))
+		if (new_count && pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_DATANODE))
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Could not begin transaction on data nodes.")));
@@ -3567,7 +3603,7 @@ DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_
 	if (new_count > 0 && need_tran)
 	{
 		/* Start transaction on connections where it is not started */
-		if (pgxc_node_begin(new_count, newConnections, gxid))
+		if (pgxc_node_begin(new_count, newConnections, gxid, PGXC_NODE_DATANODE))
 		{
 			pfree_pgxc_all_handles(pgxc_handles);
 			pfree(copy_connections);
@@ -4650,8 +4686,7 @@ do_query(RemoteQueryState *node)
 			if (connections[i]->transaction_status != 'T' &&
 				connections[i]->state != DN_CONNECTION_STATE_QUERY)
 				new_connections[new_count++] = connections[i];
-
-		if (new_count && pgxc_node_begin(new_count, new_connections, gxid))
+		if (new_count && pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_DATANODE))
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Could not begin transaction on data nodes.")));
@@ -5611,7 +5646,7 @@ ExecRemoteUtility(RemoteQuery *node)
 		if (exec_type == EXEC_ON_ALL_NODES ||
 			exec_type == EXEC_ON_DATANODES)
 		{
-			if (new_count && pgxc_node_begin(new_count, new_connections, gxid))
+			if (new_count && pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_DATANODE))
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
 							 errmsg("Could not begin transaction on data nodes")));
@@ -5627,7 +5662,7 @@ ExecRemoteUtility(RemoteQuery *node)
 				if (pgxc_connections->coord_handles[i]->transaction_status != 'T')
 					new_connections[new_count++] = pgxc_connections->coord_handles[i];
 
-			if (new_count && pgxc_node_begin(new_count, new_connections, gxid))
+			if (new_count && pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_COORDINATOR))
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
 							 errmsg("Could not begin transaction on Coordinators")));
@@ -6560,7 +6595,7 @@ ExecRemoteQuery(RemoteQueryState *node)
 				if (connections[i]->transaction_status != 'T')
 					new_connections[new_count++] = connections[i];
 
-			if (new_count && pgxc_node_begin(new_count, new_connections, gxid))
+			if (new_count && pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_DATANODE))
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Could not begin transaction on data nodes.")));
@@ -7453,7 +7488,7 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 				 errmsg("Failed to get next transaction ID")));
 	}
 	if (new_count &&
-			pgxc_node_begin(new_count, new_connections, gxid))
+			pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_DATANODE))
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("Could not begin transaction on data nodes.")));

@@ -3,9 +3,6 @@
 -- 2. distributed or replicated tables across the datanodes
 -- If a testcase is added to any of the combinations, please check if it's
 -- applicable in other combinations as well.
--- Since we are testing, the plan reduction of GROUP and AGG nodes, we should
--- disable fast query shipping
-set enable_fast_query_shipping to off;
 -- Combination 1: enable_hashagg on and distributed tables
 set enable_hashagg to on;
 -- create required tables and fill them with data
@@ -107,10 +104,10 @@ explain (verbose true, costs false, nodes false) select count(*), sum(xc_having_
          Join Filter: ((xc_having_tab1.val2 = xc_having_tab2.val2) AND ((xc_having_tab1.val2 + xc_having_tab2.val2) > 2))
          ->  Data Node Scan on xc_having_tab1
                Output: xc_having_tab1.val, xc_having_tab1.val2
-               Remote query: SELECT xc_having_tab1.val, xc_having_tab1.val2 FROM ONLY xc_having_tab1 WHERE true
+               Remote query: SELECT val, val2 FROM ONLY xc_having_tab1 WHERE true
          ->  Data Node Scan on xc_having_tab2
                Output: xc_having_tab2.val, xc_having_tab2.val2
-               Remote query: SELECT xc_having_tab2.val, xc_having_tab2.val2 FROM ONLY xc_having_tab2 WHERE true
+               Remote query: SELECT val, val2 FROM ONLY xc_having_tab2 WHERE true
 (11 rows)
 
 -- group by and having, without aggregate in the target list
@@ -277,10 +274,10 @@ explain (verbose true, costs false, nodes false) select count(*), sum(xc_having_
          Join Filter: ((xc_having_tab1.val2 = xc_having_tab2.val2) AND ((xc_having_tab1.val2 + xc_having_tab2.val2) > 2))
          ->  Data Node Scan on xc_having_tab1
                Output: xc_having_tab1.val, xc_having_tab1.val2
-               Remote query: SELECT xc_having_tab1.val, xc_having_tab1.val2 FROM ONLY xc_having_tab1 WHERE true
+               Remote query: SELECT val, val2 FROM ONLY xc_having_tab1 WHERE true
          ->  Data Node Scan on xc_having_tab2
                Output: xc_having_tab2.val, xc_having_tab2.val2
-               Remote query: SELECT xc_having_tab2.val, xc_having_tab2.val2 FROM ONLY xc_having_tab2 WHERE true
+               Remote query: SELECT val, val2 FROM ONLY xc_having_tab2 WHERE true
 (11 rows)
 
 -- group by and having, without aggregate in the target list
@@ -450,10 +447,10 @@ explain (verbose true, costs false, nodes false) select count(*), sum(xc_having_
                Join Filter: ((xc_having_tab1.val2 = xc_having_tab2.val2) AND ((xc_having_tab1.val2 + xc_having_tab2.val2) > 2))
                ->  Data Node Scan on xc_having_tab1
                      Output: xc_having_tab1.val, xc_having_tab1.val2
-                     Remote query: SELECT xc_having_tab1.val, xc_having_tab1.val2 FROM ONLY xc_having_tab1 WHERE true
+                     Remote query: SELECT val, val2 FROM ONLY xc_having_tab1 WHERE true
                ->  Data Node Scan on xc_having_tab2
                      Output: xc_having_tab2.val, xc_having_tab2.val2
-                     Remote query: SELECT xc_having_tab2.val, xc_having_tab2.val2 FROM ONLY xc_having_tab2 WHERE true
+                     Remote query: SELECT val, val2 FROM ONLY xc_having_tab2 WHERE true
 (14 rows)
 
 -- group by and having, without aggregate in the target list
@@ -623,10 +620,10 @@ explain (verbose true, costs false, nodes false) select count(*), sum(xc_having_
                Join Filter: ((xc_having_tab1.val2 = xc_having_tab2.val2) AND ((xc_having_tab1.val2 + xc_having_tab2.val2) > 2))
                ->  Data Node Scan on xc_having_tab1
                      Output: xc_having_tab1.val, xc_having_tab1.val2
-                     Remote query: SELECT xc_having_tab1.val, xc_having_tab1.val2 FROM ONLY xc_having_tab1 WHERE true
+                     Remote query: SELECT val, val2 FROM ONLY xc_having_tab1 WHERE true
                ->  Data Node Scan on xc_having_tab2
                      Output: xc_having_tab2.val, xc_having_tab2.val2
-                     Remote query: SELECT xc_having_tab2.val, xc_having_tab2.val2 FROM ONLY xc_having_tab2 WHERE true
+                     Remote query: SELECT val, val2 FROM ONLY xc_having_tab2 WHERE true
 (14 rows)
 
 -- group by and having, without aggregate in the target list
@@ -693,4 +690,3 @@ explain (verbose true, costs false, nodes false) select count(*) + sum(val) + av
 drop table xc_having_tab1;
 drop table xc_having_tab2;
 reset enable_hashagg;
-reset enable_fast_query_shipping;

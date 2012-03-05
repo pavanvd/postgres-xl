@@ -383,13 +383,6 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 		AlterSeqStmt *altseqstmt;
 		List	   *attnamelist;
 
-#ifdef PGXC
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("Postgres-XC does not support SERIAL yet"),
-				 errdetail("The feature is not currently supported")));
-#endif
-
 		/*
 		 * Determine namespace and name to use for the sequence.
 		 *
@@ -424,6 +417,9 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 		seqstmt = makeNode(CreateSeqStmt);
 		seqstmt->sequence = makeRangeVar(snamespace, sname, -1);
 		seqstmt->options = NIL;
+#ifdef PGXC
+		seqstmt->is_serial = true;
+#endif
 
 		/*
 		 * If this is ALTER ADD COLUMN, make sure the sequence will be owned
@@ -446,6 +442,9 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 		 */
 		altseqstmt = makeNode(AlterSeqStmt);
 		altseqstmt->sequence = makeRangeVar(snamespace, sname, -1);
+#ifdef PGXC
+		altseqstmt->is_serial = true;
+#endif
 		attnamelist = list_make3(makeString(snamespace),
 								 makeString(cxt->relation->relname),
 								 makeString(column->colname));
@@ -1443,15 +1442,6 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	index->isconstraint = true;
 	index->deferrable = constraint->deferrable;
 	index->initdeferred = constraint->initdeferred;
-
-#ifdef PGXC
-	/* DEFERRABLE INITIALLY DEFERRED constraints are not supported in Postgres-XC */
-	if (constraint->deferrable && constraint->initdeferred)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("Postgres-XC does not support DEFERRED constraints yet"),
-				 errdetail("The feature is not currently supported")));
-#endif
 
 	if (constraint->conname != NULL)
 		index->idxname = pstrdup(constraint->conname);
@@ -2623,12 +2613,6 @@ transformConstraintAttrs(CreateStmtContext *cxt, List *constraintList)
 				break;
 
 			case CONSTR_ATTR_DEFERRED:
-#ifdef PGXC
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("Postgres-XC does not support DEFERRED constraints yet"),
-						 errdetail("The feature is not currently supported")));
-#endif
 				if (!SUPPORTS_ATTRS(lastprimarycon))
 					ereport(ERROR,
 							(errcode(ERRCODE_SYNTAX_ERROR),

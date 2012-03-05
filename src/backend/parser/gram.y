@@ -3236,6 +3236,9 @@ CreateSeqStmt:
 					n->sequence = $4;
 					n->options = $5;
 					n->ownerId = InvalidOid;
+/* PGXC_BEGIN */
+					n->is_serial = false;
+/* PGXC_END */
 					$$ = (Node *)n;
 				}
 		;
@@ -3246,6 +3249,9 @@ AlterSeqStmt:
 					AlterSeqStmt *n = makeNode(AlterSeqStmt);
 					n->sequence = $3;
 					n->options = $4;
+/* PGXC_BEGIN */
+					n->is_serial = false;
+/* PGXC_END */
 					$$ = (Node *)n;
 				}
 		;
