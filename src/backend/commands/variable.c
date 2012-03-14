@@ -20,6 +20,9 @@
 
 #include "access/xact.h"
 #include "catalog/pg_authid.h"
+#ifdef XCP
+#include "catalog/pgxc_node.h"
+#endif
 #include "commands/variable.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
@@ -910,6 +913,126 @@ assign_session_authorization(const char *newval, void *extra)
 
 	SetSessionAuthorization(myextra->roleid, myextra->is_superuser);
 }
+
+
+#ifdef XCP
+
+/*
+ * SET GLOBAL SESSION
+ */
+
+typedef struct
+{
+	/* This is the "extra" state for GLOBAL SESSION */
+	Oid			coordid;
+	int			coordpid;
+} global_session_extra;
+
+
+bool
+check_global_session(char **newval, void **extra, GucSource source)
+{
+	HeapTuple	coordTup;
+	Oid			coordid;
+	char	   *separatorPos;
+	int 		coordpid;
+	global_session_extra *myextra;
+
+	/* Do nothing for the boot_val default of NULL */
+	if (*newval == NULL)
+		return true;
+
+	if (!IsTransactionState())
+	{
+		/*
+		 * Can't do catalog lookups, so fail.  The result of this is that
+		 * session_authorization cannot be set in postgresql.conf, which seems
+		 * like a good thing anyway, so we don't work hard to avoid it.
+		 */
+		return false;
+	}
+
+	if (strcmp(*newval, "none") == 0)
+	{
+		/* hardwired translation */
+		coordid = InvalidOid;
+		coordpid = 0;
+	}
+	else
+	{
+		/*
+		 * Get pointer on '#' character separating coordinator name from pid in the
+		 * global session identifier
+		 */
+		separatorPos = strrchr(*newval, '#');
+		if (separatorPos == NULL)
+		{
+			GUC_check_errmsg("malformed Global Session identifier: \"%s\"", *newval);
+			return false;
+		}
+
+		/*
+		 * The pid is written immediately after the separator
+		 */
+		coordpid = atoi(separatorPos + 1);
+		if (coordpid <= 0)
+		{
+			GUC_check_errmsg("malformed Global Session identifier: \"%s\"", *newval);
+			return false;
+		}
+
+
+		/*
+		 * Temporary truncate the Global Session identifier to extract session name
+		 */
+		*separatorPos = '\0';
+		/* Look up the nodename */
+		coordTup = SearchSysCache1(PGXCNODENAME, PointerGetDatum(*newval));
+		if (!HeapTupleIsValid(coordTup))
+		{
+			*separatorPos = '#';
+			GUC_check_errmsg("node \"%s\" does not exist", *newval);
+			return false;
+		}
+
+		if (((Form_pgxc_node) GETSTRUCT(coordTup))->node_type != PGXC_NODE_COORDINATOR)
+		{
+			ReleaseSysCache(coordTup);
+			*separatorPos = '#';
+			GUC_check_errmsg("node \"%s\" is not a coordinator", *newval);
+			return false;
+		}
+
+		coordid = HeapTupleGetOid(coordTup);
+
+		*separatorPos = '#';
+		ReleaseSysCache(coordTup);
+	}
+
+	/* Set up "extra" struct for assign_session_authorization to use */
+	myextra = (global_session_extra *) malloc(sizeof(global_session_extra));
+	if (!myextra)
+		return false;
+	myextra->coordid = coordid;
+	myextra->coordpid = coordpid;
+	*extra = (void *) myextra;
+
+	return true;
+}
+
+
+void
+assign_global_session(const char *newval, void *extra)
+{
+	global_session_extra *myextra = (global_session_extra *) extra;
+
+	/* Do nothing for the boot_val default of NULL */
+	if (!myextra)
+		return;
+
+	SetGlobalSession(myextra->coordid, myextra->coordpid);
+}
+#endif
 
 
 /*

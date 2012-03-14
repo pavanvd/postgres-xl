@@ -1261,7 +1261,7 @@ GetSnapshotData(Snapshot snapshot)
 		elog(WARNING, "Do not have a GTM snapshot available");
 	}
 #endif
-      
+
 	/*
 	 * Fallback to standard routine, calculate snapshot from local proc arrey
 	 * if no master connection
@@ -1468,7 +1468,7 @@ GetSnapshotData(Snapshot snapshot)
 
 #ifdef PGXC
 	elog(DEBUG1, "Local snapshot is built, xmin: %d, xmax: %d, xcnt: %d, RecentGlobalXmin: %d", xmin, xmax, count, globalxmin);
-#endif 
+#endif
 	/*
 	 * This is a new snapshot, so set both refcounts are zero, and mark it as
 	 * not copied in persistent memory.
@@ -2415,11 +2415,11 @@ DisplayXidCache(void)
 #endif   /* XIDCACHE_DEBUG */
 
 
-#ifdef PGXC  
+#ifdef PGXC
 /*
  * Store snapshot data received from the coordinator
  */
-void 
+void
 SetGlobalSnapshotData(int xmin, int xmax, int xcnt, int *xip)
 {
 	if (gxip)
@@ -2454,7 +2454,7 @@ UnsetGlobalSnapshotData(void)
  *
  * returns whether or not to return immediately with snapshot
  */
-static bool 
+static bool
 GetSnapshotDataDataNode(Snapshot snapshot)
 {
 	Assert(IS_PGXC_DATANODE || IsConnFromCoord());
@@ -2571,7 +2571,7 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 		RecentXmin = gxmin;
 
 		/* PGXCTODO - set this until we handle subtransactions. */
-		snapshot->subxcnt = 0; 
+		snapshot->subxcnt = 0;
 
 		/*
 		 * This is a new snapshot, so set both refcounts are zero, and mark it
@@ -2658,7 +2658,7 @@ GetSnapshotDataDataNode(Snapshot snapshot)
  *
  * returns whether or not to return immediately with snapshot
  */
-static bool 
+static bool
 GetSnapshotDataCoordinator(Snapshot snapshot)
 {
 	bool canbe_grouped;
@@ -2670,11 +2670,11 @@ GetSnapshotDataCoordinator(Snapshot snapshot)
 	canbe_grouped = (!FirstSnapshotSet) || (!IsolationUsesXactSnapshot());
 	gtm_snapshot = GetSnapshotGTM(GetCurrentGlobalTransactionId(), canbe_grouped);
 
-	if (!gtm_snapshot) 
+	if (!gtm_snapshot)
 			ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				errmsg("GTM error, could not obtain snapshot")));
-	else 
+	else
 	{
 		snapshot->xmin = gtm_snapshot->sn_xmin;
 		snapshot->xmax = gtm_snapshot->sn_xmax;
@@ -2710,7 +2710,7 @@ GetSnapshotDataCoordinator(Snapshot snapshot)
 
 			/*
 			 * FIXME
-			 * 
+			 *
 			 * We really don't support subtransaction in PGXC right now, but
 			 * when we would, we should fix the allocation below
 			 */
@@ -2734,7 +2734,7 @@ GetSnapshotDataCoordinator(Snapshot snapshot)
 			snapshot->max_xcnt = gtm_snapshot->sn_xcnt;
 		}
 
-		memcpy(snapshot->xip, gtm_snapshot->sn_xip, gtm_snapshot->sn_xcnt * sizeof(TransactionId)); 
+		memcpy(snapshot->xip, gtm_snapshot->sn_xip, gtm_snapshot->sn_xcnt * sizeof(TransactionId));
 		snapshot->curcid = GetCurrentCommandId(false);
 
 		if (!TransactionIdIsValid(MyProc->xmin))
@@ -2749,7 +2749,7 @@ GetSnapshotDataCoordinator(Snapshot snapshot)
 		RecentXmin = snapshot->xmin;
 
 		/* PGXCTODO - set this until we handle subtransactions. */
-		snapshot->subxcnt = 0; 
+		snapshot->subxcnt = 0;
 		/*
 		 * This is a new snapshot, so set both refcounts are zero, and mark it
 		 * as not copied in persistent memory.
@@ -2771,7 +2771,7 @@ AnalyzeProcArrayShmemSize(void)
 {
 	Size		size;
 
-	size = offsetof(ProcArrayStruct, procs); 
+	size = offsetof(ProcArrayStruct, procs);
 	size = add_size(size, mul_size(sizeof(PGPROC *), autovacuum_max_workers));
 
 	return size;
@@ -3693,3 +3693,35 @@ KnownAssignedXidsDisplay(int trace_level)
 
 	pfree(buf.data);
 }
+
+
+#ifdef XCP
+void
+GetGlobalSessionInfo(int pid, Oid *coordId, int *coordPid)
+{
+	ProcArrayStruct *arrayP = procArray;
+	int			index;
+
+	*coordId = InvalidOid;
+	*coordPid = 0;
+
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+	/*
+	 * Scan processes and get from it info about the parent session
+	 */
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		volatile PGPROC *proc = arrayP->procs[index];
+
+		if (proc->pid == pid)
+		{
+			*coordId = proc->coordId;
+			*coordPid = proc->coordPid;
+			break;
+		}
+	}
+
+	LWLockRelease(ProcArrayLock);
+}
+#endif

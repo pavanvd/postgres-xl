@@ -272,6 +272,9 @@ extern void SetUserIdAndContext(Oid userid, bool sec_def_context);
 extern void InitializeSessionUserId(const char *rolename);
 extern void InitializeSessionUserIdStandalone(void);
 extern void SetSessionAuthorization(Oid userid, bool is_superuser);
+#ifdef XCP
+extern void SetGlobalSession(Oid coordid, int coordpid);
+#endif
 extern Oid	GetCurrentRoleId(void);
 extern void SetCurrentRoleId(Oid roleid, bool is_superuser);
 

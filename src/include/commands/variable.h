@@ -33,6 +33,10 @@ extern bool check_client_encoding(char **newval, void **extra, GucSource source)
 extern void assign_client_encoding(const char *newval, void *extra);
 extern bool check_session_authorization(char **newval, void **extra, GucSource source);
 extern void assign_session_authorization(const char *newval, void *extra);
+#ifdef XCP
+extern bool check_global_session(char **newval, void **extra, GucSource source);
+extern void assign_global_session(const char *newval, void *extra);
+#endif
 extern bool check_role(char **newval, void **extra, GucSource source);
 extern void assign_role(const char *newval, void *extra);
 extern const char *show_role(void);

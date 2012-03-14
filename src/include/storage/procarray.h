@@ -80,5 +80,7 @@ extern bool CountOtherDBBackends(Oid databaseId,
 extern void XidCacheRemoveRunningXids(TransactionId xid,
 						  int nxids, const TransactionId *xids,
 						  TransactionId latestXid);
-
+#ifdef XCP
+extern void GetGlobalSessionInfo(int pid, Oid *coordId, int *coordPid);
+#endif /* XCP */
 #endif   /* PROCARRAY_H */

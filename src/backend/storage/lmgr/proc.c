@@ -320,6 +320,10 @@ InitProcess(void)
 	MyProc->backendId = InvalidBackendId;
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
+#ifdef XCP
+	MyProc->coordId = InvalidOid;
+	MyProc->coordPid = 0;
+#endif
 	MyProc->inCommit = false;
 	MyProc->vacuumFlags = 0;
 	/* NB -- autovac launcher intentionally does not set IS_AUTOVACUUM */
@@ -469,6 +473,10 @@ InitAuxiliaryProcess(void)
 	MyProc->backendId = InvalidBackendId;
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
+#ifdef XCP
+	MyProc->coordId = InvalidOid;
+	MyProc->coordPid = 0;
+#endif
 #ifdef PGXC
 	MyProc->isPooler = false;
 	if (IsPGXCPoolerProcess())

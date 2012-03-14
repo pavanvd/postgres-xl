@@ -553,6 +553,31 @@ SetSessionAuthorization(Oid userid, bool is_superuser)
 					PGC_INTERNAL, PGC_S_OVERRIDE);
 }
 
+
+#ifdef XCP
+void
+SetGlobalSession(Oid coordid, int coordpid)
+{
+	bool reset = false;
+
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	/*
+	 * Need to reset pool manager agent if we backend being assigned to
+	 * different global session.
+	 */
+	if (OidIsValid(MyProc->coordId) && MyProc->coordPid &&
+			(MyProc->coordPid != coordpid || MyProc->coordId != coordid))
+		reset = true;
+	MyProc->coordId = coordid;
+	MyProc->coordPid = coordpid;
+	LWLockRelease(ProcArrayLock);
+	if (reset)
+		/* XXX cheaper reset */
+		PoolManagerReconnect();
+}
+#endif
+
+
 /*
  * Report current role id
  *		This follows the semantics of SET ROLE, ie return the outer-level ID

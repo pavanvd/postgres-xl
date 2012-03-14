@@ -60,6 +60,9 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#ifdef XCP
+#include "storage/procarray.h"
+#endif
 
 /* Configuration options */
 int			MinPoolSize = 1;
@@ -494,6 +497,9 @@ agent_create(void)
 	agent->coord_connections = NULL;
 	agent->session_params = NULL;
 	agent->local_params = NULL;
+#ifdef XCP
+	agent->global_session_id = NULL;
+#endif
 	agent->is_temp = false;
 	agent->pid = 0;
 
@@ -1482,6 +1488,53 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 	}
 
 
+#ifdef XCP
+	/*
+	 * If command to set global_session is not set yet do that now.
+	 * On the datanode global_session for the client process should be set
+	 * already.
+	 */
+	if (agent->global_session_id == NULL && agent->pid)
+	{
+		StringInfoData  sessionid;
+		initStringInfo(&sessionid);
+		if (IS_PGXC_COORDINATOR)
+		{
+			/*
+			 * On Coordinator it is easy to find out node name and pid
+			 * of the initiating session.
+			 */
+			appendStringInfo(&sessionid, "SET global_session = '%s#%d';",
+							 PGXCNodeName, agent->pid);
+			agent->global_session_id = sessionid.data;
+		}
+		else
+		{
+			Oid			coordId;
+			int			coordPid;
+
+			GetGlobalSessionInfo(agent->pid, &coordId, &coordPid);
+
+			if (OidIsValid(coordId))
+			{
+				char *coordName;
+
+				coordName = get_pgxc_nodename(coordId);
+				appendStringInfo(&sessionid, "SET global_session = '%s#%d';",
+								 coordName, coordPid);
+				pfree(coordName);
+				agent->global_session_id = sessionid.data;
+			}
+			else
+			{
+				agent->global_session_id = NULL;
+				pfree(sessionid.data);
+			}
+		}
+	}
+#endif
+
+
 	/* Initialize result */
 	i = 0;
 	/* Save in array fds of Datanodes first */
@@ -1511,6 +1564,12 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 			 */
 			if (agent->session_params)
 				PGXCNodeSendSetQuery(slot->conn, agent->session_params);
+
+#ifdef XCP
+			/* Set Global Session id */
+			if (agent->global_session_id)
+				PGXCNodeSendSetQuery(slot->conn, agent->global_session_id);
+#endif
 		}
 
 		result[i++] = PQsocket((PGconn *) agent->dn_connections[node]->conn);
@@ -1781,8 +1840,18 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
 		 * Release connection.
 		 * If connection has temporary objects on it, destroy connection slot.
 		 */
+#ifdef XCP
+		if (slot)
+		{
+			/* Reset Global Session id */
+			if (agent->global_session_id)
+				PGXCNodeSendSetQuery(slot->conn, "SET global_session = 'none'");
+			release_connection(agent->pool, slot, i, force_destroy, REMOTE_CONN_DATANODE);
+		}
+#else
 		if (slot)
 			release_connection(agent->pool, slot, i, force_destroy, REMOTE_CONN_DATANODE);
+#endif
 		agent->dn_connections[i] = NULL;
 	}
 	/* Then clean up for Coordinator connections */
@@ -1857,6 +1926,13 @@ agent_reset_session(PoolAgent *agent)
 		pfree(agent->local_params);
 		agent->local_params = NULL;
 	}
+#ifdef XCP
+	if (agent->global_session_id)
+	{
+		pfree(agent->global_session_id);
+		agent->global_session_id = NULL;
+	}
+#endif
 }
 
 

@@ -96,6 +96,10 @@ struct PGPROC
 	BackendId	backendId;		/* This backend's backend ID (if assigned) */
 	Oid			databaseId;		/* OID of database this backend is using */
 	Oid			roleId;			/* OID of role using this backend */
+#ifdef XCP
+	Oid			coordId;  		/* OID of originating coordinator */
+	int			coordPid;		/* Pid of the originating session */
+#endif
 
 	bool		inCommit;		/* true if within commit critical section */
 

@@ -493,6 +493,9 @@ static char *log_timezone_string;
 static char *timezone_abbreviations_string;
 static char *XactIsoLevel_string;
 static char *session_authorization_string;
+#ifdef XCP
+static char *global_session_string;
+#endif
 static char *custom_variable_classes;
 static int	max_function_args;
 static int	max_index_keys;
@@ -2944,6 +2947,19 @@ static struct config_string ConfigureNamesString[] =
 		NULL,
 		check_session_authorization, assign_session_authorization, NULL
 	},
+
+#ifdef XCP
+	{
+		{"global_session", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the global session identifier."),
+			NULL,
+			GUC_IS_NAME | GUC_REPORT | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_NOT_WHILE_SEC_REST
+		},
+		&global_session_string,
+		NULL,
+		check_global_session, assign_global_session, NULL
+	},
+#endif
 
 	{
 		{"log_destination", PGC_SIGHUP, LOGGING_WHERE,
