@@ -25,6 +25,7 @@
 #include "miscadmin.h"
 #include "access/gtm.h"
 #include "catalog/pgxc_node.h"
+#include "commands/prepare.h"
 #include "executor/executor.h"
 #include "pgxc/nodemgr.h"
 #include "pgxc/pgxc.h"
@@ -34,6 +35,10 @@
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/hsearch.h"
+
+
+int NSQueues = 64;
+int SQueueSize = 64;
 
 
 typedef struct ConsumerSync
@@ -518,6 +523,27 @@ SharedQueueDump(SharedQueue squeue, int consumerIdx,
 		/* check if queue has enough room for the data */
 		if (QUEUE_FREE_SPACE(cstate) < sizeof(int) + tmpslot->tts_datarow->msglen)
 		{
+			/*
+			 * If stored tuple does not fit empty queue we can not continue.
+			 */
+			if (cstate->cs_ntuples == 0)
+			{
+				/* let consumer know we have a trouble */
+				cstate->cs_status = CONSUMER_ERROR;
+				/* ... and wake it up */
+				SetLatch(&squeue->sq_sync->sqs_consumer_sync[consumerIdx].cs_latch);
+				/*
+				 * Caller is holding a lock on the queue, but won't have
+				 * a chance to release, so do it now.
+				 */
+				LWLockRelease(squeue->sq_sync->sqs_consumer_sync[consumerIdx].cs_lwlock);
+				ereport(ERROR,
+						(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+						 errmsg("tuple does not fit consumer queue"),
+						 errdetail("Produced tuple is larger then consumer queue."),
+						 errhint("Consider increasing of SQUEUE_SIZE.")));
+			}
+
 			/* Restore read position to get same tuple next time */
 			tuplestore_copy_read_pointer(tuplestore, 0, 1);
 			cstate->stat_buff_returns++;

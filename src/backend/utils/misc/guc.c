@@ -64,6 +64,7 @@
 #endif
 #ifdef XCP
 #include "pgxc/nodemgr.h"
+#include "pgxc/squeue.h"
 #endif
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgwriter.h"
@@ -2509,6 +2510,31 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&MaxDataNodes,
 		16, 2, 65535,
+		NULL, NULL, NULL
+	},
+	/*
+	 * Shared queues provide shared memory buffers to stream data from
+	 * "producer" - process which executes subplan to "consumers" - processes
+	 * that are forwarding data to destination data nodes.
+	 */
+	{
+		{"shared_queues", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory queues used by the distributed executor."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&NSQueues,
+		64, 16, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"shared_queue_size", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the amount of memory allocated for a shared memory queue."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&SQueueSize,
+		64, 16, MAX_KILOBYTES,
 		NULL, NULL, NULL
 	},
 #endif /* PGXC */

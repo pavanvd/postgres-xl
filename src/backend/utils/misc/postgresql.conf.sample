@@ -143,6 +143,10 @@
 
 #effective_io_concurrency = 1		# 1-1000. 0 disables prefetching
 
+# - Shared queues -
+
+#shared_queues = 64 			# min 16   
+#shared_queue_size = 64KB		# min 16KB
 
 #------------------------------------------------------------------------------
 # WRITE AHEAD LOG

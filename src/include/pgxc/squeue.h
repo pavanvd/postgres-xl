@@ -21,10 +21,13 @@
 #include "nodes/pg_list.h"
 #include "utils/tuplestore.h"
 
+extern PGDLLIMPORT int NSQueues;
+extern PGDLLIMPORT int SQueueSize;
+
 /* Fixed size of shared queue, maybe need to be GUC configurable */
-#define SQUEUE_SIZE (64 * 1024)
+#define SQUEUE_SIZE ((long) SQueueSize * 1024L)
 /* Number of shared queues, maybe need to be GUC configurable */
-#define NUM_SQUEUES (64)
+#define NUM_SQUEUES ((long) NSQueues)
 
 #define SQUEUE_KEYSIZE (64)
 
