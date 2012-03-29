@@ -335,6 +335,15 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 	 * a separate list for us.
 	 */
 	subps = NIL;
+#ifdef XCP
+	/*
+	 * If plan being initialized during we should skip doing initPlan here.
+	 * In case the plan is actually referenced on this step of the distributed
+	 * plan it will be done in ExecFinishInitProcNode
+	 */
+	if (!(eflags & EXEC_FLAG_SUBPLAN))
+	{
+#endif
 	foreach(l, node->initPlan)
 	{
 		SubPlan    *subplan = (SubPlan *) lfirst(l);
@@ -344,6 +353,9 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		sstate = ExecInitSubPlan(subplan, result);
 		subps = lappend(subps, sstate);
 	}
+#ifdef XCP
+	}
+#endif
 	result->initPlan = subps;
 
 	/* Set up instrumentation for this node if requested */
@@ -361,7 +373,8 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 void
 ExecFinishInitProcNode(PlanState *node)
 {
-	TupleTableSlot *result;
+	List	   *subps;
+	ListCell   *l;
 
 	/* Exit if we reached leaf of the tree */
 	if (node == NULL)
@@ -382,6 +395,18 @@ ExecFinishInitProcNode(PlanState *node)
 			ExecFinishInitProcNode(node->righttree);
 			break;
 	}
+
+	subps = NIL;
+	foreach(l, node->plan->initPlan)
+	{
+		SubPlan    *subplan = (SubPlan *) lfirst(l);
+		SubPlanState *sstate;
+
+		Assert(IsA(subplan, SubPlan));
+		sstate = ExecInitSubPlan(subplan, node);
+		subps = lappend(subps, sstate);
+	}
+	node->initPlan = subps;
 }
 #endif
 
