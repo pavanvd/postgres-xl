@@ -210,7 +210,6 @@ typedef struct CopyStateData
 	RelationLocInfo *rel_loc;	/* the locator key */
 #ifdef XCP
 	Locator    *locator;
-	AttrNumber  dist_col;
 	Oid			dist_type;
 #else
 	/* Execution nodes for COPY */
@@ -2268,11 +2267,11 @@ CopyFrom(CopyState cstate)
 #ifdef XCP
 			Datum 				value = (Datum) 0;
 			bool				isnull = true;
-
-			if (AttributeNumberIsValid(cstate->dist_col))
+			AttrNumber			dist_col = cstate->rel_loc->partAttrNum;
+			if (AttributeNumberIsValid(dist_col))
 			{
-				value = values[cstate->dist_col-1];
-				isnull = nulls[cstate->dist_col-1];
+				value = values[dist_col-1];
+				isnull = nulls[dist_col-1];
 			}
 
 			if (DataNodeCopyIn(cstate->line_buf.data,
@@ -2966,12 +2965,12 @@ EndCopyFrom(CopyState cstate)
 	/* For PGXC related COPY, free also relation location data */
 	if (IS_PGXC_COORDINATOR && cstate->rel_loc)
 	{
-		bool replicated = cstate->rel_loc->locatorType == LOCATOR_TYPE_REPLICATED;
 #ifdef XCP
 		DataNodeCopyFinish(getLocatorNodeCount(cstate->locator),
 					   (PGXCNodeHandle **) getLocatorNodeMap(cstate->locator));
 		freeLocator(cstate->locator);
 #else
+		bool replicated = cstate->rel_loc->locatorType == LOCATOR_TYPE_REPLICATED;
 		DataNodeCopyFinish(
 				cstate->connections,
 				replicated ? PGXCNodeGetNodeId(primary_data_node, PGXC_NODE_DATANODE) : -1,
@@ -4317,10 +4316,6 @@ static void
 build_copy_statement(CopyState cstate, List *attnamelist,
 					 TupleDesc tupDesc, bool is_from)
 {
-	char *pPartByCol;
-	List *nodeList;
-	RelationLocInfo *rel_loc;
-
 	/*
 	 * If target table does not exists on nodes (e.g. system table)
 	 * the location info returned is NULL. This is the criteria, when
@@ -4328,34 +4323,16 @@ build_copy_statement(CopyState cstate, List *attnamelist,
 	 */
 	cstate->rel_loc = GetRelationLocInfo(RelationGetRelid(cstate->rel));
 
+	/* Run local COPY */
 	if (cstate->rel_loc == NULL)
 		return;
 
-	if (!is_from)
-		/* COPY TO does not care about partitioning key */
-		pPartByCol = NULL;
-	else
-		pPartByCol = GetRelationDistColumn(cstate->rel_loc);
-	nodeList = cstate->rel_loc->nodeList;
-
-	cstate->dist_col = InvalidAttrNumber;
-	cstate->dist_type = InvalidOid;
-	if (pPartByCol)
+	/* COPY TO never needs to care about partitioning key */
+	if (is_from)
 	{
-		List	   *attnums;
-		ListCell   *cur;
-
-		attnums = CopyGetAttnums(tupDesc, cstate->rel, attnamelist);
-		foreach(cur, attnums)
-		{
-			int 		attnum = lfirst_int(cur);
-			if (namestrcmp(&(tupDesc->attrs[attnum - 1]->attname), pPartByCol) == 0)
-			{
-				cstate->dist_col = attnum;
-				cstate->dist_type = tupDesc->attrs[attnum - 1]->atttypid;
-				break;
-			}
-		}
+		AttrNumber attnum = cstate->rel_loc->partAttrNum;
+		cstate->dist_type = AttributeNumberIsValid(attnum) ?
+							tupDesc->attrs[attnum - 1]->atttypid : InvalidOid;
 	}
 
 	/*
