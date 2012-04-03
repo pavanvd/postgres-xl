@@ -127,6 +127,70 @@ ProcessUtility_callback(Node *parsetree,
 							completionTag);
 
 	stats_store(get_database_name(MyDatabaseId), CMD_UNKNOWN, false, true);
+
+	/*
+	 * Check if it's a CREATE/DROP DATABASE command. Update entries in the
+	 * shared hash table accordingly.
+	 */
+	switch (nodeTag(parsetree))
+	{
+		case T_CreatedbStmt:
+			{
+				ssHashKey        key;
+				StormStatsEntry  *entry;
+				CreatedbStmt	 *stmt = (CreatedbStmt *)parsetree;
+
+				/* Set up key for hashtable search */
+				key.dbname_len = strlen(stmt->dbname);
+				key.dbname_ptr = stmt->dbname;
+
+				/*
+				 * Lookup the hash table entry with exclusive lock. We have to
+				 * manipulate the entries immediately anyways..
+				 */
+				LWLockAcquire(shared_state->lock, LW_EXCLUSIVE);
+
+				entry = (StormStatsEntry *) hash_search(StatsEntryHash, &key, HASH_FIND, NULL);
+
+				/* What do we do if we find an entry already? We WARN for now */
+				if (!entry)
+					entry = alloc_event_entry(&key);
+				else
+					ereport(WARNING,
+						(errmsg("entry exists already for database %s!",
+						entry->dbname)));
+				LWLockRelease(shared_state->lock);
+				break;
+			}
+		case T_DropdbStmt:
+			{
+				ssHashKey        key;
+				StormStatsEntry  *entry;
+				DropdbStmt		 *stmt = (DropdbStmt *)parsetree;
+
+				/* Set up key for hashtable search */
+				key.dbname_len = strlen(stmt->dbname);
+				key.dbname_ptr = stmt->dbname;
+
+				/*
+				 * Lookup the hash table entry with exclusive lock. We have to
+				 * manipulate the entries immediately anyways..
+				 */
+				LWLockAcquire(shared_state->lock, LW_EXCLUSIVE);
+
+				entry = (StormStatsEntry *) hash_search(StatsEntryHash, &key, HASH_REMOVE, NULL);
+
+				/* What do we do if we do not find an entry? We WARN for now */
+				if (!entry)
+					ereport(WARNING,
+						(errmsg("entry does not exist for database %s!",
+						entry->dbname)));
+				LWLockRelease(shared_state->lock);
+				break;
+			}
+		default:
+			/* Nothing */;
+	}
 }
 
 void
@@ -695,6 +759,11 @@ Datum storm_database_stats(PG_FUNCTION_ARGS)
 	HASH_SEQ_STATUS     hash_seq;
 	StormStatsEntry	    *entry;
 	HTAB				*LocalStatsHash = NULL;
+
+	if (IS_PGXC_DATANODE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("invalid invocation on data node")));
 
 	if (!shared_state || !StatsEntryHash)
 		ereport(ERROR,
