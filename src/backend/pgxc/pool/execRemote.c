@@ -6532,6 +6532,14 @@ ExecRemoteQuery(RemoteQueryState *node)
 			regular_conn_count--;
 		}
 
+		/*
+		 * If it's an EXEC_ON_COORDS type connection, we set regular_conn_count
+		 * to co_conn_count above. But that considers the self/local connection
+		 * too. So decrement that from regular_conn_count.
+		 */
+		if (step->exec_type == EXEC_ON_COORDS)
+			regular_conn_count--;
+
 		pfree(pgxc_connections);
 
 		/*
