@@ -702,7 +702,12 @@ pg_relation_filepath(PG_FUNCTION_ARGS)
 			break;
 		case RELPERSISTENCE_TEMP:
 			if (isTempOrToastNamespace(relform->relnamespace))
+#ifdef XCP
+				backend = OidIsValid(MyCoordId) ?
+										InvalidBackendId : MyBackendId;
+#else
 				backend = MyBackendId;
+#endif
 			else
 			{
 				/* Do it the hard way. */

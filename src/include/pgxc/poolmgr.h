@@ -169,6 +169,10 @@ extern void PoolManagerConnect(PoolHandle *handle, const char *database, const c
  */
 extern void PoolManagerReconnect(void);
 
+#ifdef XCP
+extern void PoolManagerReset(void);
+#endif
+
 /*
  * Save a SET command in Pooler.
  * This command is run on existent agent connections

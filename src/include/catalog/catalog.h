@@ -32,8 +32,13 @@ extern char *relpathbackend(RelFileNode rnode, BackendId backend,
 extern char *GetDatabasePath(Oid dbNode, Oid spcNode);
 
 /* First argument is a RelFileNodeBackend */
+#ifdef XCP
+#define relpath(rnode, forknum) \
+		relpathbackend((rnode).node, InvalidBackendId, (forknum))
+#else
 #define relpath(rnode, forknum) \
 		relpathbackend((rnode).node, (rnode).backend, (forknum))
+#endif
 
 /* First argument is a RelFileNode */
 #define relpathperm(rnode, forknum) \

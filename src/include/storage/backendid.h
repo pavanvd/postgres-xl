@@ -24,4 +24,19 @@ typedef int BackendId;			/* unique currently active backend identifier */
 
 extern PGDLLIMPORT BackendId MyBackendId;		/* backend id of this backend */
 
+#ifdef XCP
+/*
+ * Two next variables make up distributed session id. Actual distributed
+ * session id is a string, which includes coordinator node name, but
+ * it is better to use Oid to store and compare with distributed session ids
+ * of other backends under the same postmaster.
+ */
+extern PGDLLIMPORT Oid MyCoordId;
+
+extern PGDLLIMPORT int MyCoordPid;
+
+/* BackendId of the first backend of the distributed session on the node */
+extern PGDLLIMPORT BackendId MyFirstBackendId;
+#endif
+
 #endif   /* BACKENDID_H */

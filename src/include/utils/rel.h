@@ -26,6 +26,9 @@
 #endif
 #include "rewrite/prs2lock.h"
 #include "storage/block.h"
+#ifdef XCP
+#include "storage/proc.h"
+#endif
 #include "storage/relfilenode.h"
 #include "utils/relcache.h"
 
@@ -408,8 +411,14 @@ typedef struct StdRdOptions
  * RelationUsesLocalBuffers
  *		True if relation's pages are stored in local buffers.
  */
+#ifdef XCP
+#define RelationUsesLocalBuffers(relation) \
+	!OidIsValid(MyCoordId) && \
+		((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+#else
 #define RelationUsesLocalBuffers(relation) \
 	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+#endif
 
 /*
  * RelationUsesTempNamespace
@@ -425,9 +434,16 @@ typedef struct StdRdOptions
  *
  * Beware of multiple eval of argument
  */
+#ifdef XCP
+#define RELATION_IS_LOCAL(relation) \
+	((!OidIsValid(MyCoordId) && (relation)->rd_backend == MyBackendId) || \
+	 (OidIsValid(MyCoordId) && (relation)->rd_backend == MyFirstBackendId) || \
+	 (relation)->rd_createSubid != InvalidSubTransactionId)
+#else
 #define RELATION_IS_LOCAL(relation) \
 	((relation)->rd_backend == MyBackendId || \
 	 (relation)->rd_createSubid != InvalidSubTransactionId)
+#endif
 
 #ifdef XCP
 /*
@@ -445,9 +461,16 @@ typedef struct StdRdOptions
  *
  * Beware of multiple eval of argument
  */
+#ifdef XCP
+#define RELATION_IS_OTHER_TEMP(relation) \
+	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP && \
+	 ((!OidIsValid(MyCoordId) && (relation)->rd_backend != MyBackendId) || \
+	  (OidIsValid(MyCoordId) && (relation)->rd_backend != MyFirstBackendId)))
+#else
 #define RELATION_IS_OTHER_TEMP(relation) \
 	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP \
 	&& (relation)->rd_backend != MyBackendId)
+#endif
 
 
 /* routines in utils/cache/relcache.c */

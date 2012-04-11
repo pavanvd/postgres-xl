@@ -70,8 +70,13 @@ typedef struct SMgrRelationData
 
 typedef SMgrRelationData *SMgrRelation;
 
+#ifdef XCP
+#define SmgrIsTemp(smgr) \
+	(!OidIsValid(MyCoordId) && (smgr)->smgr_rnode.backend != InvalidBackendId)
+#else
 #define SmgrIsTemp(smgr) \
 	((smgr)->smgr_rnode.backend != InvalidBackendId)
+#endif
 
 extern void smgrinit(void);
 extern SMgrRelation smgropen(RelFileNode rnode, BackendId backend);

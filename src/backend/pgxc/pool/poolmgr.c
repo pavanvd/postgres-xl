@@ -571,6 +571,20 @@ PoolManagerReconnect(void)
 					   GetUserNameFromId(GetUserId()));
 }
 
+
+#ifdef XCP
+/*
+ * Reset all session and transaction parameters.
+ */
+void
+PoolManagerReset(void)
+{
+	pool_putmessage(&poolHandle->port, 'u', NULL, 0);
+	pool_flush(&poolHandle->port);
+}
+#endif
+
+
 int
 PoolManagerSetCommand(PoolCommandType command_type, const char *set_command)
 {
@@ -1287,6 +1301,19 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 				/* Send success result */
 				pool_sendres(&agent->port, res);
 				break;
+#ifdef XCP
+			case 'u':			/* Unset session specific setting */
+				/*
+				 * Forget all session related info, including SET commands, as
+				 * parent backend released back to pooler.
+				 */
+				pool_getmessage(&agent->port, s, 4);
+				/* no arguments expected */
+				pq_getmsgend(s);
+				agent_reset_session(agent);
+				/* no response expected */
+				break;
+#endif
 			default:			/* EOF or protocol violation */
 				agent_destroy(agent);
 				return;
@@ -1880,7 +1907,12 @@ agent_reset_session(PoolAgent *agent)
 	if (!agent->dn_connections && !agent->coord_connections)
 		return;
 
+#ifdef XCP
+	if (!agent->session_params && !agent->local_params &&
+			!agent->global_session_id)
+#else
 	if (!agent->session_params && !agent->local_params)
+#endif
 		return;
 
 	/* Reset connection params */
@@ -1929,6 +1961,15 @@ agent_reset_session(PoolAgent *agent)
 #ifdef XCP
 	if (agent->global_session_id)
 	{
+		int i;
+		for (i = 0; i < agent->num_dn_connections; i++)
+		{
+			PGXCNodePoolSlot *slot = agent->dn_connections[i];
+
+			/* Reset given slot with parameters */
+			if (slot)
+				PGXCNodeSendSetQuery(slot->conn, "SET global_session = 'none';");
+		}
 		pfree(agent->global_session_id);
 		agent->global_session_id = NULL;
 	}

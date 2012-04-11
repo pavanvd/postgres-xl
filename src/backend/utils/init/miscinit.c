@@ -29,6 +29,9 @@
 #include <utime.h>
 #endif
 
+#ifdef XCP
+#include "catalog/namespace.h"
+#endif
 #include "catalog/pg_authid.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
@@ -558,22 +561,81 @@ SetSessionAuthorization(Oid userid, bool is_superuser)
 void
 SetGlobalSession(Oid coordid, int coordpid)
 {
-	bool reset = false;
+	bool 			reset = false;
+	BackendId 		firstBackend = InvalidBackendId;
+	int				bCount = 0;
+	int				bPids[MaxBackends];
 
-	LWLockAcquire(ProcArrayLock, LW_SHARED);
 	/*
-	 * Need to reset pool manager agent if we backend being assigned to
-	 * different global session.
+	 * Need to reset pool manager agent if the backend being assigned to
+	 * different global session or assignment is canceled.
 	 */
-	if (OidIsValid(MyProc->coordId) && MyProc->coordPid &&
-			(MyProc->coordPid != coordpid || MyProc->coordId != coordid))
+	if (OidIsValid(MyCoordId) &&
+			(MyCoordId != coordid || MyCoordPid != coordpid))
 		reset = true;
+
+retry:
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	/* Expose distributed session id in the PGPROC structure */
 	MyProc->coordId = coordid;
 	MyProc->coordPid = coordpid;
+	/*
+	 * Determine first backend id.
+	 * If this backend is the first backend of the distributed session on the
+	 * node we should clean up the temporary namespace.
+	 * Backend is the first if no backends with such distributed session id.
+	 * If such backends are found we can copy first found valid firstBackendId.
+	 * If none of them valid that means the first is still cleaning up the
+	 * temporary namespace.
+	 */
+	if (OidIsValid(coordid))
+		firstBackend = GetFirstBackendId(&bCount, bPids);
+	else
+		firstBackend = InvalidBackendId;
+	/* If first backend id is defined set it right now */
+	if (firstBackend != InvalidBackendId)
+		MyProc->firstBackendId = firstBackend;
 	LWLockRelease(ProcArrayLock);
+
+	if (OidIsValid(coordid) && firstBackend == InvalidBackendId)
+	{
+		/*
+		 * We are the first or need to retry
+		 */
+		if (bCount > 0)
+		{
+			/* XXX sleep ? */
+			goto retry;
+		}
+		else
+		{
+			/* Set globals for this backend */
+			MyCoordId = coordid;
+			MyCoordPid = coordpid;
+			MyFirstBackendId = MyBackendId;
+			/* XXX Maybe this lock is not needed because of atomic operation? */
+			LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+			MyProc->firstBackendId = MyBackendId;
+			LWLockRelease(ProcArrayLock);
+		}
+	}
+	else
+	{
+		/* Set globals for this backend */
+		MyCoordId = coordid;
+		MyCoordPid = coordpid;
+		MyFirstBackendId = firstBackend;
+	}
+
 	if (reset)
-		/* XXX cheaper reset */
-		PoolManagerReconnect();
+	{
+		PoolManagerReset();
+		/*
+		 * Next time when backend will be assigned to a global session it will
+		 * be referencing different temp namespace
+		 */
+		ForgetTempTableNamespace();
+	}
 }
 #endif
 

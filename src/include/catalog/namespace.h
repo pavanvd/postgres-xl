@@ -113,6 +113,9 @@ extern bool isOtherTempNamespace(Oid namespaceId);
 extern int	GetTempNamespaceBackendId(Oid namespaceId);
 extern Oid	GetTempToastNamespace(void);
 extern void ResetTempTableNamespace(void);
+#ifdef XCP
+extern void ForgetTempTableNamespace(void);
+#endif
 
 extern OverrideSearchPath *GetOverrideSearchPath(MemoryContext context);
 extern void PushOverrideSearchPath(OverrideSearchPath *newpath);

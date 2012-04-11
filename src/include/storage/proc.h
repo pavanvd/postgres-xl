@@ -99,6 +99,8 @@ struct PGPROC
 #ifdef XCP
 	Oid			coordId;  		/* OID of originating coordinator */
 	int			coordPid;		/* Pid of the originating session */
+	BackendId	firstBackendId;	/* Backend ID of the first backend of
+								 * the distributed session */
 #endif
 
 	bool		inCommit;		/* true if within commit critical section */

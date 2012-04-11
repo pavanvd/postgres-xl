@@ -600,6 +600,11 @@ GetNewRelFileNode(Oid reltablespace, Relation pg_class, char relpersistence)
 	switch (relpersistence)
 	{
 		case RELPERSISTENCE_TEMP:
+#ifdef XCP
+			if (OidIsValid(MyCoordId))
+				backend = MyFirstBackendId;
+			else
+#endif
 			backend = MyBackendId;
 			break;
 		case RELPERSISTENCE_UNLOGGED:

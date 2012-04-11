@@ -82,5 +82,6 @@ extern void XidCacheRemoveRunningXids(TransactionId xid,
 						  TransactionId latestXid);
 #ifdef XCP
 extern void GetGlobalSessionInfo(int pid, Oid *coordId, int *coordPid);
+extern int	GetFirstBackendId(int *numBackends, int *backends);
 #endif /* XCP */
 #endif   /* PROCARRAY_H */

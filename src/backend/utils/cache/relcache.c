@@ -862,7 +862,12 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 			break;
 		case RELPERSISTENCE_TEMP:
 			if (isTempOrToastNamespace(relation->rd_rel->relnamespace))
+#ifdef XCP
+				relation->rd_backend = OidIsValid(MyCoordId) ?
+												MyFirstBackendId : MyBackendId;
+#else
 				relation->rd_backend = MyBackendId;
+#endif
 			else
 			{
 				/*
@@ -2531,6 +2536,11 @@ RelationBuildLocalRelation(const char *relname,
 			rel->rd_backend = InvalidBackendId;
 			break;
 		case RELPERSISTENCE_TEMP:
+#ifdef XCP
+			if (OidIsValid(MyCoordId))
+				rel->rd_backend = MyFirstBackendId;
+			else
+#endif
 			rel->rd_backend = MyBackendId;
 			break;
 		default:

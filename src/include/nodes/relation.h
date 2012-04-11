@@ -257,6 +257,9 @@ typedef struct PlannerInfo
 	/* These fields are workspace for createplan.c */
 	Relids		curOuterRels;	/* outer rels above current node */
 	List	   *curOuterParams; /* not-yet-assigned NestLoopParams */
+#ifdef XCP
+	Bitmapset  *curOuterRestrict; 	/* Datanodes where outer plan is executed */
+#endif
 
 	/* optional private data for join_search_hook, e.g., GEQO */
 	void	   *join_search_private;

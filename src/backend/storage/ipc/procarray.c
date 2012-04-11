@@ -3696,6 +3696,14 @@ KnownAssignedXidsDisplay(int trace_level)
 
 
 #ifdef XCP
+/*
+ * GetGlobalSessionInfo
+ *
+ * Determine the global session id of the specified backend process
+ * Returns Oid and pid of the initiating coordinator session.
+ * If no such backend or global session id is not defined for the backend
+ * return InvalidOid and 0 respectively.
+ */
 void
 GetGlobalSessionInfo(int pid, Oid *coordId, int *coordPid)
 {
@@ -3723,5 +3731,79 @@ GetGlobalSessionInfo(int pid, Oid *coordId, int *coordPid)
 	}
 
 	LWLockRelease(ProcArrayLock);
+}
+
+
+/*
+ * GetFirstBackendId
+ *
+ * Determine BackendId of the current process.
+ * The caller must hold the ProcArrayLock and the global session id should
+ * be defined.
+ */
+int
+GetFirstBackendId(int *numBackends, int *backends)
+{
+	ProcArrayStruct *arrayP = procArray;
+	Oid				coordId = MyProc->coordId;
+	int				coordPid = MyProc->coordPid;
+	int				bCount = 0;
+	int				bPids[MaxBackends];
+	int				index;
+
+	Assert(OidIsValid(coordId));
+
+	/* Scan processes */
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		volatile PGPROC *proc = arrayP->procs[index];
+
+		/* Skip MyProc */
+		if (proc == MyProc)
+			continue;
+
+		if (proc->coordId == coordId && proc->coordPid == coordPid)
+		{
+			/* BackendId is the same for all backends of the session */
+			if (proc->firstBackendId != InvalidBackendId)
+				return proc->firstBackendId;
+
+			bPids[bCount++] = proc->pid;
+		}
+	}
+
+	if (*numBackends > 0)
+	{
+		int i, j;
+		/*
+		 * This is not the first invocation, to prevent endless loop in case
+		 * if first backend failed to complete initialization check if all the
+		 * processes which were intially found are still here, throw error if
+		 * not.
+		 */
+		for (i = 0; i < *numBackends; i++)
+		{
+			bool found = false;
+
+			for (j = 0; j < bCount; j++)
+			{
+				if (bPids[j] == backends[i])
+				{
+					found = true;
+					break;
+				}
+			}
+
+			if (!found)
+				elog(ERROR, "Failed to determine BackendId for distributed session");
+		}
+	}
+	else
+	{
+		*numBackends = bCount;
+		if (bCount)
+			memcpy(backends, bPids, bCount * sizeof(int));
+	}
+	return InvalidBackendId;
 }
 #endif

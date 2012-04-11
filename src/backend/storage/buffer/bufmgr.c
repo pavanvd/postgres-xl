@@ -1960,7 +1960,11 @@ DropRelFileNodeBuffers(RelFileNodeBackend rnode, ForkNumber forkNum,
 {
 	int			i;
 
+#ifdef XCP
+	if (!OidIsValid(MyCoordId) && rnode.backend != InvalidBackendId)
+#else
 	if (rnode.backend != InvalidBackendId)
+#endif
 	{
 		if (rnode.backend == MyBackendId)
 			DropRelFileNodeLocalBuffers(rnode.node, forkNum, firstDelBlock);

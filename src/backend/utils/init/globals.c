@@ -58,6 +58,14 @@ char		postgres_exec_path[MAXPGPATH];		/* full path to backend */
 /* note: currently this is not valid in backend processes */
 #endif
 
+#ifdef XCP
+Oid			MyCoordId = InvalidOid;
+
+int 		MyCoordPid = 0;
+
+BackendId	MyFirstBackendId = InvalidBackendId;
+#endif
+
 BackendId	MyBackendId = InvalidBackendId;
 
 Oid			MyDatabaseId = InvalidOid;

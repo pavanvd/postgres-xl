@@ -106,6 +106,11 @@ RelationCreateStorage(RelFileNode rnode, char relpersistence)
 	switch (relpersistence)
 	{
 		case RELPERSISTENCE_TEMP:
+#ifdef XCP
+			if (OidIsValid(MyCoordId))
+				backend = MyFirstBackendId;
+			else
+#endif
 			backend = MyBackendId;
 			needs_wal = false;
 			break;

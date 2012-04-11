@@ -48,6 +48,9 @@
 #include "parser/parse_func.h"
 #include "storage/backendid.h"
 #include "storage/ipc.h"
+#ifdef XCP
+#include "storage/proc.h"
+#endif
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
@@ -197,6 +200,9 @@ static void RemoveTempRelationsCallback(int code, Datum arg);
 static void NamespaceCallback(Datum arg, int cacheid, ItemPointer tuplePtr);
 static bool MatchNamedCall(HeapTuple proctup, int nargs, List *argnames,
 			   int **argnumbers);
+#ifdef XCP
+static void FindTemporaryNamespace(void);
+#endif
 
 /* These don't really need to appear in any header file */
 Datum		pg_table_is_visible(PG_FUNCTION_ARGS);
@@ -2382,13 +2388,22 @@ LookupNamespaceNoError(const char *nspname)
 	{
 		if (OidIsValid(myTempNamespace))
 			return myTempNamespace;
-
+#ifdef XCP
+		/*
+		 * Try to find temporary namespace created by other backend of
+		 * the same distributed session. If not found myTempNamespace will
+		 * be InvalidOid, that is correct result.
+		 */
+		FindTemporaryNamespace();
+		return myTempNamespace;
+#else
 		/*
 		 * Since this is used only for looking up existing objects, there is
 		 * no point in trying to initialize the temp namespace here; and doing
 		 * so might create problems for some callers. Just report "not found".
 		 */
 		return InvalidOid;
+#endif
 	}
 
 	return get_namespace_oid(nspname, true);
@@ -2412,6 +2427,16 @@ LookupExplicitNamespace(const char *nspname)
 	{
 		if (OidIsValid(myTempNamespace))
 			return myTempNamespace;
+
+#ifdef XCP
+		/*
+		 * Try to find temporary namespace created by other backend of
+		 * the same distributed session.
+		 */
+		FindTemporaryNamespace();
+		if (OidIsValid(myTempNamespace))
+			return myTempNamespace;
+#endif
 
 		/*
 		 * Since this is used only for looking up existing objects, there is
@@ -3275,6 +3300,16 @@ InitTempTableNamespace(void)
 				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
 				 errmsg("cannot create temporary tables during recovery")));
 
+#ifdef XCP
+	/*
+	 * In case of distributed session use MyFirstBackendId for temp objects
+	 */
+	if (OidIsValid(MyCoordId))
+		snprintf(namespaceName, sizeof(namespaceName), "pg_temp_%d",
+				 MyFirstBackendId);
+	else
+	/* fallback to default */
+#endif
 	snprintf(namespaceName, sizeof(namespaceName), "pg_temp_%d", MyBackendId);
 
 	namespaceId = get_namespace_oid(namespaceName, true);
@@ -3306,6 +3341,16 @@ InitTempTableNamespace(void)
 	 * it. (We assume there is no need to clean it out if it does exist, since
 	 * dropping a parent table should make its toast table go away.)
 	 */
+#ifdef XCP
+	/*
+	 * In case of distributed session use MyFirstBackendId for temp objects
+	 */
+	if (OidIsValid(MyCoordId))
+		snprintf(namespaceName, sizeof(namespaceName), "pg_toast_temp_%d",
+				 MyFirstBackendId);
+	else
+	/* fallback to default */
+#endif
 	snprintf(namespaceName, sizeof(namespaceName), "pg_toast_temp_%d",
 			 MyBackendId);
 
@@ -3327,6 +3372,9 @@ InitTempTableNamespace(void)
 
 	/* It should not be done already. */
 	AssertState(myTempNamespaceSubID == InvalidSubTransactionId);
+#ifdef XCP
+	if (!OidIsValid(MyCoordId))
+#endif
 	myTempNamespaceSubID = GetCurrentSubTransactionId();
 
 	baseSearchPathValid = false;	/* need to rebuild list */
@@ -3349,7 +3397,20 @@ AtEOXact_Namespace(bool isCommit)
 	if (myTempNamespaceSubID != InvalidSubTransactionId)
 	{
 		if (isCommit)
+#ifdef XCP
+		{
+			/*
+			 * During backend lifetime it may be assigned to different
+			 * distributed sessions, and each of them may create temp
+			 * namespace and set a callback. That may cause memory leak.
+			 * XXX is it ever possible to remove callbacks?
+			 */
+			if (!OidIsValid(MyCoordId))
+				on_shmem_exit(RemoveTempRelationsCallback, 0);
+		}
+#else
 			on_shmem_exit(RemoveTempRelationsCallback, 0);
+#endif
 		else
 		{
 			myTempNamespace = InvalidOid;
@@ -3506,7 +3567,44 @@ ResetTempTableNamespace(void)
 {
 	if (OidIsValid(myTempNamespace))
 		RemoveTempRelations(myTempNamespace);
+#ifdef XCP
+	else if (OidIsValid(MyCoordId))
+	{
+		char		namespaceName[NAMEDATALEN];
+		Oid			namespaceId;
+
+		snprintf(namespaceName, sizeof(namespaceName), "pg_temp_%d",
+				 MyFirstBackendId);
+
+		namespaceId = get_namespace_oid(namespaceName, true);
+		if (OidIsValid(namespaceId))
+			RemoveTempRelations(namespaceId);
+	}
+#endif
 }
+
+
+#ifdef XCP
+/*
+ * Reset myTempNamespace so it will be reinitialized after backend is assigned
+ * to a different session.
+ */
+void
+ForgetTempTableNamespace(void)
+{
+	/* If the namespace exists and need to be cleaned up do that */
+	if (OidIsValid(myTempNamespace) &&
+			myTempNamespaceSubID != InvalidSubTransactionId)
+	{
+		elog(WARNING, "leaked temp namespace clean up callback");
+		RemoveTempRelations(myTempNamespace);
+	}
+	myTempNamespace = InvalidOid;
+	myTempToastNamespace = InvalidOid;
+	baseSearchPathValid = false;		/* need to rebuild list */
+	myTempNamespaceSubID = InvalidSubTransactionId;
+}
+#endif
 
 
 /*
@@ -3870,3 +3968,43 @@ pg_is_other_temp_schema(PG_FUNCTION_ARGS)
 
 	PG_RETURN_BOOL(isOtherTempNamespace(oid));
 }
+
+
+#ifdef XCP
+/*
+ * FindTemporaryNamespace
+ * 	If this is secondary backend of distributed session check if primary backend
+ * 	of the same session created temporary namespace and wire it up if it is the
+ * 	case, instead of creating new.
+ */
+static void
+FindTemporaryNamespace(void)
+{
+	char		namespaceName[NAMEDATALEN];
+
+	Assert(!OidIsValid(myTempNamespace));
+
+	/*
+	 * We need distribution session identifier to find the namespace.
+	 */
+	if (!OidIsValid(MyCoordId))
+		return;
+
+	/*
+	 * Look up namespace by name. This code should be in synch with
+	 * InitTempTableNamespace.
+	 */
+	snprintf(namespaceName, sizeof(namespaceName), "pg_temp_%d",
+			 MyFirstBackendId);
+	myTempNamespace = get_namespace_oid(namespaceName, true);
+	/* Same for the toast namespace */
+	if (OidIsValid(myTempNamespace))
+	{
+		snprintf(namespaceName, sizeof(namespaceName), "pg_toast_temp_%d",
+				 MyFirstBackendId);
+		myTempToastNamespace = get_namespace_oid(namespaceName, true);
+		baseSearchPathValid = false;	/* need to rebuild list */
+	}
+}
+#endif
+
