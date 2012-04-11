@@ -73,6 +73,8 @@ static Result *create_result_plan(PlannerInfo *root, ResultPath *best_path);
 static Material *create_material_plan(PlannerInfo *root, MaterialPath *best_path);
 static Plan *create_unique_plan(PlannerInfo *root, UniquePath *best_path);
 #ifdef XCP
+static void adjustSubplanDistribution(PlannerInfo *root, Distribution *pathd,
+						  Distribution *subd);
 static RemoteSubplan *create_remotescan_plan(PlannerInfo *root,
 					   RemoteSubPath *best_path);
 static char *get_internal_cursor(void);
@@ -251,6 +253,11 @@ create_plan(PlannerInfo *root, Path *best_path)
 	/* Initialize this module's private workspace in PlannerInfo */
 	root->curOuterRels = NULL;
 	root->curOuterParams = NIL;
+#ifdef XCP
+	root->curOuterRestrict = NULL;
+	adjustSubplanDistribution(root, root->distribution,
+							  best_path->distribution);
+#endif
 
 	/* Recursively process the path tree */
 	plan = create_plan_recurse(root, best_path);
@@ -1745,6 +1752,69 @@ create_unique_plan(PlannerInfo *root, UniquePath *best_path)
 
 #ifdef XCP
 /*
+ * adjustSubplanDistribution
+ * 	Make sure the distribution of the subplan is matching to the consumers.
+ */
+static void
+adjustSubplanDistribution(PlannerInfo *root, Distribution *pathd,
+						  Distribution *subd)
+{
+	/* Replace path restriction with actual */
+	if (pathd && !bms_is_empty(root->curOuterRestrict))
+	{
+		bms_free(pathd->restrictNodes);
+		pathd->restrictNodes = bms_copy(root->curOuterRestrict);
+	}
+
+	root->curOuterRestrict = NULL;
+
+	/* Set new restriction for the subpath */
+	if (subd)
+	{
+		/*
+		 * If subpath is replicated without restriction choose one execution
+		 * datanode and set it as current restriction.
+		 */
+		if (IsReplicated(subd->distributionType) &&
+				bms_num_members(subd->restrictNodes) != 1)
+		{
+			Bitmapset  *result = NULL;
+			Bitmapset  *execute;
+			Bitmapset  *common;
+			int			node;
+
+			/*
+			 * We should choose one of the distribution nodes, but we can save
+			 * some network traffic if chosen execution node will be one of
+			 * the result nodes at the same time.
+			 */
+			if (pathd)
+				result = bms_is_empty(pathd->restrictNodes) ?
+										pathd->nodes : pathd->restrictNodes;
+			execute = bms_is_empty(subd->restrictNodes) ?
+										subd->nodes : subd->restrictNodes;
+			common = bms_intersect(result, execute);
+			if (bms_is_empty(common))
+			{
+				bms_free(common);
+				common = bms_copy(subd->nodes);
+			}
+
+			/* XXX load balance */
+			node = bms_first_member(common);
+			bms_free(common);
+
+			/* set restriction for the subplan */
+			root->curOuterRestrict = bms_make_singleton(node);
+
+			/* replace execution restriction for the generated  */
+			bms_free(subd->restrictNodes);
+			subd->restrictNodes = bms_make_singleton(node);
+		}
+	}
+}
+
+/*
  * create_remotescan_plan
  *	  Create a RemoteSubquery plan for 'best_path' and (recursively) plans
  *	  for its subpaths.
@@ -1757,8 +1827,18 @@ create_remotescan_plan(PlannerInfo *root,
 {
 	RemoteSubplan  *plan;
 	Plan	   	   *subplan;
+	Bitmapset  	   *saverestrict;
 
-	subplan = create_plan(root, best_path->subpath);
+	/*
+	 * Subsequent code will modify current restriction, it needs to be restored
+	 * so other path nodes in the outer tree could see correct value.
+	 */
+	saverestrict = root->curOuterRestrict;
+
+	adjustSubplanDistribution(root, best_path->path.distribution,
+							  best_path->subpath->distribution);
+
+	subplan = create_plan_recurse(root, best_path->subpath);
 
 	/* We don't want any excess columns in the remote tuples */
 	disuse_physical_tlist(subplan, best_path->subpath);
@@ -1769,6 +1849,10 @@ create_remotescan_plan(PlannerInfo *root,
 							  best_path->path.pathkeys);
 
 	copy_path_costsize(&plan->scan.plan, (Path *) best_path);
+
+	/* restore current restrict */
+	bms_free(root->curOuterRestrict);
+	root->curOuterRestrict = saverestrict;
 
 	return plan;
 }
@@ -4134,7 +4218,8 @@ make_remotesubplan(PlannerInfo *root,
 		while ((nodenum = bms_first_member(tmpset)) >= 0)
 			node->nodeList = lappend_int(node->nodeList, nodenum);
 		bms_free(tmpset);
-		node->execOnAll = !IsReplicated(execDistribution->distributionType);
+		node->execOnAll = list_length(node->nodeList) == 1 ||
+				!IsReplicated(execDistribution->distributionType);
 	}
 	else
 	{
