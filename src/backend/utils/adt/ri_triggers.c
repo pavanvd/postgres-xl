@@ -2642,8 +2642,10 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	RangeTblEntry *fkrte;
 	const char *sep;
 	int			i;
+#ifndef XCP
 	int			old_work_mem;
 	char		workmembuf[32];
+#endif
 	int			spi_result;
 	SPIPlanPtr	qplan;
 
@@ -2773,6 +2775,7 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	}
 	appendStringInfo(&querybuf, ")");
 
+#ifndef XCP
 	/*
 	 * Temporarily increase work_mem so that the check query can be executed
 	 * more efficiently.  It seems okay to do this because the query is simple
@@ -2789,6 +2792,7 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	(void) set_config_option("work_mem", workmembuf,
 							 PGC_USERSET, PGC_S_SESSION,
 							 GUC_ACTION_LOCAL, true);
+#endif
 
 	if (SPI_connect() != SPI_OK_CONNECT)
 		elog(ERROR, "SPI_connect failed");
@@ -2870,6 +2874,7 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
 
+#ifndef XCP
 	/*
 	 * Restore work_mem for the remainder of the current transaction. This is
 	 * another SET LOCAL, so it won't affect the session value.
@@ -2878,6 +2883,7 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	(void) set_config_option("work_mem", workmembuf,
 							 PGC_USERSET, PGC_S_SESSION,
 							 GUC_ACTION_LOCAL, true);
+#endif
 
 	return true;
 }

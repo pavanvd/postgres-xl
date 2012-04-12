@@ -106,6 +106,9 @@ static char *conf_file;
 static char *conversion_file;
 static char *dictionary_file;
 static char *info_schema_file;
+#ifdef XCP
+static char *storm_cat_file;
+#endif
 static char *features_file;
 static char *system_views_file;
 static bool made_new_pgdata = false;
@@ -182,6 +185,9 @@ static void setup_dictionary(void);
 static void setup_privileges(void);
 static void set_info_version(void);
 static void setup_schema(void);
+#ifdef XCP
+static void setup_storm(void);
+#endif
 static void load_plpgsql(void);
 static void vacuum_db(void);
 static void make_template0(void);
@@ -1545,7 +1551,11 @@ setup_description(void)
 	PG_CMD_PRINTF1("COPY tmp_pg_shdescription FROM E'%s';\n",
 				   escape_quotes(shdesc_file));
 
+#ifdef XCP
+	PG_CMD_PUTS("INSERT INTO pg_catalog.pg_shdescription "
+#else
 	PG_CMD_PUTS("INSERT INTO pg_shdescription "
+#endif
 				" SELECT t.objoid, c.oid, t.description "
 				"  FROM tmp_pg_shdescription t, pg_class c "
 				"   WHERE c.relname = t.classname;\n");
@@ -1844,6 +1854,9 @@ setup_privileges(void)
 		"  WHERE relkind IN ('r', 'v', 'S') AND relacl IS NULL;\n",
 		"GRANT USAGE ON SCHEMA pg_catalog TO PUBLIC;\n",
 		"GRANT CREATE, USAGE ON SCHEMA public TO PUBLIC;\n",
+#ifdef XCP
+        "GRANT USAGE ON SCHEMA storm_catalog TO PUBLIC;\n",
+#endif
 		"REVOKE ALL ON pg_largeobject FROM PUBLIC;\n",
 		NULL
 	};
@@ -1954,6 +1967,46 @@ setup_schema(void)
 	check_ok();
 }
 
+#ifdef XCP
+/*
+ * load storm catalog and populate from features file
+ */
+static void
+setup_storm(void)
+{
+        PG_CMD_DECL;
+        char      **line;
+        char      **lines;
+
+        fputs(_("creating storm catalog... "), stdout);
+        fflush(stdout);
+
+        lines = readfile(storm_cat_file);
+
+        /*
+         * We use -j here to avoid backslashing stuff in storm_catalog.sql
+         */
+        snprintf(cmd, sizeof(cmd),
+                         "\"%s\" %s -j template1 >%s",
+                         backend_exec, backend_options,
+                         DEVNULL);
+
+        PG_CMD_OPEN;
+
+        for (line = lines; *line != NULL; line++)
+        {
+                PG_CMD_PUTS(*line);
+                free(*line);
+        }
+
+        free(lines);
+
+        PG_CMD_CLOSE;
+
+        check_ok();
+}
+#endif
+
 /*
  * load PL/pgsql server-side language
  */
@@ -2014,7 +2067,11 @@ make_template0(void)
 	const char **line;
 	static const char *template0_setup[] = {
 		"CREATE DATABASE template0;\n",
+#ifdef XCP
+		"UPDATE pg_catalog.pg_database SET "
+#else
 		"UPDATE pg_database SET "
+#endif
 		"	datistemplate = 't', "
 		"	datallowconn = 'f' "
 		"    WHERE datname = 'template0';\n",
@@ -2022,8 +2079,13 @@ make_template0(void)
 		/*
 		 * We use the OID of template0 to determine lastsysoid
 		 */
+#ifdef XCP
+		"UPDATE pg_catalog.pg_database SET datlastsysoid = "
+		"    (SELECT oid FROM pg_catalog.pg_database "
+#else
 		"UPDATE pg_database SET datlastsysoid = "
 		"    (SELECT oid FROM pg_database "
+#endif
 		"    WHERE datname = 'template0');\n",
 
 		/*
@@ -2039,7 +2101,11 @@ make_template0(void)
 		/*
 		 * Finally vacuum to clean up dead rows in pg_database
 		 */
+#ifdef XCP
+		"VACUUM FULL pg_catalog.pg_database;\n",
+#else
 		"VACUUM FULL pg_database;\n",
+#endif
 		NULL
 	};
 
@@ -2980,6 +3046,9 @@ main(int argc, char *argv[])
 	set_input(&conversion_file, "conversion_create.sql");
 	set_input(&dictionary_file, "snowball_create.sql");
 	set_input(&info_schema_file, "information_schema.sql");
+#ifdef XCP
+	set_input(&storm_cat_file, "storm_catalog.sql");
+#endif
 	set_input(&features_file, "sql_features.txt");
 	set_input(&system_views_file, "system_views.sql");
 
@@ -3013,6 +3082,9 @@ main(int argc, char *argv[])
 	check_input(conversion_file);
 	check_input(dictionary_file);
 	check_input(info_schema_file);
+#ifdef XCP
+	check_input(storm_cat_file);
+#endif
 	check_input(features_file);
 	check_input(system_views_file);
 
@@ -3356,6 +3428,10 @@ main(int argc, char *argv[])
 	setup_schema();
 
 	load_plpgsql();
+
+#ifdef XCP
+	setup_storm();
+#endif
 
 	vacuum_db();
 

@@ -1416,7 +1416,11 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+#ifdef XCP
+		{"synchronize_seqscans", PGC_SUSET, COMPAT_OPTIONS_PREVIOUS,
+#else
 		{"synchronize_seqscans", PGC_USERSET, COMPAT_OPTIONS_PREVIOUS,
+#endif
 			gettext_noop("Enable synchronized sequential scans."),
 			NULL
 		},
@@ -1704,7 +1708,11 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+#ifdef XCP
+		{"temp_buffers", PGC_SUSET, RESOURCES_MEM,
+#else
 		{"temp_buffers", PGC_USERSET, RESOURCES_MEM,
+#endif
 			gettext_noop("Sets the maximum number of temporary buffers used by each session."),
 			NULL,
 			GUC_UNIT_BLOCKS
@@ -1754,7 +1762,11 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+#ifdef XCP
+		{"work_mem", PGC_SUSET, RESOURCES_MEM,
+#else
 		{"work_mem", PGC_USERSET, RESOURCES_MEM,
+#endif
 			gettext_noop("Sets the maximum memory to be used for query workspaces."),
 			gettext_noop("This much memory can be used by each internal "
 						 "sort operation and hash table before switching to "
@@ -1767,7 +1779,11 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+#ifdef XCP
+		{"maintenance_work_mem", PGC_SUSET, RESOURCES_MEM,
+#else
 		{"maintenance_work_mem", PGC_USERSET, RESOURCES_MEM,
+#endif
 			gettext_noop("Sets the maximum memory to be used for maintenance operations."),
 			gettext_noop("This includes operations such as VACUUM and CREATE INDEX."),
 			GUC_UNIT_KB
@@ -2108,7 +2124,11 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+#ifdef XCP
+		{"commit_delay", PGC_SUSET, WAL_SETTINGS,
+#else
 		{"commit_delay", PGC_USERSET, WAL_SETTINGS,
+#endif
 			gettext_noop("Sets the delay in microseconds between transaction commit and "
 						 "flushing WAL to disk."),
 			NULL
@@ -2119,7 +2139,11 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+#ifdef XCP
+		{"commit_siblings", PGC_SUSET, WAL_SETTINGS,
+#else
 		{"commit_siblings", PGC_USERSET, WAL_SETTINGS,
+#endif
 			gettext_noop("Sets the minimum concurrent open transactions before performing "
 						 "commit_delay."),
 			NULL

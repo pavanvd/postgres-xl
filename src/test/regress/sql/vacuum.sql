@@ -49,7 +49,7 @@ CLUSTER vaccluster;
 
 VACUUM FULL pg_am;
 VACUUM FULL pg_class;
-VACUUM FULL pg_database;
+VACUUM FULL pg_catalog.pg_database;
 VACUUM FULL vaccluster;
 VACUUM FULL vactst;
 
