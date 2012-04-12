@@ -181,10 +181,10 @@ ProcessUtility_callback(Node *parsetree,
 				entry = (StormStatsEntry *) hash_search(StatsEntryHash, &key, HASH_REMOVE, NULL);
 
 				/* What do we do if we do not find an entry? We WARN for now */
-				if (!entry)
+				if (!entry && !stmt->missing_ok)
 					ereport(WARNING,
 						(errmsg("entry does not exist for database %s!",
-						entry->dbname)));
+						stmt->dbname)));
 				LWLockRelease(shared_state->lock);
 				break;
 			}
