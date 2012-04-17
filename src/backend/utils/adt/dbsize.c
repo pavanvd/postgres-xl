@@ -35,6 +35,14 @@
 #include "utils/relmapper.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#ifdef XCP
+#include "catalog/pg_type.h"
+#include "catalog/pgxc_node.h"
+#include "executor/executor.h"
+#include "nodes/makefuncs.h"
+#include "pgxc/execRemote.h"
+#include "utils/snapmgr.h"
+#endif
 
 #ifdef PGXC
 static Datum pgxc_database_size(Oid dbOid);
@@ -792,16 +800,65 @@ pgxc_database_size(Oid dbOid)
 Datum
 pgxc_execute_on_nodes(int numnodes, Oid *nodelist, char *query)
 {
+#ifndef XCP
 	StringInfoData  buf;
 	int             ret;
 	TupleDesc       spi_tupdesc;
+#endif
 	int             i;
 	int64           total_size = 0;
 	int64           size = 0;
+#ifndef XCP
 	bool            isnull;
 	char           *nodename;
+#endif
 	Datum           datum;
 
+#ifdef XCP
+	EState		   *estate;
+	MemoryContext	oldcontext;
+	RemoteQuery	   *plan;
+	RemoteQueryState   *pstate;
+	TupleTableSlot	   *result;
+	Var			   *dummy;
+
+	/* 
+	 * Make up RemoteQuery plan node
+	 */
+	plan = makeNode(RemoteQuery);
+	plan->combine_type = COMBINE_TYPE_NONE;
+	plan->exec_nodes = makeNode(ExecNodes);
+	for (i = 0; i < numnodes; i++)
+		plan->exec_nodes->nodeList = lappend_int(plan->exec_nodes->nodeList,
+			PGXCNodeGetNodeId(nodelist[i], PGXC_NODE_DATANODE));
+	plan->sql_statement = query;
+	plan->force_autocommit = false;
+	plan->exec_type = EXEC_ON_DATANODES;
+	/* 
+	 * We only need the target entry to determine result data type.
+	 * So create dummy even if real expression is a function.
+	 */
+	dummy = makeVar(1, 1, INT8OID, 0, InvalidOid, 0);
+	plan->scan.plan.targetlist = lappend(plan->scan.plan.targetlist,
+									  makeTargetEntry((Expr *) dummy, 1, NULL, false));
+	/* prepare to execute */
+	estate = CreateExecutorState();
+	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+	estate->es_snapshot = GetActiveSnapshot();
+	pstate = ExecInitRemoteQuery(plan, estate, 0);
+	MemoryContextSwitchTo(oldcontext);
+
+	result = ExecRemoteQuery(pstate);
+	while (!TupIsNull(result))
+	{
+		bool isnull;
+		datum = slot_getattr(result, 1, &isnull);
+		size = DatumGetInt64(datum);
+                total_size += size;
+		result = ExecRemoteQuery(pstate);
+	}
+	ExecEndRemoteQuery(pstate);
+#else
 	/*
 	 * Connect to SPI manager
 	 */
@@ -846,6 +903,7 @@ pgxc_execute_on_nodes(int numnodes, Oid *nodelist, char *query)
 	}
 
 	SPI_finish();
+#endif
 
 	if (numnodes == 1)
 		PG_RETURN_DATUM(datum);
