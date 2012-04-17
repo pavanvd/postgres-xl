@@ -1052,6 +1052,9 @@ selectDumpableNamespace(NamespaceInfo *nsinfo)
 		nsinfo->dobj.dump = simple_oid_list_member(&schema_include_oids,
 												   nsinfo->dobj.catId.oid);
 	else if (strncmp(nsinfo->dobj.name, "pg_", 3) == 0 ||
+#ifdef XCP
+			 strncmp(nsinfo->dobj.name, "storm_", 6) == 0 ||
+#endif
 			 strcmp(nsinfo->dobj.name, "information_schema") == 0)
 		nsinfo->dobj.dump = false;
 	else
@@ -1759,6 +1762,23 @@ dumpDatabase(Archive *AH)
 	selectSourceSchema("pg_catalog");
 
 	/* Get the database owner and parameters from pg_database */
+#ifdef XCP
+	if (g_fout->remoteVersion >= 90100)
+	{
+		appendPQExpBuffer(dbQry, "SELECT 1262::oid as tableoid, oid, "
+						  "(%s datdba) AS dba, "
+						  "pg_encoding_to_char(encoding) AS encoding, "
+						  "datcollate, datctype, datfrozenxid, "
+						  "(SELECT spcname FROM pg_tablespace t WHERE t.oid = dattablespace) AS tablespace, "
+					  "shobj_description(oid, 'pg_database') AS description "
+
+						  "FROM pg_database "
+						  "WHERE datname = ",
+						  username_subquery);
+		appendStringLiteralAH(dbQry, datname, AH);
+	}
+	else
+#endif
 	if (g_fout->remoteVersion >= 80400)
 	{
 		appendPQExpBuffer(dbQry, "SELECT tableoid, oid, "
