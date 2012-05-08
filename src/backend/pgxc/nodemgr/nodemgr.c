@@ -13,6 +13,7 @@
 #include "postgres.h"
 #include "miscadmin.h"
 
+#include "access/hash.h"
 #include "access/heapam.h"
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
@@ -28,12 +29,94 @@
 #include "pgxc/nodemgr.h"
 #include "pgxc/pgxc.h"
 
-#ifdef XCP
-int         MaxDataNodes = 16;
-#endif
-/* Global number of nodes */
-int         NumDataNodes = 2;
-int         NumCoords = 1;
+/*
+ * How many times should we try to find a unique indetifier
+ * in case hash of the node name comes out to be duplicate
+ */
+
+#define MAX_TRIES_FOR_NID	200
+
+static Datum generate_node_id(const char *node_name);
+
+/*
+ * GUC parameters.
+ * Shared memory block can not be resized dynamically, so we should have some
+ * limits set at startup time to calculate amount of shared memory to store
+ * node table. Nodes can be added to running cluster until that limit is reached
+ * if cluster needs grow beyond the configuration value should be changed and
+ * cluster restarted.
+ */
+int				MaxCoords = 16;
+int				MaxDataNodes = 16;
+
+/* Global number of nodes. Point to a shared memory block */
+static int	   *shmemNumCoords;
+static int	   *shmemNumDataNodes;
+
+/* Shared memory tables of node definitions */
+NodeDefinition *coDefs;
+NodeDefinition *dnDefs;
+
+/*
+ * NodeTablesInit
+ *	Initializes shared memory tables of Coordinators and Datanodes.
+ */
+void
+NodeTablesShmemInit(void)
+{
+	bool found;
+	/*
+	 * Initialize the table of Coordinators: first sizeof(int) bytes are to
+	 * store actual number of Coordinators, remaining data in the structure is
+	 * array of NodeDefinition that can contain up to MaxCoords entries.
+	 * That is a bit weird and probably it would be better have these in
+	 * separate structures, but I am unsure about cost of having shmem structure
+	 * containing just single integer.
+	 */
+	shmemNumCoords = ShmemInitStruct("Coordinator Table",
+								sizeof(int) +
+									sizeof(NodeDefinition) * MaxCoords,
+								&found);
+
+	/* Have coDefs pointing right behind shmemNumCoords */
+	coDefs = (NodeDefinition *) (shmemNumCoords + 1);
+
+	/* Mark it empty upon creation */
+	if (!found)
+		*shmemNumCoords = 0;
+
+	/* Same for datanodes */
+	shmemNumDataNodes = ShmemInitStruct("Datanode Table",
+								   sizeof(int) +
+									   sizeof(NodeDefinition) * MaxDataNodes,
+								   &found);
+
+	/* Have coDefs pointing right behind shmemNumDataNodes */
+	dnDefs = (NodeDefinition *) (shmemNumDataNodes + 1);
+
+	/* Mark it empty upon creation */
+	if (!found)
+		*shmemNumDataNodes = 0;
+}
+
+
+/*
+ * NodeTablesShmemSize
+ *	Get the size of shared memory dedicated to node definitions
+ */
+Size
+NodeTablesShmemSize(void)
+{
+	Size co_size;
+	Size dn_size;
+
+	co_size = mul_size(sizeof(NodeDefinition), MaxCoords);
+	co_size = add_size(co_size, sizeof(int));
+	dn_size = mul_size(sizeof(NodeDefinition), MaxDataNodes);
+	dn_size = add_size(dn_size, sizeof(int));
+
+	return add_size(co_size, dn_size);
+}
 
 /*
  * Check list of options and return things filled.
@@ -41,7 +124,7 @@ int         NumCoords = 1;
  */
 static void
 check_node_options(const char *node_name, List *options, char **node_host,
-			int *node_port, char *node_type, 
+			int *node_port, char *node_type,
 			bool *is_primary, bool *is_preferred)
 {
 	ListCell   *option;
@@ -137,6 +220,70 @@ check_node_options(const char *node_name, List *options, char **node_host,
 #endif
 }
 
+/*
+ * generate_node_id
+ *
+ * Given a node name compute its hash to generate the identifier
+ * If the hash comes out to be duplicate , try some other values
+ * Give up after a few tries
+ */
+static Datum
+generate_node_id(const char *node_name)
+{
+	Datum		node_id;
+	uint32		n;
+	bool		inc;
+	int		i;
+
+	/* Compute node identifier by computing hash of node name */
+	node_id = hash_any((unsigned char *)node_name, strlen(node_name));
+
+	/*
+	 * Check if the hash is near the overflow limit, then we will
+	 * decrement it , otherwise we will increment
+	 */
+	inc = true;
+	n = DatumGetUInt32(node_id);
+	if (n >= UINT_MAX - MAX_TRIES_FOR_NID)
+		inc = false;
+
+	/*
+	 * Check if the identifier is clashing with an existing one,
+	 * and if it is try some other
+	 */
+	for (i = 0; i < MAX_TRIES_FOR_NID; i++)
+	{
+		HeapTuple	tup;
+
+		tup = SearchSysCache1(PGXCNODEIDENTIFIER, node_id);
+		if (tup == NULL)
+			break;
+
+		ReleaseSysCache(tup);
+
+		n = DatumGetUInt32(node_id);
+		if (inc)
+			n++;
+		else
+			n--;
+
+		node_id = UInt32GetDatum(n);
+	}
+
+	/*
+	 * This has really few chances to happen, but inform backend that node
+	 * has not been registered correctly in this case.
+	 */
+	if (i >= MAX_TRIES_FOR_NID)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("Please choose different node name."),
+				 errdetail("Name \"%s\" produces a duplicate identifier node_name",
+						   node_name)));
+
+	return node_id;
+}
+
 /* --------------------------------
  *  cmp_nodes
  *
@@ -159,25 +306,23 @@ cmp_nodes(const void *p1, const void *p2)
 	return 1;
 }
 
+
 /*
- * PgxcNodeCount
+ * PgxcNodeListAndCount
  *
- * Count number of PGXC nodes based on catalog information and return
- * an ordered list of node Oids for each PGXC node type.
+ * Update node definitions in the shared memory tables from the catalog
  */
 void
-PgxcNodeListAndCount(Oid **coOids, Oid **dnOids, int *num_coords, int *num_dns)
+PgxcNodeListAndCount(void)
 {
 	Relation rel;
 	HeapScanDesc scan;
 	HeapTuple   tuple;
 
-	*num_coords = 0;
-	*num_dns = 0;
+	LWLockAcquire(NodeTableLock, LW_EXCLUSIVE);
 
-	/* Don't forget to reinitialize primary and preferred nodes also */
-	primary_data_node = InvalidOid;
-	num_preferred_data_nodes = 0;
+	*shmemNumCoords = 0;
+	*shmemNumDataNodes = 0;
 
 	/*
 	 * Node information initialization is made in one scan:
@@ -188,77 +333,162 @@ PgxcNodeListAndCount(Oid **coOids, Oid **dnOids, int *num_coords, int *num_dns)
 	 */
 	rel = heap_open(PgxcNodeRelationId, AccessShareLock);
 	scan = heap_beginscan(rel, SnapshotNow, 0, NULL);
-#ifdef XCP
-scanloop:
-#endif
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
-		int numnodes;
-		Oid **nodes;
 		Form_pgxc_node  nodeForm = (Form_pgxc_node) GETSTRUCT(tuple);
+		NodeDefinition *node;
 
-		/* Take data for given node type */
+		/* Take definition for given node type */
 		switch (nodeForm->node_type)
 		{
 			case PGXC_NODE_COORDINATOR:
-#ifdef XCP
-				/*
-				 * Someone may create coordinator definitions in datanode's
-				 * catalog, but datanode never refer coordinator, so skip it
-				 */
-				if (IS_PGXC_DATANODE)
-					goto scanloop;
-#endif
-				(*num_coords)++;
-				numnodes = *num_coords;
-				nodes = coOids;
+				node = &coDefs[(*shmemNumCoords)++];
 				break;
 			case PGXC_NODE_DATANODE:
-				(*num_dns)++;
-				numnodes = *num_dns;
-				nodes = dnOids;
+				node = &dnDefs[(*shmemNumDataNodes)++];
 				break;
 			default:
 				break;
 		}
 
-		if (numnodes == 1)
-			*nodes = (Oid *) palloc(numnodes * sizeof(Oid));
-		else
-			*nodes = (Oid *) repalloc(*nodes, numnodes * sizeof(Oid));
-
-#ifdef XCP
-		(*nodes)[numnodes - 1] = HeapTupleGetOid(tuple);
-#else
-		(*nodes)[numnodes - 1] = get_pgxc_nodeoid(NameStr(nodeForm->node_name));
-#endif
-
-		/*
-		 * Save data related to preferred and primary node
-		 * Preferred and primaries use node Oids
-		 */
-		if (nodeForm->nodeis_primary)
-#ifdef XCP
-			primary_data_node = HeapTupleGetOid(tuple);
-#else
-			primary_data_node = get_pgxc_nodeoid(NameStr(nodeForm->node_name));
-#endif
-		if (nodeForm->nodeis_preferred)
-		{
-			preferred_data_node[num_preferred_data_nodes] =
-				get_pgxc_nodeoid(NameStr(nodeForm->node_name));
-			num_preferred_data_nodes++;
-		}
+		/* Populate the definition */
+		node->nodeoid = HeapTupleGetOid(tuple);
+		memcpy(&node->nodename, &nodeForm->node_name, NAMEDATALEN);
+		memcpy(&node->nodehost, &nodeForm->node_host, NAMEDATALEN);
+		node->nodeport = nodeForm->node_port;
+		node->nodeisprimary = nodeForm->nodeis_primary;
+		node->nodeispreferred = nodeForm->nodeis_preferred;
 	}
 	heap_endscan(scan);
 	heap_close(rel, AccessShareLock);
 
-	/* Finally sort the lists to be sent back */
-	if (NumCoords != 0)
-		qsort(*coOids, *num_coords, sizeof(Oid), cmp_nodes);
-	if (NumDataNodes != 0)
-		qsort(*dnOids, *num_dns, sizeof(Oid), cmp_nodes);
+	elog(LOG, "Done pgxc_nodes scan: %d coordinators and %d datanodes",
+			*shmemNumCoords, *shmemNumDataNodes);
+
+	/* Finally sort the lists */
+	if (*shmemNumCoords > 1)
+		qsort(coDefs, *shmemNumCoords, sizeof(NodeDefinition), cmp_nodes);
+	if (*shmemNumDataNodes > 1)
+		qsort(dnDefs, *shmemNumDataNodes, sizeof(NodeDefinition), cmp_nodes);
+
+	LWLockRelease(NodeTableLock);
 }
+
+
+/*
+ * PgxcNodeGetIds
+ *
+ * List into palloc'ed arrays Oids of Coordinators and Datanodes currently
+ * presented in the node table, as well as number of Coordinators and Datanodes.
+ * Any parameter may be NULL if caller is not interested in receiving
+ * appropriate results. Preferred and primary node information can be updated
+ * in session if requested.
+ */
+void
+PgxcNodeGetOids(Oid **coOids, Oid **dnOids,
+				int *num_coords, int *num_dns, bool update_preferred)
+{
+	LWLockAcquire(NodeTableLock, LW_SHARED);
+
+	elog(LOG, "Get OIDs from table: %d coordinators and %d datanodes",
+			*shmemNumCoords, *shmemNumDataNodes);
+
+	if (num_coords)
+		*num_coords = *shmemNumCoords;
+	if (num_dns)
+		*num_dns = *shmemNumDataNodes;
+
+	if (coOids)
+	{
+		int i;
+
+		*coOids = (Oid *) palloc(*shmemNumCoords * sizeof(Oid));
+		for (i = 0; i < *shmemNumCoords; i++)
+			(*coOids)[i] = coDefs[i].nodeoid;
+	}
+
+	if (dnOids)
+	{
+		int i;
+
+		*dnOids = (Oid *) palloc(*shmemNumDataNodes * sizeof(Oid));
+		for (i = 0; i < *shmemNumDataNodes; i++)
+			(*dnOids)[i] = dnDefs[i].nodeoid;
+	}
+
+	/* Update also preferred and primary node informations if requested */
+	if (update_preferred)
+	{
+		int i;
+
+		/* Initialize primary and preferred node information */
+		primary_data_node = InvalidOid;
+		num_preferred_data_nodes = 0;
+
+		for (i = 0; i < *shmemNumDataNodes; i++)
+		{
+			if (dnDefs[i].nodeisprimary)
+				primary_data_node = dnDefs[i].nodeoid;
+
+			if (dnDefs[i].nodeispreferred)
+			{
+				preferred_data_node[num_preferred_data_nodes] = dnDefs[i].nodeoid;
+				num_preferred_data_nodes++;
+			}
+		}
+	}
+
+	LWLockRelease(NodeTableLock);
+}
+
+
+/*
+ * Find node definition in the shared memory node table.
+ * The structure is a copy palloc'ed in current memory context.
+ */
+NodeDefinition *
+PgxcNodeGetDefinition(Oid node)
+{
+	NodeDefinition *result = NULL;
+	int				i;
+
+	LWLockAcquire(NodeTableLock, LW_SHARED);
+
+	/* search through the data nodes first */
+	for (i = 0; i < *shmemNumDataNodes; i++)
+	{
+		if (dnDefs[i].nodeoid == node)
+		{
+			result = (NodeDefinition *) palloc(sizeof(NodeDefinition));
+
+			memcpy(result, dnDefs + i, sizeof(NodeDefinition));
+
+			LWLockRelease(NodeTableLock);
+
+			return result;
+		}
+	}
+
+	/* if not found, search through the Coordinators */
+	for (i = 0; i < *shmemNumCoords; i++)
+	{
+		if (coDefs[i].nodeoid == node)
+		{
+			result = (NodeDefinition *) palloc(sizeof(NodeDefinition));
+
+			memcpy(result, coDefs + i, sizeof(NodeDefinition));
+
+			LWLockRelease(NodeTableLock);
+
+			return result;
+		}
+	}
+
+	/* not found, return NULL */
+	LWLockRelease(NodeTableLock);
+	return NULL;
+}
+
 
 /*
  * PgxcNodeCreate
@@ -280,6 +510,7 @@ PgxcNodeCreate(CreateNodeStmt *stmt)
 	int			node_port = 0;
 	bool		is_primary = false;
 	bool		is_preferred = false;
+	Datum		node_id;
 
 	/* Only a DB administrator can add nodes */
 	if (!superuser())
@@ -297,14 +528,17 @@ PgxcNodeCreate(CreateNodeStmt *stmt)
 	/* Check length of node name */
 	if (strlen(node_name) > PGXC_NODENAME_LENGTH)
 		ereport(ERROR,
-                (errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-                 errmsg("Node name \"%s\" is too long",
-                        node_name)));
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("Node name \"%s\" is too long",
+						node_name)));
 
 	/* Filter options */
 	check_node_options(node_name, stmt->options, &node_host,
 				&node_port, &node_type,
 				&is_primary, &is_preferred);
+
+	/* Compute node identifier */
+	node_id = generate_node_id(node_name);
 
 	/*
 	 * Then assign default values if necessary
@@ -347,6 +581,7 @@ PgxcNodeCreate(CreateNodeStmt *stmt)
 	values[Anum_pgxc_node_host - 1] = DirectFunctionCall1(namein, CStringGetDatum(node_host));
 	values[Anum_pgxc_node_is_primary - 1] = BoolGetDatum(is_primary);
 	values[Anum_pgxc_node_is_preferred - 1] = BoolGetDatum(is_preferred);
+	values[Anum_pgxc_node_id - 1] = node_id;
 
 	htup = heap_form_tuple(pgxcnodesrel->rd_att, values, nulls);
 
@@ -378,6 +613,7 @@ PgxcNodeAlter(AlterNodeStmt *stmt)
 	Datum		new_record[Natts_pgxc_node];
 	bool		new_record_nulls[Natts_pgxc_node];
 	bool		new_record_repl[Natts_pgxc_node];
+	uint32		node_id;
 
 	/* Only a DB administrator can alter cluster nodes */
 	if (!superuser())
@@ -410,6 +646,7 @@ PgxcNodeAlter(AlterNodeStmt *stmt)
 	is_primary = is_pgxc_nodeprimary(nodeOid);
 	node_type = get_pgxc_nodetype(nodeOid);
 	node_type_old = node_type;
+	node_id = get_pgxc_node_id(nodeOid);
 
 	/* Filter options */
 	check_node_options(node_name, stmt->options, &node_host,
@@ -444,7 +681,7 @@ PgxcNodeAlter(AlterNodeStmt *stmt)
 	MemSet(new_record_repl, false, sizeof(new_record_repl));
 	new_record[Anum_pgxc_node_port - 1] = Int32GetDatum(node_port);
 	new_record_repl[Anum_pgxc_node_port - 1] = true;
-	new_record[Anum_pgxc_node_host - 1] = 
+	new_record[Anum_pgxc_node_host - 1] =
 		DirectFunctionCall1(namein, CStringGetDatum(node_host));
 	new_record_repl[Anum_pgxc_node_host - 1] = true;
 	new_record[Anum_pgxc_node_type - 1] = CharGetDatum(node_type);
@@ -453,6 +690,8 @@ PgxcNodeAlter(AlterNodeStmt *stmt)
 	new_record_repl[Anum_pgxc_node_is_primary - 1] = true;
 	new_record[Anum_pgxc_node_is_preferred - 1] = BoolGetDatum(is_preferred);
 	new_record_repl[Anum_pgxc_node_is_preferred - 1] = true;
+	new_record[Anum_pgxc_node_id - 1] = UInt32GetDatum(node_id);
+	new_record_repl[Anum_pgxc_node_id - 1] = true;
 
 	/* Update relation */
 	newtup = heap_modify_tuple(oldtup, RelationGetDescr(rel),

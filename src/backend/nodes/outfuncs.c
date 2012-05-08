@@ -34,6 +34,9 @@
 #include "utils/lsyscache.h"
 #endif
 #include "utils/datum.h"
+#ifdef PGXC
+#include "pgxc/planner.h"
+#endif
 
 #ifdef XCP
 /*
@@ -682,6 +685,43 @@ _outIndexScan(StringInfo str, IndexScan *node)
 	WRITE_NODE_FIELD(indexorderbyorig);
 	WRITE_ENUM_FIELD(indexorderdir, ScanDirection);
 }
+
+#ifdef PGXC
+static void
+_outRemoteQuery(StringInfo str, RemoteQuery *node)
+{
+	WRITE_NODE_TYPE("REMOTEQUERY");
+
+	_outScanInfo(str, (Scan *) node);
+
+	WRITE_ENUM_FIELD(exec_direct_type, ExecDirectType);
+	WRITE_STRING_FIELD(sql_statement);
+	WRITE_NODE_FIELD(exec_nodes);
+	WRITE_ENUM_FIELD(combine_type, CombineType);
+	WRITE_BOOL_FIELD(read_only);
+	WRITE_BOOL_FIELD(force_autocommit);
+	WRITE_STRING_FIELD(statement);
+	WRITE_STRING_FIELD(cursor);
+	WRITE_INT_FIELD(num_params);
+	WRITE_ENUM_FIELD(exec_type, RemoteQueryExecType);
+#ifndef XCP
+	WRITE_BOOL_FIELD(is_temp);
+#endif
+}
+
+static void
+_outExecNodes(StringInfo str, ExecNodes *node)
+{
+	WRITE_NODE_TYPE("EXEC_NODES");
+
+	WRITE_NODE_FIELD(primarynodelist);
+	WRITE_NODE_FIELD(nodeList);
+	WRITE_CHAR_FIELD(baselocatortype);
+	WRITE_NODE_FIELD(en_expr);
+	WRITE_OID_FIELD(en_relid);
+	WRITE_ENUM_FIELD(accesstype, RelationAccessType);
+}
+#endif
 
 static void
 _outBitmapIndexScan(StringInfo str, BitmapIndexScan *node)
@@ -1383,11 +1423,11 @@ _outSimpleSort(StringInfo str, SimpleSort *node)
 		else
 			appendStringInfo(str, " %u", node->sortOperators[i]);
 
-	appendStringInfo(str, " :collations");
+	appendStringInfo(str, " :sortCollations");
 	for (i = 0; i < node->numCols; i++)
 		if (portable_output)
 		{
-			Oid coll = node->collations[i];
+			Oid coll = node->sortCollations[i];
 			if (OidIsValid(coll))
 			{
 				appendStringInfoChar(str, ' ');
@@ -1400,7 +1440,7 @@ _outSimpleSort(StringInfo str, SimpleSort *node)
 				appendStringInfo(str, " <> <> -1");
 		}
 		else
-			appendStringInfo(str, " %u", node->collations[i]);
+			appendStringInfo(str, " %u", node->sortCollations[i]);
 
 	appendStringInfo(str, " :nullsFirst");
 	for (i = 0; i < node->numCols; i++)
@@ -3288,12 +3328,6 @@ _outSetOperationStmt(StringInfo str, SetOperationStmt *node)
 static void
 _outRangeTblEntry(StringInfo str, RangeTblEntry *node)
 {
-#ifdef PGXC
-#ifndef XCP
-	int i;
-#endif
-#endif
-
 	WRITE_NODE_TYPE("RTE");
 
 	/* put alias + eref first to make dump more legible */
@@ -3309,24 +3343,6 @@ _outRangeTblEntry(StringInfo str, RangeTblEntry *node)
 	switch (node->rtekind)
 	{
 		case RTE_RELATION:
-#ifdef PGXC
-#ifndef XCP
-			/* write tuple descriptor */
-			appendStringInfo(str, " :tupdesc_natts %d (", node->reltupdesc->natts);
-
-			for (i = 0 ; i < node->reltupdesc->natts ; i++)
-			{
-				appendStringInfo(str, ":colname ");
-				_outToken(str, NameStr(node->reltupdesc->attrs[i]->attname));
-				appendStringInfo(str, " :coltypid %u ",
-						node->reltupdesc->attrs[i]->atttypid);
-				appendStringInfo(str, ":coltypmod %d ",
-						node->reltupdesc->attrs[i]->atttypmod);
-			}
-
-			appendStringInfo(str, ") ");
-#endif
-#endif
 #ifdef XCP
 			if (portable_output)
 				WRITE_RELID_FIELD(relid);
@@ -3747,6 +3763,11 @@ _outNode(StringInfo str, void *obj)
 			case T_SeqScan:
 				_outSeqScan(str, obj);
 				break;
+#ifdef PGXC
+			case T_RemoteQuery:
+				_outRemoteQuery(str, obj);
+				break;
+#endif
 			case T_IndexScan:
 				_outIndexScan(str, obj);
 				break;
@@ -4183,6 +4204,11 @@ _outNode(StringInfo str, void *obj)
 			case T_XmlSerialize:
 				_outXmlSerialize(str, obj);
 				break;
+#ifdef PGXC
+			case T_ExecNodes:
+				_outExecNodes(str, obj);
+				break;
+#endif
 
 			default:
 

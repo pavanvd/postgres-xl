@@ -46,9 +46,6 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
-#ifdef PGXC
-#include "pgxc/poolmgr.h"
-#endif
 
 
 #define DIRECTORY_LOCK_FILE		"postmaster.pid"
@@ -505,14 +502,7 @@ InitializeSessionUserIdStandalone(void)
 	 * This function should only be called in single-user mode and in
 	 * autovacuum workers.
 	 */
-#ifdef PGXC
-	/* A pooler process can also go through freely */
-	AssertState(!IsUnderPostmaster ||
-				IsAutoVacuumWorkerProcess() ||
-				IsPGXCPoolerProcess());
-#else
 	AssertState(!IsUnderPostmaster || IsAutoVacuumWorkerProcess());
-#endif
 
 	/* call only once */
 	AssertState(!OidIsValid(AuthenticatedUserId));

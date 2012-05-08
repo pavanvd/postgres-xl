@@ -29,6 +29,7 @@
 #include "commands/trigger.h"
 
 #ifdef PGXC
+#include "pgxc/locator.h"
 #include "pgxc/nodemgr.h"
 #include "pgxc/pgxc.h"
 #include "pgxc/postgresql_fdw.h"
@@ -1204,11 +1205,16 @@ rewriteTargetListUD(Query *parsetree, RangeTblEntry *target_rte,
 		if (var->varattno < 1 || var->varattno > numattrs)
 			continue;
 
+		/* Bypass if this var does not use this relation */
+		if (var->varno != parsetree->resultRelation)
+			continue;
+
 		att_tup = target_relation->rd_att->attrs[var->varattno - 1];
 		tle = makeTargetEntry((Expr *) var,
 							  list_length(parsetree->targetList) + 1,
 							  pstrdup(NameStr(att_tup->attname)),
 							  true);
+
 		parsetree->targetList = lappend(parsetree->targetList, tle);
 	}
 #endif
@@ -1246,6 +1252,37 @@ rewriteTargetListUD(Query *parsetree, RangeTblEntry *target_rte,
 						  true);
 
 	parsetree->targetList = lappend(parsetree->targetList, tle);
+
+#ifdef PGXC
+	/*
+	 * If relation is non-replicated, we need also to identify the Datanode
+	 * from where tuple is fetched.
+	 */
+	if (IS_PGXC_COORDINATOR &&
+		!IsConnFromCoord() &&
+#ifdef XCP
+		!IsReplicated(GetRelationLocType(RelationGetRelid(target_relation))))
+#else
+		!IsLocatorReplicated(GetRelationLocType(RelationGetRelid(target_relation))))
+#endif
+	{
+		var = makeVar(parsetree->resultRelation,
+					  XC_NodeIdAttributeNumber,
+					  INT4OID,
+					  -1,
+					  InvalidOid,
+					  0);
+
+		attrname = "xc_node_id";
+
+		tle = makeTargetEntry((Expr *) var,
+							  list_length(parsetree->targetList) + 1,
+							  pstrdup(attrname),
+							  true);
+
+		parsetree->targetList = lappend(parsetree->targetList, tle);
+	}
+#endif
 }
 
 
@@ -2036,7 +2073,7 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 		}
 		else
 			elog(ERROR, "unrecognized commandType: %d", (int) event);
-		
+
 #ifdef PGXC
 		if (parsetree_list == NIL)
 		{
@@ -2151,7 +2188,7 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 			foreach(pt_cell, parsetree_list)
 			{
 				Query  *query;
-				
+
 				query = (Query *)lfirst(pt_cell);
 
 				/*
@@ -2172,7 +2209,7 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 										&instead,
 										&returning,
 										&qual_product);
-					
+
 					qual_product_list = lappend(qual_product_list,  qual_product);
 
 					/*
@@ -2295,14 +2332,14 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 	}
 	else
 	{
-		int query_no = 0;	
+		int query_no = 0;
 
 		foreach(pt_cell, parsetree_list)
 		{
 
 			Query	*query = NULL;
 			Query	*qual = NULL;
-			
+
 			query = (Query *)lfirst(pt_cell);
 			if (!instead)
 			{
@@ -2486,7 +2523,7 @@ QueryRewriteCTAS(Query *parsetree)
    	create_stmt = makeNode(CreateStmt);
 	create_stmt->relation = relation;
 
-	/* 
+	/*
 	 * Based on the targetList, populate the column information for the target
 	 * table.
 	 */
@@ -2510,7 +2547,7 @@ QueryRewriteCTAS(Query *parsetree)
 		coldef->cooked_default = NULL;
 		coldef->constraints = NIL;
 
-		/* 
+		/*
 		 * Set typeOid and typemod. The name of the type is derived while
 		 * generating query
 		 */
@@ -2519,7 +2556,7 @@ QueryRewriteCTAS(Query *parsetree)
 
 		coldef->typeName = typename;
 
-		/* 
+		/*
 		 * XXX Should we look at the column specifications in the intoClause
 		 * instead of the target entry ?
 		 */
@@ -2527,7 +2564,7 @@ QueryRewriteCTAS(Query *parsetree)
 		tableElts = lappend(tableElts, coldef);
 	}
 
-	/* 
+	/*
 	 * Set column information and the distribution mechanism (which will be
 	 * NULL for SELECT INTO and the default mechanism will be picked)
 	 */
@@ -2551,7 +2588,7 @@ QueryRewriteCTAS(Query *parsetree)
 	/* Get a copy of the parsetree which we can freely modify  */
 	cparsetree = copyObject(parsetree);
 
-	/* 
+	/*
 	 * Now build a utility statement in order to run the CREATE TABLE DDL on
 	 * the local and remote nodes. We keep others fields as it is since they
 	 * are ignored anyways by deparse_query.

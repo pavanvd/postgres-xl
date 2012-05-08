@@ -916,11 +916,7 @@ tuplesort_begin_datum(Oid datumType, Oid sortOperator, Oid sortCollation,
 Tuplesortstate *
 tuplesort_begin_merge(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
-					 Oid *sortOperators,
-#ifdef XCP
-					 Oid *sortCollations,
-#endif
-					 bool *nullsFirstFlags,
+					 Oid *sortOperators, Oid *sortCollations, bool *nullsFirstFlags,
 #ifdef XCP
 					 ResponseCombiner *combiner,
 #else
@@ -966,6 +962,7 @@ tuplesort_begin_merge(TupleDesc tupDesc,
 	{
 		Oid			sortFunction;
 		bool		reverse;
+		int			flags;
 
 		AssertArg(attNums[i] != 0);
 		AssertArg(sortOperators[i] != 0);
@@ -975,32 +972,26 @@ tuplesort_begin_merge(TupleDesc tupDesc,
 			elog(ERROR, "operator %u is not a valid ordering operator",
 				 sortOperators[i]);
 
+
+		/* We use btree's conventions for encoding directionality */
+		flags = 0;
+		if (reverse)
+			flags |= SK_BT_DESC;
+		if (nullsFirstFlags[i])
+			flags |= SK_BT_NULLS_FIRST;
+
 		/*
 		 * We needn't fill in sk_strategy or sk_subtype since these scankeys
 		 * will never be passed to an index.
 		 */
-#ifdef XCP
 		ScanKeyEntryInitialize(&state->scanKeys[i],
-							   0,
-							   attNums[i],
-							   InvalidStrategy,
-							   InvalidOid,
-							   sortCollations[i],
-							   sortFunction,
-							   (Datum) 0);
-#else
-		ScanKeyInit(&state->scanKeys[i],
+					flags,
 					attNums[i],
 					InvalidStrategy,
+					InvalidOid,
+					sortCollations[i],
 					sortFunction,
 					(Datum) 0);
-#endif
-
-		/* However, we use btree's conventions for encoding directionality */
-		if (reverse)
-			state->scanKeys[i].sk_flags |= SK_BT_DESC;
-		if (nullsFirstFlags[i])
-			state->scanKeys[i].sk_flags |= SK_BT_NULLS_FIRST;
 	}
 
 	/*
@@ -3407,6 +3398,10 @@ readtup_cluster(Tuplesortstate *state, SortTuple *stup,
 						 &tuple->t_self, sizeof(ItemPointerData));
 	/* We don't currently bother to reconstruct t_tableOid */
 	tuple->t_tableOid = InvalidOid;
+#ifdef PGXC
+	tuple->t_xc_node_id = 0;
+#endif
+
 	/* Read in the tuple body */
 	LogicalTapeReadExact(state->tapeset, tapenum,
 						 tuple->t_data, tuple->t_len);

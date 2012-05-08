@@ -703,8 +703,7 @@ pg_relation_filepath(PG_FUNCTION_ARGS)
 		case RELPERSISTENCE_TEMP:
 			if (isTempOrToastNamespace(relform->relnamespace))
 #ifdef XCP
-				backend = OidIsValid(MyCoordId) ?
-										InvalidBackendId : MyBackendId;
+				backend = OidIsValid(MyCoordId) ? InvalidBackendId : MyBackendId;
 #else
 				backend = MyBackendId;
 #endif
@@ -751,7 +750,7 @@ pgxc_tablespace_size(Oid tsOid)
 	initStringInfo(&buf);
 	appendStringInfo(&buf, "SELECT pg_catalog.pg_tablespace_size('%s')", tsname);
 
-	PgxcNodeListAndCount(&coOids, &dnOids, &numcoords, &numdnodes);
+	PgxcNodeGetOids(&coOids, &dnOids, &numcoords, &numdnodes, false);
 
 	return pgxc_execute_on_nodes(numdnodes, dnOids, buf.data);
 }
@@ -776,7 +775,7 @@ pgxc_database_size(Oid dbOid)
 	initStringInfo(&buf);
 	appendStringInfo(&buf, "SELECT pg_catalog.pg_database_size('%s')", dbname);
 
-	PgxcNodeListAndCount(&coOids, &dnOids, &numcoords, &numdnodes);
+	PgxcNodeGetOids(&coOids, &dnOids, &numcoords, &numdnodes, false);
 
 	return pgxc_execute_on_nodes(numdnodes, dnOids, buf.data);
 }

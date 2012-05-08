@@ -616,7 +616,14 @@ check_XactIsoLevel(char **newval, void **extra, GucSource source)
 
 	if (strcmp(*newval, "serializable") == 0)
 	{
+#ifdef PGXC
+		/*
+		 * PGXCTODO - PGXC does not support 9.1 serializable transactions yet
+		 */
+		newXactIsoLevel = XACT_REPEATABLE_READ;
+#else		
 		newXactIsoLevel = XACT_SERIALIZABLE;
+#endif		
 	}
 	else if (strcmp(*newval, "repeatable read") == 0)
 	{
@@ -673,6 +680,13 @@ void
 assign_XactIsoLevel(const char *newval, void *extra)
 {
 	XactIsoLevel = *((int *) extra);
+#ifdef PGXC
+	/*
+	 * PGXCTODO - PGXC does not support 9.1 serializable transactions yet
+	 */
+	if (XactIsoLevel == XACT_SERIALIZABLE)
+		XactIsoLevel = XACT_REPEATABLE_READ;
+#endif	
 }
 
 const char *
@@ -961,10 +975,10 @@ check_global_session(char **newval, void **extra, GucSource source)
 	else
 	{
 		/*
-		 * Get pointer on '#' character separating coordinator name from pid in the
+		 * Get pointer on '_' character separating coordinator name from pid in the
 		 * global session identifier
 		 */
-		separatorPos = strrchr(*newval, '#');
+		separatorPos = strrchr(*newval, '_');
 		if (separatorPos == NULL)
 		{
 			GUC_check_errmsg("malformed Global Session identifier: \"%s\"", *newval);
@@ -990,7 +1004,7 @@ check_global_session(char **newval, void **extra, GucSource source)
 		coordTup = SearchSysCache1(PGXCNODENAME, PointerGetDatum(*newval));
 		if (!HeapTupleIsValid(coordTup))
 		{
-			*separatorPos = '#';
+			*separatorPos = '_';
 			GUC_check_errmsg("node \"%s\" does not exist", *newval);
 			return false;
 		}
@@ -998,14 +1012,14 @@ check_global_session(char **newval, void **extra, GucSource source)
 		if (((Form_pgxc_node) GETSTRUCT(coordTup))->node_type != PGXC_NODE_COORDINATOR)
 		{
 			ReleaseSysCache(coordTup);
-			*separatorPos = '#';
+			*separatorPos = '_';
 			GUC_check_errmsg("node \"%s\" is not a coordinator", *newval);
 			return false;
 		}
 
 		coordid = HeapTupleGetOid(coordTup);
 
-		*separatorPos = '#';
+		*separatorPos = '_';
 		ReleaseSysCache(coordTup);
 	}
 

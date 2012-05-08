@@ -123,9 +123,6 @@ typedef enum TBlockState
 	TBLOCK_BEGIN,				/* starting transaction block */
 	TBLOCK_INPROGRESS,			/* live transaction */
 	TBLOCK_END,					/* COMMIT received */
-#ifdef PGXC
-	TBLOCK_END_NOT_GTM,			/* COMMIT received but do not commit on GTM */
-#endif
 	TBLOCK_ABORT,				/* failed xact, awaiting ROLLBACK */
 	TBLOCK_ABORT_END,			/* failed xact, ROLLBACK received */
 	TBLOCK_ABORT_PENDING,		/* live xact, ROLLBACK received */
@@ -147,14 +144,17 @@ typedef enum TBlockState
  */
 typedef struct TransactionStateData
 {
-	TransactionId transactionId;	/* my XID, or Invalid if none */
 #ifdef PGXC  /* PGXC_COORD */
-	GlobalTransactionId	globalTransactionId;		/* my GXID, or Invalid if none */
-	GlobalTransactionId	globalCommitTransactionId;	/* Commit GXID used by implicit 2PC */
-	bool				ArePGXCNodesPrepared;		/* Checks if PGXC Nodes are prepared and
-													 * rollbacks then in case of an Abort */
+	/* my GXID, or Invalid if none */
+	GlobalTransactionId transactionId;
+	GlobalTransactionId	topGlobalTransansactionId;
+	GlobalTransactionId	auxilliaryTransactionId;
+#ifndef XCP
 	bool				isLocalParameterUsed;		/* Check if a local parameter is active
 													 * in transaction block (SET LOCAL, DEFERRED) */
+#endif
+#else
+	TransactionId transactionId;	/* my XID, or Invalid if none */
 #endif
 	SubTransactionId subTransactionId;	/* my subxact ID */
 	char	   *name;			/* savepoint name, if any */
@@ -183,11 +183,15 @@ typedef TransactionStateData *TransactionState;
  * transaction at all, or when in a top-level transaction.
  */
 static TransactionStateData TopTransactionStateData = {
-	0,							/* transaction id */
 #ifdef PGXC
 	0,							/* global transaction id */
-	0,							/* global commit transaction id */
-	0,							/* flag if nodes are prepared or not */
+	0,							/* prepared global transaction id */
+	0,							/* commit prepared global transaction id */
+#ifndef XCP
+	false,						/* isLocalParameterUsed */
+#endif
+#else
+	0,							/* transaction id */
 #endif
 	0,							/* subtransaction id */
 	NULL,						/* savepoint name */
@@ -255,6 +259,10 @@ static TimestampTz GTMdeltaTimestamp = 0;
  * global to a whole transaction, so we don't keep it in the state stack.
  */
 static char *prepareGID;
+static char *savePrepareGID;
+static bool XactLocalNodePrepared;
+static bool  XactReadLocalNode;
+static bool  XactWriteLocalNode;
 
 /*
  * Some commands want to force synchronous commit.
@@ -292,6 +300,21 @@ typedef struct SubXactCallbackItem
 
 static SubXactCallbackItem *SubXact_callbacks = NULL;
 
+#ifdef PGXC
+/*
+ * List of callback items for GTM.
+ * Those are called at transaction commit/abort to perform actions
+ * on GTM in order to maintain data consistency on GTM with other cluster nodes.
+ */
+typedef struct GTMCallbackItem
+{
+	struct GTMCallbackItem *next;
+	GTMCallback callback;
+	void	   *arg;
+} GTMCallbackItem;
+
+static GTMCallbackItem *GTM_callbacks = NULL;
+#endif
 
 /* local function prototypes */
 static void AssignTransactionId(TransactionState s);
@@ -308,12 +331,12 @@ static void CallXactCallbacks(XactEvent event);
 static void CallSubXactCallbacks(SubXactEvent event,
 					 SubTransactionId mySubid,
 					 SubTransactionId parentSubid);
-static void CleanupTransaction(void);
 #ifdef PGXC
-static void CommitTransaction(bool contact_gtm);
-#else
-static void CommitTransaction(void);
+static void CleanGTMCallbacks(void);
+static void CallGTMCallbacks(GTMEvent event);
 #endif
+static void CleanupTransaction(void);
+static void CommitTransaction(void);
 static TransactionId RecordTransactionAbort(bool isSubXact);
 static void StartTransaction(void);
 
@@ -335,78 +358,8 @@ static void ShowTransactionState(const char *str);
 static void ShowTransactionStateRec(TransactionState state);
 static const char *BlockStateAsString(TBlockState blockState);
 static const char *TransStateAsString(TransState state);
-
-#ifdef PGXC  /* PGXC_COORD */
-static GlobalTransactionId GetGlobalTransactionId(TransactionState s);
-static void PrepareTransaction(bool is_implicit);
-
-/* ----------------------------------------------------------------
- *	PG-XC Functions
- * ----------------------------------------------------------------
- */
-
-/*
- * GetCurrentGlobalTransactionId
- *
- * This will return the GXID of the current transaction,
- * getting one from the GTM if it's not yet set. Be careful to call this
- * only inside a valid xact.
- */
-GlobalTransactionId
-GetCurrentGlobalTransactionId(void)
-{
-	return GetGlobalTransactionId(CurrentTransactionState);
-}
-
-/*
- * GetGlobalTransactionId
- *
- * This will return the GXID of the specified transaction,
- * getting one from the GTM if it's not yet set.
- * It also returns a timestamp value if a GXID has been taken from GTM
- */
-static GlobalTransactionId
-GetGlobalTransactionId(TransactionState s)
-{
-#ifndef XCP
-	GTM_Timestamp gtm_timestamp;
-	bool		received_tp = false;
-#endif
-
-	/*
-	 * Here we receive timestamp at the same time as gxid.
-	 */
-#ifdef XCP
-	if (!GlobalTransactionIdIsValid(s->globalTransactionId))
-	{
-		GTM_Timestamp gtm_timestamp;
-		bool		received_tp = false;
-
-		s->globalTransactionId = GetNewGlobalTransactionId(&received_tp,
-														   &gtm_timestamp);
-
-		/* Set a timestamp value if and only if it has been received from GTM */
-		if (received_tp)
-		{
-			GTMxactStartTimestamp = (TimestampTz) gtm_timestamp;
-			GTMdeltaTimestamp = GTMxactStartTimestamp - stmtStartTimestamp;
-		}
-	}
-#else
-	if (!GlobalTransactionIdIsValid(s->globalTransactionId))
-		s->globalTransactionId = (GlobalTransactionId) GetNewTransactionId(s->parent != NULL, &received_tp, &gtm_timestamp);
-
-	/* Set a timestamp value if and only if it has been received from GTM */
-	if (received_tp)
- 	{
-		GTMxactStartTimestamp = (TimestampTz) gtm_timestamp;
-		GTMdeltaTimestamp = GTMxactStartTimestamp - stmtStartTimestamp;
-	}
-#endif /* XCP */
-
-	return s->globalTransactionId;
-}
-#endif  /* PGXC */
+static void PrepareTransaction(void);
+static void AtEOXact_GlobalTxn(bool commit);
 
 
 /* ----------------------------------------------------------------
@@ -511,6 +464,7 @@ GetCurrentTransactionIdIfAny(void)
 }
 
 #ifdef PGXC
+#ifndef XCP
 /*
  *	GetCurrentLocalParamStatus
  *
@@ -533,6 +487,7 @@ SetCurrentLocalParamStatus(bool status)
 {
 	CurrentTransactionState->isLocalParameterUsed = status;
 }
+#endif
 #endif
 
 /*
@@ -592,21 +547,6 @@ AssignTransactionId(TransactionState s)
 	 * the Xid as "running".  See GetNewTransactionId.
 	 */
 #ifdef PGXC  /* PGXC_COORD */
-#ifdef XCP
-	/* Assign GXID to the current transaction if not yet set */
-	GetGlobalTransactionId(s);
-	elog(DEBUG1, "New transaction id assigned = %d, isSubXact = %s",
-		s->globalTransactionId, isSubXact ? "true" : "false");
-
-	s->transactionId = GetNewTransactionId(s->globalTransactionId,isSubXact);
-#else
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-	{
-		s->transactionId = (TransactionId) GetGlobalTransactionId(s);
-		elog(DEBUG1, "New transaction id assigned = %d, isSubXact = %s",
-			s->transactionId, isSubXact ? "true" : "false");
-	}
-	else
 	{
 		GTM_Timestamp	gtm_timestamp;
 		bool			received_tp;
@@ -618,7 +558,6 @@ AssignTransactionId(TransactionState s)
 			GTMdeltaTimestamp = GTMxactStartTimestamp - stmtStartTimestamp;
 		}
 	}
-#endif /* XCP */
 #else
 	s->transactionId = GetNewTransactionId(isSubXact);
 #endif /* PGXC */
@@ -707,6 +646,36 @@ AssignTransactionId(TransactionState s)
 	}
 }
 
+GlobalTransactionId
+GetTopGlobalTransactionId()
+{
+	TransactionState s = CurrentTransactionState;
+	return s->topGlobalTransansactionId;
+}
+
+GlobalTransactionId
+GetAuxilliaryTransactionId()
+{
+	TransactionState s = CurrentTransactionState;
+	if (!GlobalTransactionIdIsValid(s->auxilliaryTransactionId))
+		s->auxilliaryTransactionId = BeginTranGTM(NULL);
+	return s->auxilliaryTransactionId;
+}
+
+void
+SetTopGlobalTransactionId(GlobalTransactionId gxid)
+{
+	TransactionState s = CurrentTransactionState;
+	s->topGlobalTransansactionId = gxid;
+}
+
+void
+SetAuxilliaryTransactionId(GlobalTransactionId gxid)
+{
+	TransactionState s = CurrentTransactionState;
+	s->auxilliaryTransactionId = gxid;
+}
+
 /*
  *	GetCurrentSubTransactionId
  */
@@ -717,7 +686,6 @@ GetCurrentSubTransactionId(void)
 
 	return s->subTransactionId;
 }
-
 
 /*
  *	GetCurrentCommandId
@@ -1429,6 +1397,21 @@ AtCommit_Memory(void)
 	CurrentTransactionState->curTransactionContext = NULL;
 }
 
+#ifdef PGXC
+/*
+ *	CleanGTMCallbacks
+ */
+static void
+CleanGTMCallbacks(void)
+{
+	/*
+	 * The transaction is done, TopTransactionContext as well as the GTM callback items
+	 * are already cleaned, so we need here only to reset the GTM callback pointer properly.
+	 */
+	GTM_callbacks = NULL;
+}
+#endif
+
 /* ----------------------------------------------------------------
  *						CommitSubTransaction stuff
  * ----------------------------------------------------------------
@@ -1881,15 +1864,9 @@ StartTransaction(void)
 	 */
 	s->state = TRANS_START;
 #ifdef PGXC
-	/* GXID is assigned already by a remote Coordinator */
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-	{
-		s->globalTransactionId = InvalidGlobalTransactionId;	/* until assigned */
-		/* Until assigned by implicit 2PC */
-		s->globalCommitTransactionId = InvalidGlobalTransactionId;
-		s->ArePGXCNodesPrepared = false;
-		s->isLocalParameterUsed = false;
-	}
+#ifndef XCP
+	s->isLocalParameterUsed = false;
+#endif
 #endif
 	s->transactionId = InvalidTransactionId;	/* until assigned */
 	/*
@@ -1911,9 +1888,18 @@ StartTransaction(void)
 		XactReadOnly = DefaultXactReadOnly;
 	}
 	XactDeferrable = DefaultXactDeferrable;
+#ifdef PGXC
+	/* PGXCTODO - PGXC doesn't support 9.1 serializable transactions. They are
+	 * silently turned into repeatable-reads which is same as pre 9.1
+	 * serializable isolation level
+	 */
+	if (DefaultXactIsoLevel == XACT_SERIALIZABLE)
+		DefaultXactIsoLevel = XACT_REPEATABLE_READ;
+#endif
 	XactIsoLevel = DefaultXactIsoLevel;
 	forceSyncCommit = false;
 	MyXactAccessedTempRel = false;
+	XactLocalNodePrepared = false;
 
 	/*
 	 * reinitialize within-transaction counters
@@ -2008,49 +1994,11 @@ StartTransaction(void)
  * NB: if you change this routine, better look at PrepareTransaction too!
  */
 static void
-CommitTransaction(bool contact_gtm)
+CommitTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
 	TransactionId latestXid;
-#ifdef PGXC
-	bool PrepareLocalCoord = false;
-	bool PreparePGXCNodes = false;
-	bool IsHoldableCursor = false;
-	char implicitgid[256];
-	TransactionId xid = InvalidTransactionId;
 
-#ifndef XCP
-	/*
-	 * Check if there are any On Commit actions and force temporary object flag.
-	 * This is possible in the case of a session using ON COMMIT DELETE ROWS.
-	 * It is essential to do this check *before* calling PGXCNodeIsImplicit2PC.
-	 */
-	if (IsOnCommitActions())
-		ExecSetTempObjectIncluded();
-#endif
-
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && contact_gtm)
-		PreparePGXCNodes = PGXCNodeIsImplicit2PC(&PrepareLocalCoord);
-
-	if (PrepareLocalCoord || PreparePGXCNodes)
-	{
-		xid = GetCurrentTransactionId();
-		sprintf(implicitgid, "T%d", xid);
-	}
-
-	/* Save GID where PrepareTransaction can find it again */
-	if (PrepareLocalCoord)
-	{
-		prepareGID = MemoryContextStrdup(TopTransactionContext, implicitgid);
-		/*
-		 * If current transaction has a DDL, and involves more than 1 Coordinator,
-		 * PREPARE first on local Coordinator.
-		 */
-		PrepareTransaction(true);
-	}
-	else
-	{
-#endif
 	ShowTransactionState("CommitTransaction");
 
 	/*
@@ -2060,26 +2008,89 @@ CommitTransaction(bool contact_gtm)
 		elog(WARNING, "CommitTransaction while in %s state",
 			 TransStateAsString(s->state));
 	Assert(s->parent == NULL);
-#ifdef PGXC
-	}
 
+#ifdef PGXC
 	/*
-	 * If Transaction has involved several nodes, prepare them before committing on Coordinator.
+	 * If we are a coordinator and currently serving the client,
+	 * we must run a 2PC if more than one nodes are involved in this
+	 * transaction. We first prepare on the remote nodes and if everything goes
+	 * right, we commit locally and then commit on the remote nodes. We must
+	 * also be careful to prepare locally on this coordinator only if the
+	 * local coordinator has done some write activity.
+	 *
+	 * If there are any errors, they will be reported via ereport and the
+	 * transaction will be aborted.
+	 *
+	 * First save the current top transaction ID before it may get overwritten
+	 * by PrepareTransaction below. We must not reset topGlobalTransansactionId
+	 * until we are done with finishing the transaction
 	 */
-	if (PreparePGXCNodes)
+	s->topGlobalTransansactionId = s->transactionId;
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
+		XactLocalNodePrepared = false;
+		if (savePrepareGID)
+		{
+			pfree(savePrepareGID);
+			savePrepareGID = NULL;
+		}
+
+#ifndef XCP
 		/*
-		 * Prepare all the nodes involved in this Implicit 2PC
-		 * If Coordinator COMMIT fails, nodes are also rollbacked during AbortTransaction().
-		 *
-		 * Track if PGXC Nodes are already prepared
+		 * Check if there are any ON COMMIT actions or if temporary objects are in use.
+		 * If session is set-up to enforce 2PC for such transactions, return an error.
+		 * If not, simply enforce autocommit on each remote node.
 		 */
-		if (PGXCNodeImplicitPrepare(xid, implicitgid) < 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_ACTIVE_SQL_TRANSACTION),
-					 errmsg("cannot COMMIT a transaction whose PREPARE has failed on Nodes")));
-		else
-			s->ArePGXCNodesPrepared = true;
+		if (IsOnCommitActions() || ExecIsTempObjectIncluded())
+		{
+			if (!EnforceTwoPhaseCommit)
+				ExecSetTempObjectIncluded();
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("cannot PREPARE a transaction that has operated on temporary tables"),
+						 errdetail("Disabling enforce_two_phase_commit is recommended to enforce COMMIT")));
+		}
+#endif
+
+		/*
+		 * If the local node has done some write activity, prepare the local node
+		 * first. If that fails, the transaction is aborted on all the remote
+		 * nodes
+		 */
+		if (IsTwoPhaseCommitRequired(XactWriteLocalNode))
+		{
+			prepareGID = MemoryContextAlloc(TopTransactionContext, 256);
+			sprintf(prepareGID, "T%u", GetTopTransactionId());
+
+			savePrepareGID = MemoryContextStrdup(TopMemoryContext, prepareGID);
+
+			if (XactWriteLocalNode)
+			{
+				/*
+				 * OK, local node is involved in the transaction. Prepare the
+				 * local transaction now. Errors will be reported via ereport
+				 * and that will lead to transaction abortion.
+				 */
+				Assert(GlobalTransactionIdIsValid(s->topGlobalTransansactionId));
+
+				PrepareTransaction();
+				s->blockState = TBLOCK_DEFAULT;
+
+				/*
+				 * PrepareTransaction would have ended the current transaction.
+				 * Start a new transaction. We can also use the GXID of this
+				 * new transaction to run the COMMIT/ROLLBACK PREPARED
+				 * commands. Note that information as part of the
+				 * auxilliaryTransactionId
+				 */
+				StartTransaction();
+				XactLocalNodePrepared = true;
+				s->auxilliaryTransactionId = GetTopTransactionId();
+			}
+			else
+				s->auxilliaryTransactionId = InvalidGlobalTransactionId;
+		}
 	}
 #endif
 
@@ -2089,10 +2100,6 @@ CommitTransaction(bool contact_gtm)
 	 * triggers could open cursors, etc, we have to keep looping until there's
 	 * nothing left to do.
 	 */
-#ifdef PGXC
-	if (!PrepareLocalCoord)
-	{
-#endif
 	for (;;)
 	{
 		/*
@@ -2107,10 +2114,6 @@ CommitTransaction(bool contact_gtm)
 		 */
 		if (!PreCommit_Portals(false))
 			break;
-#ifdef PGXC
-		else
-			IsHoldableCursor = true;
-#endif
 	}
 
 	/*
@@ -2147,23 +2150,51 @@ CommitTransaction(bool contact_gtm)
 	PreCommit_Notify();
 
 #ifdef PGXC
-	/*
-	 * There can be error on the data nodes. So go to data nodes before
-	 * changing transaction state and local clean up
-	 * Here simply commit on nodes, we know that 2PC is not involved implicitely.
-	 *
-	 * This is called only if it is not necessary to prepare the nodes.
-	 */
 #ifdef XCP
-	if ((!PreparePGXCNodes || IsHoldableCursor) && contact_gtm)
+	if (IS_PGXC_DATANODE || !IsConnFromCoord())
 #else
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && (!PreparePGXCNodes || IsHoldableCursor) && contact_gtm)
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 #endif
 	{
-		if (IsHoldableCursor)
-			PGXCNodeCommit(!PreparePGXCNodes);
-		else
-			PGXCNodeCommit(true);
+		/*
+		 * Now run 2PC on the remote nodes. Any errors will be reported via
+		 * ereport and we will run error recovery as part of AbortTransaction
+		 */
+		PreCommit_Remote(savePrepareGID, XactLocalNodePrepared);
+
+		/*
+		 * Now that all the remote nodes have successfully prepared and
+		 * commited, commit the local transaction as well. Remember, any errors
+		 * before this point would have been reported via ereport. The fact
+		 * that we are here shows that the transaction has been committed
+		 * successfully on the remote nodes
+		 */
+		if (XactLocalNodePrepared)
+		{
+			XactLocalNodePrepared = false;
+			PreventTransactionChain(true, "COMMIT IMPLICIT PREPARED");
+			FinishPreparedTransaction(savePrepareGID, true);
+		}
+
+		/*
+		 * The current transaction may have been ended and we might have
+		 * started a new transaction. Re-initialize with
+		 * CurrentTransactionState
+		 */
+		s = CurrentTransactionState;
+
+		/*
+		 * Callback on GTM if necessary, this needs to be done before HOLD_INTERRUPTS
+		 * as this is not a part of the end of transaction processing involving clean up.
+		 */
+		CallGTMCallbacks(GTM_EVENT_COMMIT);
+
+		/*
+		 * Let the normal commit processing now handle the main transaction if
+		 * the local node was not involved. Otherwise, we are in an
+		 * auxilliary transaction and that will be closed along with the main
+		 * transaction
+		 */
 	}
 #endif
 
@@ -2185,38 +2216,6 @@ CommitTransaction(bool contact_gtm)
 	latestXid = RecordTransactionCommit();
 
 	TRACE_POSTGRESQL_TRANSACTION_COMMIT(MyProc->lxid);
-
-#ifdef PGXC
-	/*
-	 * Now we can let GTM know about transaction commit.
-	 * Only a Remote Coordinator is allowed to do that.
-	 *
-	 * Also do not commit a transaction that has already been prepared on Datanodes
-	 */
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && !PreparePGXCNodes && contact_gtm)
-	{
-		CommitTranGTM(s->globalTransactionId);
-		latestXid = s->globalTransactionId;
-	}
-	else if ((IS_PGXC_DATANODE || IsConnFromCoord()) && contact_gtm)
-	{
-		/* If we are autovacuum, commit on GTM */
-		if ((IsAutoVacuumWorkerProcess() || GetForceXidFromGTM())
-				&& IsGTMConnected())
-		{
-			if(IsAutoVacuumAnalyzeWorker())
-				LWLockAcquire(AnalyzeProcArrayLock, LW_EXCLUSIVE);
-
-			CommitTranGTM((GlobalTransactionId) latestXid);
-
-			if(IsAutoVacuumAnalyzeWorker())
-			{
-				AnalyzeProcArrayRemove(MyProc, latestXid);
-				LWLockRelease(AnalyzeProcArrayLock);
-			}
-		}
-	}
-#endif
 
 	/*
 	 * Let others know about no transaction in progress by me. Note that this
@@ -2275,45 +2274,6 @@ CommitTransaction(bool contact_gtm)
 
 	AtEOXact_MultiXact();
 
-#ifdef PGXC
-	}/* End of !PrepareLocalCoord */
-
-	/*
-	 * At this point, if no 2pc has been used, we have a transaction that committed on GTM,
-	 * local coord and nodes, so the remaining stuff is only ressource cleanup.
-	 * If 2pc has been used, Coordinator has been prepared (if 2 Coordinators at least are involved
-	 * in current transaction).
-	 * Datanodes have also been prepared if more than 1 Datanode has been written.
-	 *
-	 * Here we complete Implicit 2PC in the following order
-	 *  - Commit the prepared transaction on local coordinator (if necessary)
-	 *  - Commit on the remaining nodes
-	 */
-
-	if (PreparePGXCNodes)
-	{
-		/*
-		 * Preparing for Commit, transaction has to take a new TransactionID for Commit
-		 * It is considered as in Progress state.
-		 */
-		s->state = TRANS_INPROGRESS;
-		s->globalCommitTransactionId = BeginTranGTM(NULL);
-
-		/* COMMIT local Coordinator */
-		if (PrepareLocalCoord)
-		{
-			FinishPreparedTransaction(implicitgid, true);
-		}
-
-		/*
-		 * Commit all the nodes involved in this implicit 2PC.
-		 * COMMIT on GTM is made here and is made at the same time
-		 * for prepared GXID and commit GXID to limit interactions between GTM and Coord.
-		 * This explains why prepared GXID is also in argument.
-		 */
-		PGXCNodeImplicitCommitPrepared(xid, s->globalCommitTransactionId, implicitgid, true);
-	}
-
 #ifdef XCP
 	/* If the cluster lock was held at commit time, keep it locked! */
 	if (cluster_ex_lock_held)
@@ -2322,7 +2282,6 @@ CommitTransaction(bool contact_gtm)
 		/*if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 			RequestClusterPause(false, NULL);*/
 	}
-#endif
 #endif
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
@@ -2355,6 +2314,10 @@ CommitTransaction(bool contact_gtm)
 	TopTransactionResourceOwner = NULL;
 
 	AtCommit_Memory();
+#ifdef PGXC
+	/* Clean up GTM callbacks at the end of transaction */
+	CleanGTMCallbacks();
+#endif
 
 	s->transactionId = InvalidTransactionId;
 	s->subTransactionId = InvalidSubTransactionId;
@@ -2365,22 +2328,10 @@ CommitTransaction(bool contact_gtm)
 	s->maxChildXids = 0;
 
 #ifdef PGXC
-#ifdef XCP
-	s->globalTransactionId = InvalidGlobalTransactionId;
-	s->globalCommitTransactionId = InvalidGlobalTransactionId;
-	s->ArePGXCNodesPrepared = false;
-	if (IS_PGXC_DATANODE || IsConnFromCoord())
-#else
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-	{
-		s->globalTransactionId = InvalidGlobalTransactionId;
-		s->globalCommitTransactionId = InvalidGlobalTransactionId;
-		s->ArePGXCNodesPrepared = false;
-		s->isLocalParameterUsed = false;
-	}
-	else if (IS_PGXC_DATANODE || IsConnFromCoord())
-#endif /* XCP */
-		SetNextTransactionId(InvalidTransactionId);
+#ifndef XCP
+	s->isLocalParameterUsed = false;
+#endif
+	ForgetTransactionLocalNode();
 #endif
 
 	/*
@@ -2390,15 +2341,78 @@ CommitTransaction(bool contact_gtm)
 	s->state = TRANS_DEFAULT;
 
 	RESUME_INTERRUPTS();
+
+	/*
+	 * XXX We now close the main and auxilliary transaction (if any) on the
+	 * GTM. We do this after resuming interrupts to ensure that we don't end
+	 * blocking forever on the communication channel. But we need to see if
+	 * this is safe in all cases (TODO)
+	 */
+	AtEOXact_GlobalTxn(true);
+	AtEOXact_Remote();
 }
 
+/*
+ * Mark the end of global transaction. This is called at the end of the commit
+ * or abort processing when the local and remote transactions have been either
+ * committed or aborted and we just need to close the transaction on the GTM.
+ * Obviously, we don't call this at the PREPARE time because the GXIDs must not
+ * be closed at the GTM until the transaction finishes
+ */
+static void
+AtEOXact_GlobalTxn(bool commit)
+{
+	TransactionState s = CurrentTransactionState;
+
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		if (commit)
+		{
+			if (GlobalTransactionIdIsValid(s->auxilliaryTransactionId) &&
+				GlobalTransactionIdIsValid(s->topGlobalTransansactionId))
+				CommitPreparedTranGTM(s->topGlobalTransansactionId,
+						s->auxilliaryTransactionId);
+			else if (GlobalTransactionIdIsValid(s->topGlobalTransansactionId))
+				CommitTranGTM(s->topGlobalTransansactionId);
+			else if (GlobalTransactionIdIsValid(s->auxilliaryTransactionId))
+				CommitTranGTM(s->auxilliaryTransactionId);
+		}
+		else
+		{
+			/*
+			 * XXX Why don't we have a single API to abort both the GXIDs
+			 * together ?
+			 */
+			if (GlobalTransactionIdIsValid(s->auxilliaryTransactionId))
+				RollbackTranGTM(s->auxilliaryTransactionId);
+			if (GlobalTransactionIdIsValid(s->topGlobalTransansactionId))
+				RollbackTranGTM(s->topGlobalTransansactionId);
+		}
+	}
+	else if (IS_PGXC_DATANODE || IsConnFromCoord())
+	{
+		/* If we are autovacuum, commit on GTM */
+		if ((IsAutoVacuumWorkerProcess() || GetForceXidFromGTM())
+				&& IsGTMConnected())
+		{
+			if (commit)
+				CommitTranGTM(s->topGlobalTransansactionId);
+			else
+				RollbackTranGTM(s->topGlobalTransansactionId);
+		}
+	}
+
+	s->topGlobalTransansactionId = InvalidGlobalTransactionId;
+	s->auxilliaryTransactionId = InvalidGlobalTransactionId;
+
+	SetNextTransactionId(InvalidTransactionId);
+}
 
 /*
  *	PrepareTransaction
  *
  * NB: if you change this routine, better look at CommitTransaction too!
  */
-#ifdef PGXC
 /*
  * Only a Postgres-XC Coordinator that received a PREPARE Command from
  * an application can use this special prepare.
@@ -2406,29 +2420,18 @@ CommitTransaction(bool contact_gtm)
  * this is made by CommitTransaction when transaction has been committed on Nodes.
  */
 static void
-PrepareTransaction(bool is_implicit)
-#else
-static void
 PrepareTransaction(void)
-#endif
 {
 	TransactionState s = CurrentTransactionState;
 	TransactionId xid = GetCurrentTransactionId();
 	GlobalTransaction gxact;
 	TimestampTz prepared_at;
+#ifdef PGXC
+	bool		isImplicit = !(s->blockState == TBLOCK_PREPARE);
+	char		*nodestring;
+#endif
 
 	ShowTransactionState("PrepareTransaction");
-
-#ifdef PGXC
-#ifndef XCP
-	/*
-	 * Check if there are any On Commit actions and force temporary object flag.
-	 * This is possible in the case of a session using ON COMMIT DELETE ROWS.
-	 */
-	if (IsOnCommitActions())
-		ExecSetTempObjectIncluded();
-#endif
-#endif
 
 	/*
 	 * check the current transaction state
@@ -2437,6 +2440,23 @@ PrepareTransaction(void)
 		elog(WARNING, "PrepareTransaction while in %s state",
 			 TransStateAsString(s->state));
 	Assert(s->parent == NULL);
+
+#ifdef PGXC
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		if (savePrepareGID)
+			pfree(savePrepareGID);
+		savePrepareGID = MemoryContextStrdup(TopMemoryContext, prepareGID);
+		nodestring = PrePrepare_Remote(savePrepareGID, XactWriteLocalNode, isImplicit);
+		s->topGlobalTransansactionId = s->transactionId;
+
+		/*
+		 * Callback on GTM if necessary, this needs to be done before HOLD_INTERRUPTS
+		 * as this is not a part of the end of transaction processing involving clean up.
+		 */
+		CallGTMCallbacks(GTM_EVENT_PREPARE);
+	}
+#endif
 
 	/*
 	 * Do pre-commit processing that involves calling user-defined code, such
@@ -2521,6 +2541,7 @@ PrepareTransaction(void)
 
 	/* Tell bufmgr and smgr to prepare for commit */
 	BufmgrCommit();
+
 
 	/*
 	 * Reserve the GID for this transaction. This could fail if the requested
@@ -2612,14 +2633,6 @@ PrepareTransaction(void)
 	PostPrepare_Locks(xid);
 	PostPrepare_PredicateLocks(xid);
 
-#ifdef PGXC
-	/*
-	 * In case of an implicit 2PC, ressources are released by CommitTransaction()
-	 */
-	if (!is_implicit)
-	{
-#endif
-
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_LOCKS,
 						 true, true);
@@ -2649,6 +2662,10 @@ PrepareTransaction(void)
 	TopTransactionResourceOwner = NULL;
 
 	AtCommit_Memory();
+#ifdef PGXC
+	/* Clean up GTM callbacks */
+	CleanGTMCallbacks();
+#endif
 
 	s->transactionId = InvalidTransactionId;
 	s->subTransactionId = InvalidSubTransactionId;
@@ -2658,13 +2675,6 @@ PrepareTransaction(void)
 	s->nChildXids = 0;
 	s->maxChildXids = 0;
 
-#ifdef PGXC /* PGXC_DATANODE */
-#ifdef XCP
-	s->globalTransactionId = InvalidGlobalTransactionId;
-#endif
-	if (IS_PGXC_DATANODE || IsConnFromCoord())
-		SetNextTransactionId(InvalidTransactionId);
-#endif
 	/*
 	 * done with 1st phase commit processing, set current transaction state
 	 * back to default
@@ -2672,8 +2682,26 @@ PrepareTransaction(void)
 	s->state = TRANS_DEFAULT;
 
 	RESUME_INTERRUPTS();
-#ifdef PGXC
-	} /* is_implicit END */
+
+#ifdef PGXC /* PGXC_DATANODE */
+	/*
+	 * Now also prepare the remote nodes involved in this transaction. We do
+	 * this irrespective of whether we are doing an implicit or an explicit
+	 * prepare.
+	 *
+	 * XXX Like CommitTransaction and AbortTransaction, we do this after
+	 * resuming interrupts because we are going to access the communication
+	 * channels. So we want to keep receiving signals to avoid infinite
+	 * blocking. But this must be checked for correctness
+	 */
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		PostPrepare_Remote(savePrepareGID, nodestring, isImplicit);
+		if (!isImplicit)
+			s->topGlobalTransansactionId = InvalidGlobalTransactionId;
+		ForgetTransactionLocalNode();
+	}
+	SetNextTransactionId(InvalidTransactionId);
 #endif
 }
 
@@ -2687,12 +2715,48 @@ AbortTransaction(void)
 	TransactionState s = CurrentTransactionState;
 	TransactionId latestXid;
 
+#ifdef PGXC
+	/*
+	 * Save the current top transaction ID. We need this to close the
+	 * transaction at the GTM at thr end
+	 */
+	s->topGlobalTransansactionId = s->transactionId;
+	/*
+	 * Handle remote abort first.
+	 */
+	if (PreAbort_Remote())
+	{
+		if (XactLocalNodePrepared)
+		{
+			PreventTransactionChain(true, "ROLLBACK IMPLICIT PREPARED");
+			FinishPreparedTransaction(savePrepareGID, false);
+			XactLocalNodePrepared = false;
+		}
+	}
+	else
+		s->topGlobalTransansactionId = InvalidTransactionId;
+
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		/*
+		 * Callback on GTM if necessary, this needs to be done before HOLD_INTERRUPTS
+		 * as this is not a part of the end of transaction procesing involving clean up.
+		 */
+		CallGTMCallbacks(GTM_EVENT_ABORT);
+	}
+#endif
+
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
 
 	/* Make sure we have a valid memory context and resource owner */
 	AtAbort_Memory();
 	AtAbort_ResourceOwner();
+
+#ifdef PGXC
+	/* Clean up GTM callbacks */
+	CleanGTMCallbacks();
+#endif
 
 	/*
 	 * Release any LW locks we might be holding as quickly as possible.
@@ -2738,39 +2802,6 @@ AbortTransaction(void)
 	 */
 	SetUserIdAndSecContext(s->prevUser, s->prevSecContext);
 
-#ifdef PGXC
-	/*
-	 * We should rollback on the data nodes before cleaning up portals
-	 * to be sure data structures used by connections are not freed yet
-	 *
-	 * It is also necessary to check that node are not partially committed
-	 * in an implicit 2PC, correct handling is made below.
-	 */
-#ifdef XCP
-	if (!TransactionIdIsValid(s->globalCommitTransactionId))
-#else
-	if (IS_PGXC_COORDINATOR &&
-		!IsConnFromCoord() &&
-		!TransactionIdIsValid(s->globalCommitTransactionId))
-#endif
-	{
-		/*
-		 * Make sure this is rolled back on the DataNodes
-		 * if so it will just return
-		 */
-		PGXCNodeRollback();
-	}
-#ifdef XCP
-	if (cluster_ex_lock_held && IS_PGXC_COORDINATOR && !IsConnFromCoord())
-	{
-		elog(DEBUG2, "PAUSE CLUSTER lock released due to rollback/abort");
-		LWLockAcquire(ClusterLock, LW_SHARED);
-		RequestClusterPause(false, NULL);
-		LWLockRelease(ClusterLock);
-	}
-#endif
-#endif
-
 	/*
 	 * do abort processing
 	 */
@@ -2784,96 +2815,10 @@ AbortTransaction(void)
 	 * Advertise the fact that we aborted in pg_clog (assuming that we got as
 	 * far as assigning an XID to advertise).
 	 */
-#ifdef PGXC
-	/* Do not abort a transaction that has already been committed in an implicit 2PC */
-	if (!TransactionIdIsValid(s->globalCommitTransactionId))
-#endif
 	latestXid = RecordTransactionAbort(false);
 
 	TRACE_POSTGRESQL_TRANSACTION_ABORT(MyProc->lxid);
-#ifdef PGXC
-	/* This is done by remote Coordinator */
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-	{
-		/*
-		 * Rollback the transaction ID only if it is not being used by an implicit 2PC.
-		 */
-		if (!s->ArePGXCNodesPrepared)
-			RollbackTranGTM(s->globalTransactionId);
 
-		latestXid = s->globalTransactionId;
-
-		/* Rollback Prepared Nodes if they are totally prepared but not committed at all */
-		if (s->ArePGXCNodesPrepared && !TransactionIdIsValid(s->globalCommitTransactionId))
-		{
-			char implicitgid[256];
-
-			sprintf(implicitgid, "T%d", s->globalTransactionId);
-			PGXCNodeImplicitCommitPrepared(s->globalTransactionId,
-										   s->globalCommitTransactionId,
-										   implicitgid, false);
-		}
-		else if (s->ArePGXCNodesPrepared && TransactionIdIsValid(s->globalCommitTransactionId))
-		{
-			/*
-			 * In this case transaction is partially committed, pick up the list of nodes
-			 * prepared and not committed and register them on GTM as if it is an explicit 2PC.
-			 * This permits to keep the transaction alive in snapshot and other transaction
-			 * don't have any side effects with partially committed transactions
-			 */
-			char	implicitgid[256];
-			char	*nodestring = NULL;
-
-			sprintf(implicitgid, "T%d", s->globalTransactionId);
-
-			/* Get the list of nodes in error state */
-			nodestring = PGXCNodeGetNodeList(nodestring);
-
-			/*
-			 * If there are no nodes in error state,
-			 * all the nodes are already prepared
-			 */
-			if (nodestring)
-			{
-				/* Save the node list and gid on GTM. */
-				StartPreparedTranGTM(s->globalTransactionId, implicitgid,
-									 nodestring);
-
-				/* Finish to prepare the transaction. */
-				PrepareTranGTM(s->globalTransactionId);
-
-				/*
-				 * Rollback commit GXID as it has been used by an implicit 2PC.
-				 * It is important at this point not to Commit the GXID used for PREPARE
-				 * to keep it visible in snapshot for other transactions.
-				 */
-				RollbackTranGTM(s->globalCommitTransactionId);
-			}
-			else
-			{
-				/* No nodes need to be registered, so just clean up */
-				RollbackTranGTM(s->globalTransactionId);
-				RollbackTranGTM(s->globalCommitTransactionId);
-			}
-		}
-	}
-	else if (IS_PGXC_DATANODE || IsConnFromCoord())
-	{
-		if(IsAutoVacuumAnalyzeWorker())
-			LWLockAcquire(AnalyzeProcArrayLock, LW_EXCLUSIVE);
-
-		/* If we are autovacuum, commit on GTM */
-		if ((IsAutoVacuumWorkerProcess() || GetForceXidFromGTM())
-				&& IsGTMConnected())
-			RollbackTranGTM((GlobalTransactionId) latestXid);
-
-		if(IsAutoVacuumAnalyzeWorker())
-		{
-			AnalyzeProcArrayRemove(MyProc, latestXid);
-			LWLockRelease(AnalyzeProcArrayLock);
-		}
-	}
-#endif
 	/*
 	 * Let others know about no transaction in progress by me. Note that this
 	 * must be done _before_ releasing locks we hold and _after_
@@ -2918,10 +2863,19 @@ AbortTransaction(void)
 		pgstat_report_xact_timestamp(0);
 	}
 
+#ifdef PGXC
+	ForgetTransactionLocalNode();
+#endif
 	/*
 	 * State remains TRANS_ABORT until CleanupTransaction().
 	 */
 	RESUME_INTERRUPTS();
+
+#ifdef PGXC
+	AtEOXact_GlobalTxn(false);
+	AtEOXact_Remote();
+#endif
+
 }
 
 /*
@@ -2960,18 +2914,6 @@ CleanupTransaction(void)
 	s->childXids = NULL;
 	s->nChildXids = 0;
 	s->maxChildXids = 0;
-
-#ifdef PGXC  /* PGXC_DATANODE */
-#ifdef XCP
-	s->globalTransactionId = InvalidGlobalTransactionId;
-	if (IS_PGXC_DATANODE || IsConnFromCoord())
-#else
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-		s->globalTransactionId = InvalidGlobalTransactionId;
-	else if (IS_PGXC_DATANODE || IsConnFromCoord())
-#endif /* XCP */
-		SetNextTransactionId(InvalidTransactionId);
-#endif
 
 	/*
 	 * done with abort processing, set current transaction state back to
@@ -3027,9 +2969,6 @@ StartTransactionCommand(void)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 		case TBLOCK_SUBEND:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
@@ -3076,11 +3015,7 @@ CommitTransactionCommand(void)
 			 * transaction commit, and return to the idle state.
 			 */
 		case TBLOCK_STARTED:
-#ifdef PGXC
-			CommitTransaction(true);
-#else
 			CommitTransaction();
-#endif
 			s->blockState = TBLOCK_DEFAULT;
 			break;
 
@@ -3109,20 +3044,10 @@ CommitTransactionCommand(void)
 			 * idle state.
 			 */
 		case TBLOCK_END:
-#ifdef PGXC
-			CommitTransaction(true);
-#else
 			CommitTransaction();
-#endif
 			s->blockState = TBLOCK_DEFAULT;
 			break;
 
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-			CommitTransaction(false);
-			s->blockState = TBLOCK_DEFAULT;
-			break;
-#endif
 			/*
 			 * Here we are in the middle of a transaction block but one of the
 			 * commands caused an abort so we do nothing but remain in the
@@ -3158,11 +3083,7 @@ CommitTransactionCommand(void)
 			 * return to the idle state.
 			 */
 		case TBLOCK_PREPARE:
-#ifdef PGXC
-			PrepareTransaction(false);
-#else
 			PrepareTransaction();
-#endif
 			s->blockState = TBLOCK_DEFAULT;
 			break;
 
@@ -3193,21 +3114,13 @@ CommitTransactionCommand(void)
 			if (s->blockState == TBLOCK_END)
 			{
 				Assert(s->parent == NULL);
-#ifdef PGXC
-				CommitTransaction(true);
-#else
 				CommitTransaction();
-#endif
 				s->blockState = TBLOCK_DEFAULT;
 			}
 			else if (s->blockState == TBLOCK_PREPARE)
 			{
 				Assert(s->parent == NULL);
-#ifdef PGXC
-				PrepareTransaction(false);
-#else
 				PrepareTransaction();
-#endif
 				s->blockState = TBLOCK_DEFAULT;
 			}
 			else
@@ -3367,9 +3280,6 @@ AbortCurrentTransaction(void)
 			 * the transaction).
 			 */
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 			AbortTransaction();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
@@ -3449,20 +3359,6 @@ AbortCurrentTransaction(void)
 			break;
 	}
 }
-
-#ifdef PGXC
-/*
- *	AbortCurrentTransactionOnce
- *
- * Abort transaction, but only if we have not already.
- */
-void
-AbortCurrentTransactionOnce(void)
-{
-	if (CurrentTransactionState->state != TRANS_ABORT)
-		AbortCurrentTransaction();
-}
-#endif
 
 /*
  *	PreventTransactionChain
@@ -3713,6 +3609,60 @@ CallSubXactCallbacks(SubXactEvent event,
 }
 
 
+#ifdef PGXC
+/*
+ * Register or deregister callback functions for GTM at xact start or stop.
+ * Those operations are more or less the xact callbacks but we need to perform
+ * them before HOLD_INTERRUPTS as it is a part of transaction management and
+ * is not included in xact cleaning.
+ *
+ * The callback is called when xact finishes and may be initialized by events
+ * related to GTM that need to be taken care of at the end of a transaction block.
+ */
+void
+RegisterGTMCallback(GTMCallback callback, void *arg)
+{
+	GTMCallbackItem *item;
+
+	item = (GTMCallbackItem *)
+		MemoryContextAlloc(TopTransactionContext, sizeof(GTMCallbackItem));
+	item->callback = callback;
+	item->arg = arg;
+	item->next = GTM_callbacks;
+	GTM_callbacks = item;
+}
+
+void
+UnregisterGTMCallback(GTMCallback callback, void *arg)
+{
+	GTMCallbackItem *item;
+	GTMCallbackItem *prev;
+
+	prev = NULL;
+	for (item = GTM_callbacks; item; prev = item, item = item->next)
+	{
+		if (item->callback == callback && item->arg == arg)
+		{
+			if (prev)
+				prev->next = item->next;
+			else
+				GTM_callbacks = item->next;
+			pfree(item);
+			break;
+		}
+	}
+}
+
+static void
+CallGTMCallbacks(GTMEvent event)
+{
+	GTMCallbackItem *item;
+
+	for (item = GTM_callbacks; item; item = item->next)
+		(*item->callback) (event, item->arg);
+}
+#endif
+
 /* ----------------------------------------------------------------
  *					   transaction block support
  * ----------------------------------------------------------------
@@ -3753,9 +3703,6 @@ BeginTransactionBlock(void)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 		case TBLOCK_SUBEND:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
@@ -3789,11 +3736,7 @@ PrepareTransactionBlock(char *gid)
 	bool		result;
 
 	/* Set up to commit the current transaction */
-#ifdef PGXC
-	result = EndTransactionBlock(true);
-#else
 	result = EndTransactionBlock();
-#endif
 
 	/* If successful, change outer tblock state to PREPARE */
 	if (result)
@@ -3838,11 +3781,7 @@ PrepareTransactionBlock(char *gid)
  * resource owner, etc while executing inside a Portal.
  */
 bool
-#ifdef PGXC
-EndTransactionBlock(bool contact_gtm)
-#else
 EndTransactionBlock(void)
-#endif
 {
 	TransactionState s = CurrentTransactionState;
 	bool		result = false;
@@ -3854,11 +3793,6 @@ EndTransactionBlock(void)
 			 * to COMMIT.
 			 */
 		case TBLOCK_INPROGRESS:
-#ifdef PGXC
-			if (!contact_gtm)
-				s->blockState = TBLOCK_END_NOT_GTM;
-			else
-#endif
 			s->blockState = TBLOCK_END;
 			result = true;
 			break;
@@ -3937,9 +3871,6 @@ EndTransactionBlock(void)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 		case TBLOCK_SUBEND:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
@@ -4032,9 +3963,6 @@ UserAbortTransactionBlock(void)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 		case TBLOCK_SUBEND:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
@@ -4080,9 +4008,6 @@ DefineSavepoint(char *name)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 		case TBLOCK_SUBEND:
 		case TBLOCK_ABORT:
 		case TBLOCK_SUBABORT:
@@ -4139,9 +4064,6 @@ ReleaseSavepoint(List *options)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 		case TBLOCK_SUBEND:
 		case TBLOCK_ABORT:
 		case TBLOCK_SUBABORT:
@@ -4242,9 +4164,6 @@ RollbackToSavepoint(List *options)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 		case TBLOCK_SUBEND:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
@@ -4335,9 +4254,6 @@ BeginInternalSubTransaction(char *name)
 		case TBLOCK_STARTED:
 		case TBLOCK_INPROGRESS:
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 		case TBLOCK_PREPARE:
 		case TBLOCK_SUBINPROGRESS:
 			/* Normal subtransaction start */
@@ -4422,9 +4338,6 @@ RollbackAndReleaseCurrentSubTransaction(void)
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_INPROGRESS:
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 		case TBLOCK_SUBEND:
 		case TBLOCK_ABORT:
 		case TBLOCK_ABORT_END:
@@ -4480,9 +4393,6 @@ AbortOutOfAnyTransaction(void)
 			case TBLOCK_BEGIN:
 			case TBLOCK_INPROGRESS:
 			case TBLOCK_END:
-#ifdef PGXC
-			case TBLOCK_END_NOT_GTM:
-#endif
 			case TBLOCK_ABORT_PENDING:
 			case TBLOCK_PREPARE:
 				/* In a transaction, so clean up */
@@ -4574,9 +4484,6 @@ TransactionBlockStatusCode(void)
 		case TBLOCK_INPROGRESS:
 		case TBLOCK_SUBINPROGRESS:
 		case TBLOCK_END:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 		case TBLOCK_SUBEND:
 		case TBLOCK_PREPARE:
 			return 'T';			/* in transaction */
@@ -4932,14 +4839,6 @@ PushTransaction(void)
 	 * We can now stack a minimally valid subtransaction without fear of
 	 * failure.
 	 */
-#ifdef PGXC  /* PGXC_COORD */
-#ifdef XCP
-	s->globalTransactionId = InvalidGlobalTransactionId;
-#else
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-		s->globalTransactionId = InvalidGlobalTransactionId;
-#endif
-#endif
 	s->transactionId = InvalidTransactionId;	/* until assigned */
 	s->subTransactionId = currentSubTransactionId;
 	s->parent = p;
@@ -5075,9 +4974,6 @@ BlockStateAsString(TBlockState blockState)
 		case TBLOCK_ABORT_PENDING:
 			return "ABORT PEND";
 		case TBLOCK_PREPARE:
-#ifdef PGXC
-		case TBLOCK_END_NOT_GTM:
-#endif
 			return "PREPARE";
 		case TBLOCK_SUBBEGIN:
 			return "SUB BEGIN";
@@ -5563,3 +5459,57 @@ xact_desc(StringInfo buf, uint8 xl_info, char *rec)
 	else
 		appendStringInfo(buf, "UNKNOWN");
 }
+
+#ifdef PGXC
+/*
+ * Remember that the local node has done some write activity
+ */
+void
+RegisterTransactionLocalNode(bool write)
+{
+	if (write)
+	{
+		XactWriteLocalNode = true;
+		XactReadLocalNode = false;
+	}
+	else
+		XactReadLocalNode = true;
+}
+
+/*
+ * Forget about the local node's involvement in the transaction
+ */
+void
+ForgetTransactionLocalNode(void)
+{
+	XactReadLocalNode = XactWriteLocalNode = false;
+}
+
+/*
+ * Check if the local node is involved in the transaction
+ */
+bool
+IsTransactionLocalNode(bool write)
+{
+	if (write && XactWriteLocalNode)
+		return true;
+	else if (!write && XactReadLocalNode)
+		return true;
+	else
+		return false;
+}
+
+/*
+ * Check if the given xid is form implicit 2PC
+ */
+bool
+IsXidImplicit(const char *xid)
+{
+#define implicit2PC_head "_$XC$"
+	const size_t implicit2PC_head_len = strlen(implicit2PC_head);
+
+	if (strncmp(xid, implicit2PC_head, implicit2PC_head_len))
+		return false;
+	return true;
+}
+#endif

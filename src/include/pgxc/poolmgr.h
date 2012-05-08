@@ -21,6 +21,7 @@
 #include "pgxcnode.h"
 #include "poolcomm.h"
 #include "storage/pmsignal.h"
+#include "utils/hsearch.h"
 
 #define MAX_IDLE_TIME 60
 
@@ -69,8 +70,8 @@ typedef struct
 /* Pool of connections to specified pgxc node */
 typedef struct
 {
-	char	   *connstr;
 	Oid			nodeoid;	/* Node Oid related to this pool */
+	char	   *connstr;
 	int			freeSize;	/* available connections */
 	int			size;  		/* total pool size */
 	PGXCNodePoolSlot **slot;
@@ -81,11 +82,11 @@ typedef struct databasepool
 {
 	char	   *database;
 	char	   *user_name;
-	int			num_dn_pools;
-	int			num_co_pools;
-	PGXCNodePool **dataNodePools;	/* one for each Datanode */
-	PGXCNodePool **coordNodePools;	/* one for each Coordinator */
-	struct databasepool *next;
+	char	   *pgoptions;		/* Connection options */
+	HTAB	   *nodePools; 		/* Hashtable of PGXCNodePool, one entry for each
+								 * Coordinator or DataNode */
+	MemoryContext mcxt;
+	struct databasepool *next; 	/* Reference to next to organize linked list */
 } DatabasePool;
 
 /*
@@ -96,19 +97,23 @@ typedef struct databasepool
 typedef struct
 {
 	/* Process ID of postmaster child process associated to pool agent */
-	int			pid;
+	int				pid;
 	/* communication channel */
 	PoolPort		port;
-	DatabasePool		*pool;
-	int			num_dn_connections;
-	int			num_coord_connections;
-	PGXCNodePoolSlot	**dn_connections; /* one for each Datanode */
-	PGXCNodePoolSlot	**coord_connections; /* one for each Coordinator */
-	char			*session_params;
-	char			*local_params;
+	DatabasePool   *pool;
+	MemoryContext	mcxt;
+	int				num_dn_connections;
+	int				num_coord_connections;
+	Oid		   	   *dn_conn_oids;		/* one for each Datanode */
+	Oid		   	   *coord_conn_oids;	/* one for each Coordinator */
+	PGXCNodePoolSlot **dn_connections; /* one for each Datanode */
+	PGXCNodePoolSlot **coord_connections; /* one for each Coordinator */
 #ifdef XCP
-	char			*global_session_id;
+	HTAB		   *session_param_htab;
+	HTAB		   *local_param_htab;
 #endif
+	char		   *session_params;
+	char		   *local_params;
 	bool			is_temp; /* Temporary objects used for this pool session? */
 } PoolAgent;
 
@@ -156,12 +161,16 @@ extern void PoolManagerCloseHandle(PoolHandle *handle);
  */
 extern void PoolManagerDisconnect(void);
 
+extern char *session_options(void);
+
 /*
  * Called from Session process after fork(). Associate handle with session
  * for subsequent calls. Associate session with specified database and
  * initialize respective connection pool
  */
-extern void PoolManagerConnect(PoolHandle *handle, const char *database, const char *user_name);
+extern void PoolManagerConnect(PoolHandle *handle,
+	                           const char *database, const char *user_name,
+	                           char *pgoptions);
 
 /*
  * Reconnect to pool manager
@@ -179,7 +188,12 @@ extern void PoolManagerReset(void);
  * and stored in pooler agent to be replayed when new connections
  * are requested.
  */
+#ifdef XCP
+extern void PoolManagerSetCommand(PoolCommandType command_type, 
+					  const char *name, const char *value);
+#else
 extern int PoolManagerSetCommand(PoolCommandType command_type, const char *set_command);
+#endif
 
 /* Get pooled connections */
 extern int *PoolManagerGetConnections(List *datanodelist, List *coordlist);
@@ -208,7 +222,9 @@ extern void PoolManagerLock(bool is_lock);
 /* Check if pool has a handle */
 extern bool IsPoolHandle(void);
 
+#ifndef XCP 
 /* Send commands to alter the behavior of current transaction */
 extern int PoolManagerSendLocalCommand(int dn_count, int* dn_list, int co_count, int* co_list);
+#endif
 
 #endif

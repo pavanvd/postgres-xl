@@ -4178,6 +4178,13 @@ PostgresMain(int argc, char *argv[], const char *username)
 
 	InitMultinodeExecutor(false);
 
+	if (IsUnderPostmaster)
+	{
+		pool_handle = GetPoolManagerHandle();
+		/* Pooler initialization has to be made before ressource is released */
+		PoolManagerConnect(pool_handle, dbname, username, session_options());
+	}
+
 	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_BEFORE_LOCKS, true, true);
 	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
 	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
@@ -4208,7 +4215,7 @@ PostgresMain(int argc, char *argv[], const char *username)
 			return STATUS_ERROR;
 		}
 		/* Pooler initialization has to be made before ressource is released */
-		PoolManagerConnect(pool_handle, dbname, username);
+		PoolManagerConnect(pool_handle, dbname, username, session_options());
 
 		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_BEFORE_LOCKS, true, true);
 		ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
@@ -4224,29 +4231,6 @@ PostgresMain(int argc, char *argv[], const char *username)
 		/* If we exit, first try and clean connection to GTM */
 		on_proc_exit (DataNodeShutdown, 0);
 	}
-
-
-#ifndef XCP
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-	{
-		/*
-		 * Do not authorize connection to Coordinator if
-		 * connection data to remote nodes is inconsistent.
-		 */
-		bool is_pool_chk = PoolManagerCheckConnectionInfo();
-
-		if (!is_pool_chk && !superuser())
-			ereport(ERROR,
-					(errcode(ERRCODE_OPERATOR_INTERVENTION),
-					 errmsg("Remote node information on pool manager inconsistent "
-							"with catalogs")));
-
-		if (!is_pool_chk && superuser())
-			elog(WARNING, "Remote connection information on pooler is inconsistent "
-						  "with catalogs. You should run pgxc_pool_reload() to reload "
-						  "new cluster configuration");
-	}
-#endif
 #endif
 
 	/*
@@ -4312,15 +4296,7 @@ PostgresMain(int argc, char *argv[], const char *username)
 		/*
 		 * Abort the current transaction in order to recover.
 		 */
-#ifdef PGXC
-		/*
-		 * Temporarily do not abort if we are already in an abort state.
-		 * This change tries to handle the case where the error data stack fills up.
-		 */
-		AbortCurrentTransactionOnce();
-#else
 		AbortCurrentTransaction();
-#endif
 
 		/*
 		 * Now return to normal top-level context and clear ErrorContext for

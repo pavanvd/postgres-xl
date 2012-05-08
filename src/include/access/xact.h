@@ -93,6 +93,19 @@ typedef enum
 typedef void (*SubXactCallback) (SubXactEvent event, SubTransactionId mySubid,
 									SubTransactionId parentSubid, void *arg);
 
+#ifdef PGXC
+/*
+ * GTM callback events
+ */
+typedef enum
+{
+	GTM_EVENT_COMMIT,
+	GTM_EVENT_ABORT,
+	GTM_EVENT_PREPARE
+} GTMEvent;
+
+typedef void (*GTMCallback) (GTMEvent event, void *arg);
+#endif
 
 /* ----------------
  *		transaction-related XLOG entries
@@ -202,9 +215,14 @@ extern TransactionId GetTopTransactionIdIfAny(void);
 extern TransactionId GetCurrentTransactionId(void);
 extern TransactionId GetCurrentTransactionIdIfAny(void);
 #ifdef PGXC  /* PGXC_COORD */
+#ifndef XCP
 extern bool GetCurrentLocalParamStatus(void);
 extern void SetCurrentLocalParamStatus(bool status);
-extern GlobalTransactionId GetCurrentGlobalTransactionId(void);
+#endif
+extern GlobalTransactionId GetAuxilliaryTransactionId(void);
+extern GlobalTransactionId GetTopGlobalTransactionId(void);
+extern void SetAuxilliaryTransactionId(GlobalTransactionId gxid);
+extern void SetTopGlobalTransactionId(GlobalTransactionId gxid);
 #endif
 extern SubTransactionId GetCurrentSubTransactionId(void);
 extern CommandId GetCurrentCommandId(bool used);
@@ -227,11 +245,7 @@ extern void AbortCurrentTransactionOnce(void);
 #endif
 extern void AbortCurrentTransaction(void);
 extern void BeginTransactionBlock(void);
-#ifdef PGXC
-extern bool EndTransactionBlock(bool contact_gtm);
-#else
 extern bool EndTransactionBlock(void);
-#endif
 extern bool PrepareTransactionBlock(char *gid);
 extern void UserAbortTransactionBlock(void);
 extern void ReleaseSavepoint(List *options);
@@ -252,6 +266,17 @@ extern void RegisterXactCallback(XactCallback callback, void *arg);
 extern void UnregisterXactCallback(XactCallback callback, void *arg);
 extern void RegisterSubXactCallback(SubXactCallback callback, void *arg);
 extern void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
+
+#ifdef PGXC
+extern void RegisterGTMCallback(GTMCallback callback, void *arg);
+extern void UnregisterGTMCallback(GTMCallback callback, void *arg);
+extern void RegisterTransactionNodes(int count, void **connections, bool write);
+extern void ForgetTransactionNodes(void);
+extern void RegisterTransactionLocalNode(bool write);
+extern bool IsTransactionLocalNode(bool write);
+extern void ForgetTransactionLocalNode(void);
+extern bool IsXidImplicit(const char *xid);
+#endif
 
 extern int	xactGetCommittedChildren(TransactionId **ptr);
 

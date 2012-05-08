@@ -87,7 +87,6 @@ typedef enum NodeTag
 #endif
 	T_ExecNodes,
 	T_SimpleSort,
-	T_SimpleDistinct,
 	T_RemoteQuery,
 #ifdef XCP
 	T_RemoteSubplan,

@@ -80,7 +80,9 @@
 #include "catalog/pgxc_class.h"
 #include "catalog/pgxc_node.h"
 #include "pgxc/locator.h"
+#include "pgxc/nodemgr.h"
 #include "pgxc/pgxc.h"
+#include "pgxc/pgxcnode.h"
 #include "pgxc/postgresql_fdw.h"
 #endif
 
@@ -191,7 +193,24 @@ static FormData_pg_attribute a7 = {
 	true, 'p', 'i', true, false, false, true, 0
 };
 
+#ifdef PGXC
+/*
+ * In XC we need some sort of node identification for each tuple
+ * We are adding another system column that would serve as node identifier.
+ * This is not only required by WHERE CURRENT OF but it can be used any
+ * where we want to know the originating Datanode of a tuple received
+ * at the Coordinator
+ */
+static FormData_pg_attribute a8 = {
+	0, {"xc_node_id"}, INT4OID, 0, sizeof(int4),
+	XC_NodeIdAttributeNumber, 0, -1, -1,
+	true, 'p', 'i', true, false, false, true, 0
+};
+
+static const Form_pg_attribute SysAtt[] = {&a1, &a2, &a3, &a4, &a5, &a6, &a7, &a8};
+#else
 static const Form_pg_attribute SysAtt[] = {&a1, &a2, &a3, &a4, &a5, &a6, &a7};
+#endif
 
 /*
  * This function returns a Form_pg_attribute pointer for a system attribute.
@@ -1130,41 +1149,27 @@ build_subcluster_data(PGXCSubCluster *subcluster, int *numnodes)
 
 	if (!subcluster)
 	{
+		int i;
 		/*
-		 * If no subcluster is defined, all the Datanode are associated to the
-		 * table. So scan pgxc_node and pick up all the necessary stuff.
+		 * If no subcluster is defined, all the Datanodes are associated to the
+		 * table. So obtain list of node Oids currenly known to the session.
+		 * There could be a difference between the content of pgxc_node catalog
+		 * table and current session, because someone may change nodes and not
+		 * yet update session data.
+		 * We should use session data because Executor uses it as well to run
+		 * commands on nodes.
 		 */
-		Relation		rel;
-		HeapScanDesc	scan;
-		HeapTuple		tuple;
-
-		rel = heap_open(PgxcNodeRelationId, AccessShareLock);
-		scan = heap_beginscan(rel, SnapshotNow, 0, NULL);
-
-		while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
-		{
-			Form_pgxc_node  pgxc_node = (Form_pgxc_node) GETSTRUCT(tuple);
-
-			/* Add only Datanodes */
-			if (pgxc_node->node_type != PGXC_NODE_DATANODE)
-				continue;
-
-			(*numnodes)++;
-			if (!nodes)
-				nodes = (Oid *) palloc(*numnodes * sizeof(Oid));
-			else
-				nodes = (Oid *) repalloc(nodes, *numnodes * sizeof(Oid));
-
-			nodes[*numnodes - 1] = get_pgxc_nodeoid(NameStr(pgxc_node->node_name));
-		}
-		heap_endscan(scan);
-		heap_close(rel, AccessShareLock);
+		*numnodes = NumDataNodes;
 
 		/* No nodes found ?? */
 		if (*numnodes == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("No Datanode defined in cluster")));
+
+		nodes = (Oid *) palloc(NumDataNodes * sizeof(Oid));
+		for (i = 0; i < NumDataNodes; i++)
+			nodes[i] = PGXCNodeGetNodeOid(i, PGXC_NODE_DATANODE);
 
 		return nodes;
 	}

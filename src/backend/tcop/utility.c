@@ -73,7 +73,6 @@
 #include "pgxc/nodemgr.h"
 #include "pgxc/groupmgr.h"
 #include "utils/lsyscache.h"
-#include "pgxc/poolutils.h"
 #ifdef XCP
 #include "pgxc/pause.h"
 #include "access/transam.h"
@@ -82,6 +81,7 @@
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
 #endif
+#include "pgxc/xc_maintenance_mode.h"
 
 static void ExecUtilityStmtOnNodes(const char *queryString, ExecNodes *nodes,
 								   bool force_autocommit, RemoteQueryExecType exec_type,
@@ -389,8 +389,6 @@ standard_ProcessUtility(Node *parsetree,
 #endif /* PGXC */
 						char *completionTag)
 {
-	bool operation_local = false;
-
 	check_xact_readonly(parsetree);
 
 	if (completionTag)
@@ -415,11 +413,6 @@ standard_ProcessUtility(Node *parsetree,
 					case TRANS_STMT_START:
 						{
 							ListCell   *lc;
-#ifdef PGXC
-							if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-								PGXCNodeBegin();
-#endif
-
 							BeginTransactionBlock();
 							foreach(lc, stmt->options)
 							{
@@ -442,11 +435,7 @@ standard_ProcessUtility(Node *parsetree,
 						break;
 
 					case TRANS_STMT_COMMIT:
-#ifdef PGXC
-						if (!EndTransactionBlock(true))
-#else
 						if (!EndTransactionBlock())
-#endif
 						{
 							/* report unsuccessful commit in completionTag */
 							if (completionTag)
@@ -457,103 +446,59 @@ standard_ProcessUtility(Node *parsetree,
 					case TRANS_STMT_PREPARE:
 						PreventCommandDuringRecovery("PREPARE TRANSACTION");
 #ifdef PGXC
-						/*
-						 * If 2PC is invoked from application, transaction is first prepared on Datanodes.
-						 * 2PC file is not written for Coordinators to keep the possiblity
-						 * of a COMMIT PREPARED on a separate Coordinator.
-						 */
-						if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-							operation_local = PGXCNodePrepare(stmt->gid);
-
-						/*
-						 * On a Postgres-XC Datanode, a prepare command coming from Coordinator
-						 * has always to be executed.
-						 * On a Coordinator also when a DDL has been involved in the prepared transaction
-						 */
-						if (IsConnFromCoord())
-							operation_local = true;
-
-						if (operation_local)
+						/* Add check if xid is valid */
+						if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && !xc_maintenance_mode)
 						{
+							if (IsXidImplicit((const char *)stmt->gid))
+							{
+								elog(ERROR, "Invalid transaciton_id to prepare.");
+								break;
+							}
+						}
 #endif
+
 						if (!PrepareTransactionBlock(stmt->gid))
 						{
 							/* report unsuccessful commit in completionTag */
 							if (completionTag)
 								strcpy(completionTag, "ROLLBACK");
 						}
-#ifdef PGXC
-						}
-						else
-						{
-							/*
-							 * In this case commit locally to erase the transaction traces
-							 * but do not contact GTM
-							 */
-							if (!EndTransactionBlock(false))
-							{
-								/* report unsuccessful commit in completionTag */
-								if (completionTag)
-									strcpy(completionTag, "ROLLBACK");
-							}
-						}
-#endif
 						break;
 
 					case TRANS_STMT_COMMIT_PREPARED:
 						PreventTransactionChain(isTopLevel, "COMMIT PREPARED");
 						PreventCommandDuringRecovery("COMMIT PREPARED");
-#ifdef PGXC
+#ifdef PGXC						
 						/*
-						 * If a COMMIT PREPARED message is received from another Coordinator,
-						 * Don't send it down to Datanodes.
-						 *
-						 * XXX We call FinishPreparedTransaction inside
-						 * PGXCNodeCommitPrepared if we are doing a local
-						 * operation. This is convenient because we want to
-						 * hold on to the BarrierLock until local transaction
-						 * is committed too.
-						 *
+						 * Commit a transaction which was explicitely prepared
+						 * before
 						 */
 						if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-							PGXCNodeCommitPrepared(stmt->gid);
-						else if (IsConnFromCoord())
 						{
-							/*
-							 * A local Coordinator always commits if involved in Prepare.
-							 * 2PC file is created and flushed if a DDL has been involved in the transaction.
-							 * If remote connection is a Coordinator type, the commit prepared has to be done locally
-							 * if and only if the Coordinator number was in the node list received from GTM.
-							 */
+							if (FinishRemotePreparedTransaction(stmt->gid, true) || xc_maintenance_mode)
+								FinishPreparedTransaction(stmt->gid, true);
+						}
+						else
 #endif
 						FinishPreparedTransaction(stmt->gid, true);
-#ifdef PGXC
-						}
-#endif
 						break;
 
 					case TRANS_STMT_ROLLBACK_PREPARED:
 						PreventTransactionChain(isTopLevel, "ROLLBACK PREPARED");
 						PreventCommandDuringRecovery("ROLLBACK PREPARED");
-#ifdef PGXC
+#ifdef PGXC						
 						/*
-						 * If a ROLLBACK PREPARED message is received from another Coordinator,
-						 * Don't send it down to Datanodes.
+						 * Abort a transaction which was explicitely prepared
+						 * before
 						 */
 						if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-							operation_local = PGXCNodeRollbackPrepared(stmt->gid);
-						/*
-						 * Local coordinator rollbacks if involved in PREPARE
-						 * If remote connection is a Coordinator type, the commit prepared has to be done locally also.
-						 * This works for both Datanodes and Coordinators.
-						 */
-						if (operation_local || IsConnFromCoord())
 						{
+							if (FinishRemotePreparedTransaction(stmt->gid, false) || xc_maintenance_mode)
+								FinishPreparedTransaction(stmt->gid, false);
+						}
+						else
 #endif
 						FinishPreparedTransaction(stmt->gid, false);
-#ifdef PGXC
-						}
-#endif
 						break;
 
 					case TRANS_STMT_ROLLBACK:
@@ -744,7 +689,11 @@ standard_ProcessUtility(Node *parsetree,
 #ifdef PGXC
 						/* Set temporary object object flag in pooler */
 						if (is_temp)
+#ifdef XCP
+							PoolManagerSetCommand(POOL_CMD_TEMP, NULL, NULL);
+#else
 							PoolManagerSetCommand(POOL_CMD_TEMP, NULL);
+#endif
 #endif
 
 						/* Create the table itself */
@@ -1579,7 +1528,11 @@ standard_ProcessUtility(Node *parsetree,
 
 					/* Set temporary object flag in pooler */
 					if (is_temp)
+#ifdef XCP
+						PoolManagerSetCommand(POOL_CMD_TEMP, NULL, NULL);
+#else
 						PoolManagerSetCommand(POOL_CMD_TEMP, NULL);
+#endif
 
 					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, is_temp);
 				}
@@ -1758,54 +1711,15 @@ standard_ProcessUtility(Node *parsetree,
 			/* we choose to allow this during "read only" transactions */
 			PreventCommandDuringRecovery("VACUUM");
 #ifdef PGXC
-#ifdef XCP
-			/*
-			 * Send command down to data nodes
-			 */
-			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-			{
-				ExecUtilityStmtOnNodes(queryString, NULL, true,
-									   EXEC_ON_DATANODES, false);
-			}
-			else if (IS_PGXC_COORDINATOR && IsConnFromCoord())
-			{
-				LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-				MyProc->vacuumFlags |= PROC_VACUUM_COORD;
-				LWLockRelease(ProcArrayLock);
-			}
-#else
 			/*
 			 * We have to run the command on nodes before coordinator because
 			 * vacuum() pops active snapshot and we can not send it to nodes
  			 */
 			if (IS_PGXC_COORDINATOR)
 				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_DATANODES, false);
-#endif /* XCP */
 #endif /* PGXC */
 			vacuum((VacuumStmt *) parsetree, InvalidOid, true, NULL, false,
 				   isTopLevel);
-#ifdef XCP
-			/*
-			 * Get statistics from the data nodes, apply them locally and
-			 * propagate to other coordinators.
-			 */
-			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-			{
-				/*
-				 * New transaction is started before exiting from vacuum, get
-				 * a snapshot for the transaction.
-				 */
-				PushActiveSnapshot(GetTransactionSnapshot());
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_COORDS, false);
-				PopActiveSnapshot();
-			}
-			else if (IS_PGXC_COORDINATOR && IsConnFromCoord())
-			{
-				LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-				MyProc->vacuumFlags &= ~PROC_VACUUM_COORD;
-				LWLockRelease(ProcArrayLock);
-			}
-#endif
 			break;
 
 		case T_ExplainStmt:
@@ -1815,6 +1729,7 @@ standard_ProcessUtility(Node *parsetree,
 		case T_VariableSetStmt:
 			ExecSetVariableStmt((VariableSetStmt *) parsetree);
 #ifdef PGXC
+#ifndef XCP
 			/* Let the pooler manage the statement */
 			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 			{
@@ -1837,6 +1752,7 @@ standard_ProcessUtility(Node *parsetree,
 						elog(ERROR, "Postgres-XC: ERROR SET query");
 				}
 			}
+#endif
 #endif
 			break;
 
@@ -2016,6 +1932,7 @@ standard_ProcessUtility(Node *parsetree,
 		case T_ConstraintsSetStmt:
 			AfterTriggerSetState((ConstraintsSetStmt *) parsetree);
 #ifdef PGXC
+#ifndef XCP
 			/*
 			 * Let the pooler manage the statement, SET CONSTRAINT can just be used
 			 * inside a transaction block, hence it has no effect outside that, so use
@@ -2026,6 +1943,7 @@ standard_ProcessUtility(Node *parsetree,
 				if (PoolManagerSetCommand(POOL_CMD_LOCAL_SET, queryString) < 0)
 					elog(ERROR, "Postgres-XC: ERROR SET query");
 			}
+#endif
 #endif
 			break;
 

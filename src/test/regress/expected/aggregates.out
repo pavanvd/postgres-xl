@@ -445,19 +445,19 @@ FROM bool_test;
 --
 -- Test cases that should be optimized into indexscans instead of
 -- the generic aggregate implementation.
+-- In Postgres-XC, plans printed by explain are the ones created on the
+-- coordinator. Coordinator does not generate index scan plans.
 --
 analyze tenk1;		-- ensure we get consistent plans here
 -- Basic cases
-explain (costs off)
+explain (costs off, nodes off)
   select min(unique1) from tenk1;
-                      QUERY PLAN                       
--------------------------------------------------------
- Result
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan using tenk1_unique1 on tenk1
-                 Index Cond: (unique1 IS NOT NULL)
-(5 rows)
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Aggregate
+   ->  Materialize
+         ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
+(3 rows)
 
 select min(unique1) from tenk1;
  min 
@@ -465,16 +465,14 @@ select min(unique1) from tenk1;
    0
 (1 row)
 
-explain (costs off)
+explain (costs off, nodes off)
   select max(unique1) from tenk1;
-                           QUERY PLAN                           
-----------------------------------------------------------------
- Result
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan Backward using tenk1_unique1 on tenk1
-                 Index Cond: (unique1 IS NOT NULL)
-(5 rows)
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Aggregate
+   ->  Materialize
+         ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
+(3 rows)
 
 select max(unique1) from tenk1;
  max  
@@ -482,16 +480,14 @@ select max(unique1) from tenk1;
  9999
 (1 row)
 
-explain (costs off)
+explain (costs off, nodes off)
   select max(unique1) from tenk1 where unique1 < 42;
-                               QUERY PLAN                               
-------------------------------------------------------------------------
- Result
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan Backward using tenk1_unique1 on tenk1
-                 Index Cond: ((unique1 IS NOT NULL) AND (unique1 < 42))
-(5 rows)
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Aggregate
+   ->  Materialize
+         ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
+(3 rows)
 
 select max(unique1) from tenk1 where unique1 < 42;
  max 
@@ -499,16 +495,14 @@ select max(unique1) from tenk1 where unique1 < 42;
   41
 (1 row)
 
-explain (costs off)
+explain (costs off, nodes off)
   select max(unique1) from tenk1 where unique1 > 42;
-                               QUERY PLAN                               
-------------------------------------------------------------------------
- Result
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan Backward using tenk1_unique1 on tenk1
-                 Index Cond: ((unique1 IS NOT NULL) AND (unique1 > 42))
-(5 rows)
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Aggregate
+   ->  Materialize
+         ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
+(3 rows)
 
 select max(unique1) from tenk1 where unique1 > 42;
  max  
@@ -516,16 +510,14 @@ select max(unique1) from tenk1 where unique1 > 42;
  9999
 (1 row)
 
-explain (costs off)
+explain (costs off, nodes off)
   select max(unique1) from tenk1 where unique1 > 42000;
-                                QUERY PLAN                                 
----------------------------------------------------------------------------
- Result
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan Backward using tenk1_unique1 on tenk1
-                 Index Cond: ((unique1 IS NOT NULL) AND (unique1 > 42000))
-(5 rows)
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Aggregate
+   ->  Materialize
+         ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
+(3 rows)
 
 select max(unique1) from tenk1 where unique1 > 42000;
  max 
@@ -534,16 +526,14 @@ select max(unique1) from tenk1 where unique1 > 42000;
 (1 row)
 
 -- multi-column index (uses tenk1_thous_tenthous)
-explain (costs off)
+explain (costs off, nodes off)
   select max(tenthous) from tenk1 where thousand = 33;
-                                QUERY PLAN                                
---------------------------------------------------------------------------
- Result
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan Backward using tenk1_thous_tenthous on tenk1
-                 Index Cond: ((thousand = 33) AND (tenthous IS NOT NULL))
-(5 rows)
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Aggregate
+   ->  Materialize
+         ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
+(3 rows)
 
 select max(tenthous) from tenk1 where thousand = 33;
  max  
@@ -551,16 +541,14 @@ select max(tenthous) from tenk1 where thousand = 33;
  9033
 (1 row)
 
-explain (costs off)
+explain (costs off, nodes off)
   select min(tenthous) from tenk1 where thousand = 33;
-                                QUERY PLAN                                
---------------------------------------------------------------------------
- Result
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan using tenk1_thous_tenthous on tenk1
-                 Index Cond: ((thousand = 33) AND (tenthous IS NOT NULL))
-(5 rows)
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Aggregate
+   ->  Materialize
+         ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
+(3 rows)
 
 select min(tenthous) from tenk1 where thousand = 33;
  min 
@@ -569,19 +557,18 @@ select min(tenthous) from tenk1 where thousand = 33;
 (1 row)
 
 -- check parameter propagation into an indexscan subquery
-explain (costs off)
+explain (costs off, nodes off)
   select f1, (select min(unique1) from tenk1 where unique1 > f1) AS gt
     from int4_tbl;
-                                       QUERY PLAN                                        
------------------------------------------------------------------------------------------
- Seq Scan on int4_tbl
-   SubPlan 2
-     ->  Result
-           InitPlan 1 (returns $1)
-             ->  Limit
-                   ->  Index Scan using tenk1_unique1 on tenk1
-                         Index Cond: ((unique1 IS NOT NULL) AND (unique1 > int4_tbl.f1))
-(7 rows)
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Result
+   ->  Data Node Scan on int4_tbl
+   SubPlan 1
+     ->  Aggregate
+           ->  Data Node Scan on tenk1
+                 Coordinator quals: (unique1 > int4_tbl.f1)
+(6 rows)
 
 select f1, (select min(unique1) from tenk1 where unique1 > f1) AS gt
 from int4_tbl 
@@ -596,17 +583,14 @@ order by f1;
 (5 rows)
 
 -- check some cases that were handled incorrectly in 8.3.0
-explain (costs off)
+explain (costs off, nodes off)
   select distinct max(unique2) from tenk1;
-                           QUERY PLAN                           
-----------------------------------------------------------------
+             QUERY PLAN              
+-------------------------------------
  HashAggregate
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan Backward using tenk1_unique2 on tenk1
-                 Index Cond: (unique2 IS NOT NULL)
-   ->  Result
-(6 rows)
+   ->  Aggregate
+         ->  Data Node Scan on tenk1
+(3 rows)
 
 select distinct max(unique2) from tenk1;
  max  
@@ -614,18 +598,15 @@ select distinct max(unique2) from tenk1;
  9999
 (1 row)
 
-explain (costs off)
+explain (costs off, nodes off)
   select max(unique2) from tenk1 order by 1;
-                           QUERY PLAN                           
-----------------------------------------------------------------
+             QUERY PLAN              
+-------------------------------------
  Sort
-   Sort Key: ($0)
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan Backward using tenk1_unique2 on tenk1
-                 Index Cond: (unique2 IS NOT NULL)
-   ->  Result
-(7 rows)
+   Sort Key: (max(unique2))
+   ->  Aggregate
+         ->  Data Node Scan on tenk1
+(4 rows)
 
 select max(unique2) from tenk1 order by 1;
  max  
@@ -633,18 +614,15 @@ select max(unique2) from tenk1 order by 1;
  9999
 (1 row)
 
-explain (costs off)
+explain (costs off, nodes off)
   select max(unique2) from tenk1 order by max(unique2);
-                           QUERY PLAN                           
-----------------------------------------------------------------
+             QUERY PLAN              
+-------------------------------------
  Sort
-   Sort Key: ($0)
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan Backward using tenk1_unique2 on tenk1
-                 Index Cond: (unique2 IS NOT NULL)
-   ->  Result
-(7 rows)
+   Sort Key: (max(unique2))
+   ->  Aggregate
+         ->  Data Node Scan on tenk1
+(4 rows)
 
 select max(unique2) from tenk1 order by max(unique2);
  max  
@@ -652,18 +630,15 @@ select max(unique2) from tenk1 order by max(unique2);
  9999
 (1 row)
 
-explain (costs off)
+explain (costs off, nodes off)
   select max(unique2) from tenk1 order by max(unique2)+1;
-                           QUERY PLAN                           
-----------------------------------------------------------------
+             QUERY PLAN              
+-------------------------------------
  Sort
-   Sort Key: (($0 + 1))
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan Backward using tenk1_unique2 on tenk1
-                 Index Cond: (unique2 IS NOT NULL)
-   ->  Result
-(7 rows)
+   Sort Key: ((max(unique2) + 1))
+   ->  Aggregate
+         ->  Data Node Scan on tenk1
+(4 rows)
 
 select max(unique2) from tenk1 order by max(unique2)+1;
  max  
@@ -671,18 +646,15 @@ select max(unique2) from tenk1 order by max(unique2)+1;
  9999
 (1 row)
 
-explain (costs off)
+explain (costs off, nodes off)
   select max(unique2), generate_series(1,3) as g from tenk1 order by g desc;
-                           QUERY PLAN                           
-----------------------------------------------------------------
+             QUERY PLAN              
+-------------------------------------
  Sort
    Sort Key: (generate_series(1, 3))
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Index Scan Backward using tenk1_unique2 on tenk1
-                 Index Cond: (unique2 IS NOT NULL)
-   ->  Result
-(7 rows)
+   ->  Aggregate
+         ->  Data Node Scan on tenk1
+(4 rows)
 
 select max(unique2), generate_series(1,3) as g from tenk1 order by g desc;
  max  | g 
@@ -705,36 +677,17 @@ insert into minmaxtest values(11), (12);
 insert into minmaxtest1 values(13), (14);
 insert into minmaxtest2 values(15), (16);
 insert into minmaxtest3 values(17), (18);
-explain (costs off)
+explain (costs off, nodes off)
   select min(f1), max(f1) from minmaxtest;
-                                      QUERY PLAN                                      
---------------------------------------------------------------------------------------
- Result
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Merge Append
-                 Sort Key: public.minmaxtest.f1
-                 ->  Index Scan using minmaxtesti on minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Scan using minmaxtest1i on minmaxtest1 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Scan Backward using minmaxtest2i on minmaxtest2 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Scan using minmaxtest3i on minmaxtest3 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-   InitPlan 2 (returns $1)
-     ->  Limit
-           ->  Merge Append
-                 Sort Key: public.minmaxtest.f1
-                 ->  Index Scan Backward using minmaxtesti on minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Scan Backward using minmaxtest1i on minmaxtest1 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Scan using minmaxtest2i on minmaxtest2 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Scan Backward using minmaxtest3i on minmaxtest3 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-(25 rows)
+                QUERY PLAN                
+------------------------------------------
+ Aggregate
+   ->  Append
+         ->  Data Node Scan on minmaxtest
+         ->  Data Node Scan on minmaxtest
+         ->  Data Node Scan on minmaxtest
+         ->  Data Node Scan on minmaxtest
+(6 rows)
 
 select min(f1), max(f1) from minmaxtest;
  min | max 

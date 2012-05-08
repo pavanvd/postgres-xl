@@ -231,7 +231,7 @@ InitProcGlobal(void)
 	{
 		AuxiliaryProcs[i].pid = 0;		/* marks auxiliary proc as not in use */
 		PGSemaphoreCreate(&(AuxiliaryProcs[i].sem));
-		InitSharedLatch(&procs[i].waitLatch);
+		InitSharedLatch(&AuxiliaryProcs[i].waitLatch);
 	}
 
 	/* Create ProcStructLock spinlock, too */
@@ -685,15 +685,6 @@ RemoveProcFromArray(int code, Datum arg)
 {
 	Assert(MyProc != NULL);
 	ProcArrayRemove(MyProc, InvalidTransactionId);
-#ifdef PGXC
-	/* Remove from the analyze array */
-	if (IS_PGXC_DATANODE && IsAutoVacuumAnalyzeWorker())
-	{
- 		LWLockAcquire(AnalyzeProcArrayLock, LW_EXCLUSIVE);
-		AnalyzeProcArrayRemove(MyProc, InvalidTransactionId);
-		LWLockRelease(AnalyzeProcArrayLock);
-	}
-#endif
 }
 
 /*

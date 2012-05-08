@@ -872,7 +872,6 @@ RelationBuildLocator(Relation rel)
 /*
  * GetLocatorRelationInfo - Returns the locator information for relation,
  * in a copy of the RelationLocatorInfo struct in relcache
- *
  */
 RelationLocInfo *
 GetRelationLocInfo(Oid relid)
@@ -887,6 +886,19 @@ GetRelationLocInfo(Oid relid)
 	relation_close(rel, AccessShareLock);
 
 	return ret_loc_info;
+}
+
+/*
+ * Get the distribution type of relation.
+ */
+char
+GetRelationLocType(Oid relid)
+{
+	RelationLocInfo *locinfo = GetRelationLocInfo(relid);
+	if (!locinfo)
+		return LOCATOR_TYPE_NONE;
+
+	return locinfo->locatorType;
 }
 
 /*
@@ -928,6 +940,24 @@ FreeRelationLocInfo(RelationLocInfo *relationLocInfo)
 		pfree(relationLocInfo);
 	}
 }
+
+
+/*
+ * Free the contents of the ExecNodes expression */
+void
+FreeExecNodes(ExecNodes **exec_nodes)
+{
+	ExecNodes *tmp_en = *exec_nodes;
+
+	/* Nothing to do */
+	if (!tmp_en)
+		return;
+	list_free(tmp_en->primarynodelist);
+	list_free(tmp_en->nodeList);
+	pfree(tmp_en);
+	*exec_nodes = NULL;
+}
+
 
 #ifdef XCP
 /*

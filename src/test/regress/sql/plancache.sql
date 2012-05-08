@@ -2,6 +2,9 @@
 -- Tests to exercise the plan caching/invalidation mechanism
 --
 
+-- Enforce use of COMMIT instead of 2PC for temporary objects
+SET enforce_two_phase_commit TO off;
+
 CREATE TEMP TABLE pcachetest AS SELECT * FROM int8_tbl;
 
 -- create and use a cached plan
@@ -149,7 +152,7 @@ begin
   drop table if exists temptable cascade;
   create temp table temptable as select * from generate_series(1,3) as f1;
   create temp view vv as select * from temptable;
-  for r in select * from vv loop
+  for r in select * from vv order by 1 loop
     raise notice '%', r;
   end loop;
 end$$ language plpgsql;

@@ -478,8 +478,6 @@ SetRemoteStatementName(Plan *plan, const char *stmt_name, int num_params,
 
 		if (stmt_name)
 		{
-			do
-			{
 				strcpy(name, stmt_name);
 				/*
 				 * Append modifier. If resulting string is going to be truncated,
@@ -500,13 +498,18 @@ SetRemoteStatementName(Plan *plan, const char *stmt_name, int num_params,
 				}
 				n++;
 				hash_search(datanode_queries, name, HASH_FIND, &exists);
-			} while (exists);
-			entry = (DatanodeStatement *) hash_search(datanode_queries,
+
+			/* If it already exists, that means this plan has just been revalidated. */
+			if (!exists)
+			{
+				entry = (DatanodeStatement *) hash_search(datanode_queries,
 												  name,
 												  HASH_ENTER,
 												  NULL);
+				entry->number_of_nodes = 0;
+			}
+
 			((RemoteQuery *) plan)->statement = pstrdup(name);
-			entry->number_of_nodes = 0;
 		}
 		else if (((RemoteQuery *)plan)->statement)
 			ereport(ERROR,
@@ -515,6 +518,18 @@ SetRemoteStatementName(Plan *plan, const char *stmt_name, int num_params,
 
 		((RemoteQuery *) plan)->num_params = num_params;
 		((RemoteQuery *) plan)->param_types = param_types;
+	}
+	else if (IsA(plan, ModifyTable))
+	{
+		ModifyTable	*mt_plan = (ModifyTable *)plan;
+		/* For ModifyTable plan recurse into each of the plans underneath */
+		ListCell	*l;
+		foreach(l, mt_plan->plans)
+		{
+			Plan *plan = lfirst(l);
+			n = SetRemoteStatementName(plan, stmt_name, num_params,
+										param_types, n);
+		}
 	}
 
 	if (innerPlan(plan))
@@ -567,33 +582,6 @@ StorePreparedStatement(const char *stmt_name,
 				 errmsg("prepared statement \"%s\" already exists",
 						stmt_name)));
 
-#ifdef PGXC
-#ifndef XCP
-	if (IS_PGXC_COORDINATOR)
-	{
-		ListCell	*lc;
-		int 		n;
-		Oid			*param_types_copy = palloc(sizeof(param_types[0]) * num_params);
-		memcpy(param_types_copy, param_types, sizeof(param_types[0]) * num_params);
-
-		/* copy the param_types array in proper context */
-
-
-		/*
-		 * Scan the plans and set the statement field for all found RemoteQuery
-		 * nodes so they use data node statements
-		 */
-		n = 0;
-		foreach(lc, stmt_list)
-		{
-			PlannedStmt *ps = (PlannedStmt *) lfirst(lc);
-			n = SetRemoteStatementName(ps->planTree, stmt_name, num_params,
-										param_types_copy, n);
-		}
-	}
-#endif
-#endif
-
 	/* Create a plancache entry */
 	plansource = CreateCachedPlan(raw_parse_tree,
 								  query_string,
@@ -603,7 +591,8 @@ StorePreparedStatement(const char *stmt_name,
 								  cursor_options,
 								  stmt_list,
 								  true,
-								  true);
+								  true,
+								  stmt_name);
 
 	/* Now we can add entry to hash table */
 	entry = (PreparedStatement *) hash_search(prepared_queries,

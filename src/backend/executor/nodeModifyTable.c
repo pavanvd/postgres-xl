@@ -363,6 +363,9 @@ ExecDelete(ItemPointer tupleid,
 		tuple.t_len = HeapTupleHeaderGetDatumLength(oldtuple);
 		ItemPointerSetInvalid(&(tuple.t_self));
 		tuple.t_tableOid = InvalidOid;
+#ifdef PGXC
+		tuple.t_xc_node_id = 0;
+#endif
 
 		dodelete = ExecIRDeleteTriggers(estate, resultRelInfo, &tuple);
 
@@ -453,6 +456,14 @@ ldelete:;
 	if (canSetTag)
 		(estate->es_processed)++;
 
+#ifdef PGXC
+#ifndef XCP
+	/*
+	 * Do not fire triggers on remote relation, it would not find old tuple
+	 */
+	if (resultRemoteRel == NULL)
+#endif
+#endif
 	/* AFTER ROW DELETE Triggers */
 	ExecARDeleteTriggers(estate, resultRelInfo, tupleid);
 
@@ -474,6 +485,9 @@ ldelete:;
 			deltuple.t_len = HeapTupleHeaderGetDatumLength(oldtuple);
 			ItemPointerSetInvalid(&(deltuple.t_self));
 			deltuple.t_tableOid = InvalidOid;
+#ifdef PGXC
+			deltuple.t_xc_node_id = 0;
+#endif
 			delbuffer = InvalidBuffer;
 		}
 		else
@@ -589,6 +603,9 @@ ExecUpdate(ItemPointer tupleid,
 		oldtup.t_len = HeapTupleHeaderGetDatumLength(oldtuple);
 		ItemPointerSetInvalid(&(oldtup.t_self));
 		oldtup.t_tableOid = InvalidOid;
+#ifdef PGXC
+		oldtup.t_xc_node_id = 0;
+#endif
 
 		slot = ExecIRUpdateTriggers(estate, resultRelInfo,
 									&oldtup, slot);
@@ -707,6 +724,14 @@ lreplace:;
 	if (canSetTag)
 		(estate->es_processed)++;
 
+#ifdef PGXC
+#ifndef XCP
+	/*
+	 * Do not fire triggers on remote relation, it would not find old tuple
+	 */
+	if (resultRemoteRel == NULL)
+#endif
+#endif
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(estate, resultRelInfo, tupleid, tuple,
 						 recheckIndexes);

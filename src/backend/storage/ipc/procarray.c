@@ -79,6 +79,9 @@
 typedef struct ProcArrayStruct
 {
 	int			numProcs;		/* number of valid procs entries */
+#ifdef PGXC
+	int			numAVProcs;		/* number of autovacuum procs - stored at the begining of the array */
+#endif
 	int			maxProcs;		/* allocated size of procs array */
 
 	/*
@@ -107,10 +110,6 @@ typedef struct ProcArrayStruct
 } ProcArrayStruct;
 
 static ProcArrayStruct *procArray;
-
-#ifdef PGXC
-static ProcArrayStruct *analyzeProcArray;
-#endif
 
 /*
  * Bookkeeping for tracking emulated transactions in recovery
@@ -310,7 +309,16 @@ ProcArrayAdd(PGPROC *proc)
 				 errmsg("sorry, too many clients already")));
 	}
 
-	arrayP->procs[arrayP->numProcs] = proc;
+#ifdef PGXC
+	if (proc->vacuumFlags & PROC_IS_AUTOVACUUM)
+	{
+		arrayP->procs[arrayP->numProcs] = arrayP->procs[arrayP->numAVProcs];
+		arrayP->procs[arrayP->numAVProcs] = proc;
+		arrayP->numAVProcs++;
+	}
+	else
+#endif
+		arrayP->procs[arrayP->numProcs] = proc;
 	arrayP->numProcs++;
 
 	LWLockRelease(ProcArrayLock);
@@ -362,6 +370,24 @@ ProcArrayRemove(PGPROC *proc, TransactionId latestXid)
 	{
 		if (arrayP->procs[index] == proc)
 		{
+#ifdef PGXC
+			if (proc->vacuumFlags & PROC_IS_AUTOVACUUM)
+			{
+				/*
+				 * We must maintain all the autovacuum processes at the start
+				 * of the array. So unless we are removing the last autovacuum
+				 * process, we must shuffle the array so that the invariance is
+				 * maintained
+				 */
+				if (index < arrayP->numAVProcs - 1)
+				{
+					arrayP->procs[index] = arrayP->procs[arrayP->numAVProcs - 1];
+					index = arrayP->numAVProcs - 1;
+				}
+				Assert(index == arrayP->numAVProcs - 1);
+				arrayP->numAVProcs--;
+			}
+#endif
 			arrayP->procs[index] = arrayP->procs[arrayP->numProcs - 1];
 			arrayP->procs[arrayP->numProcs - 1] = NULL; /* for debugging */
 			arrayP->numProcs--;
@@ -403,13 +429,15 @@ ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 		 */
 #ifdef PGXC
 		/*
-		 * Remove this assertion check for PGXC on Coordinator
-		 * We could abort even after a Coordinator has committed
-		 * for a 2PC transaction if Datanodes have failed committed the transaction
+		 * Remove this assertion. We have seen this failing because a ROLLBACK
+		 * statement may get canceled by a coordinator, leading to recursive
+		 * abort of a transaction. This must be a PostgreSQL issue, highlighted
+		 * by XC. See thread on hackers with subject "Canceling ROLLBACK
+		 * statement"
 		 */
-		if (IS_PGXC_DATANODE)
-#endif
+#else
 		Assert(TransactionIdIsValid(proc->xid));
+#endif
 
 		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
 
@@ -441,12 +469,13 @@ ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 		 */
 #ifdef PGXC
 		/*
-		 * Removed this assertion check for PGXC on the Coordinator
-		 * We could abort before the Coordinator has obtained a GXID
+		 * We are seeing this assertion failure every once in a while. We have
+		 * a theory about how this can happen also on vanilla PostgreSQL, we
+		 * don't have a reproducible case yet (see email of hackers with
+		 * subject "Canceling ROLLBACK statement".
 		 */
-	if (IS_PGXC_DATANODE)
-#endif
 		Assert(!TransactionIdIsValid(proc->xid));
+#endif
 
 		proc->lxid = InvalidLocalTransactionId;
 		proc->xmin = InvalidTransactionId;
@@ -1218,7 +1247,6 @@ GetSnapshotData(Snapshot snapshot)
 	int			count = 0;
 	int			subcount = 0;
 	bool		suboverflowed = false;
-
 
 #ifdef PGXC  /* PGXC_DATANODE */
 	/*
@@ -2464,15 +2492,8 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 	{
 		GTM_Snapshot gtm_snapshot;
 		bool canbe_grouped = (!FirstSnapshotSet) || (!IsolationUsesXactSnapshot());
-#ifdef XCP
-		elog(DEBUG1, "Getting snapshot for autovacuum. Current XID = %d",
-			 GetCurrentGlobalTransactionId());
-		gtm_snapshot = GetSnapshotGTM(GetCurrentGlobalTransactionId(),
-									  canbe_grouped);
-#else
 		elog(DEBUG1, "Getting snapshot for autovacuum. Current XID = %d", GetCurrentTransactionId());
 		gtm_snapshot = GetSnapshotGTM(GetCurrentTransactionId(), canbe_grouped);
-#endif
 		if (!gtm_snapshot)
 			ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
@@ -2507,7 +2528,7 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 				&& TransactionIdIsValid(gxmin))
 	{
 		int index;
-		ProcArrayStruct *arrayP = analyzeProcArray;
+		ProcArrayStruct *arrayP = procArray;
 
 		snapshot->xmin = gxmin;
 		snapshot->xmax = gxmax;
@@ -2585,13 +2606,13 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 		 * Start of handling for local ANALYZE
 		 * Make adjustments for any running auto ANALYZE commands
 		 */
-		LWLockAcquire(AnalyzeProcArrayLock, LW_SHARED);
+		LWLockAcquire(ProcArrayLock, LW_SHARED);
 
 		/*
 		 * Spin over analyzeProcArray and add these local analyze XIDs to the
 		 * local snapshot.
 		 */
-		for (index = 0; index < arrayP->numProcs; index++)
+		for (index = 0; index < arrayP->numAVProcs; index++)
 		{
 			volatile PGPROC *proc = arrayP->procs[index];
 			TransactionId xid;
@@ -2644,7 +2665,7 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 		if (!TransactionIdIsValid(MyProc->xmin))
 			MyProc->xmin = snapshot->xmin;
 
-		LWLockRelease(AnalyzeProcArrayLock);
+		LWLockRelease(ProcArrayLock);
 		/* End handling of local analyze XID in snapshots */
 
 		return true;
@@ -2668,7 +2689,7 @@ GetSnapshotDataCoordinator(Snapshot snapshot)
  	Assert (IS_PGXC_COORDINATOR);
 
 	canbe_grouped = (!FirstSnapshotSet) || (!IsolationUsesXactSnapshot());
-	gtm_snapshot = GetSnapshotGTM(GetCurrentGlobalTransactionId(), canbe_grouped);
+	gtm_snapshot = GetSnapshotGTM(GetCurrentTransactionId(), canbe_grouped);
 
 	if (!gtm_snapshot)
 			ereport(ERROR,
@@ -2760,103 +2781,6 @@ GetSnapshotDataCoordinator(Snapshot snapshot)
 		return true;
 	}
 	return false;
-}
-
-
-/*
- * Report shared-memory space needed by CreateSharedAnalyzeProcArray.
- */
-Size
-AnalyzeProcArrayShmemSize(void)
-{
-	Size		size;
-
-	size = offsetof(ProcArrayStruct, procs);
-	size = add_size(size, mul_size(sizeof(PGPROC *), autovacuum_max_workers));
-
-	return size;
-}
-
-/*
- * Initialize the shared ANALYZE PGPROC array during postmaster startup.
- */
-void
-CreateSharedAnalyzeProcArray(void)
-{
-	bool		found;
-
-	/* Create or attach to the ProcArray shared structure */
-	analyzeProcArray = (ProcArrayStruct *)
-		ShmemInitStruct("Analyze Proc Array", AnalyzeProcArrayShmemSize(), &found);
-
-	if (!found)
-	{
-		/*
-		 * We're the first - initialize.
-		 */
-		analyzeProcArray->numProcs = 0;
-		analyzeProcArray->maxProcs = autovacuum_max_workers;
-	}
-}
-
-/*
- * Add the specified PGPROC to the shared ANALYZE array.
- *
- * It assumes that AnalyzeProcArrayLock is already held,
- * and will be held at exit.
- */
-void
-AnalyzeProcArrayAdd(PGPROC *proc)
-{
-	ProcArrayStruct *arrayP = analyzeProcArray;
-
-	if (arrayP->numProcs >= arrayP->maxProcs)
-	{
-		/*
-		 * Ooops, no room.	(This really shouldn't happen, since there is a
-		 * fixed supply of PGPROC structs too, and so we should have failed
-		 * earlier.)
-		 */
-		LWLockRelease(AnalyzeProcArrayLock);
-		ereport(FATAL,
-				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
-				 errmsg("sorry, too many analyze clients already")));
-	}
-
-	arrayP->procs[arrayP->numProcs] = proc;
-	arrayP->numProcs++;
-
-	elog(DEBUG1, "Added analyze proc %p for xid %d in AnalyzeProcArray", proc, proc->xid);
-}
-
-/*
- * Remove the specified PGPROC from the shared ANALYZE array.
- * We assume that AnalyzeProcArrayLock is already held,
- * and it will still be held at exit
- */
-void
-AnalyzeProcArrayRemove(PGPROC *proc, TransactionId latestXid)
-{
-	ProcArrayStruct *arrayP = analyzeProcArray;
-	int			index;
-
-#ifdef XIDCACHE_DEBUG
-	/* dump stats at backend shutdown, but not prepared-xact end */
-	if (proc->pid != 0)
-		DisplayXidCache();
-#endif
-
-	for (index = 0; index < arrayP->numProcs; index++)
-	{
-		if (arrayP->procs[index] == proc)
-		{
-			arrayP->procs[index] = arrayP->procs[arrayP->numProcs - 1];
-			arrayP->procs[arrayP->numProcs - 1] = NULL; /* for debugging */
-			arrayP->numProcs--;
-			elog(DEBUG1, "Removed analyze proc %p for xid %d in AnalyzeProcArray", proc, proc->xid);
-			return;
-		}
-	}
 }
 #endif /* PGXC */
 
@@ -3700,9 +3624,9 @@ KnownAssignedXidsDisplay(int trace_level)
  * GetGlobalSessionInfo
  *
  * Determine the global session id of the specified backend process
- * Returns Oid and pid of the initiating coordinator session.
+ * Returns coordinator node_id and pid of the initiating coordinator session.
  * If no such backend or global session id is not defined for the backend
- * return InvalidOid and 0 respectively.
+ * return zero values.
  */
 void
 GetGlobalSessionInfo(int pid, Oid *coordId, int *coordPid)

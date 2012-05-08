@@ -23,6 +23,9 @@
 #include "commands/async.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#ifdef PGXC
+#include "pgxc/nodemgr.h"
+#endif
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
@@ -118,9 +121,6 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, MultiXactShmemSize());
 		size = add_size(size, LWLockShmemSize());
 		size = add_size(size, ProcArrayShmemSize());
-#ifdef PGXC
-		size = add_size(size, AnalyzeProcArrayShmemSize());
-#endif
 		size = add_size(size, BackendStatusShmemSize());
 		size = add_size(size, SInvalShmemSize());
 		size = add_size(size, PMSignalShmemSize());
@@ -136,6 +136,10 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
+#ifdef PGXC
+		size = add_size(size, NodeTablesShmemSize());
+#endif
+
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -222,9 +226,6 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	if (!IsUnderPostmaster)
 		InitProcGlobal();
 	CreateSharedProcArray();
-#ifdef PGXC
-	CreateSharedAnalyzeProcArray();
-#endif
 	CreateSharedBackendStatus();
 
 	/*
@@ -256,6 +257,11 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	BTreeShmemInit();
 	SyncScanShmemInit();
 	AsyncShmemInit();
+
+#ifdef PGXC
+	NodeTablesShmemInit();
+#endif
+
 
 #ifdef EXEC_BACKEND
 

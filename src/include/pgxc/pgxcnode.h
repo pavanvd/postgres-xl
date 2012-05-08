@@ -100,10 +100,10 @@ extern void InitMultinodeExecutor(bool is_force);
 /* Open/close connection routines (invoked from Pool Manager) */
 #ifdef XCP
 extern char *PGXCNodeConnStr(char *host, int port, char *dbname, char *user,
-							 char *remote_type, char *parent_node);
+				 char *pgoptions, char *remote_type, char *parent_node);
 #else
 extern char *PGXCNodeConnStr(char *host, int port, char *dbname, char *user,
-							 char *remote_type);
+	                         char *pgoptions, char *remote_type);
 #endif
 extern NODE_CONNECTION *PGXCNodeConnect(char *connstr);
 extern int PGXCNodeSendSetQuery(NODE_CONNECTION *conn, const char *sql_command);
@@ -121,6 +121,9 @@ extern Oid PGXCNodeGetNodeOid(int nodeid, char node_type);
 extern int PGXCNodeGetNodeIdFromName(char *node_name, char node_type);
 
 extern PGXCNodeAllHandles *get_handles(List *datanodelist, List *coordlist, bool is_query_coord_only);
+#ifdef XCP
+extern PGXCNodeAllHandles *get_current_handles(void);
+#endif
 extern void pfree_pgxc_all_handles(PGXCNodeAllHandles *handles);
 
 extern void release_handles(void);
@@ -173,8 +176,10 @@ extern int	send_some(PGXCNodeHandle * handle, int len);
 extern int	pgxc_node_flush(PGXCNodeHandle *handle);
 extern void	pgxc_node_flush_read(PGXCNodeHandle *handle);
 
+#ifndef XCP
 extern int	pgxc_all_handles_send_gxid(PGXCNodeAllHandles *pgxc_handles, GlobalTransactionId gxid, bool stop_at_error);
 extern int	pgxc_all_handles_send_query(PGXCNodeAllHandles *pgxc_handles, const char *buffer, bool stop_at_error);
+#endif
 
 extern char get_message(PGXCNodeHandle *conn, int *len, char **msg);
 

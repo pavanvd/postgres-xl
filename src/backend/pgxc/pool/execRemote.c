@@ -19,6 +19,7 @@
 #include "postgres.h"
 #include "access/twophase.h"
 #include "access/gtm.h"
+#include "access/transam.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "catalog/pgxc_node.h"
@@ -46,10 +47,66 @@
 #include "pgxc/locator.h"
 #include "pgxc/pgxc.h"
 #include "parser/parse_type.h"
+#include "pgxc/xc_maintenance_mode.h"
+
+/* Enforce the use of two-phase commit when temporary objects are used */
+bool EnforceTwoPhaseCommit = true;
 
 #define END_QUERY_TIMEOUT	20
 #define DATA_NODE_FETCH_SIZE 1
 
+typedef enum RemoteXactNodeStatus
+{
+	RXACT_NODE_NONE,					/* Initial state */
+	RXACT_NODE_PREPARE_SENT,			/* PREPARE request sent */
+	RXACT_NODE_PREPARE_FAILED,		/* PREPARE failed on the node */
+	RXACT_NODE_PREPARED,				/* PREARED successfully on the node */
+	RXACT_NODE_COMMIT_SENT,			/* COMMIT sent successfully */
+	RXACT_NODE_COMMIT_FAILED,		/* failed to COMMIT on the node */
+	RXACT_NODE_COMMITTED,			/* COMMITTed successfully on the node */
+	RXACT_NODE_ABORT_SENT,			/* ABORT sent successfully */
+	RXACT_NODE_ABORT_FAILED,			/* failed to ABORT on the node */
+	RXACT_NODE_ABORTED				/* ABORTed successfully on the node */
+} RemoteXactNodeStatus;
+
+typedef enum RemoteXactStatus
+{
+	RXACT_NONE,				/* Initial state */
+	RXACT_PREPARE_FAILED,	/* PREPARE failed */
+	RXACT_PREPARED,			/* PREPARED succeeded on all nodes */
+	RXACT_COMMIT_FAILED,		/* COMMIT failed on all the nodes */
+	RXACT_PART_COMMITTED,	/* COMMIT failed on some and succeeded on other nodes */
+	RXACT_COMMITTED,			/* COMMIT succeeded on all the nodes */
+	RXACT_ABORT_FAILED,		/* ABORT failed on all the nodes */
+	RXACT_PART_ABORTED,		/* ABORT failed on some and succeeded on other nodes */
+	RXACT_ABORTED			/* ABORT succeeded on all the nodes */
+} RemoteXactStatus;
+
+typedef struct RemoteXactState
+{
+	/* Current status of the remote 2PC */
+	RemoteXactStatus		status;
+
+	/*
+	 * Information about all the nodes involved in the transaction. We track
+	 * the number of writers and readers. The first numWriteRemoteNodes entries
+	 * in the remoteNodeHandles and remoteNodeStatus correspond to the writer
+	 * connections and rest correspond to the reader connections.
+	 */
+	int 					numWriteRemoteNodes;
+	int 					numReadRemoteNodes;
+	int						maxRemoteNodes;
+	PGXCNodeHandle			**remoteNodeHandles;
+	RemoteXactNodeStatus	*remoteNodeStatus;
+
+	GlobalTransactionId		commitXid;
+
+	bool					preparedLocalNode;
+
+	char					prepareGID[256]; /* GID used for internal 2PC */
+} RemoteXactState;
+
+static RemoteXactState remoteXactState;
 
 /*
  * Buffer size does not affect performance significantly, just do not allow
@@ -58,63 +115,57 @@
 #define COPY_BUFFER_SIZE 8192
 #define PRIMARY_NODE_WRITEAHEAD 1024 * 1024
 
-static bool autocommit = true;
-static bool is_ddl = false;
-static bool implicit_force_autocommit = false;
+/*
+ * List of PGXCNodeHandle to track readers and writers involved in the
+ * current transaction
+ */
+static List *XactWriteNodes;
+static List *XactReadNodes;
+static char *preparedNodes;
+
 #ifndef XCP
+/*
+ * Flag to track if a temporary object is accessed by the current transaction
+ */
 static bool temp_object_included = false;
 #endif
-static PGXCNodeHandle **write_node_list = NULL;
-static int	write_node_count = 0;
 
-static bool analyze_node_string(char *nodestring,
-								List **datanodelist,
-								List **coordlist);
 static int	pgxc_node_begin(int conn_count, PGXCNodeHandle ** connections,
-				GlobalTransactionId gxid, char node_type);
-static int	pgxc_node_commit(PGXCNodeAllHandles * pgxc_handles);
-static int	pgxc_node_rollback(PGXCNodeAllHandles * pgxc_handles);
-static int	pgxc_node_prepare(PGXCNodeAllHandles * pgxc_handles, char *gid);
-static int	pgxc_node_rollback_prepared(GlobalTransactionId gxid, GlobalTransactionId prepared_gxid,
-				PGXCNodeAllHandles * pgxc_handles, char *gid);
-static int	pgxc_node_commit_prepared(GlobalTransactionId gxid, GlobalTransactionId prepared_gxid,
-				PGXCNodeAllHandles * pgxc_handles, char *gid);
+				GlobalTransactionId gxid, bool need_tran_block,
+				bool readOnly, char node_type);
 static PGXCNodeAllHandles * get_exec_connections(RemoteQueryState *planstate,
 					 ExecNodes *exec_nodes,
 					 RemoteQueryExecType exec_type);
-static int	pgxc_node_implicit_commit_prepared(GlobalTransactionId prepare_xid,
-											   GlobalTransactionId commit_xid,
-											   PGXCNodeAllHandles * pgxc_handles,
-											   char *gid,
-											   bool is_commit);
-static int	pgxc_node_implicit_prepare(GlobalTransactionId prepare_xid,
-				PGXCNodeAllHandles * pgxc_handles, char *gid);
 
-#ifdef XCP
-static int	pgxc_node_receive_and_validate(const int conn_count,
-										   PGXCNodeHandle ** connections);
-#else
-static int	pgxc_node_receive_and_validate(const int conn_count,
-										   PGXCNodeHandle ** connections,
-										   bool reset_combiner);
-#endif
-static void clear_write_node_list(void);
-
-static PGXCNodeAllHandles *pgxc_get_all_transaction_nodes(PGXCNode_HandleRequested status_requested);
-static bool pgxc_start_command_on_connection(PGXCNodeHandle *connection,
-					bool need_tran, GlobalTransactionId gxid, TimestampTz timestamp,
-					RemoteQueryState *remotestate, int total_conn_count, Snapshot snapshot);
 #ifndef XCP
-static bool ExecRemoteQueryInnerPlan(RemoteQueryState *node);
-static TupleTableSlot * RemoteQueryNext(RemoteQueryState *node);
 static void close_node_cursors(PGXCNodeHandle **connections, int conn_count, char *cursor);
 #endif
-static char *GenerateBeginCommand(void);
+
+static int pgxc_get_transaction_nodes(PGXCNodeHandle *connections[], int size, bool writeOnly);
+static int pgxc_get_connections(PGXCNodeHandle *connections[], int size, List *connlist);
+
+static bool pgxc_start_command_on_connection(PGXCNodeHandle *connection,
+					RemoteQueryState *remotestate, Snapshot snapshot);
+#ifndef XCP
+static TupleTableSlot * RemoteQueryNext(RemoteQueryState *node);
+#endif
+
+static char *generate_begin_command(void);
+static bool pgxc_node_remote_prepare(char *prepareGID);
+static void pgxc_node_remote_commit(void);
+static void pgxc_node_remote_abort(void);
+static char *pgxc_node_get_nodelist(bool localNode);
+#ifdef XCP
+static void pgxc_connections_cleanup(ResponseCombiner *combiner);
+#endif
+
+#ifndef XCP
+static void ExecClearTempObjectIncluded(void);
+#endif
+static void init_RemoteXactState(bool preparedLocalNode);
+static void clear_RemoteXactState(void);
 
 #ifdef XCP
-static void register_write_nodes(int conn_count, PGXCNodeHandle **connections);
-
-
 #define REMOVE_CURR_CONN(combiner) \
 	if ((combiner)->current_conn < --((combiner)->conn_count)) \
 	{ \
@@ -124,6 +175,7 @@ static void register_write_nodes(int conn_count, PGXCNodeHandle **connections);
 	else \
 		(combiner)->current_conn = 0
 #endif
+
 #define MAX_STATEMENTS_PER_TRAN 10
 
 /* Variables to collect statistics */
@@ -153,8 +205,7 @@ static void
 stat_transaction(int node_count)
 {
 	total_transactions++;
-	if (autocommit)
-		total_autocommit++;
+
 	if (!statements_per_transaction)
 	{
 		statements_per_transaction = (int *) malloc((MAX_STATEMENTS_PER_TRAN + 1) * sizeof(int));
@@ -401,7 +452,6 @@ HandleCopyOutComplete(RemoteQueryState *combiner)
 	combiner->copy_out_count++;
 }
 
-
 /*
  * Handle CommandComplete ('C') message from a data node connection
  */
@@ -451,7 +501,6 @@ HandleCommandComplete(RemoteQueryState *combiner, char *msg_body, size_t len)
 
 	combiner->command_complete_count++;
 }
-
 
 /*
  * Handle RowDescription ('T') message from a data node connection
@@ -665,7 +714,6 @@ HandleDataRow(RemoteQueryState *combiner, char *msg_body, size_t len, int nid)
 }
 #endif
 
-
 /*
  * Handle ErrorResponse ('E') message from a data node connection
  */
@@ -677,18 +725,9 @@ HandleError(RemoteQueryState *combiner, char *msg_body, size_t len)
 #endif
 {
 	/* parse error message */
-	char *severity = NULL;
 	char *code = NULL;
 	char *message = NULL;
 	char *detail = NULL;
-	char *hint = NULL;
-	char *position = NULL;
-	char *int_position = NULL;
-	char *int_query = NULL;
-	char *where = NULL;
-	char *file = NULL;
-	char *line = NULL;
-	char *routine = NULL;
 	int   offset = 0;
 
 	/*
@@ -701,41 +740,27 @@ HandleError(RemoteQueryState *combiner, char *msg_body, size_t len)
 
 		switch (msg_body[offset])
 		{
-			case 'S':
-				severity = str;
-				break;
-			case 'C':
+			case 'C':	/* code */
 				code = str;
 				break;
-			case 'M':
+			case 'M':	/* message */
 				message = str;
 				break;
-			case 'D':
+			case 'D':	/* details */
 				detail = str;
 				break;
-			case 'H':
-				hint = str;
-				break;
-			case 'P':
-				position = str;
-				break;
-			case 'p':
-				int_position = str;
-				break;
-			case 'q':
-				int_query = str;
-				break;
-			case 'W':
-				where = str;
-				break;
-			case 'F':
-				file = str;
-				break;
-			case 'L':
-				line = str;
-				break;
-			case 'R':
-				routine = str;
+
+			/* Fields not yet in use */
+			case 'S':	/* severity */
+			case 'R':	/* routine */
+			case 'H':	/* hint */
+			case 'P':	/* position string */
+			case 'p':	/* position int */
+			case 'q':	/* int query */
+			case 'W':	/* where */
+			case 'F':	/* file */
+			case 'L':	/* line */
+			default:
 				break;
 		}
 
@@ -953,7 +978,6 @@ CloseCombiner(RemoteQueryState *combiner)
 }
 #endif
 
-
 /*
  * Validate combiner and release storage freeing allocated memory
  */
@@ -970,59 +994,6 @@ ValidateAndCloseCombiner(RemoteQueryState *combiner)
 
 	return valid;
 }
-
-
-#ifndef XCP
-/*
- * Validate combiner and reset storage
- */
-static bool
-ValidateAndResetCombiner(RemoteQueryState *combiner)
-{
-	bool		valid = validate_combiner(combiner);
-	ListCell   *lc;
-
-	if (combiner->connections)
-		pfree(combiner->connections);
-	if (combiner->tuple_desc)
-		FreeTupleDesc(combiner->tuple_desc);
-	if (combiner->currentRow.msg)
-		pfree(combiner->currentRow.msg);
-	foreach(lc, combiner->rowBuffer)
-	{
-		RemoteDataRow dataRow = (RemoteDataRow) lfirst(lc);
-		pfree(dataRow->msg);
-	}
-	list_free_deep(combiner->rowBuffer);
-	if (combiner->errorMessage)
-		pfree(combiner->errorMessage);
-	if (combiner->errorDetail)
-		pfree(combiner->errorDetail);
-	if (combiner->tapenodes)
-		pfree(combiner->tapenodes);
-
-	combiner->command_complete_count = 0;
-	combiner->connections = NULL;
-	combiner->conn_count = 0;
-	combiner->request_type = REQUEST_TYPE_NOT_DEFINED;
-	combiner->tuple_desc = NULL;
-	combiner->description_count = 0;
-	combiner->copy_in_count = 0;
-	combiner->copy_out_count = 0;
-	combiner->errorMessage = NULL;
-	combiner->errorDetail = NULL;
-	combiner->query_Done = false;
-	combiner->currentRow.msg = NULL;
-	combiner->currentRow.msglen = 0;
-	combiner->currentRow.msgnode = 0;
-	combiner->rowBuffer = NIL;
-	combiner->tapenodes = NULL;
-	combiner->copy_file = NULL;
-
-	return valid;
-}
-#endif
-
 
 /*
  * It is possible if multiple steps share the same data node connection, when
@@ -1304,7 +1275,6 @@ BufferConnection(PGXCNodeHandle *conn)
 }
 #endif
 
-
 /*
  * copy the datarow from combiner to the given slot, in the slot's memory
  * context
@@ -1334,7 +1304,7 @@ CopyDataRowTupleToSlot(RemoteQueryState *combiner, TupleTableSlot *slot)
 	oldcontext = MemoryContextSwitchTo(slot->tts_mcxt);
 	msg = (char *)palloc(combiner->currentRow.msglen);
 	memcpy(msg, combiner->currentRow.msg, combiner->currentRow.msglen);
-	ExecStoreDataRowTuple(msg, combiner->currentRow.msglen, combiner->currentRow.msgnode, slot, true);
+	ExecStoreDataRowTuple(msg, combiner->currentRow.msglen, slot, true);
 	pfree(combiner->currentRow.msg);
 	combiner->currentRow.msg = NULL;
 	combiner->currentRow.msglen = 0;
@@ -1694,7 +1664,7 @@ FetchTuple(RemoteQueryState *combiner, TupleTableSlot *slot)
 	{
 		RemoteDataRow dataRow = (RemoteDataRow) linitial(combiner->rowBuffer);
 		combiner->rowBuffer = list_delete_first(combiner->rowBuffer);
-		ExecStoreDataRowTuple(dataRow->msg, dataRow->msglen, dataRow->msgnode, slot, true);
+		ExecStoreDataRowTuple(dataRow->msg, dataRow->msglen, slot, true);
 		pfree(dataRow);
 		return true;
 	}
@@ -1863,7 +1833,7 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
 				default:
 					/* Inconsistent responses */
 					add_error_message(to_receive[i], "Unexpected response from the data nodes");
-					elog(WARNING, "Unexpected response from the data nodes, result = %d, request type %d", result, combiner->request_type);
+					elog(ERROR, "Unexpected response from the data nodes, result = %d, request type %d", result, combiner->request_type);
 					/* Stop tracking and move last connection in place */
 					count--;
 					if (i < count)
@@ -1875,7 +1845,6 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
 	return 0;
 }
 
-int
 #ifdef XCP
 /*
  * Read next message from the connection and update the combiner
@@ -1895,6 +1864,7 @@ int
  * RESPONSE_COPY - got copy response
  * RESPONSE_BARRIER_OK - barrier command completed successfully
  */
+int
 handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
 {
 	char	   *msg;
@@ -1985,6 +1955,7 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
 				break;
 			case 'E':			/* ErrorResponse */
 				HandleError(combiner, msg, msg_len);
+				add_error_message(conn, combiner->errorMessage);
 				return RESPONSE_ERROR;
 			case 'A':			/* NotificationResponse */
 			case 'N':			/* NoticeResponse */
@@ -2032,7 +2003,8 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
  * RESPONSE_COPY - got copy response
  * RESPONSE_BARRIER_OK - barrier command completed successfully
  */
-handle_response(PGXCNodeHandle *conn, RemoteQueryState *combiner)
+int
+handle_response(PGXCNodeHandle * conn, RemoteQueryState *combiner)
 {
 	char		*msg;
 	int		msg_len;
@@ -2113,6 +2085,7 @@ handle_response(PGXCNodeHandle *conn, RemoteQueryState *combiner)
 				break;
 			case 'E':			/* ErrorResponse */
 				HandleError(combiner, msg, msg_len);
+				add_error_message(conn, combiner->errorMessage);
 				/*
 				 * Do not return with an error, we still need to consume Z,
 				 * ready-for-query
@@ -2170,6 +2143,7 @@ handle_response(PGXCNodeHandle *conn, RemoteQueryState *combiner)
 /*
  * Has the data node sent Ready For Query
  */
+
 bool
 is_data_node_ready(PGXCNodeHandle * conn)
 {
@@ -2222,72 +2196,12 @@ is_data_node_ready(PGXCNodeHandle * conn)
 }
 
 /*
- * Deparse the node string list obtained from GTM
- * and fill in Datanode and Coordinator lists.
- */
-static bool
-analyze_node_string(char *nodestring,
-					List **datanodelist,
-					List **coordlist)
-{
-	char *rawstring;
-	List *elemlist;
-	ListCell *item;
-	bool	is_local_coord = false;
-
-	*datanodelist = NIL;
-	*coordlist = NIL;
-
-	if (!nodestring)
-		return is_local_coord;
-
-	rawstring = pstrdup(nodestring);
-
-	if (!SplitIdentifierString(rawstring, ',', &elemlist))
-		/* syntax error in list */
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid list syntax for \"data_node_hosts\"")));
-
-	/* Fill in Coordinator and Datanode list */
-	foreach(item, elemlist)
-	{
-		char *nodename = (char *) lfirst(item);
-		Oid nodeoid = get_pgxc_nodeoid((const char *) nodename);
-
-		if (!OidIsValid(nodeoid))
-			ereport(ERROR,
-					(errcode(ERRCODE_UNDEFINED_OBJECT),
-					 errmsg("PGXC Node %s: object not defined",
-							nodename)));
-
-		if (get_pgxc_nodetype(nodeoid) == PGXC_NODE_DATANODE)
-		{
-			int nodeid = PGXCNodeGetNodeId(nodeoid, PGXC_NODE_DATANODE);
-			*datanodelist = lappend_int(*datanodelist, nodeid);
-		}
-		else if (get_pgxc_nodetype(nodeoid) == PGXC_NODE_COORDINATOR)
-		{
-			int nodeid = PGXCNodeGetNodeId(nodeoid, PGXC_NODE_COORDINATOR);
-			/* Local Coordinator has been found, so commit it */
-			if (nodeid == PGXCNodeId - 1)
-				is_local_coord = true;
-			else
-				*coordlist = lappend_int(*coordlist, nodeid);
-		}
-	}
-	pfree(rawstring);
-
-	return is_local_coord;
-}
-
-/*
  * Construct a BEGIN TRANSACTION command after taking into account the
  * current options. The returned string is not palloced and is valid only until
  * the next call to the function.
  */
 static char *
-GenerateBeginCommand(void)
+generate_begin_command(void)
 {
 	static char begin_cmd[1024];
 	const char *read_only;
@@ -2301,25 +2215,6 @@ GenerateBeginCommand(void)
 		read_only = "READ ONLY";
 	else
 		read_only = "READ WRITE";
-
-#ifdef XCP
-	/*
-	 * Datanode should not send down statements that may modify the database.
-	 * Potgres assumes that all sessions under the same postmaster have
-	 * different xids. That causes problems with locks. Shared locks used when
-	 * reading still works fine. So, by always sending BEGIN READ ONLY down
-	 * over datanode-to-datanode connection we guarantee we do not fall into
-	 * the trouble.
-	 */
-// 	Commented out because it breaks the INSERT SELECT which skips the value
-//  for a column with default nextval(seq). The default is pushed down as an
-//  expression of tlist of the internal select subplan.
-//  We may make ExecRemoteSubplan evaluating tlists, and therefore pull it up.
-//  Evaluating tlists in ExecRemoteSubplan is in general seems to be a good
-//  idea, only source values will be sent around reducing network traffic.
-//	if (IS_PGXC_DATANODE)
-//		read_only = "READ ONLY";
-#endif
 
 	/* Now get the isolation_level for the transaction */
 	isolation_level = GetConfigOption("transaction_isolation", false);
@@ -2338,7 +2233,8 @@ GenerateBeginCommand(void)
  */
 static int
 pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
-				GlobalTransactionId gxid, char node_type)
+				GlobalTransactionId gxid, bool need_tran_block,
+				bool readOnly, char node_type)
 {
 	int			i;
 	struct timeval *timeout = NULL;
@@ -2348,17 +2244,42 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 	RemoteQueryState *combiner;
 #endif
 	TimestampTz timestamp = GetCurrentGTMStartTimestamp();
+	PGXCNodeHandle *new_connections[conn_count];
+	int new_count = 0;
 	int 			con[conn_count];
 	int				j = 0;
 
-	/* Send BEGIN */
+	/*
+	 * If no remote connections, we don't have anything to do
+	 */
+	if (conn_count == 0)
+		return 0;
+
 	for (i = 0; i < conn_count; i++)
 	{
 		/*
-		 * We better not be sending a BEGIN after already executing one or more
-		 * commands from this transaction.
+		 * If the node is already a participant in the transaction, skip it
 		 */
-		Assert(connections[i]->state != DN_CONNECTION_STATE_QUERY);
+		if (list_member(XactReadNodes, connections[i]) ||
+				list_member(XactWriteNodes, connections[i]))
+		{
+			/*
+			 * If we are doing a write operation, we may need to shift the node
+			 * to the write-list. RegisterTransactionNodes does that for us
+			 */
+			if (!readOnly)
+				RegisterTransactionNodes(1, (void **)&connections[i], true);
+			continue;
+		}
+
+		/*
+		 * PGXC TODO - A connection should not be in DN_CONNECTION_STATE_QUERY
+		 * state when we are about to send a BEGIN TRANSACTION command to the
+		 * node. We should consider changing the following to an assert and fix
+		 * any bugs reported
+		 */
+		if (connections[i]->state == DN_CONNECTION_STATE_QUERY)
+			BufferConnection(connections[i]);
 
 		/* Send GXID and check for errors */
 		if (GlobalTransactionIdIsValid(gxid) && pgxc_node_send_gxid(connections[i], gxid))
@@ -2368,41 +2289,64 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 		if (GlobalTimestampIsValid(timestamp) && pgxc_node_send_timestamp(connections[i], timestamp))
 			return EOF;
 
-		/* Send the BEGIN TRANSACTION command and check for errors */
-		if (pgxc_node_send_query(connections[i], GenerateBeginCommand()))
-			return EOF;
+		/* Send BEGIN */
+		if (need_tran_block)
+		{
+			/* Send the BEGIN TRANSACTION command and check for errors */
+			if (pgxc_node_send_query(connections[i], generate_begin_command()))
+				return EOF;
 
-		con[j++] = PGXCNodeGetNodeId(connections[i]->nodeoid, node_type);
+			con[j++] = PGXCNodeGetNodeId(connections[i]->nodeoid, node_type);
+			/*
+			 * Register the node as a participant in the transaction. The
+			 * caller should tell us if the node may do any write activitiy
+			 *
+			 * XXX This is a bit tricky since it would be difficult to know if
+			 * statement has any side effect on the data node. So a SELECT
+			 * statement may invoke a function on the data node which may end up
+			 * modifying the data at the data node. We can possibly rely on the
+			 * function qualification to decide if a statement is a read-only or a
+			 * read-write statement.
+			 */
+			RegisterTransactionNodes(1, (void **)&connections[i], !readOnly);
+			new_connections[new_count++] = connections[i];
+		}
 	}
 
+	/*
+	 * If we did not send a BEGIN command to any node, we are done. Otherwise,
+	 * we need to check for any errors and report them
+	 */
+	if (new_count == 0)
+		return 0;
+
 #ifdef XCP
-	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
+	InitResponseCombiner(&combiner, new_count, COMBINE_TYPE_NONE);
 	/*
 	 * Make sure there are zeroes in unused fields
 	 */
 	memset(&combiner, 0, sizeof(ScanState));
 
 	/* Receive responses */
-	if (pgxc_node_receive_responses(conn_count, connections, timeout, &combiner))
+	if (pgxc_node_receive_responses(new_count, new_connections, timeout, &combiner))
 		return EOF;
 
 	/* Verify status */
 	if (!ValidateAndCloseCombiner(&combiner))
 		return EOF;
 #else
-	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_NONE);
+	combiner = CreateResponseCombiner(new_count, COMBINE_TYPE_NONE);
 
 	/* Receive responses */
-	if (pgxc_node_receive_responses(conn_count, connections, timeout, combiner))
+	if (pgxc_node_receive_responses(new_count, new_connections, timeout, combiner))
 		return EOF;
 
 	/* Verify status */
 	if (!ValidateAndCloseCombiner(combiner))
 		return EOF;
-#endif
 
-	/* 
-	 * Ask pooler to send commands (if any) to nodes involved in transaction to alter the 
+	/*
+	 * Ask pooler to send commands (if any) to nodes involved in transaction to alter the
 	 * behavior of current transaction. This fires all transaction level commands before
 	 * issuing any DDL, DML or SELECT within the current transaction block.
 	 */
@@ -2417,383 +2361,221 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 		if (res != 0)
 			return EOF;
 	}
+#endif
 
 	/* No problem, let's get going */
 	return 0;
 }
 
-/* Clears the write node list */
+/*
+ * Prepare all remote nodes involved in this transaction. The local node is
+ * handled separately and prepared first in xact.c. If there is any error
+ * during this phase, it will be reported via ereport() and the transaction
+ * will be aborted on the local as well as remote nodes
+ *
+ * prepareGID is created and passed from xact.c
+ */
+static bool
+pgxc_node_remote_prepare(char *prepareGID)
+{
+	int         	result = 0;
+	int				write_conn_count = remoteXactState.numWriteRemoteNodes;
+	char			prepare_cmd[256];
+	int				i;
+	PGXCNodeHandle	**connections = remoteXactState.remoteNodeHandles;
+#ifdef XCP
+	ResponseCombiner combiner;
+#else
+	RemoteQueryState *combiner = NULL;
+#endif
+
+	/*
+	 * If there is NO write activity or the caller does not want us to run a
+	 * 2PC protocol, we don't need to do anything special
+	 */
+	if ((write_conn_count == 0) || (prepareGID == NULL))
+		return false;
+
+	/* Save the prepareGID in the global state information */
+	sprintf(remoteXactState.prepareGID, "%s", prepareGID);
+
+	/* Generate the PREPARE TRANSACTION command */
+	sprintf(prepare_cmd, "PREPARE TRANSACTION '%s'", remoteXactState.prepareGID);
+
+	for (i = 0; i < write_conn_count; i++)
+	{
+		/*
+		 * PGXCTODO - We should actually make sure that the connection state is
+		 * IDLE when we reach here. The executor should have guaranteed that
+		 * before the transaction gets to the commit point. For now, consume
+		 * the pending data on the connection
+		 */
+		if (connections[i]->state != DN_CONNECTION_STATE_IDLE)
+			BufferConnection(connections[i]);
+
+		/* Clean the previous errors, if any */
+		connections[i]->error = NULL;
+
+		/*
+		 * Now we are ready to PREPARE the transaction. Any error at this point
+		 * can be safely ereport-ed and the transaction will be aborted.
+		 */
+		if (pgxc_node_send_query(connections[i], prepare_cmd))
+		{
+			remoteXactState.remoteNodeStatus[i] = RXACT_NODE_PREPARE_FAILED;
+			remoteXactState.status = RXACT_PREPARE_FAILED;
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("failed to send PREPARE TRANSACTION command to "
+						"the node %u", connections[i]->nodeoid)));
+		}
+		else
+			remoteXactState.remoteNodeStatus[i] = RXACT_NODE_PREPARE_SENT;
+	}
+
+	/*
+	 * Receive and check for any errors. In case of errors, we don't bail out
+	 * just yet. We first go through the list of connections and look for
+	 * errors on each connection. This is important to ensure that we run
+	 * an appropriate ROLLBACK command later on (prepared transactions must be
+	 * rolled back with ROLLBACK PREPARED commands).
+	 *
+	 * PGXCTODO - There doesn't seem to be a solid mechanism to track errors on
+	 * individual connections. The transaction_status field doesn't get set
+	 * every time there is an error on the connection. The combiner mechanism is
+	 * good for parallel proessing, but I think we should have a leak-proof
+	 * mechanism to track connection status
+	 */
+	if (write_conn_count)
+	{
+#ifdef XCP
+		InitResponseCombiner(&combiner, write_conn_count, COMBINE_TYPE_NONE);
+		/* Receive responses */
+		result = pgxc_node_receive_responses(write_conn_count, connections, NULL, &combiner);
+		if (result || !validate_combiner(&combiner))
+			result = EOF;
+		else
+			CloseCombiner(&combiner);
+#else
+		combiner = CreateResponseCombiner(write_conn_count, COMBINE_TYPE_NONE);
+		/* Receive responses */
+		result = pgxc_node_receive_responses(write_conn_count, connections, NULL, combiner);
+		if (result || !validate_combiner(combiner))
+			result = EOF;
+		else
+		{
+			CloseCombiner(combiner);
+			combiner = NULL;
+		}
+#endif
+
+		for (i = 0; i < write_conn_count; i++)
+		{
+			if (remoteXactState.remoteNodeStatus[i] == RXACT_NODE_PREPARE_SENT)
+			{
+				if (connections[i]->error)
+				{
+					remoteXactState.remoteNodeStatus[i] = RXACT_NODE_PREPARE_FAILED;
+					remoteXactState.status = RXACT_PREPARE_FAILED;
+				}
+				else
+					remoteXactState.remoteNodeStatus[i] = RXACT_NODE_PREPARED;
+			}
+		}
+	}
+
+	/*
+	 * If we failed to PREPARE on one or more nodes, report an error and let
+	 * the normal abort processing take charge of aborting the transaction
+	 */
+	if (result)
+	{
+		remoteXactState.status = RXACT_PREPARE_FAILED;
+#ifdef XCP
+		if (combiner.errorMessage)
+		{
+			char *code = combiner.errorCode;
+			if (combiner.errorDetail != NULL)
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+						errmsg("%s", combiner.errorMessage), errdetail("%s", combiner.errorDetail) ));
+			else
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+						errmsg("%s", combiner.errorMessage)));
+		}
+#else
+		if (combiner && combiner->errorMessage)
+		{
+			char *code = combiner->errorCode;
+			if (combiner->errorDetail != NULL)
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+						errmsg("%s", combiner->errorMessage), errdetail("%s", combiner->errorDetail) ));
+			else
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+						errmsg("%s", combiner->errorMessage)));
+		}
+#endif
+		else
+			elog(ERROR, "failed to PREPARE transaction on one or more nodes");
+	}
+
+	if (remoteXactState.status == RXACT_PREPARE_FAILED)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("Failed to PREPARE the transaction on one or more nodes")));
+
+	/* Everything went OK. */
+	remoteXactState.status = RXACT_PREPARED;
+	return result;
+}
+
+/*
+ * Commit a running or a previously PREPARED transaction on the remote nodes.
+ * The local transaction is handled separately in xact.c
+ *
+ * Once a COMMIT command is sent to any node, the transaction must be finally
+ * be committed. But we still report errors via ereport and let
+ * AbortTransaction take care of handling partly committed transactions.
+ *
+ * For 2PC transactions: If local node is involved in the transaction, its
+ * already prepared locally and we are in a context of a different transaction
+ * (we call it auxulliary transaction) already. So AbortTransaction will
+ * actually abort the auxilliary transaction, which is OK. OTOH if the local
+ * node is not involved in the main transaction, then we don't care much if its
+ * rolled back on the local node as part of abort processing.
+ *
+ * When 2PC is not used for reasons such as because transaction has accessed
+ * some temporary objects, we are already exposed to the risk of committing it
+ * one node and aborting on some other node. So such cases need not get more
+ * attentions.
+ */
 static void
-clear_write_node_list()
+pgxc_node_remote_commit(void)
 {
-	/* we just malloc once and use counter */
-	if (write_node_list == NULL)
-	{
-		write_node_list = (PGXCNodeHandle **) malloc(NumDataNodes * sizeof(PGXCNodeHandle *));
-	}
-	write_node_count = 0;
-}
-
-
-/*
- * Switch autocommit mode off, so all subsequent statements will be in the same transaction
- */
-void
-PGXCNodeBegin(void)
-{
-	autocommit = false;
-	clear_write_node_list();
-}
-
-/*
- * Error messages for PREPARE
- */
-#define ERROR_DATANODES_PREPARE	-1
-#define ERROR_ALREADY_PREPARE	-2
-
-/*
- * Prepare transaction on Datanodes and Coordinators involved in current transaction.
- * GXID associated to current transaction has to be committed on GTM.
- */
-bool
-PGXCNodePrepare(char *gid)
-{
-	int         res = 0;
-	int         tran_count;
-	PGXCNodeAllHandles *pgxc_connections;
-	bool local_operation = false;
-
-	pgxc_connections = pgxc_get_all_transaction_nodes(HANDLE_DEFAULT);
-
-	/* DDL involved in transaction, so make a local prepare too */
-	if (is_ddl)
-		local_operation = true;
-
-	/*
-	 * If no connections have been gathered for Coordinators,
-	 * it means that no DDL has been involved in this transaction.
-	 * And so this transaction is not prepared on Coordinators.
-	 * It is only on Datanodes that data is involved.
-	 */
-	tran_count = pgxc_connections->dn_conn_count + pgxc_connections->co_conn_count;
-
-	/*
-	 * If we do not have open transactions we have nothing to prepare just
-	 * report success
-	 */
-	if (tran_count == 0 && !is_ddl)
-	{
-		elog(DEBUG1, "Nothing to PREPARE on Datanodes and Coordinators, gid is not used");
-		goto finish;
-	}
-
-	res = pgxc_node_prepare(pgxc_connections, gid);
-
-finish:
-	/*
-	 * The transaction is just prepared, but Datanodes have reset,
-	 * so we'll need a new gxid for commit prepared or rollback prepared
-	 * Application is responsible for delivering the correct gid.
-	 * Release the connections for the moment.
-	 */
-	if (!autocommit)
-		stat_transaction(pgxc_connections->dn_conn_count);
-	if (!PersistentConnections)
-		release_handles();
-	autocommit = true;
-	is_ddl = false;
-	clear_write_node_list();
-
-	/* Clean up connections */
-	pfree_pgxc_all_handles(pgxc_connections);
-
-	if (res != 0)
-	{
-
-#ifndef XCP
-		/* In case transaction has operated on temporary objects */
-		if (temp_object_included)
-		{
-			/* Reset temporary object flag */
-			temp_object_included = false;
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("cannot PREPARE a transaction that has operated on temporary tables")));
-		}
-#endif
-
-		if (res == ERROR_ALREADY_PREPARE)
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("transaction identifier \"%s\" is already in use", gid)));
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Could not prepare transaction on data nodes")));
-	}
-
-#ifndef XCP
-	/* Reset temporary object flag */
-	temp_object_included = false;
-#endif
-
-	return local_operation;
-}
-
-
-/*
- * Prepare transaction on dedicated nodes with gid received from application
- */
-static int
-pgxc_node_prepare(PGXCNodeAllHandles *pgxc_handles, char *gid)
-{
-	int			result = 0;
-	int			co_conn_count = pgxc_handles->co_conn_count;
-	int			dn_conn_count = pgxc_handles->dn_conn_count;
-	char			*buffer = (char *) palloc0(22 + strlen(gid) + 1);
-	GlobalTransactionId	gxid = InvalidGlobalTransactionId;
-	char			*nodestring = NULL;
-	bool			gtm_error = false;
-
-	gxid = GetCurrentGlobalTransactionId();
-
-	/*
-	 * Now that the transaction has been prepared on the nodes,
-	 * Initialize to make the business on GTM.
-	 * We also had the Coordinator we are on in the prepared state.
-	 */
-	if (dn_conn_count != 0)
-		nodestring = collect_pgxcnode_names(nodestring,
-											dn_conn_count,
-											pgxc_handles->datanode_handles,
-											REMOTE_CONN_DATANODE);
-	/*
-	 * Local Coordinator is saved in the list sent to GTM
-	 * only when a DDL is involved in the transaction.
-	 * So we don't need to complete the list of Coordinators sent to GTM
-	 * when number of connections to Coordinator is zero (no DDL).
-	 */
-	if (co_conn_count != 0)
-		nodestring = collect_pgxcnode_names(nodestring,
-											co_conn_count,
-											pgxc_handles->coord_handles,
-											REMOTE_CONN_COORD);
-	/*
-	 * This is the case of a single Coordinator
-	 * involved in a transaction using DDL.
-	 */
-	if (is_ddl && co_conn_count == 0 && PGXCNodeId >= 0)
-		nodestring = collect_localnode_name(nodestring);
-
-	result = StartPreparedTranGTM(gxid, gid, nodestring);
-	if (result < 0)
-	{
-		gtm_error = true;
-		goto finish;
-	}
-
-	sprintf(buffer, "PREPARE TRANSACTION '%s'", gid);
-
-	/* Continue even after an error here, to consume the messages */
-	result = pgxc_all_handles_send_query(pgxc_handles, buffer, true);
-
-	/* Receive and Combine results from Datanodes and Coordinators */
+	int				result = 0;
+	char			commitPrepCmd[256];
+	char			commitCmd[256];
+	int				write_conn_count = remoteXactState.numWriteRemoteNodes;
+	int				read_conn_count = remoteXactState.numReadRemoteNodes;
+	PGXCNodeHandle	**connections = remoteXactState.remoteNodeHandles;
+	PGXCNodeHandle  *new_connections[write_conn_count + read_conn_count];
+	int				new_conn_count = 0;
+	int				i;
 #ifdef XCP
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
+	ResponseCombiner combiner;
 #else
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
+	RemoteQueryState *combiner = NULL;
 #endif
 
-	if (result)
-		goto finish;
-
 	/*
-	 * Prepare the transaction on GTM after everything is done.
-	 * GXID associated with PREPARE state is considered as used on Nodes,
-	 * but is still present in Snapshot.
-	 * This GXID will be discarded from Snapshot when commit prepared is
-	 * issued from another node.
+	 * We must handle reader and writer connections both since the transaction
+	 * must be closed even on a read-only node
 	 */
-	result = PrepareTranGTM(gxid);
-
-finish:
-	/*
-	 * An error has happened on a Datanode,
-	 * It is necessary to rollback the transaction on already prepared nodes.
-	 * But not on nodes where the error occurred.
-	 */
-	if (result)
-	{
-		GlobalTransactionId rollback_xid = InvalidGlobalTransactionId;
-		result = 0;
-
-		if (gtm_error)
-		{
-			buffer = (char *) repalloc(buffer, 9);
-			sprintf(buffer, "ROLLBACK");
-		}
-		else
-		{
-			buffer = (char *) repalloc(buffer, 20 + strlen(gid) + 1);
-			sprintf(buffer, "ROLLBACK PREPARED '%s'", gid);
-
-			rollback_xid = BeginTranGTM(NULL);
-		}
-
-		/*
-		 * Send xid and rollback prepared down to Datanodes and Coordinators
-		 * Even if we get an error on one, we try and send to the others
-		 * Only query is sent down to nodes if error occured on GTM.
-		 */
-		if (!gtm_error)
-			if (pgxc_all_handles_send_gxid(pgxc_handles, rollback_xid, false))
-				result = ERROR_DATANODES_PREPARE;
-
-		if (pgxc_all_handles_send_query(pgxc_handles, buffer, false))
-			result = ERROR_DATANODES_PREPARE;
-
-#ifdef XCP
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
-#else
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
-#endif
-
-		/*
-		 * Don't forget to rollback also on GTM if error happened on Datanodes
-		 * Both GXIDs used for PREPARE and COMMIT PREPARED are discarded from GTM snapshot here.
-		 */
-		if (!gtm_error)
-			CommitPreparedTranGTM(gxid, rollback_xid);
-
-		if (gtm_error)
-			return ERROR_ALREADY_PREPARE;
-		else
-			return ERROR_DATANODES_PREPARE;
-	}
-
-	return result;
-}
-
-/*
- * Prepare all the nodes involved in this implicit Prepare
- * Abort transaction if this is not done correctly
- */
-int
-PGXCNodeImplicitPrepare(GlobalTransactionId prepare_xid, char *gid)
-{
-	int         res = 0;
-	int         tran_count;
-	PGXCNodeAllHandles *pgxc_connections = pgxc_get_all_transaction_nodes(HANDLE_DEFAULT);
-
-	if (!pgxc_connections)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Could not prepare connection implicitely")));
-
-	tran_count = pgxc_connections->dn_conn_count + pgxc_connections->co_conn_count;
-
-	/*
-	 * This should not happen because an implicit 2PC is always using other nodes,
-	 * but it is better to check.
-	 */
-	if (tran_count == 0)
-	{
-		goto finish;
-	}
-
-	res = pgxc_node_implicit_prepare(prepare_xid, pgxc_connections, gid);
-	if (res < 0)
-	{
-		/* Rollback if it got prepared on some nodes, 
-		 * otherwise cluster might freeze because of locks held
-		 */
-		GlobalTransactionId commit_xid = InvalidGlobalTransactionId;
-
-		pgxc_node_rollback_prepared(commit_xid, prepare_xid, pgxc_connections, gid);
-	}
-
-finish:
-	if (!autocommit)
-		stat_transaction(pgxc_connections->dn_conn_count);
-
-	/* Clean up connections */
-	pfree_pgxc_all_handles(pgxc_connections);
-
-	return res;
-}
-
-/*
- * Prepare transaction on dedicated nodes for Implicit 2PC
- * This is done inside a Transaction commit if multiple nodes are involved in write operations
- * Implicit prepare in done internally on Coordinator, so this does not interact with GTM.
- */
-static int
-pgxc_node_implicit_prepare(GlobalTransactionId prepare_xid,
-						   PGXCNodeAllHandles *pgxc_handles,
-						   char *gid)
-{
-	int		result = 0;
-	int		co_conn_count = pgxc_handles->co_conn_count;
-	int		dn_conn_count = pgxc_handles->dn_conn_count;
-	char	buffer[256];
-
-	sprintf(buffer, "PREPARE TRANSACTION '%s'", gid);
-
-	/* Continue even after an error here, to consume the messages */
-	result = pgxc_all_handles_send_query(pgxc_handles, buffer, true);
-
-	/* Receive and Combine results from Datanodes and Coordinators */
-#ifdef XCP
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
-#else
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
-#endif
-
-	return result;
-}
-
-/*
- * Commit all the nodes involved in this Implicit Commit.
- * Prepared XID is committed at the same time as Commit XID on GTM.
- */
-void
-PGXCNodeImplicitCommitPrepared(GlobalTransactionId prepare_xid,
-							   GlobalTransactionId commit_xid,
-							   char *gid,
-							   bool is_commit)
-{
-	int         res = 0;
-	int         tran_count;
-	PGXCNodeAllHandles *pgxc_connections = pgxc_get_all_transaction_nodes(HANDLE_IDLE);
-
-	if (!pgxc_connections)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Could not commit prepared transaction implicitly")));
-
-	tran_count = pgxc_connections->dn_conn_count + pgxc_connections->co_conn_count;
-
-	/*
-	 * This should not happen because an implicit 2PC is always using other nodes,
-	 * but it is better to check.
-	 */
-	if (tran_count == 0)
-	{
-		elog(WARNING, "Nothing to PREPARE on Datanodes and Coordinators");
-		goto finish;
-	}
+	if (read_conn_count + write_conn_count == 0)
+		return;
 
 	/*
 	 * Barrier:
@@ -2805,545 +2587,395 @@ PGXCNodeImplicitCommitPrepared(GlobalTransactionId prepare_xid,
 	 */
 	LWLockAcquire(BarrierLock, LW_SHARED);
 
-	res = pgxc_node_implicit_commit_prepared(prepare_xid, commit_xid,
-								pgxc_connections, gid, is_commit);
+	/*
+	 * The readers can be committed with a simple COMMIT command. We still need
+	 * this to close the transaction block
+	 */
+	sprintf(commitCmd, "COMMIT TRANSACTION");
+
+	/*
+	 * If we are running 2PC, construct a COMMIT command to commit the prepared
+	 * transactions
+	 */
+	if (remoteXactState.status == RXACT_PREPARED)
+	{
+		sprintf(commitPrepCmd, "COMMIT PREPARED '%s'", remoteXactState.prepareGID);
+		/*
+		 * If the local node is involved in the transaction, we would have
+		 * already prepared it and started a new transaction. We can use the
+		 * GXID of the new transaction to run the COMMIT PREPARED commands.
+		 * So get an auxilliary GXID only if the local node is not involved
+		 */
+
+		if (!GlobalTransactionIdIsValid(remoteXactState.commitXid))
+			remoteXactState.commitXid = GetAuxilliaryTransactionId();
+	}
+
+	/*
+	 * First send GXID if necessary. If there is an error at this stage, the
+	 * transaction can be aborted safely because we haven't yet sent COMMIT
+	 * command to any participant
+	 */
+	for (i = 0; i < write_conn_count + read_conn_count; i++)
+	{
+		if (remoteXactState.remoteNodeStatus[i] == RXACT_NODE_PREPARED)
+		{
+			Assert(GlobalTransactionIdIsValid(remoteXactState.commitXid));
+			if (pgxc_node_send_gxid(connections[i], remoteXactState.commitXid))
+			{
+				remoteXactState.status = RXACT_COMMIT_FAILED;
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("failed to send GXID for COMMIT PREPARED "
+							 "command")));
+			}
+		}
+	}
+
+	/*
+	 * Now send the COMMIT command to all the participants
+	 */
+	for (i = 0; i < write_conn_count + read_conn_count; i++)
+	{
+		const char *command;
+
+		Assert(remoteXactState.remoteNodeStatus[i] == RXACT_NODE_PREPARED ||
+			   remoteXactState.remoteNodeStatus[i] == RXACT_NODE_NONE);
+
+		if (remoteXactState.remoteNodeStatus[i] == RXACT_NODE_PREPARED)
+			command = commitPrepCmd;
+		else
+			command = commitCmd;
+
+		/* Clean the previous errors, if any */
+		connections[i]->error = NULL;
+
+		if (pgxc_node_send_query(connections[i], command))
+		{
+			remoteXactState.remoteNodeStatus[i] = RXACT_NODE_COMMIT_FAILED;
+			remoteXactState.status = RXACT_COMMIT_FAILED;
+
+			/*
+			 * If the error occurred on the first connection, we still have
+			 * chance to abort the whole transaction. We prefer that because
+			 * that reduces the need for any manual intervention at least until
+			 * we have a automatic mechanism to resolve in-doubt transactions
+			 *
+			 * XXX We can ideally check for first writer connection, but keep
+			 * it simple for now
+			 */
+			if (i == 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("failed to send COMMIT command to node")));
+			else
+				add_error_message(connections[i], "failed to send COMMIT "
+						"command to node");
+		}
+		else
+		{
+			remoteXactState.remoteNodeStatus[i] = RXACT_NODE_COMMIT_SENT;
+			new_connections[new_conn_count++] = connections[i];
+		}
+	}
 
 	/*
 	 * Release the BarrierLock.
 	 */
 	LWLockRelease(BarrierLock);
 
-finish:
-	/* Clear nodes, signals are clear */
-	if (!autocommit)
-		stat_transaction(pgxc_connections->dn_conn_count);
-
-	/*
-	 * If an error happened, do not release handles yet. This is done when transaction
-	 * is aborted after the list of nodes in error state has been saved to be sent to GTM
-	 */
-	if (!PersistentConnections && res == 0)
-		release_handles();
-	autocommit = true;
-	is_ddl = false;
-	clear_write_node_list();
-
-#ifndef XCP
-	/* Reset temporary object flag */
-	temp_object_included = false;
-#endif
-
-	/* Clean up connections */
-	pfree_pgxc_all_handles(pgxc_connections);
-
-	if (res != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Could not commit prepared transaction implicitly")));
-
-	/*
-	 * Commit on GTM is made once we are sure that Nodes are not only partially committed
-	 * If an error happens on a Datanode during implicit COMMIT PREPARED, a special handling
-	 * is made in AbortTransaction().
-	 * The list of datanodes is saved on GTM and the partially committed transaction can be committed
-	 * with a COMMIT PREPARED delivered directly from application.
-	 * This permits to keep the gxid alive in snapshot and avoids other transactions to see only
-	 * partially committed results.
-	 */
-	CommitPreparedTranGTM(prepare_xid, commit_xid);
-}
-
-/*
- * Commit a transaction implicitely transaction on all nodes
- * Prepared transaction with this gid has reset the datanodes,
- * so we need a new gxid.
- *
- * GXID used for Prepare and Commit are committed at the same time on GTM.
- * This saves Network ressource a bit.
- */
-static int
-pgxc_node_implicit_commit_prepared(GlobalTransactionId prepare_xid,
-								   GlobalTransactionId commit_xid,
-								   PGXCNodeAllHandles *pgxc_handles,
-								   char *gid,
-								   bool is_commit)
-{
-	char	buffer[256];
-	int	result = 0;
-	int	co_conn_count = pgxc_handles->co_conn_count;
-	int	dn_conn_count = pgxc_handles->dn_conn_count;
-
-	if (is_commit)
-		sprintf(buffer, "COMMIT PREPARED '%s'", gid);
-	else
-		sprintf(buffer, "ROLLBACK PREPARED '%s'", gid);
-
-	if (pgxc_all_handles_send_gxid(pgxc_handles, commit_xid, true))
+	if (new_conn_count)
 	{
-		result = EOF;
-		goto finish;
+#ifdef XCP
+		InitResponseCombiner(&combiner, new_conn_count, COMBINE_TYPE_NONE);
+		/* Receive responses */
+		result = pgxc_node_receive_responses(new_conn_count, new_connections, NULL, &combiner);
+		if (result || !validate_combiner(&combiner))
+			result = EOF;
+		else
+			CloseCombiner(&combiner);
+#else
+		combiner = CreateResponseCombiner(new_conn_count, COMBINE_TYPE_NONE);
+		/* Receive responses */
+		result = pgxc_node_receive_responses(new_conn_count, new_connections, NULL, combiner);
+		if (result || !validate_combiner(combiner))
+			result = EOF;
+		else
+		{
+			CloseCombiner(combiner);
+			combiner = NULL;
+		}
+#endif
+		/*
+		 * Even if the command failed on some node, don't throw an error just
+		 * yet. That gives a chance to look for individual connection status
+		 * and record appropriate information for later recovery
+		 *
+		 * XXX A node once prepared must be able to either COMMIT or ABORT. So a
+		 * COMMIT can fail only because of either communication error or because
+		 * the node went down. Even if one node commits, the transaction must be
+		 * eventually committed on all the nodes.
+		 */
+
+		/* At this point, we must be in one the following state */
+		Assert(remoteXactState.status == RXACT_COMMIT_FAILED ||
+				remoteXactState.status == RXACT_PREPARED ||
+				remoteXactState.status == RXACT_NONE);
+
+		/*
+		 * Go through every connection and check if COMMIT succeeded or failed on
+		 * that connection. If the COMMIT has failed on one node, but succeeded on
+		 * some other, such transactions need special attention (by the
+		 * administrator for now)
+		 */
+		for (i = 0; i < write_conn_count + read_conn_count; i++)
+		{
+			if (remoteXactState.remoteNodeStatus[i] == RXACT_NODE_COMMIT_SENT)
+			{
+				if (connections[i]->error)
+				{
+					remoteXactState.remoteNodeStatus[i] = RXACT_NODE_COMMIT_FAILED;
+					if (remoteXactState.status != RXACT_PART_COMMITTED)
+						remoteXactState.status = RXACT_COMMIT_FAILED;
+				}
+				else
+				{
+					remoteXactState.remoteNodeStatus[i] = RXACT_NODE_COMMITTED;
+					if (remoteXactState.status == RXACT_COMMIT_FAILED)
+						remoteXactState.status = RXACT_PART_COMMITTED;
+				}
+			}
+		}
 	}
 
-	/* Send COMMIT to all handles */
-	if (pgxc_all_handles_send_query(pgxc_handles, buffer, false))
-		result = EOF;
+	stat_transaction(write_conn_count + read_conn_count);
 
-	/* Receive and Combine results from Datanodes and Coordinators */
+	if (result)
+	{
 #ifdef XCP
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
+		if (combiner.errorMessage)
+		{
+			char *code = combiner.errorCode;
+			if (combiner.errorDetail != NULL)
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+						errmsg("%s", combiner.errorMessage), errdetail("%s", combiner.errorDetail) ));
+			else
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+						errmsg("%s", combiner.errorMessage)));
+		}
 #else
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
+		if (combiner && combiner->errorMessage)
+		{
+			char *code = combiner->errorCode;
+			if (combiner->errorDetail != NULL)
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+						errmsg("%s", combiner->errorMessage), errdetail("%s", combiner->errorDetail) ));
+			else
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+						errmsg("%s", combiner->errorMessage)));
+		}
 #endif
-finish:
-	return result;
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to COMMIT the transaction on one or more nodes")));
+	}
+
+	if (remoteXactState.status == RXACT_COMMIT_FAILED ||
+		remoteXactState.status == RXACT_PART_COMMITTED)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("Failed to COMMIT the transaction on one or more nodes")));
+
+	remoteXactState.status = RXACT_COMMITTED;
 }
 
 /*
- * Commit prepared transaction on Datanodes and Coordinators (as necessary)
- * where it has been prepared.
- * Connection to backends has been cut when transaction has been prepared,
- * So it is necessary to send the COMMIT PREPARE message to all the nodes.
- * We are not sure if the transaction prepared has involved all the datanodes
- * or not but send the message to all of them.
- * This avoid to have any additional interaction with GTM when making a 2PC transaction.
+ * Abort the current transaction on the local and remote nodes. If the
+ * transaction is prepared on the remote node, we send a ROLLBACK PREPARED
+ * command, otherwise a ROLLBACK command is sent.
+ *
+ * Note that if the local node was involved and prepared successfully, we are
+ * running in a separate transaction context right now
  */
-void
-PGXCNodeCommitPrepared(char *gid)
+static void
+pgxc_node_remote_abort(void)
 {
-	int			res = 0;
-	int			res_gtm = 0;
-	PGXCNodeAllHandles	*pgxc_handles = NULL;
-	List			*datanodelist = NIL;
-	List			*coordlist = NIL;
-	int			tran_count;
-	char			**datanodes = NULL;
-	char			**coordinators = NULL;
-	int			coordcnt = 0;
-	int			datanodecnt = 0;
-	GlobalTransactionId	gxid, prepared_gxid;
-	/* This flag tracks if the transaction has to be committed locally */
-	bool			operation_local = false;
-	char		   *nodestring = NULL;
-
-	res_gtm = GetGIDDataGTM(gid, &gxid, &prepared_gxid, &nodestring);
-
-	/* Analyze string obtained and get all node informations */
-	operation_local = analyze_node_string(nodestring, &datanodelist, &coordlist);
-	coordcnt = list_length(coordlist);
-	datanodecnt = list_length(datanodelist);
-
-	tran_count = datanodecnt + coordcnt;
-	if (tran_count == 0 || res_gtm < 0)
-		goto finish;
-
-	autocommit = false;
-
-	/* Get connections */
-	if (coordcnt > 0 && datanodecnt == 0)
-		pgxc_handles = get_handles(datanodelist, coordlist, true);
-	else
-		pgxc_handles = get_handles(datanodelist, coordlist, false);
-
-	/*
-	 * Commit here the prepared transaction to all Datanodes and Coordinators
-	 * If necessary, local Coordinator Commit is performed after this DataNodeCommitPrepared.
-	 *
-	 * BARRIER:
-	 *
-	 * Take the BarrierLock in SHARE mode to synchronize on in-progress
-	 * barriers. We should hold on to the lock until the local prepared
-	 * transaction is also committed
-	 */
-	LWLockAcquire(BarrierLock, LW_SHARED);
-
-	res = pgxc_node_commit_prepared(gxid, prepared_gxid, pgxc_handles, gid);
-
-finish:
-	/* In autocommit mode statistics is collected in DataNodeExec */
-	if (!autocommit)
-		stat_transaction(tran_count);
-	if (!PersistentConnections)
-		release_handles();
-	autocommit = true;
-	is_ddl = false;
-	clear_write_node_list();
-
-#ifndef XCP
-	/* Reset temporary object flag */
-	temp_object_included = false;
+	int				result = 0;
+	char			*rollbackCmd = "ROLLBACK TRANSACTION";
+	char			rollbackPrepCmd[256];
+	int				write_conn_count = remoteXactState.numWriteRemoteNodes;
+	int				read_conn_count = remoteXactState.numReadRemoteNodes;
+	int				i;
+	PGXCNodeHandle	**connections = remoteXactState.remoteNodeHandles;
+	PGXCNodeHandle  *new_connections[remoteXactState.numWriteRemoteNodes + remoteXactState.numReadRemoteNodes];
+	int				new_conn_count = 0;
+#ifdef XCP
+	ResponseCombiner combiner;
+#else
+	RemoteQueryState *combiner = NULL;
 #endif
 
-	/* Free node list taken from GTM */
-	if (datanodes && datanodecnt != 0)
-		free(datanodes);
 
-	if (coordinators && coordcnt != 0)
-		free(coordinators);
+	/* Send COMMIT/ROLLBACK PREPARED TRANSACTION to the remote nodes */
+	for (i = 0; i < write_conn_count + read_conn_count; i++)
+	{
+		RemoteXactNodeStatus status = remoteXactState.remoteNodeStatus[i];
 
-	pfree_pgxc_all_handles(pgxc_handles);
+#ifdef XCP
+		/*
+		 * There could be pending data on the connection, we should read them in
+		 */
+		CHECK_OWNERSHIP(connections[i], NULL);
+#endif
 
-	if (res_gtm < 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("prepared transaction with identifier \"%s\" does not exist",
-						gid)));
-	if (res != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Could not commit prepared transaction on data nodes")));
+		/* Clean the previous errors, if any */
+		connections[i]->error = NULL;
+
+		if ((status == RXACT_NODE_PREPARED) ||
+			(status == RXACT_NODE_PREPARE_SENT))
+		{
+			sprintf(rollbackPrepCmd, "ROLLBACK PREPARED '%s'", remoteXactState.prepareGID);
+
+			if (!GlobalTransactionIdIsValid(remoteXactState.commitXid))
+				remoteXactState.commitXid = GetAuxilliaryTransactionId();
+
+			if (pgxc_node_send_gxid(connections[i], remoteXactState.commitXid))
+			{
+#ifdef XCP
+				connections[i]->state = DN_CONNECTION_STATE_ERROR_FATAL;
+#endif
+				add_error_message(connections[i], "failed to send GXID for "
+						"ROLLBACK PREPARED command");
+				remoteXactState.remoteNodeStatus[i] = RXACT_NODE_ABORT_FAILED;
+				remoteXactState.status = RXACT_ABORT_FAILED;
+
+			}
+			else if (pgxc_node_send_query(connections[i], rollbackPrepCmd))
+			{
+#ifdef XCP
+				connections[i]->state = DN_CONNECTION_STATE_ERROR_FATAL;
+#endif
+				add_error_message(connections[i], "failed to send ROLLBACK PREPARED "
+						"TRANSACTION command to node");
+				remoteXactState.remoteNodeStatus[i] = RXACT_NODE_ABORT_FAILED;
+				remoteXactState.status = RXACT_ABORT_FAILED;
+			}
+			else
+			{
+				remoteXactState.remoteNodeStatus[i] = RXACT_NODE_ABORT_SENT;
+				new_connections[new_conn_count++] = connections[i];
+			}
+		}
+		else
+		{
+			if (pgxc_node_send_query(connections[i], rollbackCmd))
+			{
+#ifdef XCP
+				connections[i]->state = DN_CONNECTION_STATE_ERROR_FATAL;
+#endif
+				add_error_message(connections[i], "failed to send ROLLBACK "
+						"TRANSACTION command to node");
+				remoteXactState.remoteNodeStatus[i] = RXACT_NODE_ABORT_FAILED;
+				remoteXactState.status = RXACT_ABORT_FAILED;
+			}
+			else
+			{
+				remoteXactState.remoteNodeStatus[i] = RXACT_NODE_ABORT_SENT;
+				new_connections[new_conn_count++] = connections[i];
+			}
+		}
+	}
+
+	if (new_conn_count)
+	{
+#ifdef XCP
+		/* Receive responses */
+		InitResponseCombiner(&combiner, new_conn_count, COMBINE_TYPE_NONE);
+		result = pgxc_node_receive_responses(new_conn_count, new_connections, NULL, &combiner);
+		if (result || !validate_combiner(&combiner))
+			result = EOF;
+		else
+			CloseCombiner(&combiner);
+#else
+		combiner = CreateResponseCombiner(new_conn_count, COMBINE_TYPE_NONE);
+		/* Receive responses */
+		result = pgxc_node_receive_responses(new_conn_count, new_connections, NULL, combiner);
+		if (result || !validate_combiner(combiner))
+			result = EOF;
+		else
+		{
+			CloseCombiner(combiner);
+			combiner = NULL;
+		}
+#endif
+
+		for (i = 0; i < write_conn_count + read_conn_count; i++)
+		{
+			if (remoteXactState.remoteNodeStatus[i] == RXACT_NODE_ABORT_SENT)
+			{
+				if (connections[i]->error)
+				{
+					remoteXactState.remoteNodeStatus[i] = RXACT_NODE_ABORT_FAILED;
+					if (remoteXactState.status != RXACT_PART_ABORTED)
+						remoteXactState.status = RXACT_ABORT_FAILED;
+					elog(LOG, "Failed to ABORT at node %d\nDetail: %s",
+							connections[i]->nodeoid, connections[i]->error);
+				}
+				else
+				{
+					remoteXactState.remoteNodeStatus[i] = RXACT_NODE_ABORTED;
+					if (remoteXactState.status == RXACT_ABORT_FAILED)
+						remoteXactState.status = RXACT_PART_ABORTED;
+				}
+			}
+		}
+	}
+
+	if (result)
+	{
+#ifdef XCP
+		if (combiner.errorMessage)
+		{
+			if (combiner.errorDetail != NULL)
+				elog(LOG, "%s %s", combiner.errorMessage, combiner.errorDetail);
+			else
+				elog(LOG, "%s", combiner.errorMessage);
+		}
+#else
+		if (combiner && combiner->errorMessage)
+		{
+			if (combiner->errorDetail != NULL)
+				elog(LOG, "%s %s", combiner->errorMessage, combiner->errorDetail);
+			else
+				elog(LOG, "%s", combiner->errorMessage);
+		}
+#endif
+		else
+			elog(LOG, "Failed to ABORT an implicitly PREPARED "
+					"transaction - result %d", result);
+	}
 
 	/*
-	 * A local Coordinator always commits if involved in Prepare.
-	 * 2PC file is created and flushed if a DDL has been involved in the transaction.
-	 * If remote connection is a Coordinator type, the commit prepared has to be done locally
-	 * if and only if the Coordinator number was in the node list received from GTM.
+	 * Don't ereport because we might already been abort processing and any
+	  * error at this point can lead to infinite recursion
+	 *
+	 * XXX How do we handle errors reported by internal functions used to
+	 * communicate with remote nodes ?
 	 */
-	if (operation_local)
-		FinishPreparedTransaction(gid, true);
+	if (remoteXactState.status == RXACT_ABORT_FAILED ||
+		remoteXactState.status == RXACT_PART_ABORTED)
+		elog(LOG, "Failed to ABORT an implicitly PREPARED transaction "
+				"status - %d", remoteXactState.status);
+	else
+		remoteXactState.status = RXACT_ABORTED;
 
-	LWLockRelease(BarrierLock);
 	return;
 }
-
-/*
- * Commit a prepared transaction on all nodes
- * Prepared transaction with this gid has reset the datanodes,
- * so we need a new gxid.
- * An error is returned to the application only if all the Datanodes
- * and Coordinator do not know about the gxid proposed.
- * This permits to avoid interactions with GTM.
- */
-static int
-pgxc_node_commit_prepared(GlobalTransactionId gxid,
-						  GlobalTransactionId prepared_gxid,
-						  PGXCNodeAllHandles *pgxc_handles,
-						  char *gid)
-{
-	int	result = 0;
-	int	co_conn_count = pgxc_handles->co_conn_count;
-	int	dn_conn_count = pgxc_handles->dn_conn_count;
-	char	*buffer = (char *) palloc0(18 + strlen(gid) + 1);
-
-	/* GXID has been piggybacked when gid data has been received from GTM */
-	sprintf(buffer, "COMMIT PREPARED '%s'", gid);
-
-	/* Send gxid and COMMIT PREPARED message to all the Datanodes */
-	if (pgxc_all_handles_send_gxid(pgxc_handles, gxid, true))
-		goto finish;
-
-	/* Continue and receive responses even if there is an error */
-	if (pgxc_all_handles_send_query(pgxc_handles, buffer, false))
-		result = EOF;
-
-#ifdef XCP
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
-#else
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
-#endif
-
-finish:
-	/* Both GXIDs used for PREPARE and COMMIT PREPARED are discarded from GTM snapshot here */
-	CommitPreparedTranGTM(gxid, prepared_gxid);
-
-	return result;
-}
-
-/*
- * Rollback prepared transaction on Datanodes involved in the current transaction
- *
- * Return whether or not a local operation required.
- */
-bool
-PGXCNodeRollbackPrepared(char *gid)
-{
-	int			res = 0;
-	int			res_gtm = 0;
-	PGXCNodeAllHandles	*pgxc_handles = NULL;
-	List			*datanodelist = NIL;
-	List			*coordlist = NIL;
-	int			tran_count;
-	int			coordcnt = 0;
-	int			datanodecnt = 0;
-	GlobalTransactionId	gxid, prepared_gxid;
-	char		*nodestring = NULL;
-	/* This flag tracks if the transaction has to be rolled back locally */
-	bool			operation_local = false;
-
-	res_gtm = GetGIDDataGTM(gid, &gxid, &prepared_gxid, &nodestring);
-
-	/* Analyze string obtained and get all node informations */
-	operation_local = analyze_node_string(nodestring, &datanodelist, &coordlist);
-	coordcnt = list_length(coordlist);
-	datanodecnt = list_length(datanodelist);
-
-	tran_count = datanodecnt + coordcnt;
-	if (tran_count == 0 || res_gtm < 0 )
-		goto finish;
-
-	autocommit = false;
-
-	/* Get connections */
-	if (coordcnt > 0 && datanodecnt == 0)
-		pgxc_handles = get_handles(datanodelist, coordlist, true);
-	else
-		pgxc_handles = get_handles(datanodelist, coordlist, false);
-
-	/* Here do the real rollback to Datanodes and Coordinators */
-	res = pgxc_node_rollback_prepared(gxid, prepared_gxid, pgxc_handles, gid);
-
-finish:
-	/* In autocommit mode statistics is collected in DataNodeExec */
-	if (!autocommit)
-		stat_transaction(tran_count);
-	if (!PersistentConnections)
-		release_handles();
-	autocommit = true;
-	is_ddl = false;
-	clear_write_node_list();
-
-#ifndef XCP
-	/* Reset temporary object flag */
-	temp_object_included = false;
-#endif
-
-	/* Free node list taken from GTM */
-	if (nodestring)
-		free(nodestring);
-
-	pfree_pgxc_all_handles(pgxc_handles);
-	if (res_gtm < 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("prepared transaction with identifier \"%s\" does not exist",
-						gid)));
-	if (res != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Could not rollback prepared transaction on Datanodes")));
-
-	return operation_local;
-}
-
-
-/*
- * Rollback prepared transaction
- * We first get the prepared informations from GTM and then do the treatment
- * At the end both prepared GXID and GXID are committed.
- */
-static int
-pgxc_node_rollback_prepared(GlobalTransactionId gxid, GlobalTransactionId prepared_gxid,
-							PGXCNodeAllHandles *pgxc_handles, char *gid)
-{
-	int	result = 0;
-	int	dn_conn_count = pgxc_handles->dn_conn_count;
-	int	co_conn_count = pgxc_handles->co_conn_count;
-	char	*buffer = (char *) palloc0(20 + strlen(gid) + 1);
-
-	/* Datanodes have reset after prepared state, so get a new gxid */
-	if (!GlobalTransactionIdIsValid(gxid))
-		gxid = BeginTranGTM(NULL);
-
-	sprintf(buffer, "ROLLBACK PREPARED '%s'", gid);
-
-	/* Send gxid and ROLLBACK PREPARED message to all the Datanodes */
-	if (pgxc_all_handles_send_gxid(pgxc_handles, gxid, false))
-		result = EOF;
-	if (pgxc_all_handles_send_query(pgxc_handles, buffer, false))
-		result = EOF;
-
-#ifdef XCP
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
-#else
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
-#endif
-
-	/* Both GXIDs used for PREPARE and COMMIT PREPARED are discarded from GTM snapshot here */
-	CommitPreparedTranGTM(gxid, prepared_gxid);
-
-	return result;
-}
-
-
-/*
- * Commit current transaction on data nodes where it has been started
- * This function is called when no 2PC is involved implicitely.
- * So only send a commit to the involved nodes.
- */
-void
-PGXCNodeCommit(bool bReleaseHandles)
-{
-	int			res = 0;
-	int			tran_count;
-	PGXCNodeAllHandles *pgxc_connections;
-
-	pgxc_connections = pgxc_get_all_transaction_nodes(HANDLE_DEFAULT);
-
-	tran_count = pgxc_connections->dn_conn_count + pgxc_connections->co_conn_count;
-
-	/*
-	 * If we do not have open transactions we have nothing to commit, just
-	 * report success
-	 */
-	if (tran_count == 0)
-		goto finish;
-
-	res = pgxc_node_commit(pgxc_connections);
-
-finish:
-	/* In autocommit mode statistics is collected in DataNodeExec */
-	if (!autocommit)
-		stat_transaction(tran_count);
-	if (!PersistentConnections && bReleaseHandles)
-		release_handles();
-	autocommit = true;
-	is_ddl = false;
-	clear_write_node_list();
-
-#ifndef XCP
-	/* Reset temporary object flag */
-	temp_object_included = false;
-#endif
-
-	/* Clean up connections */
-	pfree_pgxc_all_handles(pgxc_connections);
-	if (res != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Could not commit (or autocommit) data node connection")));
-}
-
-
-/*
- * Commit transaction on specified data node connections, use two-phase commit
- * if more then on one node data have been modified during the transactioon.
- */
-static int
-pgxc_node_commit(PGXCNodeAllHandles *pgxc_handles)
-{
-	char		buffer[256];
-	int		result = 0;
-	int		co_conn_count = pgxc_handles->co_conn_count;
-	int		dn_conn_count = pgxc_handles->dn_conn_count;
-
-	strcpy(buffer, "COMMIT");
-
-	/* Send COMMIT to all handles */
-	if (pgxc_all_handles_send_query(pgxc_handles, buffer, false))
-		result = EOF;
-
-	/* Receive and Combine results from Datanodes and Coordinators */
-#ifdef XCP
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
-#else
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
-#endif
-
-	return result;
-}
-
-
-/*
- * Rollback current transaction
- * This will happen
- */
-int
-PGXCNodeRollback(void)
-{
-	int			res = 0;
-	int			tran_count;
-	PGXCNodeAllHandles *pgxc_connections;
-
-	pgxc_connections = pgxc_get_all_transaction_nodes(HANDLE_DEFAULT);
-
-	tran_count = pgxc_connections->dn_conn_count + pgxc_connections->co_conn_count;
-
-	/*
-	 * If we do not have open transactions we have nothing to rollback just
-	 * report success
-	 */
-	if (tran_count == 0)
-		goto finish;
-
-	res = pgxc_node_rollback(pgxc_connections);
-
-finish:
-	/* In autocommit mode statistics is collected in DataNodeExec */
-	if (!autocommit)
-		stat_transaction(tran_count);
-	if (!PersistentConnections)
-		release_handles();
-	autocommit = true;
-	is_ddl = false;
-	clear_write_node_list();
-
-#ifndef XCP
-	/* Reset temporary object flag */
-	temp_object_included = false;
-#endif
-
-	/* Clean up connections */
-	pfree_pgxc_all_handles(pgxc_connections);
-	return res;
-}
-
-
-/*
- * Send ROLLBACK command down to Datanodes and Coordinators and handle responses
- */
-static int
-pgxc_node_rollback(PGXCNodeAllHandles *pgxc_handles)
-{
-	int			result = 0;
-	int			co_conn_count = pgxc_handles->co_conn_count;
-	int			dn_conn_count = pgxc_handles->dn_conn_count;
-
-	/* Send ROLLBACK to all handles */
-	if (pgxc_all_handles_send_query(pgxc_handles, "ROLLBACK", false))
-		result = EOF;
-
-	/* Receive and Combine results from Datanodes and Coordinators */
-#ifdef XCP
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
-#else
-	result |= pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles, false);
-	result |= pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles, false);
-#endif
-
-#ifdef XCP
-	/*
-	 * If we rollback because of error there could be prepared subplans, so
-	 * clean them all up. If no subplans the command will do nothing.
-	 */
-	if (pgxc_all_handles_send_query(pgxc_handles, "DEALLOCATE ALL", false))
-		result = EOF;
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(dn_conn_count, pgxc_handles->datanode_handles);
-	if (result == 0)
-		result = pgxc_node_receive_and_validate(co_conn_count, pgxc_handles->coord_handles);
-#endif
-
-	return result;
-}
-
 
 /*
  * Begin COPY command
@@ -3357,10 +2989,9 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 	int i;
 	List *nodelist = rel_loc->nodeList;
 	PGXCNodeHandle **connections;
-	bool need_tran;
+	bool need_tran_block;
 	GlobalTransactionId gxid;
 	ResponseCombiner combiner;
-	TimestampTz timestamp = GetCurrentGTMStartTimestamp();
 	Snapshot snapshot = GetActiveSnapshot();
 	int conn_count = list_length(nodelist);
 	Locator *result;
@@ -3382,47 +3013,32 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 		pfree(pgxc_handles);
 	}
 
-	need_tran = !autocommit || (is_from && conn_count > 1);
+	/*
+	 * If more than one nodes are involved or if we are already in a
+	 * transaction block, we must the remote statements in a transaction block
+	 */
+	need_tran_block = (conn_count > 1) || (TransactionBlockStatusCode() == 'T');
 
-	elog(DEBUG1, "autocommit = %s, conn_count = %d, need_tran = %s", autocommit ? "true" : "false", conn_count, need_tran ? "true" : "false");
+	elog(DEBUG1, "conn_count = %d, need_tran_block = %s", conn_count,
+			need_tran_block ? "true" : "false");
 
 	/* Gather statistics */
 	stat_statement();
+	stat_transaction(conn_count);
 
-	if (autocommit)
-	{
-		stat_transaction(conn_count);
-		/* We normally clear for transactions, but if autocommit, clear here, too */
-		clear_write_node_list();
-	}
-
-	if (is_from)
-		register_write_nodes(conn_count, connections);
-
-	gxid = GetCurrentGlobalTransactionId();
+	gxid = GetCurrentTransactionId();
 	if (!GlobalTransactionIdIsValid(gxid))
 	{
 		pfree(connections);
 		return NULL;
 	}
 
-	if (need_tran)
+	/* Start transaction on connections where it is not started */
+	if (pgxc_node_begin(conn_count, connections, gxid, need_tran_block, false, PGXC_NODE_DATANODE))
 	{
-		/*
-		 * Check if data node connections are in transaction and start
-		 * transactions on nodes where it is not started
-		 */
-		PGXCNodeHandle *new_connections[conn_count];
-		int 		new_count = 0;
-
-		for (i = 0; i < conn_count; i++)
-			if (connections[i]->transaction_status != 'T')
-				new_connections[new_count++] = connections[i];
-
-		if (new_count && pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_DATANODE))
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Could not begin transaction on data nodes.")));
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("Could not begin transaction on data nodes.")));
 	}
 
 	/*
@@ -3449,35 +3065,18 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 	{
 		CHECK_OWNERSHIP(connections[i], NULL);
 
-		/* If explicit transaction is needed gxid is already sent */
-		if (!need_tran && pgxc_node_send_gxid(connections[i], gxid))
-		{
-			add_error_message(connections[i], "Can not send request");
-			pfree(connections);
-			return NULL;
-		}
-		if (conn_count > 1 && pgxc_node_send_timestamp(connections[i], timestamp))
-		{
-			/*
-			 * If a transaction involves multiple connections timestamp is
-			 * always sent down to Datanodes with pgxc_node_begin.
-			 * An autocommit transaction needs the global timestamp also,
-			 * so handle this case here.
-			 */
-			add_error_message(connections[i], "Can not send request");
-			pfree(connections);
-			return NULL;
-		}
 		if (snapshot && pgxc_node_send_snapshot(connections[i], snapshot))
 		{
 			add_error_message(connections[i], "Can not send request");
 			pfree(connections);
+			freeLocator(result);
 			return NULL;
 		}
 		if (pgxc_node_send_query(connections[i], query) != 0)
 		{
 			add_error_message(connections[i], "Can not send request");
 			pfree(connections);
+			freeLocator(result);
 			return NULL;
 		}
 	}
@@ -3497,39 +3096,32 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 	if (pgxc_node_receive_responses(conn_count, connections, NULL, &combiner)
 			|| !ValidateAndCloseCombiner(&combiner))
 	{
-		if (autocommit)
-		{
-			if (need_tran)
-				DataNodeCopyFinish(conn_count, connections);
-			else if (!PersistentConnections)
-				release_handles();
-		}
-
-		pfree(connections);
+		DataNodeCopyFinish(conn_count, connections);
+		release_handles();
+		freeLocator(result);
 		return NULL;
 	}
+	pfree(connections);
 	return result;
 }
 #else
 PGXCNodeHandle**
 DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_from)
 {
-	int i, j;
+	int i;
 	int conn_count = list_length(nodelist) == 0 ? NumDataNodes : list_length(nodelist);
 	struct timeval *timeout = NULL;
 	PGXCNodeAllHandles *pgxc_handles;
 	PGXCNodeHandle **connections;
 	PGXCNodeHandle **copy_connections;
-	PGXCNodeHandle *newConnections[conn_count];
-	int new_count = 0;
 	ListCell *nodeitem;
-	bool need_tran;
+	bool need_tran_block;
 	GlobalTransactionId gxid;
 	RemoteQueryState *combiner;
-	TimestampTz timestamp = GetCurrentGTMStartTimestamp();
 
 	if (conn_count == 0)
 		return NULL;
+
 	/* Get needed datanode connections */
 	pgxc_handles = get_handles(nodelist, NULL, false);
 	connections = pgxc_handles->datanode_handles;
@@ -3537,9 +3129,14 @@ DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_
 	if (!connections)
 		return NULL;
 
-	need_tran = !autocommit || conn_count > 1;
+	/*
+	 * If more than one nodes are involved or if we are already in a
+	 * transaction block, we must the remote statements in a transaction block
+	 */
+	need_tran_block = (conn_count > 1) || (TransactionBlockStatusCode() == 'T');
 
-	elog(DEBUG1, "autocommit = %s, conn_count = %d, need_tran = %s", autocommit ? "true" : "false", conn_count, need_tran ? "true" : "false");
+	elog(DEBUG1, "conn_count = %d, need_tran_block = %s", conn_count,
+			need_tran_block ? "true" : "false");
 
 	/*
 	 * We need to be able quickly find a connection handle for specified node number,
@@ -3553,46 +3150,9 @@ DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_
 
 	/* Gather statistics */
 	stat_statement();
-	if (autocommit)
-		stat_transaction(conn_count);
+	stat_transaction(conn_count);
 
-	/* We normally clear for transactions, but if autocommit, clear here, too */
-	if (autocommit)
-	{
-		clear_write_node_list();
-	}
-
-	/* Check status of connections */
-	/* We want to track new "write" nodes, and new nodes in the current transaction
-	 * whether or not they are write nodes. */
-	if (write_node_count < NumDataNodes)
-	{
-		for (i = 0; i < conn_count; i++)
-		{
-			bool found = false;
-			for (j=0; j<write_node_count && !found; j++)
-			{
-				if (write_node_list[j] == connections[i])
-					found = true;
-			}
-			if (!found)
-			{
-				/*
-				 * Add to transaction wide-list if COPY FROM
-				 * CopyOut (COPY TO) is not a write operation, no need to update
-				 */
-				if (is_from)
-					write_node_list[write_node_count++] = connections[i];
-				/* Add to current statement list */
-				newConnections[new_count++] = connections[i];
-			}
-		}
-		// Check connection state is DN_CONNECTION_STATE_IDLE
-	}
-
-	gxid = GetCurrentGlobalTransactionId();
-
-	/* elog(DEBUG1, "Current gxid = %d", gxid); */
+	gxid = GetCurrentTransactionId();
 
 	if (!GlobalTransactionIdIsValid(gxid))
 	{
@@ -3600,15 +3160,13 @@ DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_
 		pfree(copy_connections);
 		return NULL;
 	}
-	if (new_count > 0 && need_tran)
+
+	/* Start transaction on connections where it is not started */
+	if (pgxc_node_begin(conn_count, connections, gxid, need_tran_block, false, PGXC_NODE_DATANODE))
 	{
-		/* Start transaction on connections where it is not started */
-		if (pgxc_node_begin(new_count, newConnections, gxid, PGXC_NODE_DATANODE))
-		{
-			pfree_pgxc_all_handles(pgxc_handles);
-			pfree(copy_connections);
-			return NULL;
-		}
+		pfree_pgxc_all_handles(pgxc_handles);
+		pfree(copy_connections);
+		return NULL;
 	}
 
 	/* Send query to nodes */
@@ -3616,27 +3174,7 @@ DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_
 	{
 		if (connections[i]->state == DN_CONNECTION_STATE_QUERY)
 			BufferConnection(connections[i]);
-		/* If explicit transaction is needed gxid is already sent */
-		if (!need_tran && pgxc_node_send_gxid(connections[i], gxid))
-		{
-			add_error_message(connections[i], "Can not send request");
-			pfree_pgxc_all_handles(pgxc_handles);
-			pfree(copy_connections);
-			return NULL;
-		}
-		if (conn_count == 1 && pgxc_node_send_timestamp(connections[i], timestamp))
-		{
-			/*
-			 * If a transaction involves multiple connections timestamp, is
-			 * always sent down to Datanodes with pgxc_node_begin.
-			 * An autocommit transaction needs the global timestamp also,
-			 * so handle this case here.
-			 */
-			add_error_message(connections[i], "Can not send request");
-			pfree_pgxc_all_handles(pgxc_handles);
-			pfree(copy_connections);
-			return NULL;
-		}
+
 		if (snapshot && pgxc_node_send_snapshot(connections[i], snapshot))
 		{
 			add_error_message(connections[i], "Can not send request");
@@ -3660,18 +3198,11 @@ DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_
 	 */
 	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_NONE);
 
- 	/* Receive responses */
+	/* Receive responses */
 	if (pgxc_node_receive_responses(conn_count, connections, timeout, combiner)
 			|| !ValidateAndCloseCombiner(combiner))
 	{
-		if (autocommit)
-		{
-			if (need_tran)
-				DataNodeCopyFinish(connections, -1, COMBINE_TYPE_NONE);
-			else if (!PersistentConnections)
-				release_handles();
-		}
-
+		DataNodeCopyFinish(connections, -1, COMBINE_TYPE_NONE);
 		pfree(connections);
 		pfree(copy_connections);
 		return NULL;
@@ -3943,7 +3474,7 @@ DataNodeCopyOut(PGXCNodeHandle** copy_connections,
 
 	if (!ValidateAndCloseCombiner(&combiner) || error)
 	{
-		if (autocommit && !PersistentConnections)
+		if (!PersistentConnections)
 			release_handles();
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
@@ -3959,18 +3490,16 @@ DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* 
 	RemoteQueryState *combiner;
 	int 		conn_count = list_length(exec_nodes->nodeList) == 0 ? NumDataNodes : list_length(exec_nodes->nodeList);
 	int 		count = 0;
-	bool 		need_tran;
 	List		*nodelist;
 	ListCell	*nodeitem;
 	uint64		processed;
 
 	nodelist = exec_nodes->nodeList;
-	need_tran = !autocommit || conn_count > 1;
 
 	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_SUM);
 	combiner->processed = 0;
- 	/* If there is an existing file where to copy data, pass it to combiner */
- 	if (copy_file)
+	/* If there is an existing file where to copy data, pass it to combiner */
+	if (copy_file)
 		combiner->copy_file = copy_file;
 
 	foreach(nodeitem, exec_nodes->nodeList)
@@ -4007,12 +3536,12 @@ DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* 
 	processed = combiner->processed;
 
 	if (!ValidateAndCloseCombiner(combiner))
- 	{
- 		if (autocommit && !PersistentConnections)
- 			release_handles();
- 		pfree(copy_connections);
- 		ereport(ERROR,
- 				(errcode(ERRCODE_DATA_CORRUPTED),
+	{
+		if (!PersistentConnections)
+			release_handles();
+		pfree(copy_connections);
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("Unexpected response from the data nodes when combining, request type %d", combiner->request_type)));
 	}
 
@@ -4020,6 +3549,10 @@ DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* 
 }
 #endif
 
+
+/*
+ * Finish copy process on all connections
+ */
 #ifdef XCP
 void
 DataNodeCopyFinish(int conn_count, PGXCNodeHandle** connections)
@@ -4028,16 +3561,15 @@ void
 DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_dn_index, CombineType combine_type)
 #endif
 {
-	int 		i;
+	int		i;
 #ifdef XCP
 	ResponseCombiner combiner;
 #else
 	RemoteQueryState *combiner = NULL;
-	bool 		need_tran;
 #endif
 	bool 		error = false;
-	struct timeval *timeout = NULL; /* wait forever */
 #ifndef XCP
+	struct timeval *timeout = NULL; /* wait forever */
 	PGXCNodeHandle *connections[NumDataNodes];
 	PGXCNodeHandle *primary_handle = NULL;
 	int 		conn_count = 0;
@@ -4081,12 +3613,10 @@ DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_dn_index, Comb
 	 * Make sure there are zeroes in unused fields
 	 */
 	memset(&combiner, 0, sizeof(ScanState));
-	error = (pgxc_node_receive_responses(conn_count, connections, timeout, &combiner) != 0) || error;
+	error = (pgxc_node_receive_responses(conn_count, connections, NULL, &combiner) != 0) || error;
 
 	if (!ValidateAndCloseCombiner(&combiner) || error)
 #else
-	need_tran = !autocommit || primary_handle || conn_count > 1;
-
 	if (!combiner)
 		combiner = CreateResponseCombiner(conn_count, combine_type);
 	error = (pgxc_node_receive_responses(conn_count, connections, timeout, combiner) != 0) || error;
@@ -4128,11 +3658,16 @@ DataNodeCopyEnd(PGXCNodeHandle *handle, bool is_error)
 	return false;
 }
 
+
 #ifndef XCP
 RemoteQueryState *
 ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 {
 	RemoteQueryState   *remotestate;
+
+	/* RemoteQuery node is the leaf node in the plan tree, just like seqscan */
+	Assert(innerPlan(node) == NULL);
+	Assert(outerPlan(node) == NULL);
 
 	remotestate = CreateResponseCombiner(0, node->combine_type);
 	remotestate->ss.ps.plan = (Plan *) node;
@@ -4171,26 +3706,6 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 	remotestate->ss.ps.ps_TupFromTlist = false;
 
 	/*
-	 * Tuple description for the scan slot will be set on runtime from
-	 * a RowDescription message
-	 */
-
-	if (node->distinct)
-	{
-		/* prepare equate functions */
-		remotestate->eqfunctions =
-			execTuplesMatchPrepare(node->distinct->numCols,
-								   node->distinct->eqOperators);
-		/* create memory context for execTuplesMatch */
-		remotestate->tmp_ctx =
-			AllocSetContextCreate(CurrentMemoryContext,
-								  "RemoteUnique",
-								  ALLOCSET_DEFAULT_MINSIZE,
-								  ALLOCSET_DEFAULT_INITSIZE,
-								  ALLOCSET_DEFAULT_MAXSIZE);
-	}
-
-	/*
 	 * If there are parameters supplied, get them into a form to be sent to the
 	 * datanodes with bind message. We should not have had done this before.
 	 */
@@ -4203,39 +3718,9 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 
 	/* We need expression context to evaluate */
 	if (node->exec_nodes && node->exec_nodes->en_expr)
-	{
-		Expr *expr = node->exec_nodes->en_expr;
-
-		if (IsA(expr, Var) && ((Var *) expr)->vartype == TIDOID)
-		{
-			/* Special case if expression does not need to be evaluated */
-		}
-		else
-		{
-			/*
-			 * Inner plan provides parameter values and may be needed
-			 * to determine target nodes. In this case expression is evaluated
-			 * and we should made values available for evaluator.
-			 * So allocate storage for the values.
-			 */
-			if (innerPlan(node))
-			{
-				int nParams = list_length(node->scan.plan.targetlist);
-				estate->es_param_exec_vals = (ParamExecData *) palloc0(
-						nParams * sizeof(ParamExecData));
-			}
-			/* prepare expression evaluation */
-			ExecAssignExprContext(estate, &remotestate->ss.ps);
-		}
-	}
+		ExecAssignExprContext(estate, &remotestate->ss.ps);
 	else if (remotestate->ss.ps.qual)
 		ExecAssignExprContext(estate, &remotestate->ss.ps);
-
-	if (innerPlan(node))
-		innerPlanState(remotestate) = ExecInitNode(innerPlan(node), estate, eflags);
-
-	if (outerPlan(node))
-		outerPlanState(remotestate) = ExecInitNode(outerPlan(node), estate, eflags);
 
 	return remotestate;
 }
@@ -4250,8 +3735,7 @@ copy_slot(RemoteQueryState *node, TupleTableSlot *src, TupleTableSlot *dst)
 		if (src->tts_mcxt == dst->tts_mcxt)
 		{
 			/* now dst slot controls the backing message */
-			ExecStoreDataRowTuple(src->tts_dataRow, src->tts_dataLen,
-								  src->tts_dataNodeIndex, dst,
+			ExecStoreDataRowTuple(src->tts_dataRow, src->tts_dataLen, dst,
 								  src->tts_shouldFreeRow);
 			src->tts_shouldFreeRow = false;
 		}
@@ -4263,7 +3747,7 @@ copy_slot(RemoteQueryState *node, TupleTableSlot *src, TupleTableSlot *dst)
 			char		*msg = (char *) palloc(len);
 
 			memcpy(msg, src->tts_dataRow, len);
-			ExecStoreDataRowTuple(msg, len, src->tts_dataNodeIndex, dst, true);
+			ExecStoreDataRowTuple(msg, len, dst, true);
 			MemoryContextSwitchTo(oldcontext);
 		}
 	}
@@ -4291,6 +3775,7 @@ copy_slot(RemoteQueryState *node, TupleTableSlot *src, TupleTableSlot *dst)
 }
 #endif
 
+
 /*
  * Get Node connections depending on the connection type:
  * Datanodes Only, Coordinators only or both types
@@ -4315,76 +3800,38 @@ get_exec_connections(RemoteQueryState *planstate,
 	if (exec_type == EXEC_ON_COORDS)
 		is_query_coord_only = true;
 
+#ifdef XCP
+	if (exec_type == EXEC_ON_CURRENT)
+		return get_current_handles();
+#endif
+
 	if (exec_nodes)
 	{
 #ifndef XCP
 		if (exec_nodes->en_expr)
 		{
-			/*
-			 * Special case (argh, another one): if expression data type is TID
-			 * the ctid value is specific to the node from which it has been
-			 * returned.
-			 * So try and determine originating node and execute command on
-			 * that node only
-			 */
-			if (IsA(exec_nodes->en_expr, Var) && ((Var *) exec_nodes->en_expr)->vartype == TIDOID)
+			/* execution time determining of target data nodes */
+			bool isnull;
+			ExprState *estate = ExecInitExpr(exec_nodes->en_expr,
+											 (PlanState *) planstate);
+			Datum partvalue = ExecEvalExpr(estate,
+										   planstate->ss.ps.ps_ExprContext,
+										   &isnull,
+										   NULL);
+			RelationLocInfo *rel_loc_info = GetRelationLocInfo(exec_nodes->en_relid);
+			/* PGXCTODO what is the type of partvalue here */
+			ExecNodes *nodes = GetRelationNodes(rel_loc_info,
+												partvalue,
+												isnull,
+												exprType((Node *) exec_nodes->en_expr),
+												exec_nodes->accesstype);
+			if (nodes)
 			{
-				Var 	   *ctid = (Var *) exec_nodes->en_expr;
-				PlanState  *source = (PlanState *) planstate;
-				TupleTableSlot *slot;
-
-				/* Find originating RemoteQueryState */
-				if (ctid->varno == INNER)
-					source = innerPlanState(source);
-				else if (ctid->varno == OUTER)
-					source = outerPlanState(source);
-
-				while (!IsA(source, RemoteQueryState))
-				{
-					TargetEntry *tle = list_nth(source->plan->targetlist,
-												ctid->varattno - 1);
-					Assert(IsA(tle->expr, Var));
-					ctid = (Var *) tle->expr;
-					if (ctid->varno == INNER)
-						source = innerPlanState(source);
-					else if (ctid->varno == OUTER)
-						source = outerPlanState(source);
-					else
-						elog(ERROR, "failed to determine target node");
-				}
-
-				slot = source->ps_ResultTupleSlot;
-				/* The slot should be of type DataRow */
-				Assert(!TupIsNull(slot) && slot->tts_dataRow);
-
-				nodelist = list_make1_int(slot->tts_dataNodeIndex);
-				primarynode = NIL;
+				nodelist = nodes->nodeList;
+				primarynode = nodes->primarynodelist;
+				pfree(nodes);
 			}
-			else
-			{
-				/* execution time determining of target data nodes */
-				bool isnull;
-				ExprState *estate = ExecInitExpr(exec_nodes->en_expr,
-												 (PlanState *) planstate);
-				Datum partvalue = ExecEvalExpr(estate,
-											   planstate->ss.ps.ps_ExprContext,
-											   &isnull,
-											   NULL);
-				RelationLocInfo *rel_loc_info = GetRelationLocInfo(exec_nodes->en_relid);
-				/* PGXCTODO what is the type of partvalue here */
-				ExecNodes *nodes = GetRelationNodes(rel_loc_info,
-													partvalue,
-													isnull,
-													exprType((Node *) exec_nodes->en_expr),
-													exec_nodes->accesstype);
-				if (nodes)
-				{
-					nodelist = nodes->nodeList;
-					primarynode = nodes->primarynodelist;
-					pfree(nodes);
-				}
-				FreeRelationLocInfo(rel_loc_info);
-			}
+			FreeRelationLocInfo(rel_loc_info);
 		}
 		else if (OidIsValid(exec_nodes->en_relid))
 		{
@@ -4426,7 +3873,6 @@ get_exec_connections(RemoteQueryState *planstate,
 		}
 	}
 
-
 	/* Set node list and DN number */
 	if (list_length(nodelist) == 0 &&
 		(exec_type == EXEC_ON_ALL_NODES ||
@@ -4452,8 +3898,8 @@ get_exec_connections(RemoteQueryState *planstate,
 	if ((list_length(nodelist) == 0 && exec_type == EXEC_ON_ALL_NODES) ||
 		(list_length(coordlist) == 0 && exec_type == EXEC_ON_COORDS))
 	{
-		co_conn_count = NumCoords;
 		coordlist = GetAllCoordNodes();
+		co_conn_count = list_length(coordlist);
 	}
 	else
 	{
@@ -4496,49 +3942,22 @@ get_exec_connections(RemoteQueryState *planstate,
 	return pgxc_handles;
 }
 
-/*
- * We would want to run 2PC if current transaction modified more then
- * one node. So optimize little bit and do not look further if we
- * already have more then one write nodes.
- */
-static void
-register_write_nodes(int conn_count, PGXCNodeHandle **connections)
-{
-	int 		i, j;
 
-	for (i = 0; i < conn_count && write_node_count < 2; i++)
-	{
-		bool found = false;
-
-		for (j = 0; j < write_node_count && !found; j++)
-		{
-			if (write_node_list[j] == connections[i])
-				found = true;
-		}
-		if (!found)
-		{
-			/* Add to transaction wide-list */
-			write_node_list[write_node_count++] = connections[i];
-		}
-	}
-}
-
-#ifndef XCP
 static bool
-pgxc_start_command_on_connection(PGXCNodeHandle *connection, bool need_tran,
-									GlobalTransactionId gxid, TimestampTz timestamp,
-									RemoteQueryState *remotestate, int total_conn_count,
+pgxc_start_command_on_connection(PGXCNodeHandle *connection,
+									RemoteQueryState *remotestate,
 									Snapshot snapshot)
 {
-	RemoteQuery	*step = (RemoteQuery *) remotestate->combiner.ss.ps.plan;
+#ifdef XCP
+	ResponseCombiner *combiner = (ResponseCombiner *) remotestate;
+	RemoteQuery	*step = (RemoteQuery *) combiner->ss.ps.plan;
+	CHECK_OWNERSHIP(connection, combiner);
+#else
+	RemoteQuery	*step = (RemoteQuery *) remotestate->ss.ps.plan;
 	if (connection->state == DN_CONNECTION_STATE_QUERY)
 		BufferConnection(connection);
+#endif
 
-	/* If explicit transaction is needed gxid is already sent */
-	if (!need_tran && pgxc_node_send_gxid(connection, gxid))
-		return false;
-	if (total_conn_count == 1 && pgxc_node_send_timestamp(connection, timestamp))
-		return false;
 	if (snapshot && pgxc_node_send_snapshot(connection, snapshot))
 		return false;
 	if (step->statement || step->cursor || step->param_types)
@@ -4558,6 +3977,10 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection, bool need_tran,
 		 */
 		if (step->cursor)
 			fetch = 1;
+
+#ifdef XCP
+		combiner->extended_query = true;
+#endif
 
 		if (pgxc_node_send_query_extended(connection,
 							prepared ? NULL : step->sql_statement,
@@ -4579,6 +4002,8 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection, bool need_tran,
 	return true;
 }
 
+
+#ifndef XCP
 static void
 do_query(RemoteQueryState *node)
 {
@@ -4588,18 +4013,22 @@ do_query(RemoteQueryState *node)
 	bool			is_read_only = step->read_only;
 	GlobalTransactionId	gxid = InvalidGlobalTransactionId;
 	Snapshot		snapshot = GetActiveSnapshot();
-	TimestampTz		timestamp = GetCurrentGTMStartTimestamp();
 	PGXCNodeHandle		**connections = NULL;
 	PGXCNodeHandle		*primaryconnection = NULL;
 	int			i;
 	int			regular_conn_count;
 	int			total_conn_count;
-	bool			need_tran;
+	bool			need_tran_block;
 	PGXCNodeAllHandles	*pgxc_connections;
 
-	/* Be sure to set temporary object flag if necessary */
+	/*
+	 * Remember if the remote query is accessing a temp object
+	 *
+	 * !! PGXC TODO Check if the is_temp flag is propogated correctly when a
+	 * remote join is reduced
+	 */
 	if (step->is_temp)
-		temp_object_included = true;
+		ExecSetTempObjectIncluded();
 
 	/*
 	 * Get connections for Datanodes only, utilities and DDLs
@@ -4636,28 +4065,35 @@ do_query(RemoteQueryState *node)
 	node->node_count = regular_conn_count;
 
 	if (force_autocommit)
-		need_tran = false;
+		need_tran_block = false;
 	else
-		need_tran = !autocommit || (!is_read_only && total_conn_count > 1);
+		need_tran_block = true;
+	/*
+	 * XXX We are forcing a transaction block for every remote query. We can
+	 * get smarter here and avoid a transaction block if all of the following
+	 * conditions are true:
+	 *
+	 * 	- there is only one writer node involved in the transaction (including
+	 * 	the local node)
+	 * 	- the statement being executed on the remote writer node is a single
+	 * 	step statement. IOW, coordinator must not send multiple queries to the
+	 * 	remote node.
+	 *
+	 * 	Once we have leak-proof mechanism to enforce these constraints, we
+	 * 	should relax the transaction block requirement.
+	 *
+	   need_tran_block = (!is_read_only && total_conn_count > 1) ||
+	   					 (TransactionBlockStatusCode() == 'T');
+	 */
 
-	elog(DEBUG1, "autocommit = %s, has primary = %s, regular_conn_count = %d, need_tran = %s", autocommit ? "true" : "false", primaryconnection ? "true" : "false", regular_conn_count, need_tran ? "true" : "false");
+	elog(DEBUG1, "has primary = %s, regular_conn_count = %d, "
+				 "need_tran_block = %s", primaryconnection ? "true" : "false",
+				 regular_conn_count, need_tran_block ? "true" : "false");
 
 	stat_statement();
-	if (autocommit)
-	{
-		stat_transaction(total_conn_count);
-		/* We normally clear for transactions, but if autocommit, clear here, too */
-		clear_write_node_list();
-	}
+	stat_transaction(total_conn_count);
 
-	if (!is_read_only)
-	{
-		if (primaryconnection)
-			register_write_nodes(1, &primaryconnection);
-		register_write_nodes(regular_conn_count, connections);
-	}
-
-	gxid = GetCurrentGlobalTransactionId();
+	gxid = GetCurrentTransactionId();
 
 	if (!GlobalTransactionIdIsValid(gxid))
 	{
@@ -4669,34 +4105,16 @@ do_query(RemoteQueryState *node)
 				 errmsg("Failed to get next transaction ID")));
 	}
 
-	if (need_tran)
-	{
-		/*
-		 * Check if data node connections are in transaction and start
-		 * transactions on nodes where it is not started
-		 */
-		PGXCNodeHandle *new_connections[total_conn_count];
-		int 		new_count = 0;
-
-		if (primaryconnection &&
-			primaryconnection->transaction_status != 'T' &&
-			primaryconnection->state != DN_CONNECTION_STATE_QUERY)
-			new_connections[new_count++] = primaryconnection;
-		for (i = 0; i < regular_conn_count; i++)
-			if (connections[i]->transaction_status != 'T' &&
-				connections[i]->state != DN_CONNECTION_STATE_QUERY)
-				new_connections[new_count++] = connections[i];
-		if (new_count && pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_DATANODE))
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Could not begin transaction on data nodes.")));
-	}
-
 	/* See if we have a primary node, execute on it first before the others */
 	if (primaryconnection)
 	{
-		if (!pgxc_start_command_on_connection(primaryconnection, need_tran, gxid,
-												timestamp, node, total_conn_count, snapshot))
+		if (pgxc_node_begin(1, &primaryconnection, gxid, need_tran_block,
+					is_read_only, PGXC_NODE_DATANODE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Could not begin transaction on primary data node.")));
+
+		if (!pgxc_start_command_on_connection(primaryconnection, node, snapshot))
 		{
 			pfree(connections);
 			pfree(primaryconnection);
@@ -4739,8 +4157,13 @@ do_query(RemoteQueryState *node)
 
 	for (i = 0; i < regular_conn_count; i++)
 	{
-		if (!pgxc_start_command_on_connection(connections[i], need_tran, gxid,
-												timestamp, node, total_conn_count, snapshot))
+		if (pgxc_node_begin(1, &connections[i], gxid, need_tran_block,
+					is_read_only, PGXC_NODE_DATANODE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Could not begin transaction on data nodes.")));
+
+		if (!pgxc_start_command_on_connection(connections[i], node, snapshot))
 		{
 			pfree(connections);
 			if (primaryconnection)
@@ -4829,6 +4252,7 @@ do_query(RemoteQueryState *node)
 										   sort->numCols,
 										   sort->sortColIdx,
 										   sort->sortOperators,
+										   sort->sortCollations,
 										   sort->nullsFirst,
 										   node,
 										   work_mem);
@@ -4851,6 +4275,23 @@ do_query(RemoteQueryState *node)
 				node->current_conn = i;
 				break;
 			}
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Unexpected response from data node")));
+		}
+
+		if (node->errorMessage)
+		{
+			char *code = node->errorCode;
+			if (node->errorDetail != NULL)
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+						errmsg("%s", node->errorMessage), errdetail("%s", node->errorDetail) ));
+			else
+				ereport(ERROR,
+						(errcode(MAKE_SQLSTATE(code[0], code[1], code[2], code[3], code[4])),
+						errmsg("%s", node->errorMessage)));
 		}
 	}
 
@@ -4860,43 +4301,6 @@ do_query(RemoteQueryState *node)
 		memcpy(connections, node->cursor_connections, node->cursor_count * sizeof(PGXCNodeHandle *));
 		node->connections = connections;
 	}
-}
-
-/*
- * ExecRemoteQueryInnerPlan
- * Executes the inner plan of a RemoteQuery. It returns false if the inner plan
- * does not return any row, otherwise it returns true.
- */
-static bool
-ExecRemoteQueryInnerPlan(RemoteQueryState *node)
-{
-	EState		   *estate = node->ss.ps.state;
-	TupleTableSlot *innerSlot = ExecProcNode(innerPlanState(node));
-	/*
-	 * Use data row returned by the previus step as a parameters for
-	 * the main query.
-	 */
-	if (!TupIsNull(innerSlot))
-	{
-		node->paramval_len = ExecCopySlotDatarow(innerSlot,
-												 &node->paramval_data);
-
-		/* Needed for expression evaluation */
-		if (estate->es_param_exec_vals)
-		{
-			int i;
-			int natts = innerSlot->tts_tupleDescriptor->natts;
-
-			slot_getallattrs(innerSlot);
-			for (i = 0; i < natts; i++)
-				estate->es_param_exec_vals[i].value = slot_getattr(
-						innerSlot,
-						i+1,
-						&estate->es_param_exec_vals[i].isnull);
-		}
-		return true;
-	}
-	return false;
 }
 
 /*
@@ -5048,7 +4452,6 @@ ExecRemoteQuery(RemoteQueryState *node)
 static TupleTableSlot *
 RemoteQueryNext(RemoteQueryState *node)
 {
-	RemoteQuery    *step = (RemoteQuery *) node->ss.ps.plan;
 	TupleTableSlot *resultslot = node->ss.ps.ps_ResultTupleSlot;
 	TupleTableSlot *scanslot = node->ss.ss_ScanTupleSlot;
 	bool have_tuple = false;
@@ -5057,24 +4460,7 @@ RemoteQueryNext(RemoteQueryState *node)
 
 	if (!node->query_Done)
 	{
-		/*
-		 * Inner plan for RemoteQuery supplies parameters.
-		 * We execute inner plan to get a tuple and use values of the tuple as
-		 * parameter values when executing this remote query.
-		 * If returned slot contains NULL tuple break execution.
-		 * TODO there is a problem how to handle the case if both inner and
-		 * outer plans exist. We can decide later, since it is never used now.
-		 */
-		if (innerPlanState(node))
-		{
-			if (!ExecRemoteQueryInnerPlan(node))
-			{
-				/* no parameters, exit */
-				return NULL;
-			}
-		}
 		do_query(node);
-
 		node->query_Done = true;
 	}
 
@@ -5089,7 +4475,6 @@ RemoteQueryNext(RemoteQueryState *node)
 		pfree_pgxc_all_handles(all_dn_handles);
 	}
 
-handle_results:
 	if (node->tuplesortstate)
 	{
 		while (tuplesort_gettupleslot((Tuplesortstate *) node->tuplesortstate,
@@ -5103,29 +4488,6 @@ handle_results:
 			{
 				have_tuple = false;
 				continue;
-			}
-			/*
-			 * If DISTINCT is specified and current tuple matches to
-			 * previous skip it and get next one.
-			 * Othervise return current tuple
-			 */
-			if (step->distinct)
-			{
-				/*
-				 * Always receive very first tuple and
-				 * skip to next if scan slot match to previous (result slot)
-				 */
-				if (!TupIsNull(resultslot) &&
-						execTuplesMatch(scanslot,
-										resultslot,
-										step->distinct->numCols,
-										step->distinct->uniqColIdx,
-										node->eqfunctions,
-										node->tmp_ctx))
-				{
-					have_tuple = false;
-					continue;
-				}
 			}
 			copy_slot(node, scanslot, resultslot);
 			break;
@@ -5165,35 +4527,10 @@ handle_results:
 		return resultslot;
 
 	/*
-	 * We can not use recursion here. We can run out of the stack memory if
-	 * inner node returns long result set and this node does not returns rows
-	 * (like INSERT ... SELECT)
-	 */
-	if (innerPlanState(node))
-	{
-		if (ExecRemoteQueryInnerPlan(node))
-		{
-			do_query(node);
-			goto handle_results;
-		}
-	}
-
-	/*
-	 * Execute outer plan if specified
-	 */
-	if (outerPlanState(node))
-	{
-		TupleTableSlot *slot = ExecProcNode(outerPlanState(node));
-		if (!TupIsNull(slot))
-			return slot;
-	}
-
-	/*
 	 * OK, we have nothing to return, so return NULL
 	 */
 	return NULL;
 }
-
 
 /*
  * End the remote query
@@ -5202,12 +4539,6 @@ void
 ExecEndRemoteQuery(RemoteQueryState *node)
 {
 	ListCell *lc;
-
-	/*
-	 * shut down the subplan
-	 */
-	if (innerPlanState(node))
-		ExecEndNode(innerPlanState(node));
 
 	/* clean up the buffer */
 	foreach(lc, node->rowBuffer)
@@ -5327,12 +4658,6 @@ ExecEndRemoteQuery(RemoteQueryState *node)
 		node->paramval_len = 0;
 	}
 
-	/*
-	 * shut down the subplan
-	 */
-	if (outerPlanState(node))
-		ExecEndNode(outerPlanState(node));
-
 	if (node->ss.ss_currentRelation)
 		ExecCloseScanRelation(node->ss.ss_currentRelation);
 
@@ -5341,7 +4666,6 @@ ExecEndRemoteQuery(RemoteQueryState *node)
 
 	CloseCombiner(node);
 }
-
 
 static void
 close_node_cursors(PGXCNodeHandle **connections, int conn_count, char *cursor)
@@ -5381,11 +4705,13 @@ close_node_cursors(PGXCNodeHandle **connections, int conn_count, char *cursor)
 			}
 			else if (res == RESPONSE_COMPLETE)
 			{
-				/* Done, connection is reade for query */
 				if (--conn_count > i)
 					connections[i] = connections[conn_count];
 			}
-			/* Ignore other possible responses */
+			else
+			{
+				// Unexpected response, ignore?
+			}
 		}
 	}
 
@@ -5542,26 +4868,22 @@ ExecRemoteUtility(RemoteQuery *node)
 	ResponseCombiner *combiner;
 #endif
 	bool		force_autocommit = node->force_autocommit;
-	bool		is_read_only = node->read_only;
 	RemoteQueryExecType exec_type = node->exec_type;
 	GlobalTransactionId gxid = InvalidGlobalTransactionId;
+#ifdef XCP
+	Snapshot snapshot;
+#else
 	Snapshot snapshot = GetActiveSnapshot();
+#endif
 	PGXCNodeAllHandles *pgxc_connections;
-	int			total_conn_count;
 	int			co_conn_count;
 	int			dn_conn_count;
-	bool		need_tran;
+	bool		need_tran_block;
 	ExecDirectType		exec_direct_type = node->exec_direct_type;
 	int			i;
 
-#ifdef XCP
-	is_ddl |= (exec_type == EXEC_ON_ALL_NODES || exec_type == EXEC_ON_COORDS);
-#else
 	if (!force_autocommit)
-		is_ddl = true;
-#endif
-
-	implicit_force_autocommit = force_autocommit;
+		RegisterTransactionLocalNode(true);
 
 #ifdef XCP
 	remotestate = makeNode(RemoteQueryState);
@@ -5569,13 +4891,11 @@ ExecRemoteUtility(RemoteQuery *node)
 	InitResponseCombiner(combiner, 0, node->combine_type);
 #else
 	/*
-	 * A transaction using temporary objects cannot use 2PC.
 	 * It is possible to invoke create table with inheritance on
-	 * temporary objects, so in this case temp_object_included flag
-	 * is already assigned when analyzing inner relations.
+	 * temporary objects. Remember that we might have accessed a temp object
 	 */
-	if (!temp_object_included)
-		temp_object_included = node->is_temp;
+	if (node->is_temp)
+		ExecSetTempObjectIncluded();
 
 	remotestate = CreateResponseCombiner(0, node->combine_type);
 #endif
@@ -5583,31 +4903,30 @@ ExecRemoteUtility(RemoteQuery *node)
 	pgxc_connections = get_exec_connections(NULL, node->exec_nodes, exec_type);
 
 	dn_conn_count = pgxc_connections->dn_conn_count;
-
-	/*
-	 * EXECUTE DIRECT can only be launched on a single node
-	 * but we have to count local node also here.
-	 */
-	if (exec_direct_type != EXEC_DIRECT_NONE && exec_type == EXEC_ON_COORDS)
-		co_conn_count = 2;
-	else
-		co_conn_count = pgxc_connections->co_conn_count;
-
-	/* Registering new connections needs the sum of Connections to Datanodes AND to Coordinators */
-	total_conn_count = dn_conn_count + co_conn_count;
+	co_conn_count = pgxc_connections->co_conn_count;
+#ifdef XCP
+	/* exit right away if no nodes to run command on */
+	if (dn_conn_count == 0 && co_conn_count == 0)
+		return;
+#endif
 
 	if (force_autocommit)
-		need_tran = false;
+		need_tran_block = false;
+	else
+		need_tran_block = true;
+	/*
 	else if (exec_type == EXEC_ON_ALL_NODES ||
 			 exec_type == EXEC_ON_COORDS)
-		need_tran = true;
+		need_tran_block = true;
 	else
-		need_tran = !autocommit || total_conn_count > 1;
+		need_tran_block = (total_conn_count > 1) ||
+						  (TransactionBlockStatusCode() == 'T');
+						  */
 
 	/* Commands launched through EXECUTE DIRECT do not need start a transaction */
 	if (exec_direct_type == EXEC_DIRECT_UTILITY)
 	{
-		need_tran = false;
+		need_tran_block = false;
 
 		/* This check is not done when analyzing to limit dependencies */
 		if (IsTransactionBlock())
@@ -5616,80 +4935,30 @@ ExecRemoteUtility(RemoteQuery *node)
 					 errmsg("cannot run EXECUTE DIRECT with utility inside a transaction block")));
 	}
 
-	if (need_tran && !is_read_only)
-	{
-		register_write_nodes(dn_conn_count, pgxc_connections->datanode_handles);
-	}
-
-	gxid = GetCurrentGlobalTransactionId();
+	gxid = GetCurrentTransactionId();
+#ifdef XCP
+	snapshot = GetActiveSnapshot();
+#endif
 	if (!GlobalTransactionIdIsValid(gxid))
-	{
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("Failed to get next transaction ID")));
-	}
 
-	if (need_tran)
+#ifndef XCP
+	if (exec_type == EXEC_ON_ALL_NODES || exec_type == EXEC_ON_DATANODES)
+#endif
 	{
-		/*
-		 * Check if data node connections are in transaction and start
-		 * transactions on nodes where it is not started
-		 */
-		PGXCNodeHandle *new_connections[total_conn_count];
-		int 		new_count = 0;
-
-		/* Check for Datanodes */
-		for (i = 0; i < dn_conn_count; i++)
-			if (pgxc_connections->datanode_handles[i]->transaction_status != 'T')
-				new_connections[new_count++] = pgxc_connections->datanode_handles[i];
-
-		if (exec_type == EXEC_ON_ALL_NODES ||
-			exec_type == EXEC_ON_DATANODES)
-		{
-			if (new_count && pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_DATANODE))
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Could not begin transaction on data nodes")));
-		}
-
-		/* Check Coordinators also and begin there if necessary */
-		new_count = 0;
-		if (exec_type == EXEC_ON_ALL_NODES ||
-			exec_type == EXEC_ON_COORDS)
-		{
-			/* Important not to count the connection of local coordinator! */
-			for (i = 0; i < co_conn_count - 1; i++)
-				if (pgxc_connections->coord_handles[i]->transaction_status != 'T')
-					new_connections[new_count++] = pgxc_connections->coord_handles[i];
-
-			if (new_count && pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_COORDINATOR))
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Could not begin transaction on Coordinators")));
-		}
-	}
-
-	/* Send query down to Datanodes */
-	if (exec_type == EXEC_ON_ALL_NODES ||
-		exec_type == EXEC_ON_DATANODES)
-	{
+		if (pgxc_node_begin(dn_conn_count, pgxc_connections->datanode_handles,
+					gxid, need_tran_block, false, PGXC_NODE_DATANODE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Could not begin transaction on data nodes")));
 		for (i = 0; i < dn_conn_count; i++)
 		{
 			PGXCNodeHandle *conn = pgxc_connections->datanode_handles[i];
 
-#ifdef XCP
-			CHECK_OWNERSHIP(conn, combiner);
-#else
 			if (conn->state == DN_CONNECTION_STATE_QUERY)
 				BufferConnection(conn);
-#endif
-			/* If explicit transaction is needed gxid is already sent */
-			if (!need_tran && pgxc_node_send_gxid(conn, gxid))
-			{
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
-			}
 			if (snapshot && pgxc_node_send_snapshot(conn, snapshot))
 			{
 				ereport(ERROR,
@@ -5705,30 +4974,29 @@ ExecRemoteUtility(RemoteQuery *node)
 		}
 	}
 
-	if (exec_type == EXEC_ON_ALL_NODES ||
-		exec_type == EXEC_ON_COORDS)
+#ifndef XCP
+	if (exec_type == EXEC_ON_ALL_NODES || exec_type == EXEC_ON_COORDS)
+#endif
 	{
+		if (pgxc_node_begin(co_conn_count, pgxc_connections->coord_handles,
+					gxid, need_tran_block, false, PGXC_NODE_COORDINATOR))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Could not begin transaction on coordinators")));
 		/* Now send it to Coordinators if necessary */
-		for (i = 0; i < co_conn_count - 1; i++)
+		for (i = 0; i < co_conn_count; i++)
 		{
-			/* If explicit transaction is needed gxid is already sent */
-			if (!need_tran && pgxc_node_send_gxid(pgxc_connections->coord_handles[i], gxid))
-			{
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
-			}
 			if (snapshot && pgxc_node_send_snapshot(pgxc_connections->coord_handles[i], snapshot))
 			{
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
+						 errmsg("Failed to send command to coordinators")));
 			}
 			if (pgxc_node_send_query(pgxc_connections->coord_handles[i], node->sql_statement) != 0)
 			{
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to data nodes")));
+						 errmsg("Failed to send command to coordinators")));
 			}
 		}
 	}
@@ -5737,8 +5005,10 @@ ExecRemoteUtility(RemoteQuery *node)
 	 * Stop if all commands are completed or we got a data row and
 	 * initialized state node for subsequent invocations
 	 */
+#ifndef XCP
 	if (exec_type == EXEC_ON_ALL_NODES ||
 		exec_type == EXEC_ON_DATANODES)
+#endif
 	{
 		while (dn_conn_count > 0)
 		{
@@ -5798,11 +5068,11 @@ ExecRemoteUtility(RemoteQuery *node)
 	}
 
 	/* Make the same for Coordinators */
+#ifndef XCP
 	if (exec_type == EXEC_ON_ALL_NODES ||
 		exec_type == EXEC_ON_COORDS)
+#endif
 	{
-		/* For local Coordinator */
-		co_conn_count--;
 		while (co_conn_count > 0)
 		{
 			int i = 0;
@@ -5893,15 +5163,6 @@ ExecRemoteUtility(RemoteQuery *node)
 void
 PGXCNodeCleanAndRelease(int code, Datum arg)
 {
-	/* Rollback on Data Nodes */
-	if (IsTransactionState())
-	{
-		PGXCNodeRollback();
-
-		/* Rollback on GTM if transaction id opened. */
-		RollbackTranGTM((GlobalTransactionId) GetCurrentTransactionIdIfAny());
-	}
-
 #ifndef XCP
 	/* Clean up prepared transactions before releasing connections */
 	DropAllPreparedStatements();
@@ -5920,106 +5181,28 @@ PGXCNodeCleanAndRelease(int code, Datum arg)
 	stat_log();
 }
 
-
-/*
- * Create combiner, receive results from connections and validate combiner.
- * Works for Coordinator or Datanodes.
- */
-#ifdef XCP
 static int
-pgxc_node_receive_and_validate(const int conn_count, PGXCNodeHandle ** handles)
+pgxc_get_connections(PGXCNodeHandle *connections[], int size, List *connlist)
 {
-	int result = 0;
-	ResponseCombiner combiner;
+	ListCell *lc;
+	int count = 0;
 
-	if (conn_count == 0)
-		return result;
-
-	InitResponseCombiner(&combiner, conn_count, COMBINE_TYPE_NONE);
-	/*
-	 * Make sure there are zeroes in unused fields
-	 */
-	memset(&combiner, 0, sizeof(ScanState));
-
-	/* Receive responses */
-	result = pgxc_node_receive_responses(conn_count, handles, NULL, &combiner);
-	if (result)
-		goto finish;
-
-	result = ValidateAndCloseCombiner(&combiner) ? result : EOF;
-
-finish:
-	return result;
+	foreach(lc, connlist)
+	{
+		PGXCNodeHandle *conn = (PGXCNodeHandle *) lfirst(lc);
+		Assert (count < size);
+		connections[count++] = conn;
+	}
+	return count;
 }
-#else
-static int
-pgxc_node_receive_and_validate(const int conn_count, PGXCNodeHandle ** handles, bool reset_combiner)
-{
-	struct timeval *timeout = NULL;
-	int result = 0;
-	RemoteQueryState *combiner = NULL;
-
-	if (conn_count == 0)
-		return result;
-
-	combiner = CreateResponseCombiner(conn_count, COMBINE_TYPE_NONE);
-
-	/* Receive responses */
-	result = pgxc_node_receive_responses(conn_count, handles, timeout, combiner);
-
-	if (result)
-		goto finish;
-
-	if (reset_combiner)
-		result = ValidateAndResetCombiner(combiner) ? result : EOF;
-	else
-		result = ValidateAndCloseCombiner(combiner) ? result : EOF;
-
-finish:
-	return result;
-}
-#endif
-
-
 /*
  * Get all connections for which we have an open transaction,
  * for both data nodes and coordinators
  */
-static PGXCNodeAllHandles *
-pgxc_get_all_transaction_nodes(PGXCNode_HandleRequested status_requested)
+static int
+pgxc_get_transaction_nodes(PGXCNodeHandle *connections[], int size, bool write)
 {
-	PGXCNodeAllHandles *pgxc_connections;
-
-	pgxc_connections = (PGXCNodeAllHandles *) palloc0(sizeof(PGXCNodeAllHandles));
-	if (!pgxc_connections)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_OUT_OF_MEMORY),
-				 errmsg("out of memory")));
-	}
-
-	pgxc_connections->datanode_handles = (PGXCNodeHandle **)
-				palloc(NumDataNodes * sizeof(PGXCNodeHandle *));
-	pgxc_connections->coord_handles = (PGXCNodeHandle **)
-				palloc(NumCoords * sizeof(PGXCNodeHandle *));
-	if (!pgxc_connections->datanode_handles || !pgxc_connections->coord_handles)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_OUT_OF_MEMORY),
-				 errmsg("out of memory")));
-	}
-
-	/* gather needed connections */
-	pgxc_connections->dn_conn_count = get_transaction_nodes(
-							pgxc_connections->datanode_handles,
-							REMOTE_CONN_DATANODE,
-							status_requested);
-	pgxc_connections->co_conn_count = get_transaction_nodes(
-							pgxc_connections->coord_handles,
-							REMOTE_CONN_COORD,
-							status_requested);
-
-	return pgxc_connections;
+	return pgxc_get_connections(connections, size, write ? XactWriteNodes : XactReadNodes);
 }
 
 void
@@ -6129,114 +5312,6 @@ ExecCloseRemoteStatement(const char *stmt_name, List *nodelist)
 	pfree_pgxc_all_handles(all_handles);
 }
 
-
-/*
- * Check if an Implicit 2PC is necessary for this transaction.
- * Check also if it is necessary to prepare transaction locally.
- */
-#ifdef XCP
-bool
-PGXCNodeIsImplicit2PC(bool *prepare_local_coord)
-{
-	/*
-	 * Postgres does not allow 2PC of transactions touched temporary objects
-	 * or with forcibly autocommitted commands, like VACUUM or CREATE DATABASE
-	 */
-	if (write_node_count > 1 && !MyXactAccessedTempRel &&
-			!implicit_force_autocommit)
-	{
-		*prepare_local_coord = is_ddl;
-		implicit_force_autocommit = false;
-		return true;
-	}
-	else
-	{
-		*prepare_local_coord = false;
-		implicit_force_autocommit = false;
-		return false;
-	}
-}
-#else
-bool
-PGXCNodeIsImplicit2PC(bool *prepare_local_coord)
-{
-	PGXCNodeAllHandles *pgxc_handles = pgxc_get_all_transaction_nodes(HANDLE_DEFAULT);
-	int co_conn_count = pgxc_handles->co_conn_count;
-	int total_count = pgxc_handles->co_conn_count + pgxc_handles->dn_conn_count;
-
-	/* Clean up connections */
-	pfree_pgxc_all_handles(pgxc_handles);
-
-	/*
-	 * Prepare Local Coord only if DDL is involved.
-	 * Even 1Co/1Dn cluster needs 2PC as more than 1 node is involved.
-	 */
-	*prepare_local_coord = is_ddl && total_count != 0;
-
-	/*
-	 * In case of an autocommit or forced autocommit transaction, 2PC is not involved
-	 * This case happens for Utilities using force autocommit (CREATE DATABASE, VACUUM...).
-	 * For a transaction using temporary objects, 2PC is not authorized.
-	 */
-#ifdef XCP
-	if (implicit_force_autocommit || MyXactAccessedTempRel)
-#else
-	if (implicit_force_autocommit || temp_object_included)
-#endif
-	{
-		*prepare_local_coord = false;
-		implicit_force_autocommit = false;
-#ifndef XCP
-		temp_object_included = false;
-#endif
-		return false;
-	}
-
-	/*
-	 * 2PC is necessary at other Nodes if one Datanode or one Coordinator
-	 * other than the local one has been involved in a write operation.
-	 */
-	return (write_node_count > 1 || co_conn_count > 0 || total_count > 0);
-}
-#endif
-
-/*
- * Return the list of active nodes
- */
-char *
-PGXCNodeGetNodeList(char *nodestring)
-{
-	PGXCNodeAllHandles *pgxc_connections = pgxc_get_all_transaction_nodes(HANDLE_ERROR);
-
-	if (pgxc_connections->dn_conn_count != 0)
-		nodestring = collect_pgxcnode_names(nodestring,
-											pgxc_connections->dn_conn_count,
-											pgxc_connections->datanode_handles,
-											REMOTE_CONN_DATANODE);
-
-	if (pgxc_connections->co_conn_count != 0)
-		nodestring = collect_pgxcnode_names(nodestring,
-											pgxc_connections->co_conn_count,
-											pgxc_connections->coord_handles,
-											REMOTE_CONN_COORD);
-
-	/* Case of a single Coordinator */
-	if (is_ddl && pgxc_connections->co_conn_count == 0 && PGXCNodeId >= 0)
-		nodestring = collect_localnode_name(nodestring);
-
-	/*
-	 * Now release handles properly, the list of handles in error state has been saved
-	 * and will be sent to GTM.
-	 */
-	if (!PersistentConnections)
-		release_handles();
-
-	/* Clean up connections */
-	pfree_pgxc_all_handles(pgxc_connections);
-
-	return nodestring;
-}
-
 /*
  * DataNodeCopyInBinaryForAll
  *
@@ -6304,8 +5379,7 @@ int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_con
 /*
  * ExecSetTempObjectIncluded
  *
- * Set Temp object flag on the fly for transactions
- * This flag will be reinitialized at commit.
+ * Remember that we have accessed a temporary object.
  */
 void
 ExecSetTempObjectIncluded(void)
@@ -6313,9 +5387,20 @@ ExecSetTempObjectIncluded(void)
 	temp_object_included = true;
 }
 
+/*
+ * ExecClearTempObjectIncluded
+ *
+ * Forget about temporary objects
+ */
+static void
+ExecClearTempObjectIncluded(void)
+{
+	temp_object_included = false;
+}
+
 /* ExecIsTempObjectIncluded
  *
- * Check if a temporary object has been found
+ * Check if a temporary object has been accessed
  */
 bool
 ExecIsTempObjectIncluded(void)
@@ -6355,6 +5440,526 @@ ExecRemoteQueryStandard(Relation resultRelationDesc,
 	}
 }
 #endif
+
+
+void
+RegisterTransactionNodes(int count, void **connections, bool write)
+{
+	int i;
+	MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+
+	for (i = 0; i < count; i++)
+	{
+		/*
+		 * Add the node to either read or write participants. If a node is
+		 * already in the write participant's list, don't add it to the read
+		 * participant's list. OTOH if a node is currently in the read
+		 * participant's list, but we are now initiating a write operation on
+		 * the node, move it to the write participant's list
+		 */
+		if (write)
+		{
+			XactWriteNodes = list_append_unique(XactWriteNodes, connections[i]);
+			XactReadNodes = list_delete(XactReadNodes, connections[i]);
+		}
+		else
+		{
+			if (!list_member(XactWriteNodes, connections[i]))
+				XactReadNodes = list_append_unique(XactReadNodes, connections[i]);
+		}
+	}
+
+	MemoryContextSwitchTo(oldcontext);
+}
+
+void
+ForgetTransactionNodes(void)
+{
+	list_free(XactReadNodes);
+	XactReadNodes = NIL;
+
+	list_free(XactWriteNodes);
+	XactWriteNodes = NIL;
+}
+
+/*
+ * Clear per transaction remote information
+ */
+void
+AtEOXact_Remote(void)
+{
+#ifndef XCP
+	ExecClearTempObjectIncluded();
+#endif
+	ForgetTransactionNodes();
+	clear_RemoteXactState();
+}
+
+/*
+ * Do pre-commit processing for remote nodes which includes data nodes and
+ * coordinators. If more than one nodes are involved in the transaction write
+ * activity, then we must run 2PC. For 2PC, we do the following steps:
+ *
+ *  1. PREPARE the transaction locally if the local node is involved in the
+ *     transaction. If local node is not involved, skip this step and go to the
+ *     next step
+ *  2. PREPARE the transaction on all the remote nodes. If any node fails to
+ *     PREPARE, directly go to step 6
+ *  3. Now that all the involved nodes are PREPAREd, we can commit the
+ *     transaction. We first inform the GTM that the transaction is fully
+ *     PREPARED and also supply the list of the nodes involved in the
+ *     transaction
+ *  4. COMMIT PREPARED the transaction on all the remotes nodes and then
+ *     finally COMMIT PREPARED on the local node if its involved in the
+ *     transaction and start a new transaction so that normal commit processing
+ *     works unchanged. Go to step 5.
+ *  5. Return and let the normal commit processing resume
+ *  6. Abort by ereporting the error and let normal abort-processing take
+ *     charge.
+ */
+void
+PreCommit_Remote(char *prepareGID, bool preparedLocalNode)
+{
+	if (!preparedLocalNode)
+		PrePrepare_Remote(prepareGID, preparedLocalNode, false);
+
+	/*
+	 * OK, everything went fine. At least one remote node is in PREPARED state
+	 * and the transaction is successfully prepared on all the involved nodes.
+	 * Now we are ready to commit the transaction. We need a new GXID to send
+	 * down the remote nodes to execute the forthcoming COMMIT PREPARED
+	 * command. So grab one from the GTM and track it. It will be closed along
+	 * with the main transaction at the end.
+	 */
+	pgxc_node_remote_commit();
+
+	/*
+	 * If the transaction is not committed successfully on all the involved
+	 * nodes, it will remain in PREPARED state on those nodes. Such transaction
+	 * should be be reported as live in the snapshots. So we must not close the
+	 * transaction on the GTM. We just record the state of the transaction in
+	 * the GTM and flag a warning for applications to take care of such
+	 * in-doubt transactions
+	 */
+	if (remoteXactState.status == RXACT_PART_COMMITTED)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("Failed to commit the transaction on one or more nodes")));
+
+
+	Assert(remoteXactState.status == RXACT_COMMITTED ||
+		   remoteXactState.status == RXACT_NONE);
+
+	clear_RemoteXactState();
+
+	/*
+	 * The transaction is now successfully committed on all the remote nodes.
+	 * (XXX How about the local node ?). It can now be cleaned up from the GTM
+	 * as well
+	 */
+	if (!PersistentConnections)
+		release_handles();
+}
+
+/*
+ * Do abort processing for the transaction. We must abort the transaction on
+ * all the involved nodes. If a node has already prepared a transaction, we run
+ * ROLLBACK PREPARED command on the node. Otherwise, a simple ROLLBACK command
+ * is sufficient.
+ *
+ * We must guard against the case when a transaction is prepared succefully on
+ * all the nodes and some error occurs after we send a COMMIT PREPARED message
+ * to at lease one node. Such a transaction must not be aborted to preserve
+ * global consistency. We handle this case by recording the nodes involved in
+ * the transaction at the GTM and keep the transaction open at the GTM so that
+ * its reported as "in-progress" on all the nodes until resolved
+ */
+bool
+PreAbort_Remote(void)
+{
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		cancel_query();
+		clear_all_data();
+	}
+
+	if (remoteXactState.status == RXACT_COMMITTED)
+		return false;
+
+	if (remoteXactState.status == RXACT_PART_COMMITTED)
+	{
+		/*
+		 * In this case transaction is partially committed, pick up the list of nodes
+		 * prepared and not committed and register them on GTM as if it is an explicit 2PC.
+		 * This permits to keep the transaction alive in snapshot and other transaction
+		 * don't have any side effects with partially committed transactions
+		 */
+		char	*nodestring = NULL;
+
+		/*
+		 * Get the list of nodes in prepared state; such nodes have not
+		 * committed successfully
+		 */
+		nodestring = pgxc_node_get_nodelist(remoteXactState.preparedLocalNode);
+		Assert(nodestring);
+
+		/* Save the node list and gid on GTM. */
+		StartPreparedTranGTM(GetTopGlobalTransactionId(),
+				remoteXactState.prepareGID,
+				nodestring);
+
+		/* Finish to prepare the transaction. */
+		PrepareTranGTM(GetTopGlobalTransactionId());
+		clear_RemoteXactState();
+		return false;
+	}
+	else
+	{
+		/*
+		 * The transaction is neither part or fully committed. We can safely
+		 * abort such transaction
+		 */
+		if (remoteXactState.status == RXACT_NONE)
+			init_RemoteXactState(false);
+
+		pgxc_node_remote_abort();
+	}
+
+	clear_RemoteXactState();
+
+	if (!PersistentConnections)
+		release_handles();
+
+	return true;
+}
+
+char *
+PrePrepare_Remote(char *prepareGID, bool localNode, bool implicit)
+{
+	init_RemoteXactState(false);
+	/*
+	 * PREPARE the transaction on all nodes including remote nodes as well as
+	 * local node. Any errors will be reported via ereport and the transaction
+	 * will be aborted accordingly.
+	 */
+	pgxc_node_remote_prepare(prepareGID);
+
+	if (preparedNodes)
+		pfree(preparedNodes);
+	preparedNodes = NULL;
+
+	if (!implicit)
+		preparedNodes = pgxc_node_get_nodelist(true);
+
+	return preparedNodes;
+}
+
+void
+PostPrepare_Remote(char *prepareGID, char *nodestring, bool implicit)
+{
+	remoteXactState.preparedLocalNode = true;
+
+	/*
+	 * If this is an explicit PREPARE request by the client, we must also save
+	 * the list of nodes involved in this transaction on the GTM for later use
+	 */
+	if (!implicit)
+	{
+		/* Save the node list and gid on GTM. */
+		StartPreparedTranGTM(GetTopGlobalTransactionId(),
+				prepareGID,
+				nodestring);
+
+		/* Finish to prepare the transaction. */
+		PrepareTranGTM(GetTopGlobalTransactionId());
+		clear_RemoteXactState();
+	}
+
+	/* Now forget the transaction nodes */
+	ForgetTransactionNodes();
+}
+
+/*
+ * Return the list of nodes where the prepared transaction is not yet committed
+ */
+static char *
+pgxc_node_get_nodelist(bool localNode)
+{
+	int i;
+	char *nodestring = NULL, *nodename;
+
+	for (i = 0; i < remoteXactState.numWriteRemoteNodes; i++)
+	{
+		RemoteXactNodeStatus status = remoteXactState.remoteNodeStatus[i];
+		PGXCNodeHandle *conn = remoteXactState.remoteNodeHandles[i];
+
+		if (status != RXACT_NODE_COMMITTED)
+		{
+			nodename = get_pgxc_nodename(conn->nodeoid);
+			if (!nodestring)
+			{
+				nodestring = (char *) MemoryContextAlloc(TopMemoryContext, strlen(nodename) + 1);
+				sprintf(nodestring, "%s", nodename);
+			}
+			else
+			{
+				nodestring = (char *) repalloc(nodestring,
+											   strlen(nodename) + strlen(nodestring) + 2);
+				sprintf(nodestring, "%s,%s", nodestring, nodename);
+			}
+		}
+	}
+
+	/* Case of a single Coordinator */
+	if (localNode && PGXCNodeId >= 0)
+	{
+		if (!nodestring)
+		{
+			nodestring = (char *) MemoryContextAlloc(TopMemoryContext, strlen(PGXCNodeName) + 1);
+			sprintf(nodestring, "%s", PGXCNodeName);
+		}
+		else
+		{
+			nodestring = (char *) repalloc(nodestring,
+					strlen(PGXCNodeName) + strlen(nodestring) + 2);
+			sprintf(nodestring, "%s,%s", nodestring, PGXCNodeName);
+		}
+	}
+
+	return nodestring;
+}
+
+bool
+IsTwoPhaseCommitRequired(bool localWrite)
+{
+	if ((list_length(XactWriteNodes) > 1) ||
+		((list_length(XactWriteNodes) == 1) && localWrite))
+	{
+#ifdef XCP
+		if (MyXactAccessedTempRel)
+#else
+		if (ExecIsTempObjectIncluded())
+#endif
+		{
+			elog(DEBUG1, "Transaction accessed temporary objects - "
+					"2PC will not be used and that can lead to data inconsistencies "
+					"in case of failures");
+			return false;
+		}
+		return true;
+	}
+	else
+		return false;
+}
+
+static void
+clear_RemoteXactState(void)
+{
+	/* Clear the previous state */
+	remoteXactState.numWriteRemoteNodes = 0;
+	remoteXactState.numReadRemoteNodes = 0;
+	remoteXactState.status = RXACT_NONE;
+	remoteXactState.commitXid = InvalidGlobalTransactionId;
+	remoteXactState.prepareGID[0] = '\0';
+
+	if ((remoteXactState.remoteNodeHandles == NULL) ||
+		(remoteXactState.maxRemoteNodes < (NumDataNodes + NumCoords)))
+	{
+		remoteXactState.remoteNodeHandles = (PGXCNodeHandle **)
+			realloc (remoteXactState.remoteNodeHandles,
+					sizeof (PGXCNodeHandle *) * (NumDataNodes + NumCoords));
+		remoteXactState.remoteNodeStatus = (RemoteXactNodeStatus *)
+			realloc (remoteXactState.remoteNodeStatus,
+					sizeof (RemoteXactNodeStatus) * (NumDataNodes + NumCoords));
+		remoteXactState.maxRemoteNodes = NumDataNodes + NumCoords;
+	}
+
+	if (remoteXactState.remoteNodeHandles)
+		memset(remoteXactState.remoteNodeHandles, 0,
+				sizeof (PGXCNodeHandle *) * (NumDataNodes + NumCoords));
+	if (remoteXactState.remoteNodeStatus)
+		memset(remoteXactState.remoteNodeStatus, 0,
+				sizeof (RemoteXactNodeStatus) * (NumDataNodes + NumCoords));
+}
+
+static void
+init_RemoteXactState(bool preparedLocalNode)
+{
+	int write_conn_count, read_conn_count;
+	PGXCNodeHandle	  **connections;
+
+	clear_RemoteXactState();
+
+	remoteXactState.preparedLocalNode = preparedLocalNode;
+	connections = remoteXactState.remoteNodeHandles;
+
+	Assert(connections);
+
+	/*
+	 * First get information about all the nodes involved in this transaction
+	 */
+	write_conn_count = pgxc_get_transaction_nodes(connections,
+			NumDataNodes + NumCoords, true);
+	remoteXactState.numWriteRemoteNodes = write_conn_count;
+
+	read_conn_count = pgxc_get_transaction_nodes(connections + write_conn_count,
+			NumDataNodes + NumCoords - write_conn_count, false);
+	remoteXactState.numReadRemoteNodes = read_conn_count;
+
+}
+
+bool
+FinishRemotePreparedTransaction(char *prepareGID, bool commit)
+{
+	char					*nodename, *nodestring;
+	List					*nodelist = NIL, *coordlist = NIL;
+	GlobalTransactionId		gxid, prepare_gxid;
+	PGXCNodeAllHandles 		*pgxc_handles;
+	bool					prepared_local = false;
+	int						i;
+
+	/*
+	 * Please note that with xc_maintenance_mode = on, COMMIT/ROLLBACK PREPARED will not
+	 * propagate to remote nodes.  Only GTM status is cleaned up.  Prepared transaction
+	 * on remote nodes will be cleaned up by pgxc_clean using EXECUTE DIRECT.
+	 */
+	if (xc_maintenance_mode)
+	{
+		if (commit)
+		{
+			pgxc_node_remote_commit();
+			CommitPreparedTranGTM(prepare_gxid, gxid);
+		}
+		else
+		{
+			pgxc_node_remote_abort();
+			RollbackTranGTM(prepare_gxid);
+			RollbackTranGTM(gxid);
+		}
+		return false;
+	}
+	/*
+	 * Get the list of nodes involved in this transaction.
+	 *
+	 * This function returns the GXID of the prepared transaction. It also
+	 * returns a fresh GXID which can be used for running COMMIT PREPARED
+	 * commands on the remote nodes. Both these GXIDs can then be either
+	 * committed or aborted together.
+	 *
+	 * XXX While I understand that we get the prepared and a new GXID with a
+	 * single call, it doesn't look nicer and create confusion. We should
+	 * probably split them into two parts. This is used only for explicit 2PC
+	 * which should not be very common in XC
+	 */
+	if (GetGIDDataGTM(prepareGID, &gxid, &prepare_gxid, &nodestring) < 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("prepared transaction with identifier \"%s\" does not exist",
+						prepareGID)));
+
+	/*
+	 * Now based on the nodestring, run COMMIT/ROLLBACK PREPARED command on the
+	 * remote nodes and also finish the transaction locally is required
+	 */
+	nodename = strtok(nodestring, ",");
+	while (nodename != NULL)
+	{
+		Oid		nodeoid;
+		int		nodeIndex;
+		char	nodetype;
+
+		nodeoid = get_pgxc_nodeoid(nodename);
+
+		if (!OidIsValid(nodeoid))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("PGXC Node %s: object not defined",
+							nodename)));
+
+		/* Get node type and index */
+		nodetype = get_pgxc_nodetype(nodeoid);
+		nodeIndex = PGXCNodeGetNodeId(nodeoid, get_pgxc_nodetype(nodeoid));
+
+		/* Check if node is requested is the self-node or not */
+		if (nodetype == PGXC_NODE_COORDINATOR)
+		{
+			if (nodeIndex == PGXCNodeId - 1)
+				prepared_local = true;
+			else
+				coordlist = lappend_int(coordlist, nodeIndex);
+		}
+		else
+			nodelist = lappend_int(nodelist, nodeIndex);
+
+		nodename = strtok(NULL, ",");
+	}
+
+	/*
+	 * Now get handles for all the involved data nodes and the coordinators
+	 */
+	pgxc_handles = get_handles(nodelist, coordlist, false);
+
+	/*
+	 * Send GXID (as received above) to the remote nodes.
+	 if (pgxc_node_begin(pgxc_handles->dn_conn_count,
+	 pgxc_handles->datanode_handles,
+	 gxid, false, false))
+	 ereport(ERROR,
+	 (errcode(ERRCODE_INTERNAL_ERROR),
+	 errmsg("Could not begin transaction on data nodes")));
+	*/
+	RegisterTransactionNodes(pgxc_handles->dn_conn_count,
+							 (void **) pgxc_handles->datanode_handles, true);
+
+	/*
+	  if (pgxc_node_begin(pgxc_handles->co_conn_count,
+	  pgxc_handles->coord_handles,
+	  gxid, false, false))
+	  ereport(ERROR,
+	  (errcode(ERRCODE_INTERNAL_ERROR),
+	  errmsg("Could not begin transaction on coordinators")));
+	*/
+	RegisterTransactionNodes(pgxc_handles->co_conn_count,
+							 (void **) pgxc_handles->coord_handles, true);
+
+	/*
+	 * Initialize the remoteXactState so that we can use the APIs to take care
+	 * of commit/abort.
+	 */
+	init_RemoteXactState(prepared_local);
+	remoteXactState.commitXid = gxid;
+
+	/*
+	 * At this point, most of the things are set up in remoteXactState except
+	 * the state information for all the involved nodes. Force that now and we
+	 * are ready to call the commit/abort API
+	 */
+	strcpy(remoteXactState.prepareGID, prepareGID);
+	for (i = 0; i < remoteXactState.numWriteRemoteNodes; i++)
+		remoteXactState.remoteNodeStatus[i] = RXACT_NODE_PREPARED;
+	remoteXactState.status = RXACT_PREPARED;
+
+	if (commit)
+	{
+		pgxc_node_remote_commit();
+		CommitPreparedTranGTM(prepare_gxid, gxid);
+	}
+	else
+	{
+		pgxc_node_remote_abort();
+		RollbackTranGTM(prepare_gxid);
+		RollbackTranGTM(gxid);
+	}
+
+	/*
+	 * The following is also only for usual operation.  With xc_maintenance_mode = on,
+	 * no remote operation will be done here and no post-operation work is needed.
+	 */
+	clear_RemoteXactState();
+	ForgetTransactionNodes();
+
+	return prepared_local;
+}
 
 
 #ifdef XCP
@@ -6415,64 +6020,6 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
 }
 
 
-static bool
-pgxc_start_command_on_connection(PGXCNodeHandle *connection, bool need_tran,
-									GlobalTransactionId gxid, TimestampTz timestamp,
-									RemoteQueryState *remotestate, int total_conn_count,
-									Snapshot snapshot)
-{
-	ResponseCombiner *combiner = (ResponseCombiner *) remotestate;
-	RemoteQuery	*step = (RemoteQuery *) combiner->ss.ps.plan;
-	CHECK_OWNERSHIP(connection, combiner);
-
-	/* If explicit transaction is needed gxid is already sent */
-	if (!need_tran && pgxc_node_send_gxid(connection, gxid))
-		return false;
-	if (total_conn_count == 1 && pgxc_node_send_timestamp(connection, timestamp))
-		return false;
-	if (snapshot && pgxc_node_send_snapshot(connection, snapshot))
-		return false;
-	if (step->statement || step->cursor || step->param_types)
-	{
-		/* need to use Extended Query Protocol */
-		int	fetch = 0;
-		bool	prepared = false;
-
-		/* if prepared statement is referenced see if it is already exist */
-		if (step->statement)
-			prepared = ActivateDatanodeStatementOnNode(step->statement,
-													   PGXCNodeGetNodeId(connection->nodeoid,
-																		 PGXC_NODE_DATANODE));
-		/*
-		 * execute and fetch rows only if they will be consumed
-		 * immediately by the sorter
-		 */
-		if (step->cursor)
-			fetch = 1;
-
-		combiner->extended_query = true;
-
-		if (pgxc_node_send_query_extended(connection,
-							prepared ? NULL : step->sql_statement,
-							step->statement,
-							step->cursor,
-							step->num_params,
-							step->param_types,
-							remotestate->paramval_len,
-							remotestate->paramval_data,
-							step->read_only,
-							fetch) != 0)
-			return false;
-	}
-	else
-	{
-		if (pgxc_node_send_query(connection, step->sql_statement) != 0)
-			return false;
-	}
-	return true;
-}
-
-
 /*
  * Execute step of PGXC plan.
  * The step specifies a command to be executed on specified nodes.
@@ -6491,17 +6038,14 @@ ExecRemoteQuery(RemoteQueryState *node)
 	TupleTableSlot *resultslot = combiner->ss.ps.ps_ResultTupleSlot;
 	if (!node->query_Done)
 	{
-		bool			force_autocommit = step->force_autocommit;
-		bool			is_read_only = step->read_only;
 		GlobalTransactionId gxid = InvalidGlobalTransactionId;
 		Snapshot		snapshot = GetActiveSnapshot();
-		TimestampTz 	timestamp = GetCurrentGTMStartTimestamp();
 		PGXCNodeHandle **connections = NULL;
 		PGXCNodeHandle *primaryconnection = NULL;
 		int				i;
 		int				regular_conn_count;
 		int				total_conn_count;
-		bool			need_tran;
+		bool			need_tran_block;
 		PGXCNodeAllHandles *pgxc_connections;
 
 		/*
@@ -6528,16 +6072,6 @@ ExecRemoteQuery(RemoteQueryState *node)
 		 * Primary connection is counted separately but is included in total_conn_count if used.
 		 */
 		if (primaryconnection)
-		{
-			regular_conn_count--;
-		}
-
-		/*
-		 * If it's an EXEC_ON_COORDS type connection, we set regular_conn_count
-		 * to co_conn_count above. But that considers the self/local connection
-		 * too. So decrement that from regular_conn_count.
-		 */
-		if (step->exec_type == EXEC_ON_COORDS)
 			regular_conn_count--;
 
 		pfree(pgxc_connections);
@@ -6553,30 +6087,17 @@ ExecRemoteQuery(RemoteQueryState *node)
 		 * Start transaction on data nodes if we are in explicit transaction
 		 * or going to use extended query protocol or write to multiple nodes
 		 */
-		if (force_autocommit)
-			need_tran = false;
+		if (step->force_autocommit)
+			need_tran_block = false;
 		else
-			need_tran = !autocommit || step->cursor ||
-					(!is_read_only && total_conn_count > 1);
-
-		elog(DEBUG1, "autocommit = %s, has primary = %s, regular_conn_count = %d, need_tran = %s", autocommit ? "true" : "false", primaryconnection ? "true" : "false", regular_conn_count, need_tran ? "true" : "false");
+			need_tran_block = step->cursor ||
+					(!step->read_only && total_conn_count > 1) ||
+					(TransactionBlockStatusCode() == 'T');
 
 		stat_statement();
-		if (autocommit)
-		{
-			stat_transaction(total_conn_count);
-			/* We normally clear for transactions, but if autocommit, clear here, too */
-			clear_write_node_list();
-		}
+		stat_transaction(total_conn_count);
 
-		if (!is_read_only)
-		{
-			if (primaryconnection)
-				register_write_nodes(1, &primaryconnection);
-			register_write_nodes(regular_conn_count, connections);
-		}
-
-		gxid = GetCurrentGlobalTransactionId();
+		gxid = GetCurrentTransactionId();
 
 		if (!GlobalTransactionIdIsValid(gxid))
 		{
@@ -6588,33 +6109,17 @@ ExecRemoteQuery(RemoteQueryState *node)
 					 errmsg("Failed to get next transaction ID")));
 		}
 
-		if (need_tran)
-		{
-			/*
-			 * Check if data node connections are in transaction and start
-			 * transactions on nodes where it is not started
-			 */
-			PGXCNodeHandle *new_connections[total_conn_count];
-			int 		new_count = 0;
-
-			if (primaryconnection && primaryconnection->transaction_status != 'T')
-				new_connections[new_count++] = primaryconnection;
-			for (i = 0; i < regular_conn_count; i++)
-				if (connections[i]->transaction_status != 'T')
-					new_connections[new_count++] = connections[i];
-
-			if (new_count && pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_DATANODE))
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Could not begin transaction on data nodes.")));
-		}
-
 		/* See if we have a primary node, execute on it first before the others */
 		if (primaryconnection)
 		{
+			if (pgxc_node_begin(1, &primaryconnection, gxid, need_tran_block,
+								step->read_only, PGXC_NODE_DATANODE))
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Could not begin transaction on data node.")));
+
 			/* If explicit transaction is needed gxid is already sent */
-			if (!pgxc_start_command_on_connection(primaryconnection, need_tran, gxid,
-												timestamp, node, total_conn_count, snapshot))
+			if (!pgxc_start_command_on_connection(primaryconnection, node, snapshot))
 			{
 				pfree(connections);
 				pfree(primaryconnection);
@@ -6657,9 +6162,14 @@ ExecRemoteQuery(RemoteQueryState *node)
 
 		for (i = 0; i < regular_conn_count; i++)
 		{
+			if (pgxc_node_begin(1, &connections[i], gxid, need_tran_block,
+								step->read_only, PGXC_NODE_DATANODE))
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Could not begin transaction on data node.")));
+
 			/* If explicit transaction is needed gxid is already sent */
-			if (!pgxc_start_command_on_connection(connections[i], need_tran, gxid,
-												timestamp, node, total_conn_count, snapshot))
+			if (!pgxc_start_command_on_connection(connections[i], node, snapshot))
 			{
 				pfree(connections);
 				if (primaryconnection)
@@ -6708,7 +6218,7 @@ ExecRemoteQuery(RemoteQueryState *node)
 								   sort->numCols,
 								   sort->sortColIdx,
 								   sort->sortOperators,
-								   sort->collations,
+								   sort->sortCollations,
 								   sort->nullsFirst,
 								   combiner,
 								   work_mem);
@@ -7433,12 +6943,11 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 	ResponseCombiner   *combiner = (ResponseCombiner *) node;
 	RemoteSubplan  	   *plan = (RemoteSubplan *) combiner->ss.ps.plan;
 	Oid        		   *paramtypes = NULL;
-	PGXCNodeHandle	  **new_connections;
-	int 				new_count = 0;
 	GlobalTransactionId gxid;
 	Snapshot			snapshot;
-	TimestampTz 		timestamp;
+	TimestampTz			timestamp;
 	int 				i;
+	bool				is_read_only;
 
 	/*
 	 * Name is required to store plan as a statement
@@ -7475,18 +6984,8 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 		combiner->conn_count = 1;
 		combiner->current_conn = 0;
 	}
-	/*
-	 * Check if data node connections are in transaction and start
-	 * transactions on nodes where it is not started
-	 */
-	new_connections = (PGXCNodeHandle **)
-			palloc(combiner->conn_count * sizeof(PGXCNodeHandle *));
 
-	for (i = 0; i < combiner->conn_count; i++)
-		if (combiner->connections[i]->transaction_status != 'T')
-			new_connections[new_count++] = combiner->connections[i];
-
-	gxid = GetCurrentGlobalTransactionId();
+	gxid = GetCurrentTransactionId();
 	if (!GlobalTransactionIdIsValid(gxid))
 	{
 		combiner->conn_count = 0;
@@ -7495,12 +6994,7 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("Failed to get next transaction ID")));
 	}
-	if (new_count &&
-			pgxc_node_begin(new_count, new_connections, gxid, PGXC_NODE_DATANODE))
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Could not begin transaction on data nodes.")));
-	pfree(new_connections);
+
 	/* extract parameter data types */
 	if (node->nParamRemote > 0)
 	{
@@ -7511,9 +7005,23 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 	/* send down subplan */
 	snapshot = GetActiveSnapshot();
 	timestamp = GetCurrentGTMStartTimestamp();
+	/*
+	 * Datanode should not send down statements that may modify
+	 * the database. Potgres assumes that all sessions under the same
+	 * postmaster have different xids. That may cause a locking problem.
+	 * Shared locks acquired for reading still work fine.
+	 */
+	is_read_only = IS_PGXC_DATANODE ||
+			!IsA(outerPlan(plan), ModifyTable);
 
 	for (i = 0; i < combiner->conn_count; i++)
 	{
+		if (pgxc_node_begin(1, &combiner->connections[i], gxid, true,
+							is_read_only, PGXC_NODE_DATANODE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Could not begin transaction on data node.")));
+
 		if (pgxc_node_send_timestamp(combiner->connections[i], timestamp))
 		{
 			combiner->conn_count = 0;
@@ -7530,7 +7038,6 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Failed to send command to data nodes")));
 		}
-
 		pgxc_node_send_plan(combiner->connections[i], plan->cursor,
 							"Remote Subplan", node->subplanstr,
 							node->nParamRemote, paramtypes);
@@ -7705,25 +7212,11 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 		else if (node->execNodes)
 		{
 			int 			i;
-			bool 			is_read_only;
 
 			/*
 			 * There are prepared statement, connections should be already here
 			 */
 			Assert(combiner->conn_count > 0);
-
-			/*
-			 * Datanode should not send down statements that may modify
-			 * the database. Potgres assumes that all sessions under the same
-			 * postmaster have different xids. That may cause a locking problem.
-			 * Shared locks acquired for reading still work fine.
-			 */
-			is_read_only = IS_PGXC_DATANODE ||
-					!IsA(outerPlan(plan), ModifyTable);
-
-			if (!is_read_only)
-				register_write_nodes(combiner->conn_count,
-									 combiner->connections);
 
 			combiner->extended_query = true;
 
@@ -7767,7 +7260,7 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 									   plan->sort->numCols,
 									   plan->sort->sortColIdx,
 									   plan->sort->sortOperators,
-									   plan->sort->collations,
+									   plan->sort->sortCollations,
 									   plan->sort->nullsFirst,
 									   combiner,
 									   work_mem);
@@ -7942,5 +7435,3 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 	pfree(node);
 }
 #endif
-
-

@@ -52,6 +52,7 @@
 #include "utils/snapmgr.h"
 #endif
 
+/* Number of connections held */
 static int	datanode_count = 0;
 static int	coord_count = 0;
 
@@ -68,6 +69,10 @@ static PGXCNodeHandle *dn_handles = NULL;
  * Those handles are used inside a transaction by Coordinator to Coordinators
  */
 static PGXCNodeHandle *co_handles = NULL;
+
+/* Current size of dn_handles and co_handles */
+int			NumDataNodes;
+int 		NumCoords;
 
 static void pgxc_node_init(PGXCNodeHandle *handle, int sock);
 static void pgxc_node_free(PGXCNodeHandle *handle);
@@ -128,8 +133,11 @@ InitMultinodeExecutor(bool is_force)
 		co_handles != NULL)
 		return;
 
+	/* Update node table in the shared memory */
+	PgxcNodeListAndCount();
+
 	/* Get classified list of node Oids */
-	PgxcNodeListAndCount(&coOids, &dnOids, &NumCoords, &NumDataNodes);
+	PgxcNodeGetOids(&coOids, &dnOids, &NumCoords, &NumDataNodes, true);
 
 	/* Do proper initialization of handles */
 	if (NumDataNodes > 0)
@@ -207,10 +215,11 @@ InitMultinodeExecutor(bool is_force)
 char *
 #ifdef XCP
 PGXCNodeConnStr(char *host, int port, char *dbname,
-				char *user, char *remote_type, char *parent_node)
+				char *user, char *pgoptions, char *remote_type, 
+				char *parent_node)
 #else
 PGXCNodeConnStr(char *host, int port, char *dbname,
-				char *user, char *remote_type)
+				char *user, char *pgoptions, char *remote_type)
 #endif
 {
 	char	   *out,
@@ -223,13 +232,14 @@ PGXCNodeConnStr(char *host, int port, char *dbname,
 	 */
 #ifdef XCP
 	num = snprintf(connstr, sizeof(connstr),
-				   "host=%s port=%d dbname=%s user=%s options='-c remotetype=%s -c parentnode=%s'",
-				   host, port, dbname, user, remote_type, parent_node);
+				   "host=%s port=%d dbname=%s user=%s application_name=pgxc options='-c remotetype=%s -c parentnode=%s %s'",
+				   host, port, dbname, user, remote_type, parent_node, pgoptions);
 #else
 	num = snprintf(connstr, sizeof(connstr),
-				   "host=%s port=%d dbname=%s user=%s application_name=pgxc options='-c remotetype=%s'",
-				   host, port, dbname, user, remote_type);
+				   "host=%s port=%d dbname=%s user=%s application_name=pgxc options='-c remotetype=%s %s'",
+				   host, port, dbname, user, remote_type, pgoptions);
 #endif
+
 	/* Check for overflow */
 	if (num > 0 && num < sizeof(connstr))
 	{
@@ -245,7 +255,7 @@ PGXCNodeConnStr(char *host, int port, char *dbname,
 
 
 /*
- * Connect to a Data Node using a connection string
+ * Connect to a Datanode using a connection string
  */
 NODE_CONNECTION *
 PGXCNodeConnect(char *connstr)
@@ -364,7 +374,7 @@ pgxc_node_all_free(void)
 
 /*
  * Create and initialise internal structure to communicate to
- * Data Node via supplied socket descriptor.
+ * Datanode via supplied socket descriptor.
  * Structure stores state info and I/O buffers
  */
 static void
@@ -599,8 +609,8 @@ retry:
 			if (close_if_error)
 			{
 				add_error_message(conn,
-								"data node closed the connection unexpectedly\n"
-					"\tThis probably means the data node terminated abnormally\n"
+								"Datanode closed the connection unexpectedly\n"
+					"\tThis probably means the Datanode terminated abnormally\n"
 								"\tbefore or while processing the request.\n");
 				conn->state = DN_CONNECTION_STATE_ERROR_FATAL;	/* No more connection to
 															* backend */
@@ -827,7 +837,7 @@ cancel_query(void)
 	if (datanode_count == 0 && coord_count == 0)
 		return;
 
-	/* Collect Data Nodes handles */
+	/* Collect Datanodes handles */
 	for (i = 0; i < NumDataNodes; i++)
 	{
 		PGXCNodeHandle *handle = &dn_handles[i];
@@ -872,9 +882,35 @@ cancel_query(void)
 			}
 		}
 	}
-	PoolManagerCancelQuery(dn_count, dn_cancel, co_count, co_cancel);
-}
 
+	PoolManagerCancelQuery(dn_count, dn_cancel, co_count, co_cancel);
+
+	/*
+	 * Read responses from the nodes to whom we sent the cancel command. This
+	 * ensures that there are no pending messages left on the connection
+	 */
+	for (i = 0; i < NumDataNodes; i++)
+	{
+		PGXCNodeHandle *handle = &dn_handles[i];
+
+		if ((handle->sock != NO_SOCKET) && (handle->state != DN_CONNECTION_STATE_IDLE))
+		{
+			pgxc_node_flush_read(handle);
+			handle->state = DN_CONNECTION_STATE_IDLE;
+		}
+	}
+
+	for (i = 0; i < NumCoords; i++)
+	{
+		PGXCNodeHandle *handle = &co_handles[i];
+
+		if (handle->sock != NO_SOCKET && handle->state != DN_CONNECTION_STATE_IDLE)
+		{
+			pgxc_node_flush_read(handle);
+			handle->state = DN_CONNECTION_STATE_IDLE;
+		}
+	}
+}
 /*
  * This method won't return until all network buffers are empty
  * To ensure all data in all network buffers is read and wasted
@@ -887,7 +923,7 @@ clear_all_data(void)
 	if (datanode_count == 0 && coord_count == 0)
 		return;
 
-	/* Collect Data Nodes handles */
+	/* Collect Datanodes handles */
 	for (i = 0; i < NumDataNodes; i++)
 	{
 		PGXCNodeHandle *handle = &dn_handles[i];
@@ -897,6 +933,8 @@ clear_all_data(void)
 			pgxc_node_flush_read(handle);
 			handle->state = DN_CONNECTION_STATE_IDLE;
 		}
+		/* Clear any previous error messages */
+		handle->error = NULL;
 	}
 
 	/* Collect Coordinator handles */
@@ -909,6 +947,8 @@ clear_all_data(void)
 			pgxc_node_flush_read(handle);
 			handle->state = DN_CONNECTION_STATE_IDLE;
 		}
+		/* Clear any previous error messages */
+		handle->error = NULL;
 	}
 }
 
@@ -1115,7 +1155,7 @@ send_some(PGXCNodeHandle *handle, int len)
 }
 
 /*
- * Send PARSE message with specified statement down to the Data node
+ * Send PARSE message with specified statement down to the Datanode
  */
 int
 pgxc_node_send_parse(PGXCNodeHandle * handle, const char* statement,
@@ -1275,7 +1315,7 @@ pgxc_node_send_plan(PGXCNodeHandle * handle, const char *statement,
 
 
 /*
- * Send BIND message down to the Data node
+ * Send BIND message down to the Datanode
  */
 int
 pgxc_node_send_bind(PGXCNodeHandle * handle, const char *portal,
@@ -1356,7 +1396,7 @@ pgxc_node_send_bind(PGXCNodeHandle * handle, const char *portal,
 
 
 /*
- * Send DESCRIBE message (portal or statement) down to the Data node
+ * Send DESCRIBE message (portal or statement) down to the Datanode
  */
 int
 pgxc_node_send_describe(PGXCNodeHandle * handle, bool is_statement,
@@ -1403,7 +1443,7 @@ pgxc_node_send_describe(PGXCNodeHandle * handle, bool is_statement,
 
 
 /*
- * Send CLOSE message (portal or statement) down to the Data node
+ * Send CLOSE message (portal or statement) down to the Datanode
  */
 int
 pgxc_node_send_close(PGXCNodeHandle * handle, bool is_statement,
@@ -1442,7 +1482,7 @@ pgxc_node_send_close(PGXCNodeHandle * handle, bool is_statement,
 }
 
 /*
- * Send EXECUTE message down to the Data node
+ * Send EXECUTE message down to the Datanode
  */
 int
 pgxc_node_send_execute(PGXCNodeHandle * handle, const char *portal, int fetch)
@@ -1486,7 +1526,7 @@ pgxc_node_send_execute(PGXCNodeHandle * handle, const char *portal, int fetch)
 
 
 /*
- * Send FLUSH message down to the Data node
+ * Send FLUSH message down to the Datanode
  */
 int
 pgxc_node_send_flush(PGXCNodeHandle * handle)
@@ -1512,7 +1552,7 @@ pgxc_node_send_flush(PGXCNodeHandle * handle)
 
 
 /*
- * Send SYNC message down to the Data node
+ * Send SYNC message down to the Datanode
  */
 int
 pgxc_node_send_sync(PGXCNodeHandle * handle)
@@ -1611,13 +1651,14 @@ pgxc_node_flush_read(PGXCNodeHandle *handle)
 #endif
 	while(true)
 	{
+		read_result = pgxc_node_read_data(handle, false);
+		if (read_result < 0)
+			break;
+
 		is_ready = is_data_node_ready(handle);
 		if (is_ready == true)
 			break;
 
-		read_result = pgxc_node_read_data(handle, false);
-		if (read_result < 0)
-			break;
 	}
 }
 
@@ -1807,6 +1848,9 @@ pgxc_node_send_timestamp(PGXCNodeHandle *handle, TimestampTz timestamp)
 void
 add_error_message(PGXCNodeHandle *handle, const char *message)
 {
+#ifdef XCP
+	elog(LOG, "Connection error %s", message);
+#endif
 	handle->transaction_status = 'E';
 	if (handle->error)
 	{
@@ -1996,7 +2040,7 @@ get_handles(List *datanodelist, List *coordlist, bool is_coord_only_query)
 				{
 					ereport(ERROR,
 							(errcode(ERRCODE_OUT_OF_MEMORY),
-							errmsg("Invalid data node number")));
+							errmsg("Invalid Datanode number")));
 				}
 
 				node_handle = &dn_handles[node];
@@ -2113,7 +2157,7 @@ get_handles(List *datanodelist, List *coordlist, bool is_coord_only_query)
 				{
 					ereport(ERROR,
 							(errcode(ERRCODE_OUT_OF_MEMORY),
-							errmsg("Invalid data node number")));
+							errmsg("Invalid Datanode number")));
 				}
 
 				node_handle = &dn_handles[node];
@@ -2155,6 +2199,64 @@ get_handles(List *datanodelist, List *coordlist, bool is_coord_only_query)
 	return result;
 }
 
+
+#ifdef XCP
+PGXCNodeAllHandles *
+get_current_handles(void)
+{
+	PGXCNodeAllHandles *result;
+	PGXCNodeHandle	   *node_handle;
+	int					i;
+
+	result = (PGXCNodeAllHandles *) palloc(sizeof(PGXCNodeAllHandles));
+	if (!result)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+	}
+
+	result->primary_handle = NULL;
+	result->co_conn_count = 0;
+	result->dn_conn_count = 0;
+	
+	result->datanode_handles = (PGXCNodeHandle **)
+							   palloc(NumDataNodes * sizeof(PGXCNodeHandle *));
+	if (!result->datanode_handles)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+	}
+
+	for (i = 0; i < NumDataNodes; i++)
+	{
+		node_handle = &dn_handles[i];
+		if (node_handle->sock != NO_SOCKET)
+			result->datanode_handles[result->dn_conn_count++] = node_handle;
+	}
+
+	result->coord_handles = (PGXCNodeHandle **)
+							palloc(NumCoords * sizeof(PGXCNodeHandle *));
+	if (!result->coord_handles)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+	}
+
+	for (i = 0; i < NumCoords; i++)
+	{
+		node_handle = &co_handles[i];
+		if (node_handle->sock != NO_SOCKET)
+			result->coord_handles[result->co_conn_count++] = node_handle;
+	}
+
+	return result;
+}
+#endif
+
+
 /* Free PGXCNodeAllHandles structure */
 void
 pfree_pgxc_all_handles(PGXCNodeAllHandles *pgxc_handles)
@@ -2170,276 +2272,6 @@ pfree_pgxc_all_handles(PGXCNodeAllHandles *pgxc_handles)
 		pfree(pgxc_handles->coord_handles);
 
 	pfree(pgxc_handles);
-}
-
-
-/*
- * Return handles involved into current transaction, to run commit or rollback
- * on them, as requested.
- * Depending on the connection type, Coordinator or Datanode connections are returned.
- *
- * Transaction is not started on nodes when read-only statement is executed
- * on it, so we do not have to commit or rollback on those nodes.
- * Parameter should point to array able to store at least datanode_count pointers
- * to a PGXCNodeHandle structure.
- * The function returns number of pointers written to the connections array.
- * Remaining items in the array, if any, will be kept unchanged
- *
- * In an implicit 2PC, status of connections is set back to idle after preparing
- * the transaction on each backend.
- * At commit phase, it is necessary to get backends in idle state to be able to
- * commit properly the backends.
- *
- * In the case of an error occuring with an implicit 2PC that has been partially
- * committed on nodes, return the list of connections that has an error state
- * to register the list of remaining nodes not commit prepared on GTM.
- */
-int
-get_transaction_nodes(PGXCNodeHandle **connections, char client_conn_type,
-					  PGXCNode_HandleRequested status_requested)
-{
-	int			tran_count = 0;
-	int			i;
-	PGXCNodeHandle		*node_handle;
-
-	if (datanode_count && client_conn_type == REMOTE_CONN_DATANODE)
-	{
-		for (i = 0; i < NumDataNodes; i++)
-		{
-			node_handle = &dn_handles[i];
-
-			if (node_handle->sock != NO_SOCKET &&
-				(node_handle->state != DN_CONNECTION_STATE_ERROR_FATAL ||
-				 status_requested == HANDLE_ERROR))
-			{
-				if (status_requested == HANDLE_IDLE && node_handle->transaction_status == 'I')
-					connections[tran_count++] = node_handle;
-				else if (status_requested == HANDLE_ERROR && node_handle->transaction_status == 'E')
-					connections[tran_count++] = node_handle;
-				else if (node_handle->transaction_status != 'I')
-					connections[tran_count++] = node_handle;
-			}
-		}
-	}
-
-	if (coord_count && client_conn_type == REMOTE_CONN_COORD)
-	{
-		for (i = 0; i < NumCoords; i++)
-		{
-			node_handle = &co_handles[i];
-
-			if (node_handle->sock != NO_SOCKET &&
-				(node_handle->state != DN_CONNECTION_STATE_ERROR_FATAL ||
-				 status_requested == HANDLE_ERROR))
-			{
-				if (status_requested == HANDLE_IDLE && node_handle->transaction_status == 'I')
-					connections[tran_count++] = node_handle;
-				else if (status_requested == HANDLE_ERROR && node_handle->transaction_status == 'E')
-					connections[tran_count++] = node_handle;
-				else if (node_handle->transaction_status != 'I')
-					connections[tran_count++] = node_handle;
-			}
-		}
-	}
-
-	return tran_count;
-}
-
-/*
- * Collect node name for the given Datanode and Coordinator connections
- * and return it for prepared transactions.
- * String has format node1,node2,...,nodeN
- */
-char *
-collect_pgxcnode_names(char *nodestring,
-					   int conn_count,
-					   PGXCNodeHandle **connections,
-					   char client_conn_type)
-{
-	int i;
-
-	for (i = 0; i < conn_count; i++)
-	{
-		char *nodename = get_pgxc_nodename(connections[i]->nodeoid);
-
-		if (!nodestring)
-		{
-			nodestring = (char *) palloc(strlen(nodename) + 1);
-			sprintf(nodestring, "%s", nodename);
-		}
-		else
-		{
-			nodestring = (char *) repalloc(nodestring,
-										   strlen(nodename) + strlen(nodestring) + 2);
-			sprintf(nodestring, "%s,%s", nodestring, nodename);
-		}
-	}
-
-	/* Save here local Coordinator name also */
-	if (client_conn_type == REMOTE_CONN_COORD)
-	{
-		if (!nodestring)
-		{
-			nodestring = (char *) palloc(strlen(PGXCNodeName) + 1);
-			sprintf(nodestring, "%s", PGXCNodeName);
-		}
-		else
-		{
-			nodestring = (char *) repalloc(nodestring,
-										   strlen(PGXCNodeName) + strlen(nodestring) + 2);
-			sprintf(nodestring, "%s,%s", nodestring, PGXCNodeName);
-		}
-	}
-
-	return nodestring;
-}
-
-/*
- * Add local node name to ths string list
- */
-char *
-collect_localnode_name(char *nodestring)
-{
-	if (!nodestring)
-		nodestring = (char *) palloc(strlen(PGXCNodeName) + 2);
-	else
-		nodestring = (char *) repalloc(nodestring,
-									   strlen(PGXCNodeName) + strlen(nodestring) + 2);
-
-	sprintf(nodestring, "%s,%s", nodestring, PGXCNodeName);
-	return nodestring;
-}
-
-/* Determine if the connection is active */
-static bool
-is_active_connection(PGXCNodeHandle *handle)
-{
-	return handle->sock != NO_SOCKET &&
-				handle->state != DN_CONNECTION_STATE_IDLE &&
-				!DN_CONNECTION_STATE_ERROR(handle);
-}
-
-/*
- * Return those node connections that appear to be active and
- * have data to consume on them.
- */
-int
-get_active_nodes(PGXCNodeHandle **connections)
-{
-	int			active_count = 0;
-	int			i;
-	PGXCNodeHandle		*node_handle;
-
-	if (datanode_count)
-	{
-		for (i = 0; i < NumDataNodes; i++)
-		{
-			node_handle = &dn_handles[i];
-
-			if (is_active_connection(node_handle))
-				connections[active_count++] = node_handle;
-		}
-	}
-
-	if (coord_count)
-	{
-		for (i = 0; i < NumCoords; i++)
-		{
-			node_handle = &co_handles[i];
-
-			if (is_active_connection(node_handle))
-				connections[active_count++] = node_handle;
-		}
-	}
-
-	return active_count;
-}
-
-/*
- * Send gxid to all the handles except primary connection (treated separatly)
- */
-int
-pgxc_all_handles_send_gxid(PGXCNodeAllHandles *pgxc_handles, GlobalTransactionId gxid, bool stop_at_error)
-{
-	int dn_conn_count = pgxc_handles->dn_conn_count;
-	int co_conn_count = pgxc_handles->co_conn_count;
-	int i;
-	int result = 0;
-
-	if (pgxc_handles->primary_handle)
-		dn_conn_count--;
-
-	/* Send GXID to Datanodes */
-	for (i = 0; i < dn_conn_count; i++)
-	{
-		if (pgxc_node_send_gxid(pgxc_handles->datanode_handles[i], gxid))
-		{
-			add_error_message(pgxc_handles->datanode_handles[i], "Can not send request");
-			result = EOF;
-			if (stop_at_error)
-				goto finish;
-		}
-	}
-
-	/* Send GXID to Coordinators handles */
-	for (i = 0; i < co_conn_count; i++)
-	{
-		if (pgxc_node_send_gxid(pgxc_handles->coord_handles[i], gxid))
-		{
-			add_error_message(pgxc_handles->coord_handles[i], "Can not send request");
-			result = EOF;
-			if (stop_at_error)
-				goto finish;
-		}
-	}
-
-finish:
-	return result;
-}
-
-/*
- * Send query to all the handles except primary connection (treated separatly)
- */
-int
-pgxc_all_handles_send_query(PGXCNodeAllHandles *pgxc_handles, const char *buffer, bool stop_at_error)
-{
-	int dn_conn_count = pgxc_handles->dn_conn_count;
-	int co_conn_count = pgxc_handles->co_conn_count;
-	int i;
-	int result = 0;
-
-	if (pgxc_handles->primary_handle)
-		dn_conn_count--;
-
-	/* Send to Datanodes */
-	for (i = 0; i < dn_conn_count; i++)
-	{
-		if (pgxc_handles->datanode_handles[i]->state != DN_CONNECTION_STATE_IDLE)
-		{
-			BufferConnection(pgxc_handles->datanode_handles[i]);
-		}
-		if (pgxc_node_send_query(pgxc_handles->datanode_handles[i], buffer))
-		{
-			add_error_message(pgxc_handles->datanode_handles[i], "Can not send request");
-			result = EOF;
-			if (stop_at_error)
-				goto finish;
-		}
-	}
-	/* Send to Coordinators */
-	for (i = 0; i < co_conn_count; i++)
-	{
-		if (pgxc_node_send_query(pgxc_handles->coord_handles[i], buffer))
-		{
-			add_error_message(pgxc_handles->coord_handles[i], "Can not send request");
-			result = EOF;
-			if (stop_at_error)
-				goto finish;
-		}
-	}
-
-finish:
-	return result;
 }
 
 /*

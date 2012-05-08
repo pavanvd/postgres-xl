@@ -46,9 +46,6 @@ struct XidCache
 #define		PROC_IN_VACUUM		0x02	/* currently running lazy vacuum */
 #define		PROC_IN_ANALYZE		0x04	/* currently running analyze */
 #define		PROC_VACUUM_FOR_WRAPAROUND 0x08		/* set by autovac only */
-#ifdef XCP
-#define		PROC_VACUUM_COORD 	0x10	/* vacuum initiated from other coord */
-#endif
 
 /* flags reset at EOXact */
 #define		PROC_VACUUM_STATE_MASK (0x0E)
@@ -97,7 +94,7 @@ struct PGPROC
 	Oid			databaseId;		/* OID of database this backend is using */
 	Oid			roleId;			/* OID of role using this backend */
 #ifdef XCP
-	Oid			coordId;  		/* OID of originating coordinator */
+	Oid			coordId;  		/* Oid of originating coordinator */
 	int			coordPid;		/* Pid of the originating session */
 	BackendId	firstBackendId;	/* Backend ID of the first backend of
 								 * the distributed session */

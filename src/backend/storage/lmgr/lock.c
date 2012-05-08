@@ -1043,7 +1043,7 @@ LockCheckConflicts(LockMethod lockMethodTable,
 	 * waiting for the lock most probably would cause deadlock.
 	 */
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
-	if (OidIsValid(proc->coordId) && proc->coordPid)
+	if (proc->coordPid > 0)
 	{
 		/* Count locks held by this process and friends */
 		int myHolding[numLockModes + 1];

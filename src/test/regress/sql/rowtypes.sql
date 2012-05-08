@@ -6,6 +6,9 @@
 
 create type complex as (r float8, i float8);
 
+-- Enforce use of COMMIT instead of 2PC for temporary objects
+SET enforce_two_phase_commit TO off;
+
 create temp table fullname (first text, last text);
 
 -- Nested composite
@@ -58,8 +61,7 @@ update people set fn.suffix = 'Jr';
 
 select * from people;
 
---- PGXCTODO: This test case makes a server crash due to query deparsing in planner
---- insert into quadtable (f1, q.c1.r, q.c2.i) values(44,55,66);
+insert into quadtable (f1, q.c1.r, q.c2.i) values(44,55,66);
 
 select * from quadtable order by f1, q;
 

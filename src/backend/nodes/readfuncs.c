@@ -1833,14 +1833,6 @@ _readFromExpr(void)
 static RangeTblEntry *
 _readRangeTblEntry(void)
 {
-#ifdef PGXC
-#ifndef XCP
-	int natts, i;
-	char    *colname;
-	Oid     typid, typmod;
-#endif
-#endif
-
 	READ_LOCALS(RangeTblEntry);
 
 	/* put alias + eref first to make dump more legible */
@@ -1856,53 +1848,6 @@ _readRangeTblEntry(void)
 	switch (local_node->rtekind)
 	{
 		case RTE_RELATION:
-#ifdef PGXC
-#ifndef XCP
-			/* read tuple descriptor */
-			token = pg_strtok(&length); 	/* skip :tupdesc_natts */
-			token = pg_strtok(&length);		/* get field value */
-
-			natts = atoi(token);
-
-			if (natts > 0 && natts <= MaxTupleAttributeNumber)
-				local_node->reltupdesc = CreateTemplateTupleDesc(natts, false);
-			else
-				elog(ERROR, "invalid node field to read");
-
-			token = pg_strtok(&length); 	/* skip '(' */
-
-			if (length == 1 && pg_strncasecmp(token, "(", length) == 0)
-			{
-				for (i = 0 ; i < natts ; i++)
-				{
-					token = pg_strtok(&length); 	/* skip :colname */
-					token = pg_strtok(&length); 	/* get colname */
-					colname = nullable_string(token, length);
-
-					if (colname == NULL)
-						elog(ERROR, "invalid node field to read");
-
-					token = pg_strtok(&length); 	/* skip :coltypid */
-					token = pg_strtok(&length); 	/* get typid */
-					typid = atooid(token);
-
-					token = pg_strtok(&length); 	/* skip :coltypmod */
-					token = pg_strtok(&length); 	/* get typmod */
-					typmod = atoi(token);
-
-					TupleDescInitEntry(local_node->reltupdesc,
-							(i + 1), colname, typid, typmod, 0);
-				}
-			}
-			else
-				elog(ERROR, "invalid node field to read");
-
-			token = pg_strtok(&length); 	/* skip '(' */
-
-			if (!(length == 1 && pg_strncasecmp(token, ")", length) == 0))
-				elog(ERROR, "invalid node field to read");
-#endif
-#endif
 #ifdef XCP
 			if (portable_input)
 				READ_RELID_FIELD(relid);
@@ -3219,8 +3164,8 @@ _readSimpleSort(void)
 			local_node->sortOperators[i] = atooid(token);
 	}
 
-	token = pg_strtok(&length);		/* skip :collations */
-	local_node->collations = (Oid *) palloc(local_node->numCols * sizeof(Oid));
+	token = pg_strtok(&length);		/* skip :sortCollations */
+	local_node->sortCollations = (Oid *) palloc(local_node->numCols * sizeof(Oid));
 	for (i = 0; i < local_node->numCols; i++)
 	{
 		token = pg_strtok(&length);
@@ -3236,14 +3181,14 @@ _readSimpleSort(void)
 			token = pg_strtok(&length); /* get nargs */
 			collencoding = atoi(token);
 			if (collname)
-				local_node->collations[i] = get_collid(collname,
+				local_node->sortCollations[i] = get_collid(collname,
 													   collencoding,
 													   NSP_OID(nspname));
 			else
-				local_node->collations[i] = InvalidOid;
+				local_node->sortCollations[i] = InvalidOid;
 		}
 		else
-			local_node->collations[i] = atooid(token);
+			local_node->sortCollations[i] = atooid(token);
 	}
 
 	token = pg_strtok(&length);		/* skip :nullsFirst */

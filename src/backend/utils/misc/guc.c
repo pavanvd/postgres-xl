@@ -56,11 +56,14 @@
 #include "parser/scansup.h"
 #include "pgstat.h"
 #ifdef PGXC
+#include "commands/tablecmds.h"
+#include "nodes/nodes.h"
 #include "pgxc/execRemote.h"
 #include "pgxc/locator.h"
 #include "pgxc/planner.h"
-#include "nodes/nodes.h"
 #include "pgxc/poolmgr.h"
+#include "pgxc/nodemgr.h"
+#include "pgxc/xc_maintenance_mode.h"
 #endif
 #ifdef XCP
 #include "pgxc/nodemgr.h"
@@ -200,6 +203,9 @@ static bool check_bonjour(bool *newval, void **extra, GucSource source);
 static bool check_ssl(bool *newval, void **extra, GucSource source);
 static bool check_stage_log_stats(bool *newval, void **extra, GucSource source);
 static bool check_log_stats(bool *newval, void **extra, GucSource source);
+#ifdef PGXC
+static bool check_pgxc_maintenance_mode(bool *newval, void **extra, GucSource source);
+#endif
 static bool check_canonical_path(char **newval, void **extra, GucSource source);
 static bool check_timezone_abbreviations(char **newval, void **extra, GucSource source);
 static void assign_timezone_abbreviations(const char *newval, void *extra);
@@ -639,9 +645,13 @@ const char *const config_group_names[] =
 	gettext_noop("Developer Options"),
 #ifdef PGXC
 	/* DATA_NODES */
-	gettext_noop("Data Nodes and Connection Pooling"),
+	gettext_noop("Datanodes and Connection Pooling"),
 	/* GTM */
 	gettext_noop("GTM Connection"),
+	/* COORDINATORS */
+	gettext_noop("Coordinator Options"),
+	/* XC_HOUSEKEEPING_OPTIONS */
+	gettext_noop("XC Housekeeping Options"),
 #endif
 	/* help_config wants this array to be null-terminated */
 	NULL
@@ -1501,6 +1511,25 @@ static struct config_bool ConfigureNamesBool[] =
 		&StrictStatementChecking,
 		true,
 		NULL, NULL, NULL
+	},
+	{
+		{"enforce_two_phase_commit", PGC_SUSET, XC_HOUSEKEEPING_OPTIONS,
+			gettext_noop("Enforce the use of two-phase commit on transactions that"
+					"made use of temporary objects"),
+			NULL
+		},
+		&EnforceTwoPhaseCommit,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"xc_maintenance_mode", PGC_SUSET, XC_HOUSEKEEPING_OPTIONS,
+		    gettext_noop("Turn on XC maintenance mode."),
+		 	gettext_noop("Can set ON by SET command by superuser.")
+		},
+		&xc_maintenance_mode,
+		false,
+		check_pgxc_maintenance_mode, NULL, NULL
 	},
 #endif
 #endif
@@ -2524,18 +2553,30 @@ static struct config_int ConfigureNamesInt[] =
 		6666, 1, 65535,
 		NULL, NULL, NULL
 	},
-#endif /* PGXC */
-#ifdef XCP
+
 	{
-		{"max_data_nodes", PGC_POSTMASTER, DATA_NODES,
-			gettext_noop("Max number of data nodes in the cluster."),
-			gettext_noop("You can not create more then that number of the data nodes "
-						 "in the cluster.")
+		{"max_datanodes", PGC_POSTMASTER, DATA_NODES,
+			gettext_noop("Maximum number of Datanodes in the cluster."),
+			gettext_noop("It is not possible to create more Datanodes in the cluster than "
+						 "this maximum number.")
 		},
 		&MaxDataNodes,
 		16, 2, 65535,
 		NULL, NULL, NULL
 	},
+
+	{
+		{"max_coordinators", PGC_POSTMASTER, DATA_NODES,
+			gettext_noop("Maximum number of Coordinators in the cluster."),
+			gettext_noop("It is not possible to create more Coordinators in the cluster than "
+						 "this maximum number.")
+		},
+		&MaxCoords,
+		16, 2, 65535,
+		NULL, NULL, NULL
+	},
+
+#ifdef XCP
 	/*
 	 * Shared queues provide shared memory buffers to stream data from
 	 * "producer" - process which executes subplan to "consumers" - processes
@@ -2551,6 +2592,7 @@ static struct config_int ConfigureNamesInt[] =
 		64, 16, INT_MAX,
 		NULL, NULL, NULL
 	},
+
 	{
 		{"shared_queue_size", PGC_POSTMASTER, RESOURCES_MEM,
 			gettext_noop("Sets the amount of memory allocated for a shared memory queue."),
@@ -2561,7 +2603,9 @@ static struct config_int ConfigureNamesInt[] =
 		64, 16, MAX_KILOBYTES,
 		NULL, NULL, NULL
 	},
+#endif
 #endif /* PGXC */
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
@@ -5352,6 +5396,14 @@ set_config_option(const char *name, const char *value,
 	bool		prohibitValueChange = false;
 	bool		makeDefault;
 
+#ifdef PGXC
+	/*
+	 * Current GucContest value is needed to check if xc_maintenance_mode parameter
+	 * is specified in valid contests.   It is allowed only by SET command or
+	 * libpq connect parameters so that setting this ON is just temporary.
+	 */
+	currentGucContext = context;
+#endif
 	if (context == PGC_SIGHUP || source == PGC_S_DEFAULT)
 	{
 		/*
@@ -6064,6 +6116,39 @@ set_config_option(const char *name, const char *value,
 	if (changeVal && (record->flags & GUC_REPORT))
 		ReportGUCOption(record);
 
+#ifdef XCP
+	if (source == PGC_S_SESSION)
+	{
+		RemoteQuery    *step;
+		StringInfoData 	poolcmd;
+
+		initStringInfo(&poolcmd);
+
+		if (action == GUC_ACTION_LOCAL)
+		{
+			if (IsTransactionBlock())
+				PoolManagerSetCommand(POOL_CMD_LOCAL_SET, name, value);
+			appendStringInfo(&poolcmd, "SET LOCAL %s TO %s", name, 
+					(value ? value : "DEFAULT"));
+		}
+		else
+		{
+			PoolManagerSetCommand(POOL_CMD_GLOBAL_SET, name, value);
+			appendStringInfo(&poolcmd, "SET %s TO %s", name, 
+					(value ? value : "DEFAULT"));
+		}
+		step = makeNode(RemoteQuery);
+		step->combine_type = COMBINE_TYPE_SAME;
+		step->exec_nodes = NULL;
+		step->sql_statement = poolcmd.data;
+		step->force_autocommit = false;
+		step->exec_type = EXEC_ON_CURRENT;
+		ExecRemoteUtility(step);
+		pfree(step);
+		pfree(poolcmd.data);
+	}
+#endif
+
 	return true;
 }
 
@@ -6520,6 +6605,7 @@ set_config_by_name(PG_FUNCTION_ARGS)
 
 
 #ifdef PGXC
+#ifndef XCP
 	/*
 	 * Convert this to SET statement and pass it to pooler.
 	 * If command is local and we are not in a transaction block do NOT
@@ -6541,6 +6627,7 @@ set_config_by_name(PG_FUNCTION_ARGS)
 			elog(ERROR, "Postgres-XC: ERROR SET query");
 
 	}
+#endif
 #endif
 
 	/* Convert return string to text */
@@ -8681,6 +8768,53 @@ check_log_stats(bool *newval, void **extra, GucSource source)
 	}
 	return true;
 }
+
+#ifdef PGXC
+/*
+ * Only a warning is printed to log.
+ * Returning false will cause FATAL error and it will not be good.
+ */
+static bool
+check_pgxc_maintenance_mode(bool *newval, void **extra, GucSource source)
+{
+
+	switch(source)
+	{
+		case PGC_S_DYNAMIC_DEFAULT:
+		case PGC_S_ENV_VAR:
+		case PGC_S_ARGV:
+			GUC_check_errmsg("pgxc_maintenance_mode is not allowed here.");
+			return false;
+		case PGC_S_FILE:
+			switch (currentGucContext)
+			{
+				case PGC_SIGHUP:
+					elog(WARNING, "pgxc_maintenance_mode is not allowed in  postgresql.conf.  Set to default (false).");
+					*newval = false;
+					return true;
+				default:
+					GUC_check_errmsg("pgxc_maintenance_mode is not allowed in postgresql.conf.");
+					return false;
+			}
+			return false;	/* Should not come here */
+		case PGC_S_DATABASE:
+		case PGC_S_USER:
+		case PGC_S_DATABASE_USER:
+		case PGC_S_INTERACTIVE:
+		case PGC_S_TEST:
+			elog(WARNING, "pgxc_maintenance_mode is not allowed here.  Set to default (false).");
+			*newval = false;
+			return true;
+		case PGC_S_DEFAULT:
+		case PGC_S_CLIENT:
+		case PGC_S_SESSION:
+			return true;
+		default:
+			GUC_check_errmsg("Unknown source");
+			return false;
+	}
+}
+#endif
 
 static bool
 check_canonical_path(char **newval, void **extra, GucSource source)

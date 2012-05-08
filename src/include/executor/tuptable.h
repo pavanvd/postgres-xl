@@ -127,7 +127,6 @@ typedef struct TupleTableSlot
 	 */
 	char		*tts_dataRow;		/* Tuple data in DataRow format */
 	int		tts_dataLen;		/* Actual length of the data row */
-	int		tts_dataNodeIndex;	/* Originating node of the data row */
 #endif
 	bool		tts_shouldFreeRow;	/* should pfree tts_dataRow? */
 	struct AttInMetadata *tts_attinmeta;	/* store here info to extract values from the DataRow */
@@ -174,7 +173,6 @@ extern TupleTableSlot *ExecStoreDataRowTuple(RemoteDataRow datarow,
 #else
 extern TupleTableSlot *ExecStoreDataRowTuple(char *msg,
 					  size_t len,
-					  int node,
 					  TupleTableSlot *slot,
 					  bool shouldFree);
 #endif

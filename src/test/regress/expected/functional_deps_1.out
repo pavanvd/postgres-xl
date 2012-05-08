@@ -1,4 +1,6 @@
 -- from http://www.depesz.com/index.php/2010/04/19/getting-unique-elements/
+-- Enforce use of COMMIT instead of 2PC for temporary objects
+SET enforce_two_phase_commit TO off;
 CREATE TEMP TABLE articles (
     id int CONSTRAINT articles_pkey PRIMARY KEY,
     keywords text,
@@ -119,7 +121,10 @@ NOTICE:  ALTER TABLE / ADD PRIMARY KEY will create implicit index "products_pkey
 SELECT product_id, p.name, (sum(s.units) * p.price) AS sales
     FROM products p LEFT JOIN sales s USING (product_id)
     GROUP BY product_id;
-ERROR:  column "group_2.name_1_2_1" must appear in the GROUP BY clause or be used in an aggregate function
+ product_id | name | sales 
+------------+------+-------
+(0 rows)
+
 -- Drupal example, http://drupal.org/node/555530
 CREATE TEMP TABLE node (
     nid SERIAL,

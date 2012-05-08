@@ -149,6 +149,9 @@ Complete list of usable sgml source files in this directory.
 <!ENTITY lock               SYSTEM "lock.sgml">
 <!ENTITY move               SYSTEM "move.sgml">
 <!ENTITY notify             SYSTEM "notify.sgml">
+<!## XC>
+<!ENTITY pgxcClean          SYSTEM "pgxc_clean-ref.sgml">
+<!## end>
 <!ENTITY prepare            SYSTEM "prepare.sgml">
 <!ENTITY prepareTransaction SYSTEM "prepare_transaction.sgml">
 <!ENTITY reassignOwned      SYSTEM "reassign_owned.sgml">
@@ -192,6 +195,9 @@ Complete list of usable sgml source files in this directory.
 <!ENTITY dropuser           SYSTEM "dropuser.sgml">
 <!ENTITY ecpgRef            SYSTEM "ecpg-ref.sgml">
 <!ENTITY initdb             SYSTEM "initdb.sgml">
+<!## XC>
+<!ENTITY initgtm            SYSTEM "initgtm.sgml">
+<!## end>
 <!ENTITY pgBasebackup       SYSTEM "pg_basebackup.sgml">
 <!ENTITY pgConfig           SYSTEM "pg_config-ref.sgml">
 <!ENTITY pgControldata      SYSTEM "pg_controldata.sgml">

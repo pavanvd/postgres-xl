@@ -43,20 +43,9 @@ typedef struct
 	int			numCols;		/* number of sort-key columns */
 	AttrNumber *sortColIdx;		/* their indexes in the target list */
 	Oid		   *sortOperators;	/* OIDs of operators to sort them by */
-#ifdef XCP
-	Oid		   *collations;		/* OIDs of collations */
-#endif
+	Oid		   *sortCollations;
 	bool	   *nullsFirst;		/* NULLS FIRST/LAST directions */
 } SimpleSort;
-
-/* For returning distinct results from the RemoteQuery*/
-typedef struct
-{
-	NodeTag		type;
-	int			numCols;		/* number of sort-key columns */
-	AttrNumber *uniqColIdx;		/* their indexes in the target list */
-	Oid		   *eqOperators;	/* OIDs of operators to equate them by */
-} SimpleDistinct;
 
 /*
  * Determines if query has to be launched
@@ -66,6 +55,9 @@ typedef struct
  */
 typedef enum
 {
+#ifdef XCP
+	EXEC_ON_CURRENT,
+#endif
 	EXEC_ON_DATANODES,
 	EXEC_ON_COORDS,
 	EXEC_ON_ALL_NODES,
@@ -97,7 +89,6 @@ typedef struct
 	ExecNodes  *exec_nodes;			/* List of Datanodes where to launch query */
 	CombineType combine_type;
 	SimpleSort *sort;
-	SimpleDistinct *distinct;
 	bool		read_only;          /* do not use 2PC when committing read only steps */
 	bool		force_autocommit;	/* some commands like VACUUM require autocommit mode */
 	char	   *statement;			/* if specified use it as a PreparedStatement name on data nodes */
@@ -113,9 +104,6 @@ typedef struct
 									  * on a temporary objects (no 2PC) */
 #endif
 
-	char	  *relname;
-	bool	   remotejoin;			/* True if this is a reduced remote join  */
-	bool	   partitioned_replicated;	/* True if reduced and contains replicated-partitioned join */
 	int		   reduce_level;		/* in case of reduced JOIN, it's level    */
 	List	  *base_tlist;			/* in case of isReduced, the base tlist   */
 	char	  *outer_alias;
@@ -152,11 +140,46 @@ typedef struct
 
 
 #ifndef XCP
+/*
+ * FQS_context
+ * This context structure is used by the Fast Query Shipping walker, to gather
+ * information during analysing query for Fast Query Shipping.
+ */
 typedef struct
 {
-	bool partitioned_replicated;
-	ExecNodes *exec_nodes;
-} JoinReduceInfo;
+	Bitmapset	*fqsc_shippability;	/* The conditions for (un)shippability of the
+									 * query.
+									 */
+	Query	*fqsc_query;			/* the query being analysed for FQS */
+	int		fqsc_query_level;		/* level of the query */
+	int		fqsc_max_varlevelsup;	/* maximum upper level referred to by any
+									 * variable reference in the query. If this
+									 * value is greater than 0, the query is not
+									 * shippable, if shipped alone.
+									 */
+	ExecNodes	*fqsc_exec_nodes;	/* nodes where the query should be executed */
+	ExecNodes	*fqsc_subquery_en;	/* ExecNodes produced by merging the ExecNodes
+									 * for individual subqueries. This gets
+									 * ultimately merged with fqsc_exec_nodes.
+									 */
+} FQS_context;
+
+/* enum for reasons as to why a query is not FQSable */
+typedef enum
+{
+	FQS_UNSHIPPABLE_EXPR = 0,		/* it has unshippable expression */
+	FQS_SINGLENODE_EXPR,			/* it has single node expression, like
+									 * aggregates, ORDER BY etc. */
+	FQS_NEEDS_COORD,				/* the query needs coordinator */
+	FQS_VARLEVEL,					/* one of its subqueries has a VAR
+									 * referencing an upper level query
+									 * relation */
+	FQS_NO_NODES,					/* no suitable nodes can be found to ship
+									 * the query */
+	FQS_UNSUPPORTED_EXPR			/* it has expressions currently unsupported
+									 * by FQS, but such expressions might be
+									 * supported by FQS in future */
+} FQS_shippability;
 
 /* global variable corresponding to the GUC with same name */
 extern bool enable_fast_query_shipping;
@@ -170,12 +193,14 @@ extern PlannedStmt *pgxc_planner(Query *query, int cursorOptions,
 								 ParamListInfo boundParams);
 extern bool IsHashDistributable(Oid col_type);
 
-extern bool IsJoinReducible(RemoteQuery *innernode, RemoteQuery *outernode,
-					List *rtable_list, JoinPath *join_path, JoinReduceInfo *join_info);
+extern ExecNodes *IsJoinReducible(RemoteQuery *innernode, RemoteQuery *outernode,
+									Relids in_relids, Relids out_relids,
+									Join *join, JoinPath *join_path, List *rtable);
 
 extern List *AddRemoteQueryNode(List *stmts, const char *queryString,
 								RemoteQueryExecType remoteExecType, bool is_temp);
 extern bool pgxc_query_contains_temp_tables(List *queries);
+extern Expr *pgxc_find_distcol_expr(Index varno, PartAttrNumber partAttrNum,
 #endif
 
 #ifdef XCP

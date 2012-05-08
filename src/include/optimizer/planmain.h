@@ -150,7 +150,9 @@ extern Var *search_tlist_for_var(Var *var, List *jtlist);
 extern Plan *create_remoteinsert_plan(PlannerInfo *root, Plan *topplan);
 extern Plan *create_remoteupdate_plan(PlannerInfo *root, Plan *topplan);
 extern Plan *create_remotedelete_plan(PlannerInfo *root, Plan *topplan);
-	extern Plan *create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan);
+extern Plan *create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan);
+/* Expose fix_scan_expr to create_remotequery_plan() */
+extern Node *pgxc_fix_scan_expr(PlannerGlobal *glob, Node *node, int rtoffset);
 #endif /* XCP */
 #endif /* PGXC */
 

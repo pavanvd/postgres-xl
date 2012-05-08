@@ -26,6 +26,9 @@
 #define LOCATOR_TYPE_CUSTOM 'C'
 #define LOCATOR_TYPE_MODULO 'M'
 #define LOCATOR_TYPE_NONE 'O'
+#define LOCATOR_TYPE_DISTRIBUTED 'D'	/* for distributed table without specific
+										 * scheme, e.g. result of JOIN of
+										 * replicated and distributed table */
 
 /* Maximum number of preferred datanodes that can be defined in cluster */
 #define MAX_PREFERRED_NODES 64
@@ -41,24 +44,17 @@
 #define IsLocatorReplicated(x) (x == LOCATOR_TYPE_REPLICATED)
 #define IsLocatorColumnDistributed(x) (x == LOCATOR_TYPE_HASH || \
 									   x == LOCATOR_TYPE_RROBIN || \
-									   x == LOCATOR_TYPE_MODULO)
+									   x == LOCATOR_TYPE_MODULO || \
+									   x == LOCATOR_TYPE_DISTRIBUTED)
+#define IsLocatorDistributedByValue(x) (x == LOCATOR_TYPE_HASH || \
+										x == LOCATOR_TYPE_MODULO || \
+										x == LOCATOR_TYPE_RANGE)
 #endif
 
 #include "nodes/primnodes.h"
 #include "utils/relcache.h"
 
 typedef int PartAttrNumber;
-
-/* track if tables use pg_catalog */
-typedef enum
-{
-	TABLE_USAGE_TYPE_NO_TABLE,
-	TABLE_USAGE_TYPE_PGCATALOG,
-	TABLE_USAGE_TYPE_SEQUENCE,
-	TABLE_USAGE_TYPE_USER,
-	TABLE_USAGE_TYPE_USER_REPLICATED,  /* based on a replicated table */
-	TABLE_USAGE_TYPE_MIXED
-} TableUsageType;
 
 /*
  * How relation is accessed in the query
@@ -93,7 +89,6 @@ typedef struct
 	List		*primarynodelist;
 	List		*nodeList;
 	char		baselocatortype;
-	TableUsageType	tableusagetype;		/* track pg_catalog usage */
 	Expr		*en_expr;		/* expression to evaluate at execution time if planner
 						 * can not determine execution nodes */
 	Oid		en_relid;		/* Relation to determine execution nodes */
@@ -188,6 +183,7 @@ extern char ConvertToLocatorType(int disttype);
 extern char *GetRelationHashColumn(RelationLocInfo *rel_loc_info);
 extern RelationLocInfo *GetRelationLocInfo(Oid relid);
 extern RelationLocInfo *CopyRelationLocInfo(RelationLocInfo *src_info);
+extern char GetRelationLocType(Oid relid);
 extern bool IsTableDistOnPrimary(RelationLocInfo *rel_loc_info);
 #ifndef XCP
 extern ExecNodes *GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol,
@@ -211,5 +207,6 @@ extern bool IsModuloColumn(RelationLocInfo *rel_loc_info, char *part_col_name);
 extern bool IsModuloColumnForRelId(Oid relid, char *part_col_name);
 extern char *GetRelationDistColumn(RelationLocInfo * rel_loc_info);
 extern bool IsDistColumnForRelId(Oid relid, char *part_col_name);
+extern void FreeExecNodes(ExecNodes **exec_nodes);
 
 #endif   /* LOCATOR_H */

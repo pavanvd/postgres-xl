@@ -31,6 +31,9 @@
 #include "utils/snapshot.h"
 #include "tcop/pquery.h"
 
+/* GUC parameters */
+extern bool EnforceTwoPhaseCommit;
+
 /* Outputs of handle_response() */
 #define RESPONSE_EOF EOF
 #define RESPONSE_COMPLETE 0
@@ -231,6 +234,7 @@ typedef struct RemoteStmt
 #endif
 
 
+#ifndef XCP
 /* Multinode Executor */
 extern void PGXCNodeBegin(void);
 extern void PGXCNodeSetBeginQuery(char *query_string);
@@ -239,15 +243,8 @@ extern int	PGXCNodeRollback(void);
 extern bool	PGXCNodePrepare(char *gid);
 extern bool	PGXCNodeRollbackPrepared(char *gid);
 extern void PGXCNodeCommitPrepared(char *gid);
-extern bool	PGXCNodeIsImplicit2PC(bool *prepare_local_coord);
-extern int	PGXCNodeImplicitPrepare(GlobalTransactionId prepare_xid, char *gid);
-extern void	PGXCNodeImplicitCommitPrepared(GlobalTransactionId prepare_xid,
-										   GlobalTransactionId commit_xid,
-										   char *gid,
-										   bool is_commit);
+#endif
 
-/* Get list of nodes */
-extern char *PGXCNodeGetNodeList(char *nodestring);
 
 /* Copy command just involves Datanodes */
 #ifdef XCP
@@ -318,6 +315,13 @@ extern void ExecRemoteQueryReScan(RemoteQueryState *node, ExprContext *exprCtxt)
 extern int ParamListToDataRow(ParamListInfo params, char** result);
 
 extern void ExecCloseRemoteStatement(const char *stmt_name, List *nodelist);
+extern void PreCommit_Remote(char *prepareGID, bool preparedLocalNode);
+extern char *PrePrepare_Remote(char *prepareGID, bool localNode, bool implicit);
+extern void PostPrepare_Remote(char *prepareGID, char *nodestring, bool implicit);
+extern bool	PreAbort_Remote(void);
+extern void AtEOXact_Remote(void);
+extern bool IsTwoPhaseCommitRequired(bool localWrite);
+extern bool FinishRemotePreparedTransaction(char *prepareGID, bool commit);
 
 #ifndef XCP
 /* Flags related to temporary objects included in query */
