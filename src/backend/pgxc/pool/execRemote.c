@@ -5577,11 +5577,15 @@ PreCommit_Remote(char *prepareGID, bool preparedLocalNode)
 bool
 PreAbort_Remote(void)
 {
+#ifndef XCP
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
+#endif
 		cancel_query();
 		clear_all_data();
+#ifndef XCP
 	}
+#endif
 
 	if (remoteXactState.status == RXACT_COMMITTED)
 		return false;
@@ -5633,6 +5637,7 @@ PreAbort_Remote(void)
 	return true;
 }
 
+
 char *
 PrePrepare_Remote(char *prepareGID, bool localNode, bool implicit)
 {
@@ -5657,6 +5662,20 @@ PrePrepare_Remote(char *prepareGID, bool localNode, bool implicit)
 void
 PostPrepare_Remote(char *prepareGID, char *nodestring, bool implicit)
 {
+#ifdef XCP
+	/*
+	 * If we are running PREPARE on a datanode we should commit active
+	 * transactions on remote nodes already.
+	 */
+	if (IS_PGXC_DATANODE)
+	{
+		pgxc_node_remote_commit();
+		clear_RemoteXactState();
+		ForgetTransactionNodes();
+		return;
+	}
+#endif
+
 	remoteXactState.preparedLocalNode = true;
 
 	/*

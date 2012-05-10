@@ -2026,8 +2026,10 @@ CommitTransaction(void)
 	 * until we are done with finishing the transaction
 	 */
 	s->topGlobalTransansactionId = s->transactionId;
+#ifndef XCP
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
+#endif
 		XactLocalNodePrepared = false;
 		if (savePrepareGID)
 		{
@@ -2091,7 +2093,9 @@ CommitTransaction(void)
 			else
 				s->auxilliaryTransactionId = InvalidGlobalTransactionId;
 		}
+#ifndef XCP
 	}
+#endif
 #endif
 
 	/*
@@ -2441,13 +2445,21 @@ PrepareTransaction(void)
 			 TransStateAsString(s->state));
 	Assert(s->parent == NULL);
 
+#ifdef XCP
+	if (savePrepareGID)
+		pfree(savePrepareGID);
+	savePrepareGID = MemoryContextStrdup(TopMemoryContext, prepareGID);
+	nodestring = PrePrepare_Remote(savePrepareGID, XactWriteLocalNode, isImplicit);
+#endif
 #ifdef PGXC
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
+#ifndef XCP
 		if (savePrepareGID)
 			pfree(savePrepareGID);
 		savePrepareGID = MemoryContextStrdup(TopMemoryContext, prepareGID);
 		nodestring = PrePrepare_Remote(savePrepareGID, XactWriteLocalNode, isImplicit);
+#endif
 		s->topGlobalTransansactionId = s->transactionId;
 
 		/*
@@ -2683,6 +2695,9 @@ PrepareTransaction(void)
 
 	RESUME_INTERRUPTS();
 
+#ifdef XCP
+	PostPrepare_Remote(savePrepareGID, nodestring, isImplicit);
+#endif
 #ifdef PGXC /* PGXC_DATANODE */
 	/*
 	 * Now also prepare the remote nodes involved in this transaction. We do
@@ -2696,7 +2711,9 @@ PrepareTransaction(void)
 	 */
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
+#ifndef XCP
 		PostPrepare_Remote(savePrepareGID, nodestring, isImplicit);
+#endif
 		if (!isImplicit)
 			s->topGlobalTransansactionId = InvalidGlobalTransactionId;
 		ForgetTransactionLocalNode();
