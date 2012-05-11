@@ -841,9 +841,9 @@ SharedQueueReset(SharedQueue squeue, int consumerIdx)
 		{
 			/* Inform producer the consumer have done the job */
 			cstate->cs_status = CONSUMER_DONE;
-			/* 
-			 * No longer need to receive notifications. If consumer has not 
-			 * connected the latch is not owned 
+			/*
+			 * No longer need to receive notifications. If consumer has not
+			 * connected the latch is not owned
 			 */
 			if (cstate->cs_pid > 0)
 				DisownLatch(&sqsync->sqs_consumer_sync[consumerIdx].cs_latch);
@@ -1012,22 +1012,9 @@ SharedQueueUnBind(SharedQueue squeue)
 			/* is consumer working yet ? */
 			if (cstate->cs_status != CONSUMER_DONE)
 			{
-				/* 
-				 * If consumer has not been connected by that time it means 
-				 * something went wrong. Producer should be cleaning up after 
-				 * error, do not wait for this consumer
-				 */
-				if (cstate->cs_pid == 0)
-				{
-					cstate->cs_status = CONSUMER_DONE;
-					elog(WARNING, "Give up waiting for %s node %d", squeue->sq_key, cstate->cs_node); 
-				}
-				else
-				{
-					c_count++;
-					/* producer will continue waiting */
-					ResetLatch(&sqsync->sqs_producer_latch);
-				}
+				c_count++;
+				/* producer will continue waiting */
+				ResetLatch(&sqsync->sqs_producer_latch);
 			}
 			else
 				elog(LOG, "Done %s node %d, %ld writes and %ld reads, %ld buffer writes, %ld buffer reads, %ld tuples returned to buffer",
@@ -1070,6 +1057,8 @@ SharedQueueRelease(const char *sqname)
 {
 	bool		found;
 	SharedQueue sq;
+
+	elog(LOG, "Shared Queue release: %s", sqname);
 
 	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
 
@@ -1151,6 +1140,7 @@ SharedQueueRelease(const char *sqname)
 		}
 		else
 		{
+			elog(LOG, "Looking for consumer %d in %s", myid, sqname);
 			/* find specified node in the consumer lists */
 			for (i = 0; i < sq->sq_nconsumers; i++)
 			{

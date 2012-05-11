@@ -556,6 +556,10 @@ SetGlobalSession(Oid coordid, int coordpid)
 	int				bCount = 0;
 	int				bPids[MaxBackends];
 
+	/* If nothing changed do nothing */
+	if (MyCoordId == coordid && MyCoordPid == coordpid)
+		return;
+
 	/*
 	 * Need to reset pool manager agent if the backend being assigned to
 	 * different global session or assignment is canceled.

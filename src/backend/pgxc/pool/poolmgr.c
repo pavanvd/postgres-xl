@@ -612,8 +612,8 @@ PoolManagerReset(void)
 
 
 #ifdef XCP
-void 
-PoolManagerSetCommand(PoolCommandType command_type, 
+void
+PoolManagerSetCommand(PoolCommandType command_type,
 					  const char *name, const char *value)
 {
 	int n32, len;
@@ -836,14 +836,14 @@ agent_init(PoolAgent *agent, const char *database, const char *user_name,
 	/*
 	 * Coordinator is starting passing around global session identifier.
 	 * Datanodes send it further using standard SET mechanism
-	 */	
+	 */
 	if (IS_PGXC_COORDINATOR && agent->pid)
 	{
 		StringInfoData	sessionid;
 		/* session parameters should be in upper context */
 		initStringInfo(&sessionid);
 		appendStringInfo(&sessionid, "%s_%d", PGXCNodeName, agent->pid);
-		agent_session_command(agent, POOL_CMD_GLOBAL_SET, "global_session", 
+		agent_session_command(agent, POOL_CMD_GLOBAL_SET, "global_session",
 							  sessionid.data);
 		pfree(sessionid.data);
 	}
@@ -852,7 +852,7 @@ agent_init(PoolAgent *agent, const char *database, const char *user_name,
 	/* Get needed info and allocate memory */
 	PgxcNodeGetOids(&agent->coord_conn_oids, &agent->dn_conn_oids,
 					&agent->num_coord_connections, &agent->num_dn_connections, false);
-	
+
 	agent->coord_connections = (PGXCNodePoolSlot **)
 			palloc0(agent->num_coord_connections * sizeof(PGXCNodePoolSlot *));
 	agent->dn_connections = (PGXCNodePoolSlot **)
@@ -1161,7 +1161,7 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 	int			qtype;
 
 	qtype = pool_getbyte(&agent->port);
-	elog(LOG, "Pooler is handling command %c", (char) qtype); 
+	elog(LOG, "Pooler is handling command %c", (char) qtype);
 	/*
 	 * We can have multiple messages, so handle them all
 	 */
@@ -1431,10 +1431,10 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 					}
 					pq_getmsgend(s);
 					agent_session_command(agent, command_type, name, value);
-					/* 
-					 * restore original characters at positions where we set 
+					/*
+					 * restore original characters at positions where we set
 					 * terminating '\0's
-					 */ 
+					 */
 					if (name)
 						name[name_end] = tmp_name;
 					if (value)
@@ -1577,7 +1577,7 @@ agent_session_command(PoolAgent *agent, PoolCommandType command_type,
 	{
 		/* remove entry */
 		hash_search(table, name, HASH_REMOVE, NULL);
-	}	
+	}
 }
 #else
 static int
@@ -1772,7 +1772,7 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 					PGXCNodeSendSetQuery(slot->conn, agent->session_params);
 				else
 				{
-					/* NULL result means empty table, we can destroy it now */ 
+					/* NULL result means empty table, we can destroy it now */
 					hash_destroy(agent->session_param_htab);
 					agent->session_param_htab = NULL;
 				}
@@ -1788,7 +1788,7 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 					PGXCNodeSendSetQuery(slot->conn, agent->local_params);
 				else
 				{
-					/* NULL result means empty table, we can destroy it now */ 
+					/* NULL result means empty table, we can destroy it now */
 					hash_destroy(agent->local_param_htab);
 					agent->local_param_htab = NULL;
 				}
@@ -1840,7 +1840,7 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 					PGXCNodeSendSetQuery(slot->conn, agent->session_params);
 				else
 				{
-					/* NULL result means empty table, we can destroy it now */ 
+					/* NULL result means empty table, we can destroy it now */
 					hash_destroy(agent->session_param_htab);
 					agent->session_param_htab = NULL;
 				}
@@ -1856,7 +1856,7 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 					PGXCNodeSendSetQuery(slot->conn, agent->local_params);
 				else
 				{
-					/* NULL result means empty table, we can destroy it now */ 
+					/* NULL result means empty table, we can destroy it now */
 					hash_destroy(agent->local_param_htab);
 					agent->local_param_htab = NULL;
 				}
@@ -2092,14 +2092,14 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
 		pfree(agent->local_params);
 		agent->local_params = NULL;
 	}
-	/* 
-	 * It is not a problem to restore environment by running SET commands 
+	/*
+	 * It is not a problem to restore environment by running SET commands
 	 * on newly acquired connections. We may even allow to release connections
 	 * with temporary objects, but additional testing is required.
 	 */
 	if (agent->is_temp && !force_destroy)
 		return;
-#else	
+#else
 	/*
 	 * If there are some session parameters or temporary objects,
 	 * do not put back connections to pool.
@@ -2139,7 +2139,7 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
 		{
 			/* Reset parameters if we going to keep connection in the pool */
 			if (!force_destroy && agent->session_param_htab)
-				PGXCNodeSendSetQuery(slot->conn, "SET SESSION AUTHORIZATION DEFAULT;RESET ALL;SET GLOBAL_SESSION TO NONE;");
+				PGXCNodeSendSetQuery(slot->conn, "DISCARD ALL;");
 			release_connection(agent->pool, slot, agent->dn_conn_oids[i], force_destroy);
 		}
 #else

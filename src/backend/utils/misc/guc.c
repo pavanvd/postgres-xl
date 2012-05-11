@@ -3047,10 +3047,10 @@ static struct config_string ConfigureNamesString[] =
 		{"global_session", PGC_USERSET, UNGROUPED,
 			gettext_noop("Sets the global session identifier."),
 			NULL,
-			GUC_IS_NAME | GUC_REPORT | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_NOT_WHILE_SEC_REST
+			GUC_IS_NAME | GUC_REPORT | GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_NOT_WHILE_SEC_REST
 		},
 		&global_session_string,
-		NULL,
+		"none",
 		check_global_session, assign_global_session, NULL
 	},
 #endif
@@ -6128,13 +6128,13 @@ set_config_option(const char *name, const char *value,
 		{
 			if (IsTransactionBlock())
 				PoolManagerSetCommand(POOL_CMD_LOCAL_SET, name, value);
-			appendStringInfo(&poolcmd, "SET LOCAL %s TO %s", name, 
+			appendStringInfo(&poolcmd, "SET LOCAL %s TO %s", name,
 					(value ? value : "DEFAULT"));
 		}
 		else
 		{
 			PoolManagerSetCommand(POOL_CMD_GLOBAL_SET, name, value);
-			appendStringInfo(&poolcmd, "SET %s TO %s", name, 
+			appendStringInfo(&poolcmd, "SET %s TO %s", name,
 					(value ? value : "DEFAULT"));
 		}
 		step = makeNode(RemoteQuery);

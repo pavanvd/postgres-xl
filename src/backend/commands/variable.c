@@ -621,9 +621,9 @@ check_XactIsoLevel(char **newval, void **extra, GucSource source)
 		 * PGXCTODO - PGXC does not support 9.1 serializable transactions yet
 		 */
 		newXactIsoLevel = XACT_REPEATABLE_READ;
-#else		
+#else
 		newXactIsoLevel = XACT_SERIALIZABLE;
-#endif		
+#endif
 	}
 	else if (strcmp(*newval, "repeatable read") == 0)
 	{
@@ -686,7 +686,7 @@ assign_XactIsoLevel(const char *newval, void *extra)
 	 */
 	if (XactIsoLevel == XACT_SERIALIZABLE)
 		XactIsoLevel = XACT_REPEATABLE_READ;
-#endif	
+#endif
 }
 
 const char *
@@ -956,16 +956,6 @@ check_global_session(char **newval, void **extra, GucSource source)
 	if (*newval == NULL)
 		return true;
 
-	if (!IsTransactionState())
-	{
-		/*
-		 * Can't do catalog lookups, so fail.  The result of this is that
-		 * session_authorization cannot be set in postgresql.conf, which seems
-		 * like a good thing anyway, so we don't work hard to avoid it.
-		 */
-		return false;
-	}
-
 	if (strcmp(*newval, "none") == 0)
 	{
 		/* hardwired translation */
@@ -974,6 +964,16 @@ check_global_session(char **newval, void **extra, GucSource source)
 	}
 	else
 	{
+		if (!IsTransactionState())
+		{
+			/*
+			 * Can't do catalog lookups, so fail.  The result of this is that
+			 * global_session cannot be set in postgresql.conf, which seems
+			 * like a good thing anyway, so we don't work hard to avoid it.
+			 */
+			return false;
+		}
+
 		/*
 		 * Get pointer on '_' character separating coordinator name from pid in the
 		 * global session identifier
