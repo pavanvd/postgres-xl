@@ -1416,20 +1416,24 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 					/* Get the parameter name */
 					name_end = pq_getmsgint(s, 4);
 					if (name_end != -1)
-					{
 						name = (char *) pq_getmsgbytes(s, name_end);
-						tmp_name = name[name_end];
-						name[name_end] = '\0';
-					}
 					/* Get the parameter value */
 					value_end = pq_getmsgint(s, 4);
 					if (value_end != -1)
-					{
 						value = (char *) pq_getmsgbytes(s, value_end);
+					pq_getmsgend(s);
+					/* Name and value should be null-terminated string */
+					if (name)
+					{
+						tmp_name = name[name_end];
+						name[name_end] = '\0';
+					}
+					if (value)
+					{
 						tmp_value = value[value_end];
 						value[value_end] = '\0';
 					}
-					pq_getmsgend(s);
+					/* perform the action */
 					agent_session_command(agent, command_type, name, value);
 					/*
 					 * restore original characters at positions where we set
@@ -2157,8 +2161,18 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
 		 * Release connection.
 		 * If connection has temporary objects on it, destroy connection slot.
 		 */
+#ifdef XCP
+		if (slot)
+		{
+			/* Reset parameters if we going to keep connection in the pool */
+			if (!force_destroy && agent->session_param_htab)
+				PGXCNodeSendSetQuery(slot->conn, "DISCARD ALL;");
+			release_connection(agent->pool, slot, agent->coord_conn_oids[i], force_destroy);
+		}
+#else
 		if (slot)
 			release_connection(agent->pool, slot, agent->coord_conn_oids[i], force_destroy);
+#endif
 		agent->coord_connections[i] = NULL;
 	}
 

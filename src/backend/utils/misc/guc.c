@@ -5395,6 +5395,13 @@ set_config_option(const char *name, const char *value,
 	int			elevel;
 	bool		prohibitValueChange = false;
 	bool		makeDefault;
+#ifdef XCP
+	bool		send_to_nodes = false;
+
+	/* Determine now, because source may be changed below in the function */
+	if (source == PGC_S_SESSION && (IS_PGXC_DATANODE || !IsConnFromCoord()))
+		send_to_nodes = true;
+#endif
 
 #ifdef PGXC
 	/*
@@ -6117,7 +6124,7 @@ set_config_option(const char *name, const char *value,
 		ReportGUCOption(record);
 
 #ifdef XCP
-	if (source == PGC_S_SESSION)
+	if (send_to_nodes)
 	{
 		RemoteQuery    *step;
 		StringInfoData 	poolcmd;
