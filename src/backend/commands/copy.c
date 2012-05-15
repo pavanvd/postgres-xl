@@ -2379,6 +2379,24 @@ CopyFrom(CopyState cstate)
 #endif
 	}
 
+#ifdef XCP
+	/*
+	 * Now if line buffer contains some date that is an EOF marker. We should
+	 * send it to all the participating datanodes
+	 */
+	if (cstate->line_buf.len > 0)
+	{
+		if (DataNodeCopyIn(cstate->line_buf.data,
+						   cstate->line_buf.len,
+						   getLocatorNodeCount(cstate->locator),
+					   (PGXCNodeHandle **) getLocatorNodeMap(cstate->locator)))
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_EXCEPTION),
+						 errmsg("Copy failed on a data node")));
+
+	}
+#endif
+
 	/* Done, clean up */
 	error_context_stack = errcontext.previous;
 
@@ -3867,6 +3885,15 @@ CopyReadBinaryAttribute(CopyState cstate,
 		ereport(ERROR,
 				(errcode(ERRCODE_BAD_COPY_FILE_FORMAT),
 				 errmsg("unexpected EOF in COPY data")));
+#ifdef XCP
+	if (IS_PGXC_COORDINATOR)
+	{
+		/* Get the field size from Datanode */
+		enlargeStringInfo(&cstate->line_buf, sizeof(int32));
+		nSize = htonl(fld_size);
+		appendBinaryStringInfo(&cstate->line_buf, (char *) &nSize, sizeof(int32));
+	}
+#endif
 	if (fld_size == -1)
 	{
 		*isnull = true;
@@ -3877,6 +3904,7 @@ CopyReadBinaryAttribute(CopyState cstate,
 				(errcode(ERRCODE_BAD_COPY_FILE_FORMAT),
 				 errmsg("invalid field size")));
 #ifdef PGXC
+#ifndef XCP
 	if (IS_PGXC_COORDINATOR)
 	{
 		/* Get the field size from Datanode */
@@ -3884,6 +3912,7 @@ CopyReadBinaryAttribute(CopyState cstate,
 		nSize = htonl(fld_size);
 		appendBinaryStringInfo(&cstate->line_buf, (char *) &nSize, sizeof(int32));
 	}
+#endif
 #endif
 
 	/* reset attribute_buf to empty, and load raw data in it */
