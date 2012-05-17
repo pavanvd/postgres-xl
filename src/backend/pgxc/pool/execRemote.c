@@ -441,6 +441,10 @@ HandleCopyOutComplete(ResponseCombiner *combiner)
 HandleCopyOutComplete(RemoteQueryState *combiner)
 #endif
 {
+#ifdef XCP
+	if (combiner->request_type == REQUEST_TYPE_ERROR)
+		return;
+#endif
 	if (combiner->request_type == REQUEST_TYPE_NOT_DEFINED)
 		combiner->request_type = REQUEST_TYPE_COPY_OUT;
 	if (combiner->request_type != REQUEST_TYPE_COPY_OUT)
@@ -512,6 +516,10 @@ HandleRowDescription(ResponseCombiner *combiner, char *msg_body, size_t len)
 HandleRowDescription(RemoteQueryState *combiner, char *msg_body, size_t len)
 #endif
 {
+#ifdef XCP
+	if (combiner->request_type == REQUEST_TYPE_ERROR)
+		return false;
+#endif
 	if (combiner->request_type == REQUEST_TYPE_NOT_DEFINED)
 		combiner->request_type = REQUEST_TYPE_QUERY;
 	if (combiner->request_type != REQUEST_TYPE_QUERY)
@@ -565,6 +573,10 @@ HandleCopyIn(ResponseCombiner *combiner)
 HandleCopyIn(RemoteQueryState *combiner)
 #endif
 {
+#ifdef XCP
+	if (combiner->request_type == REQUEST_TYPE_ERROR)
+		return;
+#endif
 	if (combiner->request_type == REQUEST_TYPE_NOT_DEFINED)
 		combiner->request_type = REQUEST_TYPE_COPY_IN;
 	if (combiner->request_type != REQUEST_TYPE_COPY_IN)
@@ -591,6 +603,10 @@ HandleCopyOut(ResponseCombiner *combiner)
 HandleCopyOut(RemoteQueryState *combiner)
 #endif
 {
+#ifdef XCP
+	if (combiner->request_type == REQUEST_TYPE_ERROR)
+		return;
+#endif
 	if (combiner->request_type == REQUEST_TYPE_NOT_DEFINED)
 		combiner->request_type = REQUEST_TYPE_COPY_OUT;
 	if (combiner->request_type != REQUEST_TYPE_COPY_OUT)
@@ -617,6 +633,10 @@ HandleCopyDataRow(ResponseCombiner *combiner, char *msg_body, size_t len)
 HandleCopyDataRow(RemoteQueryState *combiner, char *msg_body, size_t len)
 #endif
 {
+#ifdef XCP
+	if (combiner->request_type == REQUEST_TYPE_ERROR)
+		return;
+#endif
 	if (combiner->request_type == REQUEST_TYPE_NOT_DEFINED)
 		combiner->request_type = REQUEST_TYPE_COPY_OUT;
 
@@ -649,6 +669,10 @@ HandleDataRow(ResponseCombiner *combiner, char *msg_body, size_t len, int node)
 	/* We expect previous message is consumed */
 	Assert(combiner->currentRow == NULL);
 
+#ifdef XCP
+	if (combiner->request_type == REQUEST_TYPE_ERROR)
+		return;
+#endif
 	if (combiner->request_type != REQUEST_TYPE_QUERY)
 	{
 		/* Inconsistent responses */
@@ -2825,13 +2849,6 @@ pgxc_node_remote_abort(void)
 	for (i = 0; i < write_conn_count + read_conn_count; i++)
 	{
 		RemoteXactNodeStatus status = remoteXactState.remoteNodeStatus[i];
-
-#ifdef XCP
-		/*
-		 * There could be pending data on the connection, we should read them in
-		 */
-		CHECK_OWNERSHIP(connections[i], NULL);
-#endif
 
 		/* Clean the previous errors, if any */
 		connections[i]->error = NULL;
@@ -5577,13 +5594,99 @@ PreCommit_Remote(char *prepareGID, bool preparedLocalNode)
 bool
 PreAbort_Remote(void)
 {
-#ifndef XCP
+#ifdef XCP
+	/*
+	 * We are about to abort current transaction, and there could be an
+	 * unexpected error leaving the node connection in some state requiring
+	 * clean up, like COPY or pending query results.
+	 * If we are running copy we should send down CopyFail message and read
+	 * all possible incoming messages, there could be copy rows (if running
+	 * COPY TO) ErrorResponse, ReadyForQuery.
+	 * If there are pending results (connection state is DN_CONNECTION_STATE_QUERY)
+	 * we just need to read them in and discard, all necessary commands are
+	 * already sent. The end of input could be CommandComplete or
+	 * PortalSuspended, in either case subsequent ROLLBACK closes the portal.
+	 */
+	PGXCNodeAllHandles *all_handles;
+	PGXCNodeHandle	   *clean_nodes[NumCoords + NumDataNodes];
+	int					node_count = 0;
+	int 				i;
+
+	all_handles = get_current_handles();
+	/*
+	 * Find "dirty" coordinator connections.
+	 * COPY is never running on a coordinator connections, we just check for
+	 * pending data.
+	 */
+	for (i = 0; i < all_handles->co_conn_count; i++)
+	{
+		PGXCNodeHandle *handle = all_handles->coord_handles[i];
+
+		if (handle->state == DN_CONNECTION_STATE_QUERY)
+		{
+			/*
+			 * Forget previous combiner if any since input will be handled by
+			 * different one.
+			 */
+			handle->combiner = NULL;
+			clean_nodes[node_count++] = handle;
+		}
+	}
+
+	/*
+	 * The same for data nodes, but cancel COPY if it is running.
+	 */
+	for (i = 0; i < all_handles->dn_conn_count; i++)
+	{
+		PGXCNodeHandle *handle = all_handles->datanode_handles[i];
+
+		if (handle->state == DN_CONNECTION_STATE_QUERY)
+		{
+			/*
+			 * Forget previous combiner if any since input will be handled by
+			 * different one.
+			 */
+			handle->combiner = NULL;
+			clean_nodes[node_count++] = handle;
+		}
+		else if (handle->state == DN_CONNECTION_STATE_COPY_IN ||
+				handle->state == DN_CONNECTION_STATE_COPY_OUT)
+		{
+			DataNodeCopyEnd(handle, true);
+			clean_nodes[node_count++] = handle;
+		}
+	}
+
+	pfree_pgxc_all_handles(all_handles);
+
+	/*
+	 * Now read and discard any data from the connections found "dirty"
+	 */
+	if (node_count > 0)
+	{
+		ResponseCombiner combiner;
+
+		InitResponseCombiner(&combiner, node_count, COMBINE_TYPE_NONE);
+		/*
+		 * Make sure there are zeroes in unused fields
+		 */
+		memset(&combiner, 0, sizeof(ScanState));
+		combiner.connections = clean_nodes;
+		combiner.conn_count = node_count;
+		combiner.request_type = REQUEST_TYPE_ERROR;
+
+		pgxc_connections_cleanup(&combiner);
+
+		/* prevent pfree'ing local variable */
+		combiner.connections = NULL;
+
+		CloseCombiner(&combiner);
+	}
+#else
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
-#endif
 		cancel_query();
 		clear_all_data();
-#ifndef XCP
 	}
 #endif
 

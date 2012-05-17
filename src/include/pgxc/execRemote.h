@@ -54,6 +54,10 @@ typedef enum
 	REQUEST_TYPE_QUERY,			/* Row description response */
 	REQUEST_TYPE_COPY_IN,		/* Copy In response */
 	REQUEST_TYPE_COPY_OUT		/* Copy Out response */
+#ifdef XCP
+	,
+	REQUEST_TYPE_ERROR			/* Error, ignore responses */
+#endif
 }	RequestType;
 
 /* Combines results of INSERT statements using multiple values */

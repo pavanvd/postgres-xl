@@ -215,7 +215,7 @@ InitMultinodeExecutor(bool is_force)
 char *
 #ifdef XCP
 PGXCNodeConnStr(char *host, int port, char *dbname,
-				char *user, char *pgoptions, char *remote_type, 
+				char *user, char *pgoptions, char *remote_type,
 				char *parent_node)
 #else
 PGXCNodeConnStr(char *host, int port, char *dbname,
@@ -822,6 +822,7 @@ release_handles(void)
 	coord_count = 0;
 }
 
+#ifndef XCP
 /*
  * cancel a running query due to error while processing rows
  */
@@ -829,7 +830,7 @@ void
 cancel_query(void)
 {
 	int			i;
-	int 			dn_cancel[NumDataNodes];
+	int 		dn_cancel[NumDataNodes];
 	int			co_cancel[NumCoords];
 	int			dn_count = 0;
 	int			co_count = 0;
@@ -951,6 +952,7 @@ clear_all_data(void)
 		handle->error = NULL;
 	}
 }
+#endif
 
 /*
  * Ensure specified amount of data can fit to the incoming buffer and
@@ -2219,7 +2221,7 @@ get_current_handles(void)
 	result->primary_handle = NULL;
 	result->co_conn_count = 0;
 	result->dn_conn_count = 0;
-	
+
 	result->datanode_handles = (PGXCNodeHandle **)
 							   palloc(NumDataNodes * sizeof(PGXCNodeHandle *));
 	if (!result->datanode_handles)

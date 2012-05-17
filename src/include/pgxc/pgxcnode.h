@@ -127,9 +127,10 @@ extern PGXCNodeAllHandles *get_current_handles(void);
 extern void pfree_pgxc_all_handles(PGXCNodeAllHandles *handles);
 
 extern void release_handles(void);
+#ifndef XCP
 extern void cancel_query(void);
 extern void clear_all_data(void);
-
+#endif
 
 extern int get_transaction_nodes(PGXCNodeHandle ** connections,
 								  char client_conn_type,
