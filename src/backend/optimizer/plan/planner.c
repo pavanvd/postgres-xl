@@ -877,10 +877,37 @@ inheritance_planner(PlannerInfo *root)
 			continue;
 
 #ifdef XCP
-		/* Gather distributed data for coordinator table */
-		if (root->distribution == NULL && subroot.distribution != NULL)
-			subplan = (Plan *) make_remotesubplan(root, subplan, NULL,
-												  subroot.distribution, NULL);
+		/*
+		 * All subplans should have the same distribution, except may be
+		 * restriction. At the moment this is always the case but if this
+		 * is changed we should handle inheritance differently.
+		 * Effectively we want to push the modify table down to data nodes, if
+		 * it is running against distributed inherited tables. To achieve this
+		 * we are building up distribution of the query from distributions of
+		 * the subplans.
+		 * If subplans are restricted to different nodes we should union these
+		 * restrictions, if at least one subplan is not restricted we should
+		 * not restrict parent plan.
+		 * After returning a plan from the function valid root->distribution
+		 * value will force proper RemoteSubplan node on top of it.
+		 */
+		if (root->distribution == NULL)
+			root->distribution = subroot.distribution;
+		else if (!bms_is_empty(root->distribution->restrictNodes))
+		{
+			if (bms_is_empty(subroot.distribution->restrictNodes))
+			{
+				bms_free(root->distribution->restrictNodes);
+				root->distribution->restrictNodes = NULL;
+			}
+			else
+			{
+				root->distribution->restrictNodes = bms_join(
+						root->distribution->restrictNodes,
+						subroot.distribution->restrictNodes);
+				subroot.distribution->restrictNodes = NULL;
+			}
+		}
 #endif
 		/* Save rtable from first rel for use below */
 		if (subplans == NIL)
