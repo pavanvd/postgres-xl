@@ -135,6 +135,58 @@ static const unsigned int xc_mod_r[][6] =
 };
 
 
+#ifdef XCP
+/*
+ * GetAnyDataNode
+ * Pick any data node from given set, but try a preferred node
+ */
+int
+GetAnyDataNode(Bitmapset *nodes)
+{
+	Bitmapset  *preferred = NULL;
+	int			i, nodeid;
+	int			nmembers = 0;
+	int			members[NumDataNodes];
+
+	for (i = 0; i < num_preferred_data_nodes; i++)
+	{
+		nodeid = PGXCNodeGetNodeId(preferred_data_node[i],
+								   PGXC_NODE_DATANODE);
+
+		/* OK, found one */
+		if (bms_is_member(nodeid, nodes))
+			preferred = bms_add_member(preferred, nodeid);
+	}
+
+	/*
+	 * If no preferred data nodes or they are not in the desired set, pick up
+	 * from the original set.
+	 */
+	if (bms_is_empty(preferred))
+		preferred = bms_copy(nodes);
+
+	/*
+	 * Load balance.
+	 * We can not get item from the set, convert it to array
+	 */
+	while ((nodeid = bms_first_member(preferred)) >= 0)
+		members[nmembers++] = nodeid;
+	bms_free(preferred);
+
+	/* If there is a single member nothing to balance */
+	if (nmembers == 1)
+		return members[0];
+
+	/*
+	 * In general, the set may contain any number of nodes, and if we save
+	 * previous returned index for load balancing the distribution won't be
+	 * flat, because small set will probably reset saved value, and lower
+	 * indexes will be picked up more often.
+	 * So we just get a random value from 0..nmembers-1.
+	 */
+	return members[((unsigned int) random()) % nmembers];
+}
+#else
 /*
  * GetAnyDataNode
  * Pick any data node from given list, but try a preferred node
@@ -167,6 +219,8 @@ GetAnyDataNode(List *relNodes)
 	/* Nothing found? Return the 1st one */
 	return lappend_int(NULL, 0);
 }
+#endif
+
 
 /*
  * compute_modulo

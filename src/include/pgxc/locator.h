@@ -197,7 +197,11 @@ extern int	GetRoundRobinNode(Oid relid);
 extern bool IsHashDistributable(Oid col_type);
 extern List *GetAllDataNodes(void);
 extern List *GetAllCoordNodes(void);
+#ifdef XCP
+extern int GetAnyDataNode(Bitmapset *nodes);
+#else
 extern List *GetAnyDataNode(List *relNodes);
+#endif
 extern void RelationBuildLocator(Relation rel);
 extern void FreeRelationLocInfo(RelationLocInfo *relationLocInfo);
 
