@@ -1804,8 +1804,11 @@ adjustSubplanDistribution(PlannerInfo *root, Distribution *pathd,
 				common = bms_copy(subd->nodes);
 			}
 
-			/* XXX load balance */
-			node = bms_first_member(common);
+			/*
+			 * Check if any of the common nodes is preferred and choose one
+			 * of the preferred
+			 */
+			node = GetAnyDataNode(common);
 			bms_free(common);
 
 			/* set restriction for the subplan */
