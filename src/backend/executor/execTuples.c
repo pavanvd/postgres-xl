@@ -792,7 +792,7 @@ ExecCopySlotDatarow(TupleTableSlot *slot, MemoryContext tmpcxt)
 
 		/* copy data to the buffer */
 		datarow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + buf.len);
-		datarow->msgnode = PGXCNodeId;
+		datarow->msgnode = InvalidOid;
 		datarow->msglen = buf.len;
 		memcpy(datarow->msg, buf.data, buf.len);
 		pfree(buf.data);

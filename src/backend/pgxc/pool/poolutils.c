@@ -26,6 +26,7 @@
 #include "pgxc/pgxcnode.h"
 #include "access/gtm.h"
 #include "access/xact.h"
+#include "catalog/pgxc_node.h"
 #include "commands/dbcommands.h"
 #include "commands/prepare.h"
 #include "storage/procarray.h"
@@ -88,23 +89,41 @@ pgxc_pool_check(PG_FUNCTION_ARGS)
 Datum
 pgxc_pool_reload(PG_FUNCTION_ARGS)
 {
+#ifndef XCP
 	MemoryContext old_context;
 
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to manage pooler"))));
+#endif
 
 	if (IsTransactionBlock())
 		ereport(ERROR,
 				(errcode(ERRCODE_ACTIVE_SQL_TRANSACTION),
 				 errmsg("pgxc_pool_reload cannot run inside a transaction block")));
 
-#ifndef XCP
+#ifdef XCP
+	/* Session is being reloaded, drop prepared and temporary objects */
+	DropAllPreparedStatements();
+
+	/* Reinitialize session, it updates the shared memory table */
+	InitMultinodeExecutor(true);
+
+	/* Be sure it is done consistently */
+	while (!PoolManagerCheckConnectionInfo())
+	{
+		/* Reload connection information in pooler */
+		PoolManagerReloadConnectionInfo();
+	}
+
+	/* Signal other sessions to reconnect to pooler if have privileges */
+	if (superuser())
+		ReloadConnInfoOnBackends();
+#else
 	/* A datanode has no pooler active, so do not bother about that */
 	if (IS_PGXC_DATANODE)
 		PG_RETURN_BOOL(true);
-#endif
 
 	/* Take a lock on pooler to forbid any action during reload */
 	PoolManagerLock(true);
@@ -147,6 +166,7 @@ pgxc_pool_reload(PG_FUNCTION_ARGS)
 	PoolManagerReconnect();
 
 	MemoryContextSwitchTo(old_context);
+#endif
 
 	PG_RETURN_BOOL(true);
 }
@@ -298,6 +318,17 @@ CleanConnection(CleanConnStmt *stmt)
 	foreach(nodelist_item, stmt->nodes)
 	{
 		char *node_name = strVal(lfirst(nodelist_item));
+#ifdef XCP
+		char node_type = PGXC_NODE_NONE;
+		stmt_nodes = lappend_int(stmt_nodes,
+								 PGXCNodeGetNodeIdFromName(node_name,
+														   &node_type));
+		if (node_type == PGXC_NODE_NONE)
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("PGXC Node %s: object not defined",
+									node_name)));
+#else
 		Oid nodeoid = get_pgxc_nodeoid(node_name);
 
 		if (!OidIsValid(nodeoid))
@@ -308,6 +339,7 @@ CleanConnection(CleanConnStmt *stmt)
 
 		stmt_nodes = lappend_int(stmt_nodes,
 								 PGXCNodeGetNodeId(nodeoid, get_pgxc_nodetype(nodeoid)));
+#endif
 	}
 
 	/* Build lists to be sent to Pooler Manager */

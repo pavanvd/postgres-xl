@@ -100,7 +100,7 @@ extern void InitMultinodeExecutor(bool is_force);
 /* Open/close connection routines (invoked from Pool Manager) */
 #ifdef XCP
 extern char *PGXCNodeConnStr(char *host, int port, char *dbname, char *user,
-				 char *pgoptions, char *remote_type, char *parent_node);
+							 char *remote_type, char *parent_node);
 #else
 extern char *PGXCNodeConnStr(char *host, int port, char *dbname, char *user,
 	                         char *pgoptions, char *remote_type);
@@ -116,9 +116,14 @@ extern void PGXCNodeCleanAndRelease(int code, Datum arg);
 extern PGXCNodeHandle *get_any_handle(List *datanodelist);
 #endif
 /* Look at information cached in node handles */
+#ifdef XCP
+extern int PGXCNodeGetNodeId(Oid nodeoid, char *node_type);
+extern int PGXCNodeGetNodeIdFromName(char *node_name, char *node_type);
+#else
 extern int PGXCNodeGetNodeId(Oid nodeoid, char node_type);
-extern Oid PGXCNodeGetNodeOid(int nodeid, char node_type);
 extern int PGXCNodeGetNodeIdFromName(char *node_name, char node_type);
+#endif
+extern Oid PGXCNodeGetNodeOid(int nodeid, char node_type);
 
 extern PGXCNodeAllHandles *get_handles(List *datanodelist, List *coordlist, bool is_query_coord_only);
 #ifdef XCP

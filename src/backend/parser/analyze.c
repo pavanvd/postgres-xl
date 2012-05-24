@@ -2308,7 +2308,9 @@ transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
 	List		*raw_parsetree_list;
 	ListCell	*raw_parsetree_item;
 	char		*nodename;
+#ifndef XCP
 	Oid			nodeoid;
+#endif
 	int			nodeIndex;
 	char		nodetype;
 
@@ -2327,6 +2329,15 @@ transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
 
 	/* There is a single element here */
 	nodename = strVal(linitial(nodelist));
+#ifdef XCP
+	nodetype = PGXC_NODE_NONE;
+	nodeIndex = PGXCNodeGetNodeIdFromName(nodename, &nodetype);
+	if (nodetype == PGXC_NODE_NONE)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("PGXC Node %s: object not defined",
+						nodename)));
+#else
 	nodeoid = get_pgxc_nodeoid(nodename);
 
 	if (!OidIsValid(nodeoid))
@@ -2338,6 +2349,7 @@ transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
 	/* Get node type and index */
 	nodetype = get_pgxc_nodetype(nodeoid);
 	nodeIndex = PGXCNodeGetNodeId(nodeoid, get_pgxc_nodetype(nodeoid));
+#endif
 
 	/* Check if node is requested is the self-node or not */
 	if (nodetype == PGXC_NODE_COORDINATOR && nodeIndex == PGXCNodeId - 1)

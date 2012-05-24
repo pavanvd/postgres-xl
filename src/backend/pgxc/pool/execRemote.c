@@ -659,20 +659,19 @@ HandleCopyDataRow(RemoteQueryState *combiner, char *msg_body, size_t len)
 
 /*
  * Handle DataRow ('D') message from a data node connection
- * The function returns true if buffer can accept more data rows.
- * Caller must stop reading if function returns false
+ * The function returns true if buffer contains row or false if it has been
+ * skipped
  */
 #ifdef XCP
 static bool
-HandleDataRow(ResponseCombiner *combiner, char *msg_body, size_t len, int node)
+HandleDataRow(ResponseCombiner *combiner, char *msg_body, size_t len, Oid node)
 {
 	/* We expect previous message is consumed */
 	Assert(combiner->currentRow == NULL);
 
-#ifdef XCP
 	if (combiner->request_type == REQUEST_TYPE_ERROR)
-		return;
-#endif
+		return false;
+
 	if (combiner->request_type != REQUEST_TYPE_QUERY)
 	{
 		/* Inconsistent responses */
@@ -1077,7 +1076,7 @@ BufferConnection(PGXCNodeHandle *conn)
 			list_length(combiner->rowBuffer) > 0)
 	{
 		RemoteDataRow dataRow = (RemoteDataRow) linitial(combiner->rowBuffer);
-		if (dataRow->msgnode != PGXCNodeGetNodeId(conn->nodeoid, PGXC_NODE_DATANODE))
+		if (dataRow->msgnode != conn->nodeoid)
 			combiner->tapemarks[combiner->current_conn] = list_tail(combiner->rowBuffer);
 	}
 
@@ -1155,9 +1154,9 @@ BufferConnection(PGXCNodeHandle *conn)
 			{
 				combiner->connections[combiner->current_conn] = NULL;
 				if (combiner->tapenodes == NULL)
-					combiner->tapenodes = (int*) palloc0(combiner->conn_count * sizeof(int));
-				combiner->tapenodes[combiner->current_conn] =
-						PGXCNodeGetNodeId(conn->nodeoid, PGXC_NODE_DATANODE);
+					combiner->tapenodes = (Oid *)
+							palloc0(combiner->conn_count * sizeof(Oid));
+				combiner->tapenodes[combiner->current_conn] = conn->nodeoid;
 			}
 			else
 			{
@@ -1360,7 +1359,7 @@ FetchTuple(ResponseCombiner *combiner)
 {
 	PGXCNodeHandle *conn;
 	TupleTableSlot *slot;
-	int 			nodenum;
+	Oid 			nodeOid;
 
 	/*
 	 * Case if we run local subplan.
@@ -1420,9 +1419,9 @@ FetchTuple(ResponseCombiner *combiner)
 	if (combiner->merge_sort)
 	{
 		Assert(conn || combiner->tapenodes);
-		nodenum = conn ? PGXCNodeGetNodeId(conn->nodeoid, PGXC_NODE_DATANODE) :
-				combiner->tapenodes[combiner->current_conn];
-		Assert(nodenum >= 0 && nodenum < NumDataNodes);
+		nodeOid = conn ? conn->nodeoid :
+						 combiner->tapenodes[combiner->current_conn];
+		Assert(OidIsValid(nodeOid));
 	}
 
 	/*
@@ -1441,7 +1440,7 @@ FetchTuple(ResponseCombiner *combiner)
 			ListCell *lc;
 			ListCell *prev;
 
-			elog(LOG, "Getting buffered tuple from node %d", nodenum);
+			elog(LOG, "Getting buffered tuple from node %x", nodeOid);
 
 			prev = combiner->tapemarks[combiner->current_conn];
 			if (prev)
@@ -1455,7 +1454,7 @@ FetchTuple(ResponseCombiner *combiner)
 				while((lc = lnext(prev)) != NULL)
 				{
 					dataRow = (RemoteDataRow) lfirst(lc);
-					if (dataRow->msgnode == nodenum)
+					if (dataRow->msgnode == nodeOid)
 					{
 						combiner->currentRow = dataRow;
 						break;
@@ -1470,7 +1469,7 @@ FetchTuple(ResponseCombiner *combiner)
 				 */
 				lc = list_head(combiner->rowBuffer);
 				dataRow = (RemoteDataRow) lfirst(lc);
-				if (dataRow->msgnode == nodenum)
+				if (dataRow->msgnode == nodeOid)
 					combiner->currentRow = dataRow;
 				else
 					lc = NULL;
@@ -1491,7 +1490,7 @@ FetchTuple(ResponseCombiner *combiner)
 					if (combiner->tapemarks[i] == lc)
 						combiner->tapemarks[i] = prev;
 				}
-				elog(LOG, "Found buffered tuple from node %d", nodenum);
+				elog(LOG, "Found buffered tuple from node %x", nodeOid);
 				combiner->rowBuffer = list_delete_cell(combiner->rowBuffer,
 													   lc, prev);
 			}
@@ -1511,7 +1510,7 @@ FetchTuple(ResponseCombiner *combiner)
 	if (combiner->currentRow)
 	{
 		Assert(!combiner->merge_sort ||
-			   combiner->currentRow->msgnode == nodenum);
+			   combiner->currentRow->msgnode == nodeOid);
 		slot = combiner->ss.ps.ps_ResultTupleSlot;
 		CopyDataRowTupleToSlot(combiner, slot);
 		return slot;
@@ -1949,8 +1948,7 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
 				Assert(conn->have_row_desc);
 #endif
 				/* Do not return if data row has not been actually handled */
-				if (HandleDataRow(combiner, msg, msg_len,
-						PGXCNodeGetNodeId(conn->nodeoid, PGXC_NODE_DATANODE)))
+				if (HandleDataRow(combiner, msg, msg_len, conn->nodeoid))
 					return RESPONSE_DATAROW;
 				break;
 			case 's':			/* PortalSuspended */
@@ -2320,7 +2318,11 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 			if (pgxc_node_send_query(connections[i], generate_begin_command()))
 				return EOF;
 
+#ifdef XCP
+			con[j++] = PGXCNodeGetNodeId(connections[i]->nodeoid, &node_type);
+#else
 			con[j++] = PGXCNodeGetNodeId(connections[i]->nodeoid, node_type);
+#endif
 			/*
 			 * Register the node as a participant in the transaction. The
 			 * caller should tell us if the node may do any write activitiy
@@ -3983,11 +3985,13 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection,
 		int	fetch = 0;
 		bool	prepared = false;
 
+#ifndef XCP
 		/* if prepared statement is referenced see if it is already exist */
 		if (step->statement)
 			prepared = ActivateDatanodeStatementOnNode(step->statement,
 													   PGXCNodeGetNodeId(connection->nodeoid,
 																		 PGXC_NODE_DATANODE));
+#endif
 		/*
 		 * execute and fetch rows only if they will be consumed
 		 * immediately by the sorter
@@ -5986,6 +5990,19 @@ FinishRemotePreparedTransaction(char *prepareGID, bool commit)
 	nodename = strtok(nodestring, ",");
 	while (nodename != NULL)
 	{
+#ifdef XCP
+		int		nodeIndex;
+		char	nodetype;
+
+		/* Get node type and index */
+		nodetype = PGXC_NODE_NONE;
+		nodeIndex = PGXCNodeGetNodeIdFromName(nodename, &nodetype);
+		if (nodetype == PGXC_NODE_NONE)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("PGXC Node %s: object not defined",
+							nodename)));
+#else
 		Oid		nodeoid;
 		int		nodeIndex;
 		char	nodetype;
@@ -6001,6 +6018,7 @@ FinishRemotePreparedTransaction(char *prepareGID, bool commit)
 		/* Get node type and index */
 		nodetype = get_pgxc_nodetype(nodeoid);
 		nodeIndex = PGXCNodeGetNodeId(nodeoid, get_pgxc_nodetype(nodeoid));
+#endif
 
 		/* Check if node is requested is the self-node or not */
 		if (nodetype == PGXC_NODE_COORDINATOR)
@@ -7065,7 +7083,7 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 	ResponseCombiner   *combiner = (ResponseCombiner *) node;
 	RemoteSubplan  	   *plan = (RemoteSubplan *) combiner->ss.ps.plan;
 	Oid        		   *paramtypes = NULL;
-	GlobalTransactionId gxid;
+	GlobalTransactionId gxid = InvalidGlobalTransactionId;
 	Snapshot			snapshot;
 	TimestampTz			timestamp;
 	int 				i;
@@ -7107,14 +7125,24 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 		combiner->current_conn = 0;
 	}
 
-	gxid = GetCurrentTransactionId();
-	if (!GlobalTransactionIdIsValid(gxid))
+	/*
+	 * If we are getting xid on a datanode we may fall into locking problem.
+	 * When xid is allocated by a session it is locked but a datanode may run
+	 * multiple session within the same transaction.
+	 * Missing xid should not be a problem on a secondary datanode session,
+	 * it is only reading data.
+	 */
+	if (IS_PGXC_COORDINATOR)
 	{
-		combiner->conn_count = 0;
-		pfree(combiner->connections);
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Failed to get next transaction ID")));
+		gxid = GetCurrentTransactionId();
+		if (!GlobalTransactionIdIsValid(gxid))
+		{
+			combiner->conn_count = 0;
+			pfree(combiner->connections);
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to get next transaction ID")));
+		}
 	}
 
 	/* extract parameter data types */

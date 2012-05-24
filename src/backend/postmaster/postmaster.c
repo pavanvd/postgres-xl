@@ -3448,9 +3448,6 @@ BackendStartup(Port *port)
 {
 	Backend    *bn;				/* for backend cleanup */
 	pid_t		pid;
-#ifdef XCP
-	PoolHandle *pool_handle;
-#endif
 
 	/*
 	 * Create backend data structure.  Better before the fork() so we can

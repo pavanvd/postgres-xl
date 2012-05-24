@@ -84,6 +84,14 @@ typedef struct
 } PGXCNodeConnectionInfo;
 
 #ifdef XCP
+/* Handle to the pool manager (Session's side) */
+typedef struct
+{
+	/* communication channel */
+	PoolPort	port;
+} PoolHandle;
+
+
 typedef struct
 {
 	NameData name;
@@ -116,8 +124,13 @@ static int	is_pool_locked = false;
 static int	server_fd = -1;
 
 static int	node_info_check(PoolAgent *agent);
+#ifdef XCP
+static void agent_init(PoolAgent *agent, const char *database,
+						const char *user_name);
+#else
 static void agent_init(PoolAgent *agent, const char *database, const char *user_name,
 	                   const char *pgoptions);
+#endif
 static void agent_destroy(PoolAgent *agent);
 static void agent_create(void);
 static void agent_handle_input(PoolAgent *agent, StringInfo s);
@@ -133,14 +146,26 @@ static int agent_set_command(PoolAgent *agent,
 							 PoolCommandType command_type);
 static int agent_temp_command(PoolAgent *agent);
 #endif
+#ifdef XCP
+static DatabasePool *create_database_pool(const char *database,
+										   const char *user_name);
+#else
 static DatabasePool *create_database_pool(const char *database, const char *user_name, const char *pgoptions);
+#endif
 static void insert_database_pool(DatabasePool *pool);
 static int	destroy_database_pool(const char *database, const char *user_name);
 static void reload_database_pools(PoolAgent *agent);
+#ifdef XCP
+static DatabasePool *find_database_pool(const char *database,
+										 const char *user_name);
+#else
 static DatabasePool *find_database_pool(const char *database, const char *user_name, const char *pgoptions);
+#endif
 static DatabasePool *remove_database_pool(const char *database, const char *user_name);
 static int *agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist);
+#ifndef XCP
 static int send_local_commands(PoolAgent *agent, List *datanodelist, List *coordlist);
+#endif
 static int cancel_query_on_connections(PoolAgent *agent, List *datanodelist, List *coordlist);
 static PGXCNodePoolSlot *acquire_connection(DatabasePool *dbPool, Oid node);
 static void agent_release_connections(PoolAgent *agent, bool force_destroy);
@@ -349,16 +374,29 @@ PoolManagerDestroy(void)
 }
 
 
+#ifdef XCP
+/*
+ * Connect to the pooler process
+ */
+static void
+#else
 /*
  * Get handle to pool manager
  * Invoked from Postmaster's main loop just before forking off new session
  * Returned PoolHandle structure will be inherited by session process
  */
 PoolHandle *
+#endif
 GetPoolManagerHandle(void)
 {
 	PoolHandle *handle;
 	int			fdsock;
+
+#ifdef XCP
+	if (poolHandle)
+		/* already connected */
+		return;
+#endif
 
 	/* Connect to the pooler */
 	fdsock = pool_connect(PoolerPort, UnixSocketDir);
@@ -370,7 +408,9 @@ GetPoolManagerHandle(void)
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("failed to connect to pool manager: %m")));
 		errno = saved_errno;
+#ifndef XCP
 		return NULL;
+#endif
 	}
 
 	/* Allocate handle */
@@ -387,7 +427,9 @@ GetPoolManagerHandle(void)
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory")));
+#ifndef XCP
 		return NULL;
+#endif
 	}
 
 	handle->port.fdsock = fdsock;
@@ -395,12 +437,17 @@ GetPoolManagerHandle(void)
 	handle->port.RecvPointer = 0;
 	handle->port.SendPointer = 0;
 
+#ifdef XCP
+	poolHandle = handle;
+#else
 	return handle;
+#endif
 }
 
 
+#ifndef XCP
 /*
- * Close handle
+ * XXX May create on_proc_exit callback instead
  */
 void
 PoolManagerCloseHandle(PoolHandle *handle)
@@ -409,7 +456,7 @@ PoolManagerCloseHandle(PoolHandle *handle)
 	free(handle);
 	handle = NULL;
 }
-
+#endif
 
 /*
  * Create agent
@@ -526,6 +573,51 @@ char *session_options(void)
  * Associate session with specified database and respective connection pool
  * Invoked from Session process
  */
+#ifdef XCP
+void
+PoolManagerConnect(const char *database, const char *user_name)
+{
+	int n32;
+	char msgtype = 'c';
+
+	Assert(database);
+	Assert(user_name);
+
+	/* Connect to the pooler process if not yet connected */
+	GetPoolManagerHandle();
+	if (poolHandle == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("failed to connect to the pooler process")));
+
+	/* Message type */
+	pool_putbytes(&poolHandle->port, &msgtype, 1);
+
+	/* Message length */
+	n32 = htonl(strlen(database) + strlen(user_name) + 18);
+	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
+
+	/* PID number */
+	n32 = htonl(MyProcPid);
+	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
+
+	/* Length of Database string */
+	n32 = htonl(strlen(database) + 1);
+	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
+
+	/* Send database name followed by \0 terminator */
+	pool_putbytes(&poolHandle->port, database, strlen(database) + 1);
+	pool_flush(&poolHandle->port);
+
+	/* Length of user name string */
+	n32 = htonl(strlen(user_name) + 1);
+	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
+
+	/* Send user name followed by \0 terminator */
+	pool_putbytes(&poolHandle->port, user_name, strlen(user_name) + 1);
+	pool_flush(&poolHandle->port);
+}
+#else
 void
 PoolManagerConnect(PoolHandle *handle,
 	               const char *database, const char *user_name,
@@ -577,6 +669,7 @@ PoolManagerConnect(PoolHandle *handle,
 	pool_flush(&handle->port);
 
 }
+#endif
 
 /*
  * Reconnect to pool manager
@@ -585,6 +678,14 @@ PoolManagerConnect(PoolHandle *handle,
 void
 PoolManagerReconnect(void)
 {
+#ifdef XCP
+	/* Connected, disconnect */
+	if (poolHandle)
+		PoolManagerDisconnect();
+
+	PoolManagerConnect(get_database_name(MyDatabaseId),
+					   GetUserNameFromId(GetUserId()));
+#else
 	PoolHandle *handle;
 
 	Assert(poolHandle);
@@ -595,6 +696,7 @@ PoolManagerReconnect(void)
 					   get_database_name(MyDatabaseId),
 					   GetUserNameFromId(GetUserId()),
 					   session_options());
+#endif
 }
 
 
@@ -605,6 +707,10 @@ PoolManagerReconnect(void)
 void
 PoolManagerReset(void)
 {
+	/* Connect to the pooler process if not yet connected */
+	if (poolHandle == NULL)
+		return;
+
 	pool_putmessage(&poolHandle->port, 'u', NULL, 0);
 	pool_flush(&poolHandle->port);
 }
@@ -798,7 +904,13 @@ PoolManagerLock(bool is_lock)
 	char msgtype = 'o';
 	int n32;
 	int msglen = 8;
+#ifdef XCP
+	if (poolHandle == NULL)
+		PoolManagerConnect(get_database_name(MyDatabaseId),
+						   GetUserNameFromId(GetUserId()));
+#else
 	Assert(poolHandle);
+#endif
 
 	/* Message type */
 	pool_putbytes(&poolHandle->port, &msgtype, 1);
@@ -816,9 +928,15 @@ PoolManagerLock(bool is_lock)
 /*
  * Init PoolAgent
  */
+#ifdef XCP
+static void
+agent_init(PoolAgent *agent, const char *database,
+						const char *user_name)
+#else
 static void
 agent_init(PoolAgent *agent, const char *database, const char *user_name,
            const char *pgoptions)
+#endif
 {
 	MemoryContext oldcontext;
 
@@ -857,12 +975,21 @@ agent_init(PoolAgent *agent, const char *database, const char *user_name,
 			palloc0(agent->num_coord_connections * sizeof(PGXCNodePoolSlot *));
 	agent->dn_connections = (PGXCNodePoolSlot **)
 			palloc0(agent->num_dn_connections * sizeof(PGXCNodePoolSlot *));
+#ifdef XCP
+	/* find database */
+	agent->pool = find_database_pool(database, user_name);
+
+	/* create if not found */
+	if (agent->pool == NULL)
+		agent->pool = create_database_pool(database, user_name);
+#else
 	/* find database */
 	agent->pool = find_database_pool(database, user_name, pgoptions);
 
 	/* create if not found */
 	if (agent->pool == NULL)
 		agent->pool = create_database_pool(database, user_name, pgoptions);
+#endif
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -952,7 +1079,13 @@ PoolManagerGetConnections(List *datanodelist, List *coordlist)
 	int			totlen = list_length(datanodelist) + list_length(coordlist);
 	int			nodes[totlen + 2];
 
+#ifdef XCP
+	if (poolHandle == NULL)
+		PoolManagerConnect(get_database_name(MyDatabaseId),
+						   GetUserNameFromId(GetUserId()));
+#else
 	Assert(poolHandle);
+#endif
 
 	/*
 	 * Prepare end send message to pool manager.
@@ -1061,6 +1194,16 @@ PoolManagerCleanConnection(List *datanodelist, List *coordlist, char *dbname, ch
 	int			userlen = username ? strlen(username) + 1 : 0;
 	int			dblen = dbname ? strlen(dbname) + 1 : 0;
 
+#ifdef XCP
+	/*
+	 * New connection may be established to clean connections to
+	 * specified nodes and databases.
+	 */
+	if (poolHandle == NULL)
+		PoolManagerConnect(get_database_name(MyDatabaseId),
+						   GetUserNameFromId(GetUserId()));
+#endif
+
 	nodes[0] = htonl(list_length(datanodelist));
 	i = 1;
 	if (list_length(datanodelist) != 0)
@@ -1125,7 +1268,17 @@ PoolManagerCheckConnectionInfo(void)
 {
 	int res;
 
+#ifdef XCP
+	/*
+	 * New connection may be established to clean connections to
+	 * specified nodes and databases.
+	 */
+	if (poolHandle == NULL)
+		PoolManagerConnect(get_database_name(MyDatabaseId),
+						   GetUserNameFromId(GetUserId()));
+#else
 	Assert(poolHandle);
+#endif
 	PgxcNodeListAndCount();
 	pool_putmessage(&poolHandle->port, 'q', NULL, 0);
 	pool_flush(&poolHandle->port);
@@ -1169,7 +1322,9 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 	{
 		const char *database = NULL;
 		const char *user_name = NULL;
+#ifndef XCP
 		const char *pgoptions = NULL;
+#endif
 		PoolCommandType	command_type;
 		int			datanodecount;
 		int			coordcount;
@@ -1245,13 +1400,19 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 				database = pq_getmsgbytes(s, len);
 				len = pq_getmsgint(s, 4);
 				user_name = pq_getmsgbytes(s, len);
+#ifndef XCP
 				len = pq_getmsgint(s, 4);
 				pgoptions = pq_getmsgbytes(s, len);
+#endif
 				/*
 				 * Coordinator pool is not initialized.
 				 * With that it would be impossible to create a Database by default.
 				 */
+#ifdef XCP
+				agent_init(agent, database, user_name);
+#else
 				agent_init(agent, database, user_name, pgoptions);
+#endif
 				pq_getmsgend(s);
 				break;
 			case 'd':			/* DISCONNECT */
@@ -1493,7 +1654,6 @@ static void
 agent_session_command(PoolAgent *agent, PoolCommandType command_type,
 					  const char *name, const char *value)
 {
-	MemoryContext 	oldcontext;
 	HTAB 		   *table;
 
 	if (command_type == POOL_CMD_TEMP)
@@ -1575,7 +1735,7 @@ agent_session_command(PoolAgent *agent, PoolCommandType command_type,
 		ParamEntry *entry;
 		/* create entry or replace value for the parameter */
 		entry = (ParamEntry *) hash_search(table, name, HASH_ENTER, NULL);
-		strlcpy(&entry->value, value, NAMEDATALEN);
+		strlcpy((char *) (&entry->value), value, NAMEDATALEN);
 	}
 	else
 	{
@@ -2258,8 +2418,13 @@ agent_reset_session(PoolAgent *agent)
  * Returns POOL_OK if operation succeed POOL_FAIL in case of OutOfMemory
  * error and POOL_WEXIST if poll for this database already exist.
  */
+#ifdef XCP
+static DatabasePool *create_database_pool(const char *database,
+										   const char *user_name)
+#else
 static DatabasePool *
 create_database_pool(const char *database, const char *user_name, const char *pgoptions)
+#endif
 {
 	MemoryContext	oldcontext;
 	MemoryContext	dbcontext;
@@ -2289,8 +2454,10 @@ create_database_pool(const char *database, const char *user_name, const char *pg
 	databasePool->database = pstrdup(database);
 	 /* Copy the user name */
 	databasePool->user_name = pstrdup(user_name);
+#ifndef XCP
 	 /* Copy the pgoptions */
 	databasePool->pgoptions = pstrdup(pgoptions);
+#endif
 
 	if (!databasePool->database)
 	{
@@ -2436,8 +2603,14 @@ reload_database_pools(PoolAgent *agent)
 /*
  * Find pool for specified database and username in the list
  */
+#ifdef XCP
+static DatabasePool *
+find_database_pool(const char *database,
+										 const char *user_name)
+#else
 static DatabasePool *
 find_database_pool(const char *database, const char *user_name, const char *pgoptions)
+#endif
 {
 	DatabasePool *databasePool;
 
@@ -2445,11 +2618,16 @@ find_database_pool(const char *database, const char *user_name, const char *pgop
 	databasePool = databasePools;
 	while (databasePool)
 	{
+#ifdef XCP
+		if (strcmp(database, databasePool->database) == 0 &&
+				strcmp(user_name, databasePool->user_name) == 0)
+			break;
+#else
 		if (strcmp(database, databasePool->database) == 0 &&
 			strcmp(user_name, databasePool->user_name) == 0 &&
 			strcmp(pgoptions, databasePool->pgoptions) == 0)
 			break;
-
+#endif
 		databasePool = databasePool->next;
 	}
 	return databasePool;
@@ -2936,6 +3114,8 @@ pooler_quickdie(SIGNAL_ARGS)
 	exit(2);
 }
 
+
+#ifndef XCP
 bool
 IsPoolHandle(void)
 {
@@ -2943,7 +3123,7 @@ IsPoolHandle(void)
 		return false;
 	return true;
 }
-
+#endif
 
 /*
  * Given node identifier, dbname and user name build connection string.
@@ -2967,7 +3147,6 @@ build_node_conn_str(Oid node, DatabasePool *dbPool)
 							  nodeDef->nodeport,
 							  dbPool->database,
 							  dbPool->user_name,
-							  dbPool->pgoptions,
 							  IS_PGXC_COORDINATOR ? "coordinator" : "datanode",
 							  PGXCNodeName);
 #else

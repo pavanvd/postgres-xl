@@ -119,6 +119,7 @@ typedef struct RemoteQueryState
 	/* TODO use a tuplestore as a rowbuffer */
 	List 	   *rowBuffer;				/* buffer where rows are stored when connection
 										 * should be cleaned for reuse by other RemoteQuery */
+#ifdef XCP
 	/*
 	 * To handle special case - if there is a simple sort and sort connection
 	 * is buffered. If EOF is reached on a connection it should be removed from
@@ -126,8 +127,7 @@ typedef struct RemoteQueryState
 	 * messages in the buffer. So we store nodenum to that array if reach EOF
 	 * when buffering
 	 */
-	int 	   *tapenodes;
-#ifdef XCP
+	Oid 	   *tapenodes;
 	/*
 	 * If some tape (connection) is buffered, contains a reference on the cell
 	 * right before first row buffered from this tape, needed to speed up
@@ -136,6 +136,15 @@ typedef struct RemoteQueryState
 	ListCell  **tapemarks;
 	bool		merge_sort;             /* perform mergesort of node tuples */
 	bool		extended_query;         /* running extended query protocol */
+#else
+	/*
+	 * To handle special case - if there is a simple sort and sort connection
+	 * is buffered. If EOF is reached on a connection it should be removed from
+	 * the array, but we need to know node number of the connection to find
+	 * messages in the buffer. So we store nodenum to that array if reach EOF
+	 * when buffering
+	 */
+	int 	   *tapenodes;
 #endif
 	void	   *tuplesortstate;			/* for merge sort */
 	/* cursor support */

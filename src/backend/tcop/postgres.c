@@ -3904,7 +3904,9 @@ PostgresMain(int argc, char *argv[], const char *username)
 	int 			*xip;
 	/* Timestamp info */
 	TimestampTz		timestamp;
+#ifndef XCP
 	PoolHandle		*pool_handle;
+#endif
 
 	remoteConnType = REMOTE_CONN_APP;
 #endif
@@ -4174,21 +4176,17 @@ PostgresMain(int argc, char *argv[], const char *username)
 
 #ifdef PGXC
 #ifdef XCP
-	CurrentResourceOwner = ResourceOwnerCreate(NULL, "ForPGXCNodes");
-
-	InitMultinodeExecutor(false);
-
 	if (IsUnderPostmaster)
 	{
-		pool_handle = GetPoolManagerHandle();
-		/* Pooler initialization has to be made before ressource is released */
-		PoolManagerConnect(pool_handle, dbname, username, session_options());
+		/*
+		 * Prepare to handle distributed requests.
+		 * Do that after sending down ReadyForQuery, to avoid pooler
+		 * blocking.
+		 */
+		start_xact_command();
+		InitMultinodeExecutor(false);
+		finish_xact_command();
 	}
-
-	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_BEFORE_LOCKS, true, true);
-	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
-	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
-	CurrentResourceOwner = NULL;
 
 	/* if we exit, try to release cluster lock properly */
 	on_shmem_exit(PGXCCleanClusterLock, 0);
@@ -4392,7 +4390,7 @@ PostgresMain(int argc, char *argv[], const char *username)
 #ifdef PGXC
 			/*
 			 * Helps us catch any problems where we did not send down a snapshot
-			 * when it was expected. However if any deferred trigger is supposed 
+			 * when it was expected. However if any deferred trigger is supposed
 			 * to be fired at commit time we need to preserve the snapshot sent previously
 			 */
 			if ((IS_PGXC_DATANODE || IsConnFromCoord()) && !IsAnyAfterTriggerDeferred())

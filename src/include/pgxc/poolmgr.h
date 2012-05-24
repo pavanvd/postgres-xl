@@ -82,7 +82,9 @@ typedef struct databasepool
 {
 	char	   *database;
 	char	   *user_name;
+#ifndef XCP
 	char	   *pgoptions;		/* Connection options */
+#endif
 	HTAB	   *nodePools; 		/* Hashtable of PGXCNodePool, one entry for each
 								 * Coordinator or DataNode */
 	MemoryContext mcxt;
@@ -117,12 +119,14 @@ typedef struct
 	bool			is_temp; /* Temporary objects used for this pool session? */
 } PoolAgent;
 
+#ifndef XCP
 /* Handle to the pool manager (Session's side) */
 typedef struct
 {
 	/* communication channel */
 	PoolPort	port;
 } PoolHandle;
+#endif
 
 extern int	MinPoolSize;
 extern int	MaxPoolSize;
@@ -140,6 +144,7 @@ extern int	PoolManagerInit(void);
 /* Destroy internal structures */
 extern int	PoolManagerDestroy(void);
 
+#ifndef XCP
 /*
  * Get handle to pool manager. This function should be called just before
  * forking off new session. It creates PoolHandle, PoolAgent and a pipe between
@@ -155,6 +160,7 @@ extern PoolHandle *GetPoolManagerHandle(void);
  * free memory occupied by PoolHandler
  */
 extern void PoolManagerCloseHandle(PoolHandle *handle);
+#endif
 
 /*
  * Gracefully close connection to the PoolManager
@@ -168,9 +174,13 @@ extern char *session_options(void);
  * for subsequent calls. Associate session with specified database and
  * initialize respective connection pool
  */
+#ifdef XCP
+extern void PoolManagerConnect(const char *database, const char *user_name);
+#else
 extern void PoolManagerConnect(PoolHandle *handle,
 	                           const char *database, const char *user_name,
 	                           char *pgoptions);
+#endif
 
 /*
  * Reconnect to pool manager
@@ -189,7 +199,7 @@ extern void PoolManagerReset(void);
  * are requested.
  */
 #ifdef XCP
-extern void PoolManagerSetCommand(PoolCommandType command_type, 
+extern void PoolManagerSetCommand(PoolCommandType command_type,
 					  const char *name, const char *value);
 #else
 extern int PoolManagerSetCommand(PoolCommandType command_type, const char *set_command);
@@ -219,10 +229,10 @@ extern void PoolManagerCancelQuery(int dn_count, int* dn_list, int co_count, int
 /* Lock/unlock pool manager */
 extern void PoolManagerLock(bool is_lock);
 
+#ifndef XCP
 /* Check if pool has a handle */
 extern bool IsPoolHandle(void);
 
-#ifndef XCP 
 /* Send commands to alter the behavior of current transaction */
 extern int PoolManagerSendLocalCommand(int dn_count, int* dn_list, int co_count, int* co_list);
 #endif

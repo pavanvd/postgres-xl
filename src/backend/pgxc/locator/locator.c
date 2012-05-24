@@ -155,7 +155,13 @@ GetAnyDataNode(List *relNodes)
 			int		i;
 			for (i = 0; i < num_preferred_data_nodes; i++)
 			{
+#ifdef XCP
+				char nodetype = PGXC_NODE_DATANODE;
+				int nodeid = PGXCNodeGetNodeId(preferred_data_node[i],
+											   &nodetype);
+#else
 				int nodeid = PGXCNodeGetNodeId(preferred_data_node[i], PGXC_NODE_DATANODE);
+#endif
 
 				/* OK, found one */
 				if (nodeid == relation_nodeid)
@@ -519,8 +525,14 @@ IsTableDistOnPrimary(RelationLocInfo *rel_loc_info)
 
 	foreach(item, rel_loc_info->nodeList)
 	{
+#ifdef XCP
+		char ntype = PGXC_NODE_DATANODE;
+		if (PGXCNodeGetNodeId(primary_data_node, &ntype) == lfirst_int(item))
+			return true;
+#else
 		if (PGXCNodeGetNodeId(primary_data_node, PGXC_NODE_DATANODE) == lfirst_int(item))
 			return true;
+#endif
 	}
 	return false;
 }
@@ -833,10 +845,19 @@ RelationBuildLocator(Relation rel)
 
 	relationLocInfo->nodeList = NIL;
 
+#ifdef XCP
+	for (j = 0; j < pgxc_class->nodeoids.dim1; j++)
+	{
+		char ntype = PGXC_NODE_DATANODE;
+		int nid = PGXCNodeGetNodeId(pgxc_class->nodeoids.values[j], &ntype);
+		relationLocInfo->nodeList = lappend_int(relationLocInfo->nodeList, nid);
+	}
+#else
 	for (j = 0; j < pgxc_class->nodeoids.dim1; j++)
 		relationLocInfo->nodeList = lappend_int(relationLocInfo->nodeList,
 												PGXCNodeGetNodeId(pgxc_class->nodeoids.values[j],
 																  PGXC_NODE_DATANODE));
+#endif
 
 	/*
 	 * If the locator type is round robin, we set a node to

@@ -583,6 +583,7 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 					int 	   *consMap;
 					int 		len;
 					int 		selfid;  /* Node Id of the parent data node */
+					char 		ntype = PGXC_NODE_DATANODE;
 					ListCell   *lc;
 					int 		i;
 					Locator	   *locator;
@@ -594,7 +595,7 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 					queryDesc->squeue = NULL;
 					queryDesc->myindex = -1;
 					selfid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE,
-													   PGXC_NODE_DATANODE);
+													   &ntype);
 					i = 0;
 					foreach(lc, queryDesc->plannedstmt->distributionNodes)
 					{

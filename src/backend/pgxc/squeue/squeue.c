@@ -267,10 +267,11 @@ SharedQueueBind(const char *sqname, List *consNodes,
 	bool		found;
 	SharedQueue sq;
 	int 		selfid;  /* Node Id of the parent data node */
+	char		ntype = PGXC_NODE_DATANODE;
 
 	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
 
-	selfid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE, PGXC_NODE_DATANODE);
+	selfid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE, &ntype);
 
 	sq = (SharedQueue) hash_search(SharedQueues, sqname, HASH_ENTER, &found);
 	if (!found)
@@ -772,7 +773,7 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 	/* have at least one row, read it in and store to slot */
 	QUEUE_READ(cstate, sizeof(int), (char *) (&datalen));
 	datarow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + datalen);
-	datarow->msgnode = PGXCNodeId;
+	datarow->msgnode = InvalidOid;
 	datarow->msglen = datalen;
 	QUEUE_READ(cstate, datalen, datarow->msg);
 	ExecStoreDataRowTuple(datarow, slot, true);
@@ -1068,9 +1069,10 @@ SharedQueueRelease(const char *sqname)
 		SQueueSync *sqsync = sq->sq_sync;
 		int 		myid;  /* Node Id of the parent data node */
 		int			i;
+		char		ntype = PGXC_NODE_DATANODE;
 
 		Assert(sqsync && sqsync->queue == sq);
-		myid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE, PGXC_NODE_DATANODE);
+		myid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE, &ntype);
 		/*
 		 * that is the producer, change status of active consumers to error,
 		 * wait while they finishing and unbind

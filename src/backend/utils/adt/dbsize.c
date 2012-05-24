@@ -822,19 +822,26 @@ pgxc_execute_on_nodes(int numnodes, Oid *nodelist, char *query)
 	TupleTableSlot	   *result;
 	Var			   *dummy;
 
-	/* 
+	/*
 	 * Make up RemoteQuery plan node
 	 */
 	plan = makeNode(RemoteQuery);
 	plan->combine_type = COMBINE_TYPE_NONE;
 	plan->exec_nodes = makeNode(ExecNodes);
 	for (i = 0; i < numnodes; i++)
+	{
+		char ntype = PGXC_NODE_DATANODE;
 		plan->exec_nodes->nodeList = lappend_int(plan->exec_nodes->nodeList,
-			PGXCNodeGetNodeId(nodelist[i], PGXC_NODE_DATANODE));
+			PGXCNodeGetNodeId(nodelist[i], &ntype));
+		if (ntype != PGXC_NODE_DATANODE)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Unknown node Oid: %x", nodelist[i])));
+	}
 	plan->sql_statement = query;
 	plan->force_autocommit = false;
 	plan->exec_type = EXEC_ON_DATANODES;
-	/* 
+	/*
 	 * We only need the target entry to determine result data type.
 	 * So create dummy even if real expression is a function.
 	 */

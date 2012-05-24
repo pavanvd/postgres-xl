@@ -99,6 +99,7 @@ init_pgxc_handle(PGXCNodeHandle *pgxc_handle)
 	pgxc_handle->outSize = 16 * 1024;
 	pgxc_handle->outBuffer = (char *) palloc(pgxc_handle->outSize);
 	pgxc_handle->inSize = 16 * 1024;
+
 	pgxc_handle->inBuffer = (char *) palloc(pgxc_handle->inSize);
 	pgxc_handle->combiner = NULL;
 	pgxc_handle->inStart = 0;
@@ -123,6 +124,10 @@ InitMultinodeExecutor(bool is_force)
 {
 	int				count;
 	Oid				*coOids, *dnOids;
+#ifdef XCP
+	MemoryContext	oldcontext;
+#endif
+
 
 	/* Free all the existing information first */
 	if (is_force)
@@ -138,6 +143,14 @@ InitMultinodeExecutor(bool is_force)
 
 	/* Get classified list of node Oids */
 	PgxcNodeGetOids(&coOids, &dnOids, &NumCoords, &NumDataNodes, true);
+
+#ifdef XCP
+	/*
+	 * Coordinator and datanode handles should be available during all the
+	 * session lifetime
+	 */
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+#endif
 
 	/* Do proper initialization of handles */
 	if (NumDataNodes > 0)
@@ -170,6 +183,8 @@ InitMultinodeExecutor(bool is_force)
 	PGXCNodeId = 0;
 
 #ifdef XCP
+	MemoryContextSwitchTo(oldcontext);
+
 	if (IS_PGXC_COORDINATOR)
 	{
 		for (count = 0; count < NumCoords; count++)
@@ -215,8 +230,7 @@ InitMultinodeExecutor(bool is_force)
 char *
 #ifdef XCP
 PGXCNodeConnStr(char *host, int port, char *dbname,
-				char *user, char *pgoptions, char *remote_type,
-				char *parent_node)
+				char *user, char *remote_type, char *parent_node)
 #else
 PGXCNodeConnStr(char *host, int port, char *dbname,
 				char *user, char *pgoptions, char *remote_type)
@@ -232,8 +246,8 @@ PGXCNodeConnStr(char *host, int port, char *dbname,
 	 */
 #ifdef XCP
 	num = snprintf(connstr, sizeof(connstr),
-				   "host=%s port=%d dbname=%s user=%s application_name=pgxc options='-c remotetype=%s -c parentnode=%s %s'",
-				   host, port, dbname, user, remote_type, parent_node, pgoptions);
+				   "host=%s port=%d dbname=%s user=%s application_name=pgxc options='-c remotetype=%s -c parentnode=%s'",
+				   host, port, dbname, user, remote_type, parent_node);
 #else
 	num = snprintf(connstr, sizeof(connstr),
 				   "host=%s port=%d dbname=%s user=%s application_name=pgxc options='-c remotetype=%s %s'",
@@ -2276,6 +2290,52 @@ pfree_pgxc_all_handles(PGXCNodeAllHandles *pgxc_handles)
 	pfree(pgxc_handles);
 }
 
+#ifdef XCP
+/*
+ * PGXCNode_getNodeId
+ *		Look at the data cached for handles and return node position
+ * 		If node type is PGXC_NODE_COORDINATOR look only in coordinator list,
+ *		if node type is PGXC_NODE_DATANODE look only in datanode list,
+ *		if other (assume PGXC_NODE_NODE) search both, in last case return actual
+ *		node type.
+ */
+int
+PGXCNodeGetNodeId(Oid nodeoid, char *node_type)
+{
+	int i;
+
+	/* First check datanodes, they referenced more often */
+	if (node_type == NULL || *node_type != PGXC_NODE_COORDINATOR)
+	{
+		for (i = 0; i < NumDataNodes; i++)
+		{
+			if (dn_handles[i].nodeoid == nodeoid)
+			{
+				if (node_type)
+					*node_type = PGXC_NODE_DATANODE;
+				return i;
+			}
+		}
+	}
+	/* Then check coordinators */
+	if (node_type == NULL || *node_type != PGXC_NODE_DATANODE)
+	{
+		for (i = 0; i < NumCoords; i++)
+		{
+			if (co_handles[i].nodeoid == nodeoid)
+			{
+				if (node_type)
+					*node_type = PGXC_NODE_COORDINATOR;
+				return i;
+			}
+		}
+	}
+	/* Not found, have caller handling it */
+	if (node_type)
+		*node_type = PGXC_NODE_NONE;
+	return -1;
+}
+#else
 /*
  * PGXCNode_getNodeId
  *		Look at the data cached for handles and return node position
@@ -2314,6 +2374,7 @@ PGXCNodeGetNodeId(Oid nodeoid, char node_type)
 	}
 	return res;
 }
+#endif
 
 /*
  * PGXCNode_getNodeOid
@@ -2357,20 +2418,40 @@ pgxc_node_str(PG_FUNCTION_ARGS)
  *		Return node position in handles array
  */
 int
+#ifdef XCP
+PGXCNodeGetNodeIdFromName(char *node_name, char *node_type)
+#else
 PGXCNodeGetNodeIdFromName(char *node_name, char node_type)
+#endif
 {
 	char *nm;
 	Oid nodeoid;
 
 	if (node_name == NULL)
+#ifdef XCP
+	{
+		if (node_type)
+			*node_type = PGXC_NODE_NONE;
 		return -1;
+	}
+#else
+		return -1;
+#endif
 
 	nm = str_tolower(node_name, strlen(node_name), DEFAULT_COLLATION_OID);
 
 	nodeoid = get_pgxc_nodeoid(nm);
 	pfree(nm);
 	if (!OidIsValid(nodeoid))
+#ifdef XCP
+	{
+		if (node_type)
+			*node_type = PGXC_NODE_NONE;
 		return -1;
+	}
+#else
+		return -1;
+#endif
 
 	return PGXCNodeGetNodeId(nodeoid, node_type);
 }

@@ -542,7 +542,7 @@ typedef HeapTupleData *HeapTuple;
  */
 typedef struct RemoteDataRowData
 {
-	int 		msgnode;				/* node number of the data row message */
+	Oid 		msgnode;				/* node number of the data row message */
 	int 		msglen;					/* length of the data row message */
 	char		msg[0];					/* last data row message */
 } 	RemoteDataRowData;
