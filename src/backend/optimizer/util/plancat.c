@@ -391,7 +391,8 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 	{
 		case RELKIND_RELATION:
 #ifdef PGXC
-			/* 
+#ifndef XCP
+			/*
 			 * This is a remote table... we have no idea how many pages/rows
 			 * we may get from a scan of this table. However, we should set the
 			 * costs in such a manner that cheapest paths should pick up the
@@ -413,6 +414,7 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 				reltuples  = 1;
 				break;
 			}
+#endif
 #endif
 		case RELKIND_INDEX:
 		case RELKIND_TOASTVALUE:
