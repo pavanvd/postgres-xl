@@ -150,8 +150,8 @@ GetAnyDataNode(Bitmapset *nodes)
 
 	for (i = 0; i < num_preferred_data_nodes; i++)
 	{
-		nodeid = PGXCNodeGetNodeId(preferred_data_node[i],
-								   PGXC_NODE_DATANODE);
+		char ntype = PGXC_NODE_DATANODE;
+		nodeid = PGXCNodeGetNodeId(preferred_data_node[i], &ntype);
 
 		/* OK, found one */
 		if (bms_is_member(nodeid, nodes))
