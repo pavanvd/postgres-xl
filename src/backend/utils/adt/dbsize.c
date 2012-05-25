@@ -830,13 +830,13 @@ pgxc_execute_on_nodes(int numnodes, Oid *nodelist, char *query)
 	plan->exec_nodes = makeNode(ExecNodes);
 	for (i = 0; i < numnodes; i++)
 	{
-		char ntype = PGXC_NODE_DATANODE;
+		char ntype = PGXC_NODE_NONE;
 		plan->exec_nodes->nodeList = lappend_int(plan->exec_nodes->nodeList,
 			PGXCNodeGetNodeId(nodelist[i], &ntype));
-		if (ntype != PGXC_NODE_DATANODE)
+		if (ntype == PGXC_NODE_NONE)
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Unknown node Oid: %x", nodelist[i])));
+					 errmsg("Unknown node Oid: %u", nodelist[i])));
 	}
 	plan->sql_statement = query;
 	plan->force_autocommit = false;
