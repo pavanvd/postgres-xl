@@ -468,7 +468,7 @@ standard_ProcessUtility(Node *parsetree,
 					case TRANS_STMT_COMMIT_PREPARED:
 						PreventTransactionChain(isTopLevel, "COMMIT PREPARED");
 						PreventCommandDuringRecovery("COMMIT PREPARED");
-#ifdef PGXC						
+#ifdef PGXC
 						/*
 						 * Commit a transaction which was explicitely prepared
 						 * before
@@ -486,7 +486,7 @@ standard_ProcessUtility(Node *parsetree,
 					case TRANS_STMT_ROLLBACK_PREPARED:
 						PreventTransactionChain(isTopLevel, "ROLLBACK PREPARED");
 						PreventCommandDuringRecovery("ROLLBACK PREPARED");
-#ifdef PGXC						
+#ifdef PGXC
 						/*
 						 * Abort a transaction which was explicitely prepared
 						 * before
@@ -1715,11 +1715,21 @@ standard_ProcessUtility(Node *parsetree,
 			 * We have to run the command on nodes before coordinator because
 			 * vacuum() pops active snapshot and we can not send it to nodes
  			 */
+#ifdef XCP
+			/* Force prepare statistics on the datanodes */
+			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+#else
 			if (IS_PGXC_COORDINATOR)
+#endif
 				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_DATANODES, false);
 #endif /* PGXC */
 			vacuum((VacuumStmt *) parsetree, InvalidOid, true, NULL, false,
 				   isTopLevel);
+#ifdef XCP
+			/* Have other coordinators updating their local catalogs */
+			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_COORDS, false);
+#endif
 			break;
 
 		case T_ExplainStmt:
