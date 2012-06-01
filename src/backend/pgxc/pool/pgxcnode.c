@@ -246,7 +246,7 @@ PGXCNodeConnStr(char *host, int port, char *dbname,
 	 */
 #ifdef XCP
 	num = snprintf(connstr, sizeof(connstr),
-				   "host=%s port=%d dbname=%s user=%s application_name=pgxc options='-c remotetype=%s -c parentnode=%s'",
+				   "host=%s port=%d dbname=%s user=%s application_name=pgxc sslmode=disable options='-c remotetype=%s -c parentnode=%s'",
 				   host, port, dbname, user, remote_type, parent_node);
 #else
 	num = snprintf(connstr, sizeof(connstr),
