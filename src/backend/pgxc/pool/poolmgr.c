@@ -1314,7 +1314,7 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 	int			qtype;
 
 	qtype = pool_getbyte(&agent->port);
-	elog(LOG, "Pooler is handling command %c", (char) qtype);
+	elog(DEBUG1, "Pooler is handling command %c", (char) qtype);
 	/*
 	 * We can have multiple messages, so handle them all
 	 */

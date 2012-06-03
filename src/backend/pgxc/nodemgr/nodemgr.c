@@ -362,7 +362,7 @@ PgxcNodeListAndCount(void)
 	heap_endscan(scan);
 	heap_close(rel, AccessShareLock);
 
-	elog(LOG, "Done pgxc_nodes scan: %d coordinators and %d datanodes",
+	elog(DEBUG1, "Done pgxc_nodes scan: %d coordinators and %d datanodes",
 			*shmemNumCoords, *shmemNumDataNodes);
 
 	/* Finally sort the lists */
@@ -390,7 +390,7 @@ PgxcNodeGetOids(Oid **coOids, Oid **dnOids,
 {
 	LWLockAcquire(NodeTableLock, LW_SHARED);
 
-	elog(LOG, "Get OIDs from table: %d coordinators and %d datanodes",
+	elog(DEBUG1, "Get OIDs from table: %d coordinators and %d datanodes",
 			*shmemNumCoords, *shmemNumDataNodes);
 
 	if (num_coords)
