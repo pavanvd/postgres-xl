@@ -775,6 +775,20 @@ standard_ProcessUtility(Node *parsetree,
 			break;
 
 		case T_CreateExtensionStmt:
+#ifdef XCP
+			/*
+			 * CREATE EXTENSION executes the extension script as a single
+			 * multi-statement query. ProcessUtility does not handle this
+			 * properly if there are multiple nodes, since it sends to other
+			 * nodes full query text, common for each statement of the query.
+			 * Therefore execute the same script multiple times on remote nodes,
+			 * trying to create duplicate objects.
+			 */
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("StormDB does not support CREATE EXTENSION yet"),
+					 errdetail("The feature is not currently supported")));
+#endif
 			CreateExtension((CreateExtensionStmt *) parsetree);
 			break;
 
