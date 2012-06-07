@@ -778,7 +778,11 @@ standard_ProcessUtility(Node *parsetree,
 			CreateExtension((CreateExtensionStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
+#ifdef XCP
+				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+#else
 				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
+#endif
 #endif
 			break;
 
@@ -786,7 +790,11 @@ standard_ProcessUtility(Node *parsetree,
 			ExecAlterExtensionStmt((AlterExtensionStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
+#ifdef XCP
+				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+#else
 				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
+#endif
 #endif
 			break;
 
@@ -794,7 +802,11 @@ standard_ProcessUtility(Node *parsetree,
 			ExecAlterExtensionContentsStmt((AlterExtensionContentsStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
+#ifdef XCP
+				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+#else
 				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
+#endif
 #endif
 			break;
 
