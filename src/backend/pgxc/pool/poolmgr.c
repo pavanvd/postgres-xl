@@ -577,11 +577,11 @@ char *session_options(void)
 void
 PoolManagerConnect(const char *database, const char *user_name)
 {
-	int n32;
-	char msgtype = 'c';
-
-	Assert(database);
-	Assert(user_name);
+	int 	n32;
+	char 	msgtype = 'c';
+	int 	unamelen = strlen(user_name);
+	int 	dbnamelen = strlen(database);
+	char	atchar = ' ';
 
 	/* Connect to the pooler process if not yet connected */
 	GetPoolManagerHandle();
@@ -590,11 +590,31 @@ PoolManagerConnect(const char *database, const char *user_name)
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("failed to connect to the pooler process")));
 
+	/*
+	 * Special handling for db_user_namespace=on
+	 * We need to handle per-db users and global users. The per-db users will
+	 * arrive with @dbname and global users just as username. Handle both of
+	 * them appropriately
+	 */
+	if (strcmp(GetConfigOption("db_user_namespace", false), "on") == 0)
+	{
+		if (strchr(user_name, '@') != NULL)
+		{
+			Assert(unamelen > dbnamelen + 1);
+			unamelen -= (dbnamelen + 1);
+		}
+		else
+		{
+			atchar = '@';
+			unamelen++;
+		}
+	}
+
 	/* Message type */
 	pool_putbytes(&poolHandle->port, &msgtype, 1);
 
 	/* Message length */
-	n32 = htonl(strlen(database) + strlen(user_name) + 18);
+	n32 = htonl(dbnamelen + unamelen + 18);
 	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
 
 	/* PID number */
@@ -602,19 +622,27 @@ PoolManagerConnect(const char *database, const char *user_name)
 	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
 
 	/* Length of Database string */
-	n32 = htonl(strlen(database) + 1);
+	n32 = htonl(dbnamelen + 1);
 	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
 
 	/* Send database name followed by \0 terminator */
-	pool_putbytes(&poolHandle->port, database, strlen(database) + 1);
-	pool_flush(&poolHandle->port);
+	pool_putbytes(&poolHandle->port, database, dbnamelen);
+	pool_putbytes(&poolHandle->port, "\0", 1);
 
 	/* Length of user name string */
-	n32 = htonl(strlen(user_name) + 1);
+	n32 = htonl(unamelen + 1);
 	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
 
 	/* Send user name followed by \0 terminator */
-	pool_putbytes(&poolHandle->port, user_name, strlen(user_name) + 1);
+	/* Send the '@' char if needed. Already accounted for in len */
+	if (atchar == '@')
+	{
+		pool_putbytes(&poolHandle->port, user_name, unamelen - 1);
+		pool_putbytes(&poolHandle->port, "@", 1);
+	}
+	else
+		pool_putbytes(&poolHandle->port, user_name, unamelen);
+	pool_putbytes(&poolHandle->port, "\0", 1);
 	pool_flush(&poolHandle->port);
 }
 #else
