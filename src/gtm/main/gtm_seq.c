@@ -915,6 +915,10 @@ ProcessSequenceInitCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "open_sequence() returns rc %d.", rc);
 		}
+#ifdef XCP
+		/* Save control file with new seq info */
+                SaveControlInfo();
+#endif
 		/*
 		 * Send a SUCCESS message back to the client
 		 */
@@ -1029,6 +1033,10 @@ ProcessSequenceAlterCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "alter_sequence() returns rc %d.", rc);
 		}
+#ifdef XCP
+		/* Save control file info */
+                SaveControlInfo();
+#endif
 		pq_beginmessage(&buf, 'S');
 		pq_sendint(&buf, SEQUENCE_ALTER_RESULT, 4);
 		if (myport->remote_type == GTM_NODE_GTM_PROXY)
@@ -1354,6 +1362,10 @@ ProcessSequenceSetValCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "set_val() returns rc %d.", rc);
 		}
+#ifdef XCP
+		/* Save control file info */
+                SaveControlInfo();
+#endif
 		/* Respond to the client */
 		pq_beginmessage(&buf, 'S');
 		pq_sendint(&buf, SEQUENCE_SET_VAL_RESULT, 4);
@@ -1424,6 +1436,10 @@ ProcessSequenceResetCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "reset_sequence() returns rc %d.", rc);
 		}
+#ifdef XCP
+		/* Save control file info */
+                SaveControlInfo();
+#endif
 		/* Respond to the client */
 		pq_beginmessage(&buf, 'S');
 		pq_sendint(&buf, SEQUENCE_RESET_RESULT, 4);
@@ -1496,6 +1512,10 @@ ProcessSequenceCloseCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "close_sequence() returns rc %d.", rc);
 		}
+#ifdef XCP
+		/* Save control file */
+                SaveControlInfo();
+#endif
 		/* Respond to the client */
 		pq_beginmessage(&buf, 'S');
 		pq_sendint(&buf, SEQUENCE_CLOSE_RESULT, 4);
@@ -1583,6 +1603,10 @@ ProcessSequenceRenameCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "rename_sequence() returns rc %d.", rc);
 		}
+#ifdef XCP
+		/* Save control file info */
+                SaveControlInfo();
+#endif
 		/* Send a SUCCESS message back to the client */
 		pq_beginmessage(&buf, 'S');
 		pq_sendint(&buf, SEQUENCE_RENAME_RESULT, 4);
@@ -1860,6 +1884,15 @@ GTM_RestoreSeqInfo(FILE *ctlf)
 		{
 			elog(WARNING, "Corrupted control file");
 			return;
+		}
+		/* increment current value by control interval in case restarting */
+		curval = curval + CONTROL_INTERVAL;
+		if (curval > maxval)
+		{
+			if (cycle)
+				curval = minval + (curval - maxval);
+			else
+				curval = maxval;
 		}
 		GTM_SeqRestore(&seqkey, increment_by, minval, maxval, startval, curval,
 					   state, cycle, called);
