@@ -1122,6 +1122,9 @@ GTM_ThreadMain(void *argp)
 
 				/* Disconnect node if necessary */
 				Recovery_PGXCNodeDisconnect(thrinfo->thr_conn->con_port);
+#ifdef XCP
+				GTM_RWLockRelease(&thrinfo->thr_lock);
+#endif
 				pthread_exit(thrinfo);
 				break;
 			
