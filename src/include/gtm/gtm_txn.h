@@ -163,7 +163,7 @@ typedef struct GTM_Transactions
 	int32				gt_lastslot;
 	GTM_TransactionInfo	gt_transactions_array[GTM_MAX_GLOBAL_TRANSACTIONS];
 	gtm_List			*gt_open_transactions;
-	
+
 	GTM_RWLock			gt_TransArrayLock;
 } GTM_Transactions;
 
@@ -247,8 +247,13 @@ void ProcessBeginTransactionGetGXIDCommandMulti(Port *myport, StringInfo message
 void ProcessCommitTransactionCommandMulti(Port *myport, StringInfo message, bool is_backup);
 void ProcessRollbackTransactionCommandMulti(Port *myport, StringInfo message, bool is_backup) ;
 
+#ifdef XCP
+void GTM_SaveTxnInfo(FILE *ctlf);
+void GTM_RestoreTxnInfo(FILE *ctlf, GlobalTransactionId next_gxid);
+#else
 void GTM_SaveTxnInfo(int ctlfd);
 void GTM_RestoreTxnInfo(int ctlfd, GlobalTransactionId next_gxid);
+#endif
 void GTM_BkupBeginTransaction(char *coord_name,
 							  GTM_TransactionHandle txn,
 							  GTM_IsolationLevel isolevel,

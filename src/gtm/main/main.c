@@ -119,14 +119,14 @@ static void ProcessSyncStandbyCommand(Port *myport, GTM_MessageType mtype, Strin
 /*
  * One-time initialization. It's called immediately after the main process
  * starts
- */ 
+ */
 static GTM_ThreadInfo *
 MainThreadInit()
 {
 	GTM_ThreadInfo *thrinfo;
 
 	pthread_key_create(&threadinfo_key, NULL);
-	
+
 	/*
 	 * Initialize the lock protecting the global threads info
 	 */
@@ -248,7 +248,7 @@ GTM_SigleHandler(int signal)
 }
 
 /*
- * Help display should match 
+ * Help display should match
  */
 static void
 help(const char *progname)
@@ -286,7 +286,11 @@ main(int argc, char *argv[])
 	int			status;
 	int			i;
 	GlobalTransactionId next_gxid = InvalidGlobalTransactionId;
+#ifdef XCP
+	FILE	   *ctlf;
+#else
 	int			ctlfd;
+#endif
 
 	/*
 	 * Local variable to hold command line options.
@@ -320,7 +324,7 @@ main(int argc, char *argv[])
 	char	*is_standby_mode = NULL;
 	char	*dest_addr = NULL;
 	char	*dest_port = NULL;
-	
+
 	isStartUp = true;
 
 	/*
@@ -341,7 +345,7 @@ main(int argc, char *argv[])
 
 	ListenAddresses = strdup(GTM_DEFAULT_HOSTNAME);
 	GTMPortNumber = GTM_DEFAULT_PORT;
-	
+
 	/*
 	 * Parse the command like options and set variables
 	 */
@@ -405,7 +409,7 @@ main(int argc, char *argv[])
 					free(dest_port);
 				dest_port = strdup(optarg);
 				break;
-				
+
 			default:
 				write_stderr("Try \"%s --help\" for more information.\n",
 							 progname);
@@ -446,7 +450,7 @@ main(int argc, char *argv[])
 	}
 	if (listen_addresses)
 	{
-		SetConfigOption(GTM_OPTNAME_LISTEN_ADDRESSES, 
+		SetConfigOption(GTM_OPTNAME_LISTEN_ADDRESSES,
 						listen_addresses, GTMC_STARTUP, GTMC_S_OVERRIDE);
 		free(listen_addresses);
 		listen_addresses = NULL;
@@ -584,10 +588,18 @@ main(int argc, char *argv[])
 	}
 	else
 	{
+#ifdef XCP
+		ctlf = fopen(GTMControlFile, "r");
+		GTM_RestoreTxnInfo(ctlf, next_gxid);
+		GTM_RestoreSeqInfo(ctlf);
+		if (ctlf)
+			fclose(ctlf);
+#else
 		ctlfd = open(GTMControlFile, O_RDONLY);
 		GTM_RestoreTxnInfo(ctlfd, next_gxid);
 		GTM_RestoreSeqInfo(ctlfd);
 		close(ctlfd);
+#endif
 	}
 
 	if (Recovery_IsStandby())
@@ -667,7 +679,7 @@ main(int argc, char *argv[])
 	pqsignal(SIGUSR1, GTM_SigleHandler);
 
 	pqinitmask();
-	
+
 	/*
 	 * Now, activating a standby GTM...
 	 */
@@ -755,7 +767,7 @@ ServerLoop(void)
 		int			selres;
 
 		//MemoryContextStats(TopMostMemoryContext);
-		
+
 		/*
 		 * Wait for a connection request to arrive.
 		 *
@@ -768,7 +780,11 @@ ServerLoop(void)
 
 		if (GTMAbortPending)
 		{
+#ifdef XCP
+			FILE *ctlf;
+#else
 			int ctlfd;
+#endif
 
 			/*
 			 * XXX We should do a clean shutdown here. For the time being, just
@@ -783,6 +799,17 @@ ServerLoop(void)
 			 */
 			GTM_SetShuttingDown();
 
+#ifdef XCP
+			ctlf = fopen(GTMControlFile, "w");
+			if (ctlf == NULL)
+			{
+				fprintf(stderr, "Failed to create/open the control file\n");
+				exit(2);
+			}
+
+			GTM_SaveTxnInfo(ctlf);
+			GTM_SaveSeqInfo(ctlf);
+#else
 			ctlfd = open(GTMControlFile, O_WRONLY | O_TRUNC | O_CREAT,
 						 S_IRUSR | S_IWUSR);
 			if (ctlfd == -1)
@@ -793,6 +820,7 @@ ServerLoop(void)
 
 			GTM_SaveTxnInfo(ctlfd);
 			GTM_SaveSeqInfo(ctlfd);
+#endif
 
 #if 0
 			/*
@@ -808,7 +836,11 @@ ServerLoop(void)
 			}
 #endif
 
+#ifdef XCP
+			fclose(ctlf);
+#else
 			close(ctlfd);
+#endif
 
 			exit(1);
 		}
@@ -821,7 +853,7 @@ ServerLoop(void)
 			timeout.tv_sec = 60;
 			timeout.tv_usec = 0;
 
-			/* 
+			/*
 			 * Now GTM-Standby can backup current status during this region
 			 */
 			GTM_RWLockRelease(&my_threadinfo->thr_lock);
@@ -875,7 +907,7 @@ ServerLoop(void)
 						GTM_Conn *standby = NULL;
 
 						standby = gtm_standby_connect_to_standby();
-						
+
 
 						if (GTMAddConnection(port, standby) != STATUS_OK)
 						{
@@ -931,7 +963,7 @@ GTM_ThreadMain(void *argp)
 	sigjmp_buf  local_sigjmp_buf;
 
 	elog(DEBUG3, "Starting the connection helper thread");
-	
+
 
 	/*
 	 * Create the memory context we will use in the main loop.
@@ -972,7 +1004,7 @@ GTM_ThreadMain(void *argp)
 						 startup_type)));
 
 		initStringInfo(&inBuf);
-		
+
 		/*
 		 * All frontend messages have a length word next
 		 * after the type code; we can read the message contents independently of
@@ -1038,7 +1070,7 @@ GTM_ThreadMain(void *argp)
 		 * should be stuff that is guaranteed to apply *only* for outer-level
 		 * error recovery, such as adjusting the FE/BE protocol status.
 		 */
-		
+
 		/* Report the error to the client and/or server log */
 		if (thrinfo->thr_conn)
 			EmitErrorReport(thrinfo->thr_conn->con_port);
@@ -1111,12 +1143,12 @@ GTM_ThreadMain(void *argp)
 			case 'C':
 				ProcessCommand(thrinfo->thr_conn->con_port, &input_message);
 				break;
-			
+
 			case 'X':
 			case EOF:
 				/*
 				 * Connection termination request
-				 * Remove all transactions opened within the thread 
+				 * Remove all transactions opened within the thread
 				 */
 				GTM_RemoveAllTransInfos(-1);
 
@@ -1127,7 +1159,7 @@ GTM_ThreadMain(void *argp)
 #endif
 				pthread_exit(thrinfo);
 				break;
-			
+
 			case 'F':
 				/*
 				 * Flush all the outgoing data on the wire. Consume the message
@@ -1148,7 +1180,7 @@ GTM_ThreadMain(void *argp)
 
 			default:
 				/*
-				 * Remove all transactions opened within the thread 
+				 * Remove all transactions opened within the thread
 				 */
 				GTM_RemoveAllTransInfos(-1);
 
@@ -1161,7 +1193,7 @@ GTM_ThreadMain(void *argp)
 								qtype)));
 				break;
 		}
-		
+
 	}
 
 	/* can't get here because the above loop never exits */
@@ -1184,7 +1216,7 @@ ProcessCommand(Port *myport, StringInfo input_message)
 	myport->conn_id = proxyhdr.ph_conid;
 	mtype = pq_getmsgint(input_message, sizeof (GTM_MessageType));
 
-	/* 
+	/*
 	 * The next line will have some overhead.  Better to be in
 	 * compile option.
 	 */

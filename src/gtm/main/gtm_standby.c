@@ -71,7 +71,11 @@ gtm_standby_restore_next_gxid(void)
 	GlobalTransactionId next_gxid = InvalidGlobalTransactionId;
 
 	next_gxid = get_next_gxid(GTM_ActiveConn);
+#ifdef XCP
+	GTM_RestoreTxnInfo(NULL, next_gxid);
+#else
 	GTM_RestoreTxnInfo(-1, next_gxid);
+#endif
 
 	elog(LOG, "Restoring the next GXID done.");
 	return 1;
@@ -88,7 +92,7 @@ gtm_standby_restore_sequence(void)
 	 * Restore sequence data.
 	 */
 	num_seq = get_sequence_list(GTM_ActiveConn, seq_list, 1024);
-		
+
 	for (i = 0; i < num_seq; i++)
 	{
 		GTM_SeqRestore(seq_list[i]->gs_key,
@@ -165,7 +169,7 @@ gtm_standby_restore_gxid(void)
 						txn.gt_transactions_array[i].gti_current_snapshot.sn_recent_global_xmin;
 		GTMTransactions.gt_transactions_array[i].gti_current_snapshot.sn_xcnt =
 						txn.gt_transactions_array[i].gti_current_snapshot.sn_xcnt;
-		GTMTransactions.gt_transactions_array[i].gti_current_snapshot.sn_xip = 
+		GTMTransactions.gt_transactions_array[i].gti_current_snapshot.sn_xip =
 						txn.gt_transactions_array[i].gti_current_snapshot.sn_xip;
 		/* end of copying GTM_SnapshotData */
 
@@ -184,7 +188,7 @@ gtm_standby_restore_gxid(void)
 							&GTMTransactions.gt_transactions_array[i]);
 		}
 	}
-	
+
 	dump_transactions_elog(&GTMTransactions, num_txn);
 
 	GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
@@ -331,7 +335,7 @@ find_standby_node_info(void)
 			 node[i]->port,
 			 node[i]->status);
 
-		if ( (strcmp(standbyNodeName, node[i]->nodename) != 0) && 
+		if ( (strcmp(standbyNodeName, node[i]->nodename) != 0) &&
 			node[i]->status == NODE_CONNECTED)
 			return node[i];
 	}
@@ -380,13 +384,13 @@ gtm_standby_connect_to_standby_int(int *report_needed)
 		return NULL;
 
 	n = find_standby_node_info();
-	
+
 	if (!n)
 	{
 		elog(LOG, "Any GTM standby node not found in registered node(s).");
 		return NULL;
 	}
-		
+
 	elog(LOG, "GTM standby is active. Going to connect.");
 	*report_needed = 1;
 
@@ -395,7 +399,7 @@ gtm_standby_connect_to_standby_int(int *report_needed)
 			 n->ipaddress, n->port, NodeName);
 
 	standby = PQconnectGTM(conn_string);
-		
+
 	if ( !standby )
 	{
 	 	elog(LOG, "Failed to establish a connection with GTM standby. - %p", n);
@@ -465,7 +469,7 @@ gtm_standby_check_communication_error(int *retry_count, GTM_Conn *oldconn)
 	/*
 	 * This function may be called without result from standby.
 	 */
-	if (my_threadInfo->thr_conn->standby->result 
+	if (my_threadInfo->thr_conn->standby->result
 		&& my_threadInfo->thr_conn->standby->result->gr_status == GTM_RESULT_COMM_ERROR)
 	{
 		if (*retry_count == 0)
@@ -538,6 +542,6 @@ gtm_standby_connectToActiveGTM(void)
 
 	sprintf(connect_string, "host=%s port=%d node_name=%s remote_type=%d",
 			active_address, active_port, NodeName, GTM_NODE_GTM);
-	
+
 	return PQconnectGTM(connect_string);
 }

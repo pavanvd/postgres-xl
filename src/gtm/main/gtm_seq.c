@@ -198,7 +198,7 @@ seq_remove_seqinfo(GTM_SeqInfo *seqinfo)
 {
 	uint32 hash = seq_gethash(seqinfo->gs_key);
 	GTM_SeqInfoHashBucket	*bucket;
-	
+
 	bucket = &GTMSequences[hash];
 
 	GTM_RWLockAcquire(&bucket->shb_lock, GTM_LOCKMODE_WRITE);
@@ -223,7 +223,7 @@ static GTM_SequenceKey
 seq_copy_key(GTM_SequenceKey key)
 {
 	GTM_SequenceKey retkey = NULL;
-   
+
 	/*
 	 * We must use the TopMostMemoryContext because the sequence information is
 	 * not bound to a thread and can outlive any of the thread specific
@@ -291,7 +291,7 @@ GTM_SeqOpen(GTM_SequenceKey seqkey,
 	 * If maxval is specfied, set the maxvalue to the given maxval, otherwise
 	 * set to the defaults depending on whether the seqeunce is ascending or
 	 * descending. Also do some basic contraint checks
-	 */	
+	 */
 	if (SEQVAL_IS_VALID(maxval))
 	{
 		if (maxval < seqinfo->gs_min_value)
@@ -730,7 +730,7 @@ GTM_SeqGetNext(GTM_SequenceKey seqkey)
 	}
 
 	GTM_RWLockAcquire(&seqinfo->gs_lock, GTM_LOCKMODE_WRITE);
-	
+
 	/*
 	 * If the sequence is called for the first time, initialize the value and
 	 * return the start value
@@ -864,7 +864,7 @@ ProcessSequenceInitCommand(Port *myport, StringInfo message, bool is_backup)
 		   sizeof (GTM_Sequence));
 	memcpy(&startval, pq_getmsgbytes(message, sizeof (GTM_Sequence)),
 		   sizeof (GTM_Sequence));
-	
+
 	cycle = pq_getmsgbyte(message);
 
 
@@ -905,7 +905,7 @@ ProcessSequenceInitCommand(Port *myport, StringInfo message, bool is_backup)
 									maxval,
 									startval,
 									cycle);
-		
+
 			if (gtm_standby_check_communication_error(&count, oldconn))
 				goto retry;
 
@@ -1008,7 +1008,7 @@ ProcessSequenceAlterCommand(Port *myport, StringInfo message, bool is_backup)
 			int count = 0;
 
 			elog(LOG, "calling alter_sequence() for standby GTM %p.", GetMyThreadInfo->thr_conn->standby);
-		
+
 		retry:
 			rc = bkup_alter_sequence(GetMyThreadInfo->thr_conn->standby,
 									 &seqkey,
@@ -1019,14 +1019,14 @@ ProcessSequenceAlterCommand(Port *myport, StringInfo message, bool is_backup)
 									 lastval,
 									 cycle,
 									 is_restart);
-		
+
 			if (gtm_standby_check_communication_error(&count, oldconn))
 				goto retry;
 
 			/* Sync */
 			if (Backup_synchronously && (myport->remote_type != GTM_NODE_GTM_PROXY))
 				gtm_sync_standby(GetMyThreadInfo->thr_conn->standby);
-			
+
 			elog(LOG, "alter_sequence() returns rc %d.", rc);
 		}
 		pq_beginmessage(&buf, 'S');
@@ -1085,7 +1085,7 @@ ProcessSequenceListCommand(Port *myport, StringInfo message)
 	{
 		GTM_SeqInfoHashBucket *b;
 		gtm_ListCell *elem;
-		
+
 		for (i = 0 ; i < SEQ_HASH_TABLE_SIZE ; i++)
 		{
 			b = &GTMSequences[i];
@@ -1118,7 +1118,7 @@ ProcessSequenceListCommand(Port *myport, StringInfo message)
 
 	/* Send a number of sequences */
 	pq_sendint(&buf, seq_count, 4);
-	
+
 	for (i = 0 ; i < seq_count ; i++)
 	{
 		char *seq_buf;
@@ -1185,7 +1185,7 @@ ProcessSequenceGetCurrentCommand(Port *myport, StringInfo message)
 		/* Don't flush to the standby because this does not change the status */
 		pq_flush(myport);
 
-	/* 
+	/*
 	 * I don't think backup is needed here. It does not change internal state.
 	 * 27th Dec., 2011, K.Suzuki
 	 */
@@ -1247,7 +1247,7 @@ ProcessSequenceGetNextCommand(Port *myport, StringInfo message, bool is_backup)
 
 		retry:
 			loc_seq = bkup_get_next(GetMyThreadInfo->thr_conn->standby, &seqkey);
-		
+
 			if (gtm_standby_check_communication_error(&count, oldconn))
 				goto retry;
 
@@ -1338,13 +1338,13 @@ ProcessSequenceSetValCommand(Port *myport, StringInfo message, bool is_backup)
 			int count = 0;
 
 			elog(LOG, "calling set_val() for standby GTM %p.", GetMyThreadInfo->thr_conn->standby);
-		
+
 		retry:
 			rc = bkup_set_val(GetMyThreadInfo->thr_conn->standby,
 							  &seqkey,
 							  nextval,
 							  iscalled);
-		
+
 			if (gtm_standby_check_communication_error(&count, oldconn))
 				goto retry;
 
@@ -1411,7 +1411,7 @@ ProcessSequenceResetCommand(Port *myport, StringInfo message, bool is_backup)
 			int count = 0;
 
 			elog(LOG, "calling reset_sequence() for standby GTM %p.", GetMyThreadInfo->thr_conn->standby);
-		
+
 		retry:
 			rc = bkup_reset_sequence(GetMyThreadInfo->thr_conn->standby, &seqkey);
 
@@ -1608,13 +1608,136 @@ ProcessSequenceRenameCommand(Port *myport, StringInfo message, bool is_backup)
 	/* FIXME: need to check errors */
 }
 
+
+#ifdef XCP
+/*
+ * Escape whitespace and non-printable characters in the sequence name to
+ * store it to the control file.
+ */
+static void
+encode_seq_key(GTM_SequenceKey seqkey, char *buffer)
+{
+	int 	i;
+	char	c;
+	char   *out;
+
+	out = buffer;
+	for (i = 0; i < seqkey->gsk_keylen; i++)
+	{
+		c = seqkey->gsk_key[i];
+
+		if (c == '\\') /* double backslach */
+		{
+			*out++ = '\\';
+			*out++ = '\\';
+		}
+		else if (c > ' ') /* no need to escape */
+		{
+			*out++ = c;
+		}
+		else if (c == '\n') /* below some known non-printable chars */
+		{
+			*out++ = '\\';
+			*out++ = 'n';
+		}
+		else if (c == '\r')
+		{
+			*out++ = '\\';
+			*out++ = 'r';
+		}
+		else if (c == '\t')
+		{
+			*out++ = '\\';
+			*out++ = 't';
+		}
+		else /* other non-printable chars */
+		{
+			*out++ = '\\';
+			if ((int) c < 10)
+			{
+				*out++ = '0';
+				*out++ = (char) ((int) '0' + (int) c);
+			}
+			else
+			{
+				*out++ = (char) ((int) '0' + ((int) c) / 10);
+				*out++ = (char) ((int) '0' + ((int) c) % 10);
+			}
+		}
+	}
+	/* Add NULL terminator */
+	*out++ = '\0';
+}
+
+
+/*
+ * Decode the string encoded by the encode_seq_key function
+ */
+static void
+decode_seq_key(char* value, GTM_SequenceKey seqkey)
+{
+	char   *in;
+	char 	out[1024];
+	int		len = 0;
+
+	in = value;
+	while (*in != '\0')
+	{
+		if (*in == '\\') /* get escaped character */
+		{
+			in++; /* next value */
+			if (*in == '\\')
+				out[len++] = *in++;
+			else if (*in == 'n')
+			{
+				out[len++] = '\n';
+				in++;
+			}
+			else if (*in == 'r')
+			{
+				out[len++] = '\r';
+				in++;
+			}
+			else if (*in == 't')
+			{
+				out[len++] = '\t';
+				in++;
+			}
+			else /* \nn format */
+			{
+				int val;
+				val = ((int) *in++ - (int) '0');
+				val *= 10;
+				val += ((int) *in++ - (int) '0');
+				out[len++] = (char) val;
+			}
+		}
+		else /* get plain character */
+		{
+			out[len++] = *in++;
+		}
+	}
+	/* copy result to palloc'ed memory */
+	seqkey->gsk_keylen = len;
+	seqkey->gsk_key = (char *) palloc(len);
+	memcpy(seqkey->gsk_key, out, len);
+}
+
+
+void
+GTM_SaveSeqInfo(FILE *ctlf)
+#else
 void
 GTM_SaveSeqInfo(int ctlfd)
+#endif
 {
 	GTM_SeqInfoHashBucket *bucket;
 	gtm_ListCell *elem;
 	GTM_SeqInfo *seqinfo = NULL;
 	int hash;
+#ifdef XCP
+	char buffer[1024];
+#endif
 
 	for (hash = 0; hash < SEQ_HASH_TABLE_SIZE; hash++)
 	{
@@ -1633,6 +1756,16 @@ GTM_SaveSeqInfo(int ctlfd)
 
 			GTM_RWLockAcquire(&seqinfo->gs_lock, GTM_LOCKMODE_READ);
 
+#ifdef XCP
+			encode_seq_key(seqinfo->gs_key, buffer);
+			fprintf(ctlf, "%s\t%ld\t%ld\t%ld\t%ld\t%ld\t%c\t%c\t%x\n",
+					buffer, seqinfo->gs_value,
+					seqinfo->gs_init_value, seqinfo->gs_increment_by,
+					seqinfo->gs_min_value, seqinfo->gs_max_value,
+					(seqinfo->gs_cycle ? 't' : 'f'),
+					(seqinfo->gs_called ? 't' : 'f'),
+					seqinfo->gs_state);
+#else
 			write(ctlfd, &SeqStartMagic, sizeof (SeqStartMagic));
 			write(ctlfd, &seqinfo->gs_key->gsk_keylen, sizeof (uint32));
 			write(ctlfd, seqinfo->gs_key->gsk_key, seqinfo->gs_key->gsk_keylen);
@@ -1645,6 +1778,7 @@ GTM_SaveSeqInfo(int ctlfd)
 			write(ctlfd, &seqinfo->gs_called, sizeof (bool));
 			write(ctlfd, &seqinfo->gs_state, sizeof (int32));
 			write(ctlfd, &SeqEndMagic, sizeof(SeqEndMagic));
+#endif
 
 			GTM_RWLockRelease(&seqinfo->gs_lock);
 		}
@@ -1654,6 +1788,84 @@ GTM_SaveSeqInfo(int ctlfd)
 
 }
 
+
+#ifdef XCP
+void
+GTM_RestoreSeqInfo(FILE *ctlf)
+{
+	char seqname[1024];
+
+	if (ctlf == NULL)
+		return;
+
+	while (fscanf(ctlf, "%s", seqname) == 1)
+	{
+		GTM_SequenceKeyData seqkey;
+		GTM_Sequence increment_by;
+		GTM_Sequence minval;
+		GTM_Sequence maxval;
+		GTM_Sequence startval;
+		GTM_Sequence curval;
+		int32 state;
+		bool cycle;
+		bool called;
+		char boolval[16];
+
+		decode_seq_key(seqname, &seqkey);
+
+		if (fscanf(ctlf, "%ld", &curval) != 1)
+		{
+			elog(WARNING, "Corrupted control file");
+			return;
+		}
+		if (fscanf(ctlf, "%ld", &startval) != 1)
+		{
+			elog(WARNING, "Corrupted control file");
+			return;
+		}
+		if (fscanf(ctlf, "%ld", &increment_by) != 1)
+		{
+			elog(WARNING, "Corrupted control file");
+			return;
+		}
+		if (fscanf(ctlf, "%ld", &minval) != 1)
+		{
+			elog(WARNING, "Corrupted control file");
+			return;
+		}
+		if (fscanf(ctlf, "%ld", &maxval) != 1)
+		{
+			elog(WARNING, "Corrupted control file");
+			return;
+		}
+		if (fscanf(ctlf, "%s", boolval) == 1)
+		{
+			cycle = (*boolval == 't');
+		}
+		else
+		{
+			elog(WARNING, "Corrupted control file");
+			return;
+		}
+		if (fscanf(ctlf, "%s", boolval) == 1)
+		{
+			called = (*boolval == 't');
+		}
+		else
+		{
+			elog(WARNING, "Corrupted control file");
+			return;
+		}
+		if (fscanf(ctlf, "%x", &state) != 1)
+		{
+			elog(WARNING, "Corrupted control file");
+			return;
+		}
+		GTM_SeqRestore(&seqkey, increment_by, minval, maxval, startval, curval,
+					   state, cycle, called);
+	}
+}
+#else
 void
 GTM_RestoreSeqInfo(int ctlfd)
 {
@@ -1685,7 +1897,7 @@ GTM_RestoreSeqInfo(int ctlfd)
 			elog(LOG, "Failed to read keylen");
 			break;
 		}
-		
+
 		seqkey.gsk_key = palloc(seqkey.gsk_keylen);
 		read(ctlfd, seqkey.gsk_key, seqkey.gsk_keylen);
 
@@ -1709,3 +1921,4 @@ GTM_RestoreSeqInfo(int ctlfd)
 					   state, cycle, called);
 	}
 }
+#endif
