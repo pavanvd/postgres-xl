@@ -1,2 +1,0 @@
-
-gcc -DPGXC -DXCP -Wall -Wmissing-prototypes -Wpointer-arith -Wdeclaration-after-statement -Wendif-labels -Wformat-security -fno-strict-aliasing -fwrapv  -dynamiclib -install_name /Users/ms/dev/stormdb//inst/lib/libgtm.1.dylib -compatibility_version 1 -current_version 1.0  -multiply_defined suppress -o libgtm.1.0.dylib gtm_opt_scanner.o aset.o mcxt.o gtm_utils.o elog.o assert.o stringinfo.o gtm_lock.o gtm_list.o gtm_serialize.o gtm_serialize_debug.o gtm_opt_handler.o -L../common -L../libpq
