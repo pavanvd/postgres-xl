@@ -292,10 +292,11 @@ gtm_status()
 
 #ifdef XCP
 /* 
- * Save control file info 
+ * Save control file info. 
+ * if next_gxid = 0, determine what the id is, otherwise use passed in value
  */
 void
-SaveControlInfo(void)
+SaveControlInfoWithTransactionId(GlobalTransactionId next_gxid)
 {
 	FILE	   *ctlf;
 
@@ -311,7 +312,7 @@ SaveControlInfo(void)
 		return;
 		//exit(2); exit?
 	}
-	GTM_SaveTxnInfo(ctlf);
+	GTM_SaveTxnInfo(ctlf, next_gxid);
 	GTM_SaveSeqInfo(ctlf);
 	if (ctlf)
 		fclose(ctlf);
@@ -320,6 +321,15 @@ SaveControlInfo(void)
 	rename(GTMControlFileTmp, GTMControlFile);
 
 	GTM_MutexLockRelease(&control_lock);
+}
+/* 
+ * Save control file info 
+ */
+void
+SaveControlInfo(void)
+{
+	/* Just pass in 0: determine from info */
+	SaveControlInfoWithTransactionId(0);
 }
 #endif
 

@@ -275,11 +275,6 @@ GTM_ThreadCleanup(void *argp)
 		thrinfo->thr_conn->standby = NULL;
 	}
 
-#ifdef XCP
-	/* It should not be holding this, but try and release anyway */
-        GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
-#endif
-
 	/*
 	 * TODO Close the open connection.
 	 */

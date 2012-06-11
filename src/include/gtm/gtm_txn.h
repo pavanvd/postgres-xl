@@ -248,7 +248,7 @@ void ProcessCommitTransactionCommandMulti(Port *myport, StringInfo message, bool
 void ProcessRollbackTransactionCommandMulti(Port *myport, StringInfo message, bool is_backup) ;
 
 #ifdef XCP
-void GTM_SaveTxnInfo(FILE *ctlf);
+void GTM_SaveTxnInfo(FILE *ctlf, GlobalTransactionId next_gxid);
 void GTM_RestoreTxnInfo(FILE *ctlf, GlobalTransactionId next_gxid);
 #else
 void GTM_SaveTxnInfo(int ctlfd);

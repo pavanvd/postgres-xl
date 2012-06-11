@@ -95,6 +95,7 @@ GTM_ThreadInfo * GTM_GetThreadInfo(GTM_ThreadID thrid);
 
 #ifdef XCP
 extern void SaveControlInfo(void);
+extern void SaveControlInfoWithTransactionId(GlobalTransactionId saveXid);
 #define CONTROL_INTERVAL		1000
 #endif
 /*

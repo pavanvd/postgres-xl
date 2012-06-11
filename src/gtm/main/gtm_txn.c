@@ -585,12 +585,11 @@ GTM_GetGlobalTransactionIdMulti(GTM_TransactionHandle handle[], int txn_count)
 
 #ifdef XCP
 	/* Periodically write the xid and sequence info out to the control file.
-	 * Try and handle wrapping, too.
+	 * Try and handle wrapping, too. Don't hold above lock.
 	 */
 	if (start_xid - ControlXid > CONTROL_INTERVAL || start_xid < CONTROL_INTERVAL)
 	{
-		SaveControlInfo();
-		//ControlXid = start_xid;
+		SaveControlInfoWithTransactionId(start_xid);
 	}
 #endif
 	GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
@@ -2637,12 +2636,30 @@ GTM_RestoreTxnInfo(int ctlfd, GlobalTransactionId next_gxid)
 }
 
 #ifdef XCP
+/* 
+ * 
+ */
 void
-GTM_SaveTxnInfo(FILE *ctlf)
+GTM_SaveTxnInfo(FILE *ctlf, GlobalTransactionId saveXid)
+{
+	GlobalTransactionId next_gxid;
+
+	/* 
+	 * If this is 0, go look it up, otherwise use passed in value 
+	 * Note that ReadNewGlobalTransactionId will take a lock
+         */
+	if (saveXid == 0)
+		next_gxid = ReadNewGlobalTransactionId();
+	else
+		next_gxid = saveXid;
+	
+	elog(LOG, "Saving transaction info - next_gxid: %u", saveXid);
+
+	fprintf(ctlf, "%u\n", next_gxid);
+}
 #else
 void
 GTM_SaveTxnInfo(int ctlfd)
-#endif
 {
 	GlobalTransactionId next_gxid;
 
@@ -2650,12 +2667,9 @@ GTM_SaveTxnInfo(int ctlfd)
 
 	elog(LOG, "Saving transaction info - next_gxid: %u", next_gxid);
 
-#ifdef XCP
-	fprintf(ctlf, "%u\n", next_gxid);
-#else
 	write(ctlfd, &next_gxid, sizeof (next_gxid));
-#endif
 }
+#endif
 /*
  * TODO
  */
