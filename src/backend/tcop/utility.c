@@ -687,11 +687,9 @@ standard_ProcessUtility(Node *parsetree,
 						static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
 
 #ifdef PGXC
+#ifndef XCP
 						/* Set temporary object object flag in pooler */
 						if (is_temp)
-#ifdef XCP
-							PoolManagerSetCommand(POOL_CMD_TEMP, NULL, NULL);
-#else
 							PoolManagerSetCommand(POOL_CMD_TEMP, NULL);
 #endif
 #endif
@@ -1550,11 +1548,9 @@ standard_ProcessUtility(Node *parsetree,
 				{
 					bool is_temp = stmt->sequence->relpersistence == RELPERSISTENCE_TEMP;
 
+#ifndef XCP
 					/* Set temporary object flag in pooler */
 					if (is_temp)
-#ifdef XCP
-						PoolManagerSetCommand(POOL_CMD_TEMP, NULL, NULL);
-#else
 						PoolManagerSetCommand(POOL_CMD_TEMP, NULL);
 #endif
 

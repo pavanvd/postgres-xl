@@ -25,6 +25,7 @@
 
 #define MAX_IDLE_TIME 60
 
+#ifndef XCP
 /*
  * List of flags related to pooler connection clean up when disconnecting
  * a session or relaeasing handles.
@@ -58,6 +59,7 @@ typedef enum
 	POOL_CMD_LOCAL_SET,	/* Local SET flag, current transaction block only */
 	POOL_CMD_GLOBAL_SET	/* Global SET flag */
 } PoolCommandType;
+#endif
 
 /* Connection pool entry */
 typedef struct
@@ -110,13 +112,11 @@ typedef struct
 	Oid		   	   *coord_conn_oids;	/* one for each Coordinator */
 	PGXCNodePoolSlot **dn_connections; /* one for each Datanode */
 	PGXCNodePoolSlot **coord_connections; /* one for each Coordinator */
-#ifdef XCP
-	HTAB		   *session_param_htab;
-	HTAB		   *local_param_htab;
-#endif
+#ifndef XCP
 	char		   *session_params;
 	char		   *local_params;
 	bool			is_temp; /* Temporary objects used for this pool session? */
+#endif
 } PoolAgent;
 
 #ifndef XCP
@@ -167,7 +167,9 @@ extern void PoolManagerCloseHandle(PoolHandle *handle);
  */
 extern void PoolManagerDisconnect(void);
 
+#ifndef XCP
 extern char *session_options(void);
+#endif
 
 /*
  * Called from Session process after fork(). Associate handle with session
@@ -188,20 +190,14 @@ extern void PoolManagerConnect(PoolHandle *handle,
  */
 extern void PoolManagerReconnect(void);
 
-#ifdef XCP
-extern void PoolManagerReset(void);
-#endif
 
+#ifndef XCP
 /*
  * Save a SET command in Pooler.
  * This command is run on existent agent connections
  * and stored in pooler agent to be replayed when new connections
  * are requested.
  */
-#ifdef XCP
-extern void PoolManagerSetCommand(PoolCommandType command_type,
-					  const char *name, const char *value);
-#else
 extern int PoolManagerSetCommand(PoolCommandType command_type, const char *set_command);
 #endif
 
@@ -221,7 +217,11 @@ extern void PoolManagerReloadConnectionInfo(void);
 extern int	PoolManagerAbortTransactions(char *dbname, char *username, int **proc_pids);
 
 /* Return connections back to the pool, for both Coordinator and Datanode connections */
+#ifdef XCP
+extern void PoolManagerReleaseConnections(bool destroy);
+#else
 extern void PoolManagerReleaseConnections(void);
+#endif
 
 /* Cancel a running query on data nodes as well as on other coordinators */
 extern void PoolManagerCancelQuery(int dn_count, int* dn_list, int co_count, int* co_list);

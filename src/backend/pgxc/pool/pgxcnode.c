@@ -49,6 +49,8 @@
 #include "utils/formatting.h"
 #include "../interfaces/libpq/libpq-fe.h"
 #ifdef XCP
+#include "miscadmin.h"
+#include "storage/ipc.h"
 #include "utils/snapmgr.h"
 #endif
 
@@ -73,6 +75,25 @@ static PGXCNodeHandle *co_handles = NULL;
 /* Current size of dn_handles and co_handles */
 int			NumDataNodes;
 int 		NumCoords;
+
+
+#ifdef XCP
+/*
+ * Session and transaction parameters need to to be set on newly connected
+ * remote nodes.
+ */
+static HTAB		   *session_param_htab = NULL;
+static HTAB		   *local_param_htab = NULL;
+static StringInfo 	session_params;
+static StringInfo	local_params;
+
+typedef struct
+{
+	NameData name;
+	NameData value;
+} ParamEntry;
+#endif
+
 
 static void pgxc_node_init(PGXCNodeHandle *handle, int sock);
 static void pgxc_node_free(PGXCNodeHandle *handle);
@@ -292,6 +313,8 @@ PGXCNodeClose(NODE_CONNECTION *conn)
 	PQfinish((PGconn *) conn);
 }
 
+
+#ifndef XCP
 /*
  * Send SET query to given connection.
  * Query is sent asynchronously and results are consumed
@@ -313,6 +336,7 @@ PGXCNodeSendSetQuery(NODE_CONNECTION *conn, const char *sql_command)
 
 	return 0;
 }
+#endif
 
 
 /*
@@ -394,6 +418,10 @@ pgxc_node_all_free(void)
 static void
 pgxc_node_init(PGXCNodeHandle *handle, int sock)
 {
+#ifdef XCP
+	char *init_str;
+#endif
+
 	handle->sock = sock;
 	handle->transaction_status = 'I';
 	handle->state = DN_CONNECTION_STATE_IDLE;
@@ -406,6 +434,17 @@ pgxc_node_init(PGXCNodeHandle *handle, int sock)
 	handle->inStart = 0;
 	handle->inEnd = 0;
 	handle->inCursor = 0;
+#ifdef XCP
+	/*
+	 * We got a new connection, set on the remote node the session parameters
+	 * if defined. The transaction parameter should be sent after BEGIN
+	 */
+	init_str = PGXCNodeGetSessionParamStr();
+	if (init_str)
+	{
+		pgxc_node_set_query(handle, init_str);
+	}
+#endif
 }
 
 
@@ -785,6 +824,9 @@ get_message(PGXCNodeHandle *conn, int *len, char **msg)
 void
 release_handles(void)
 {
+#ifdef XCP
+	bool		destroy = false;
+#endif
 	int			i;
 
 	if (datanode_count == 0 && coord_count == 0)
@@ -801,9 +843,18 @@ release_handles(void)
 
 		if (handle->sock != NO_SOCKET)
 		{
+#ifdef XCP
+			if (handle->state != DN_CONNECTION_STATE_IDLE)
+			{
+				destroy = true;
+				elog(DEBUG1, "Connection to Datanode %d has unexpected state %d and will be dropped",
+					 handle->nodeoid, handle->state);
+			}
+#else
 			if (handle->state != DN_CONNECTION_STATE_IDLE)
 				elog(DEBUG1, "Connection to Datanode %d has unexpected state %d and will be dropped",
 					 handle->nodeoid, handle->state);
+#endif
 			pgxc_node_free(handle);
 		}
 	}
@@ -819,9 +870,18 @@ release_handles(void)
 
 		if (handle->sock != NO_SOCKET)
 		{
+#ifdef XCP
+			if (handle->state != DN_CONNECTION_STATE_IDLE)
+			{
+				destroy = true;
+				elog(DEBUG1, "Connection to Coordinator %d has unexpected state %d and will be dropped",
+					 handle->nodeoid, handle->state);
+			}
+#else
 			if (handle->state != DN_CONNECTION_STATE_IDLE)
 				elog(DEBUG1, "Connection to Coordinator %d has unexpected state %d and will be dropped",
 					 handle->nodeoid, handle->state);
+#endif
 			pgxc_node_free(handle);
 		}
 	}
@@ -830,7 +890,11 @@ release_handles(void)
 #endif
 
 	/* And finally release all the connections on pooler */
+#ifdef XCP
+	PoolManagerReleaseConnections(destroy);
+#else
 	PoolManagerReleaseConnections();
+#endif
 
 	datanode_count = 0;
 	coord_count = 0;
@@ -2455,3 +2519,287 @@ PGXCNodeGetNodeIdFromName(char *node_name, char node_type)
 
 	return PGXCNodeGetNodeId(nodeoid, node_type);
 }
+
+
+#ifdef XCP
+/*
+ * Remember new value of a session or transaction parameter, and set same
+ * values on newly connected remote nodes.
+ */
+void
+PGXCNodeSetParam(bool local, const char *name, const char *value)
+{
+	HTAB 		   *table;
+
+	/*
+	 * Special cases:
+	 */
+
+	/* Transaction isolation is set by default CREATE TRANSACTION statement */
+	if (local && strcmp(name, "transaction_isolation") == 0)
+		return;
+
+	/* Same for transaction_read_only */
+	if (local && strcmp(name, "transaction_read_only") == 0)
+		return;
+
+	/* Get the target hash table and invalidate command string */
+	if (local)
+	{
+		table = local_param_htab;
+		if (local_params)
+			resetStringInfo(local_params);
+	}
+	else
+	{
+		table = session_param_htab;
+		if (session_params)
+			resetStringInfo(session_params);
+	}
+
+	/* Initialize table if empty */
+	if (table == NULL)
+	{
+		HASHCTL hinfo;
+		int		hflags;
+		MemoryContext tablecxt, oldcontext;
+
+		/* do not bother creating hash table if we about to reset non-existing
+		 * parameter */
+		if (value == NULL)
+			return;
+
+		/* Init parameter hashtable */
+		MemSet(&hinfo, 0, sizeof(hinfo));
+		hflags = 0;
+
+		hinfo.keysize = NAMEDATALEN;
+		hinfo.entrysize = sizeof(ParamEntry);
+		hflags |= HASH_ELEM;
+
+		/*
+		 * Create own context for the table. Session table should be available
+		 * all the session lifetime, local table is only valid within current
+		 * transaction
+		 */
+		tablecxt = AllocSetContextCreate(
+				local ? TopTransactionContext : TopMemoryContext,
+				"Parameter Data Context",
+				ALLOCSET_DEFAULT_MINSIZE,
+				ALLOCSET_DEFAULT_INITSIZE,
+				ALLOCSET_DEFAULT_MAXSIZE);
+		oldcontext = MemoryContextSwitchTo(tablecxt);
+
+		hinfo.hcxt = tablecxt;
+		hflags |= HASH_CONTEXT;
+
+		if (local)
+		{
+			table = hash_create("Remote local params", 16, &hinfo, hflags);
+			local_param_htab = table;
+			local_params = makeStringInfo();
+		}
+		else
+		{
+			table = hash_create("Remote session params", 16, &hinfo, hflags);
+			session_param_htab = table;
+			/*
+			 * If buffer exists while hash table does not that mean the buffer
+			 * contains only the SET command for global_session parameter.
+			 * That buffer is in TopMemoryContext, and we should now free it and
+			 * recreate in the same context as the hash table to avoid memory
+			 * leakage.
+			 */
+			if (session_params)
+			{
+				pfree(session_params->data);
+				pfree(session_params);
+			}
+			session_params = makeStringInfo();
+		}
+
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	if (value)
+	{
+		ParamEntry *entry;
+		/* create entry or replace value for the parameter */
+		entry = (ParamEntry *) hash_search(table, name, HASH_ENTER, NULL);
+		strlcpy((char *) (&entry->value), value, NAMEDATALEN);
+	}
+	else
+	{
+		/* remove entry */
+		hash_search(table, name, HASH_REMOVE, NULL);
+		/* remove table if it becomes empty */
+		if (hash_get_num_entries(table) == 0)
+		{
+			hash_destroy(table);
+			if (local)
+				local_param_htab = NULL;
+			else
+				session_param_htab = NULL;
+		}
+	}
+}
+
+
+/*
+ * Forget all parameter values set either for transaction or both transaction
+ * and session.
+ */
+void
+PGXCNodeResetParams(bool only_local)
+{
+	if (!only_local && session_param_htab)
+	{
+		hash_destroy(session_param_htab);
+		session_param_htab = NULL;
+		/*
+		 * the buffer is in the same memory context as the buffer and was
+		 * already deleted.
+		 */
+		session_params = NULL;
+	}
+	if (local_param_htab)
+	{
+		/*
+		 * no need to explicitly destroy the local_param_htab and local_params,
+		 * it will gone with the transaction memory context.
+		 */
+		local_param_htab = NULL;
+		local_params = NULL;
+	}
+}
+
+
+static void
+get_set_command(HTAB *table, StringInfo command, bool local)
+{
+	HASH_SEQ_STATUS hseq_status;
+	ParamEntry	   *entry;
+
+	if (table == NULL)
+		return;
+
+	hash_seq_init(&hseq_status, table);
+	while ((entry = (ParamEntry *) hash_seq_search(&hseq_status)))
+	{
+		appendStringInfo(command, "SET %s %s TO %s;", local ? "LOCAL" : "",
+						 NameStr(entry->name), NameStr(entry->value));
+	}
+}
+
+
+/*
+ * Returns SET commands needed to initialize remote session.
+ * The command may already be biult and valid, return it right away if the case.
+ * Otherwise build it up.
+ * To support Distributed Session machinery coordinator should generate and
+ * send a distributed session identifier to remote nodes. Generate it here.
+ */
+char *
+PGXCNodeGetSessionParamStr(void)
+{
+	/*
+	 * If no session parameters are set and that is a coordinator we need to set
+	 * global_session anyway, even if there were no other parameters.
+	 * We do not want this string to disappear, so create it in the
+	 * TopMemoryContext. However if we add first session parameter we will need
+	 * to free the buffer and recreate it in the same context as the hash table
+	 * to avoid memory leakage.
+	 */
+	if (session_params == NULL)
+	{
+		MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		session_params = makeStringInfo();
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	/* If the paramstr invalid build it up */
+	if (session_params->len == 0)
+	{
+		if (IS_PGXC_COORDINATOR)
+			appendStringInfo(session_params, "SET global_session TO %s_%d;",
+							 PGXCNodeName, MyProcPid);
+		get_set_command(session_param_htab, session_params, false);
+	}
+	return session_params->len == 0 ? NULL : session_params->data;
+}
+
+
+/*
+ * Returns SET commands needed to initialize transaction on a remote session.
+ * The command may already be biult and valid, return it right away if the case.
+ * Otherwise build it up.
+ */
+char *
+PGXCNodeGetTransactionParamStr(void)
+{
+	/* If no local parameters defined there is nothing to return */
+	if (local_param_htab == NULL)
+		return NULL;
+
+	/*
+	 * If the paramstr invalid build it up. Once there is something in the
+	 * hash table the buffer is not NULL, it is initialized if something is
+	 * inserted to the hash table.
+	 */
+	if (local_params->len == 0)
+	{
+		get_set_command(local_param_htab, local_params, true);
+	}
+	return local_params->len == 0 ? NULL : local_params->data;
+}
+
+
+/*
+ * Send down specified query, read and discard all responses until ReadyForQuery
+ */
+void
+pgxc_node_set_query(PGXCNodeHandle *handle, const char *set_query)
+{
+	pgxc_node_send_query(handle, set_query);
+	/*
+	 * Now read responses until ReadyForQuery.
+	 * XXX We may need to handle possible errors here.
+	 */
+	for (;;)
+	{
+		char	msgtype;
+		int 	msglen;
+		char   *msg;
+		/*
+		 * If we are in the process of shutting down, we
+		 * may be rolling back, and the buffer may contain other messages.
+		 * We want to avoid a procarray exception
+		 * as well as an error stack overflow.
+		 */
+		if (proc_exit_inprogress)
+			handle->state = DN_CONNECTION_STATE_ERROR_FATAL;
+
+		/* don't read from from the connection if there is a fatal error */
+		if (handle->state == DN_CONNECTION_STATE_ERROR_FATAL)
+			break;
+
+		/* No data available, read more */
+		if (!HAS_MESSAGE_BUFFERED(handle))
+		{
+			pgxc_node_receive(1, &handle, NULL);
+			continue;
+		}
+		msgtype = get_message(handle, &msglen, &msg);
+		/*
+		 * Ignore any response except ReadyForQuery, it allows to go on.
+		 */
+		if (msgtype == 'Z') /* ReadyForQuery */
+		{
+			handle->transaction_status = msg[0];
+			handle->state = DN_CONNECTION_STATE_IDLE;
+			handle->combiner = NULL;
+			break;
+		}
+	}
+}
+#endif

@@ -90,13 +90,6 @@ typedef struct
 	/* communication channel */
 	PoolPort	port;
 } PoolHandle;
-
-
-typedef struct
-{
-	NameData name;
-	NameData value;
-} ParamEntry;
 #endif
 
 /* The root memory context */
@@ -134,10 +127,7 @@ static void agent_init(PoolAgent *agent, const char *database, const char *user_
 static void agent_destroy(PoolAgent *agent);
 static void agent_create(void);
 static void agent_handle_input(PoolAgent *agent, StringInfo s);
-#ifdef XCP
-static void agent_session_command(PoolAgent *agent, PoolCommandType command_type,
-					  const char *name, const char *value);
-#else
+#ifndef XCP
 static int agent_session_command(PoolAgent *agent,
 								 const char *set_command,
 								 PoolCommandType command_type);
@@ -184,9 +174,6 @@ static int *abort_pids(int *count,
 					   const char *database,
 					   const char *user_name);
 static char *build_node_conn_str(Oid node, DatabasePool *dbPool);
-#ifdef XCP
-static char *get_set_command(HTAB *table, bool local);
-#endif
 /* Signal handlers */
 static void pooler_die(SIGNAL_ARGS);
 static void pooler_quickdie(SIGNAL_ARGS);
@@ -509,13 +496,11 @@ agent_create(void)
 	agent->coord_conn_oids = NULL;
 	agent->dn_connections = NULL;
 	agent->coord_connections = NULL;
-#ifdef XCP
-	agent->session_param_htab = NULL;
-	agent->local_param_htab = NULL;
-#endif
+#ifndef XCP
 	agent->session_params = NULL;
 	agent->local_params = NULL;
 	agent->is_temp = false;
+#endif
 	agent->pid = 0;
 
 	/* Append new agent to the list */
@@ -524,6 +509,8 @@ agent_create(void)
 	MemoryContextSwitchTo(oldcontext);
 }
 
+
+#ifndef XCP
 /*
  * session_options
  * Returns the pgoptions string generated using a particular
@@ -568,6 +555,8 @@ char *session_options(void)
 
 	return options.data;
 }
+#endif
+
 
 /*
  * Associate session with specified database and respective connection pool
@@ -728,87 +717,7 @@ PoolManagerReconnect(void)
 }
 
 
-#ifdef XCP
-/*
- * Reset all session and transaction parameters.
- */
-void
-PoolManagerReset(void)
-{
-	/* Connect to the pooler process if not yet connected */
-	if (poolHandle == NULL)
-		return;
-
-	pool_putmessage(&poolHandle->port, 'u', NULL, 0);
-	pool_flush(&poolHandle->port);
-}
-#endif
-
-
-#ifdef XCP
-void
-PoolManagerSetCommand(PoolCommandType command_type,
-					  const char *name, const char *value)
-{
-	int n32, len;
-	char msgtype = 's';
-
-	/* Do nothing if pooler connection does not exist (doing initdb) */
-	if (!poolHandle)
-		return;
-
-	/* Message type */
-	pool_putbytes(&poolHandle->port, &msgtype, 1);
-
-	/* Message length */
-	len = 16; /* length + command type + lengths of 2 strings */
-	if (name)
-		len += strlen(name);
-   	if (value)
-		len += strlen(value);
-	n32 = htonl(len);
-
-	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
-
-	/* LOCAL or SESSION parameter ? */
-	n32 = htonl(command_type);
-	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
-
-	if (name)
-	{
-		/* Length of SET command string */
-		len = strlen(name);
-		n32 = htonl(len);
-		pool_putbytes(&poolHandle->port, (char *) &n32, 4);
-
-		/* Send command string */
-		pool_putbytes(&poolHandle->port, name, len);
-	}
-	else
-	{
-		/* Send empty command */
-		n32 = htonl(-1);
-		pool_putbytes(&poolHandle->port, (char *) &n32, 4);
-	}
-
-	if (value)
-	{
-		/* Length of SET command string */
-		len = strlen(value);
-		n32 = htonl(len);
-		pool_putbytes(&poolHandle->port, (char *) &n32, 4);
-
-		/* Send command string */
-		pool_putbytes(&poolHandle->port, value, len);
-	}
-	else
-	{
-		/* Send empty command */
-		n32 = htonl(-1);
-		pool_putbytes(&poolHandle->port, (char *) &n32, 4);
-	}
-}
-#else
+#ifndef XCP
 int
 PoolManagerSetCommand(PoolCommandType command_type, const char *set_command)
 {
@@ -978,23 +887,6 @@ agent_init(PoolAgent *agent, const char *database, const char *user_name,
 
 	oldcontext = MemoryContextSwitchTo(agent->mcxt);
 
-#ifdef XCP
-	/*
-	 * Coordinator is starting passing around global session identifier.
-	 * Datanodes send it further using standard SET mechanism
-	 */
-	if (IS_PGXC_COORDINATOR && agent->pid)
-	{
-		StringInfoData	sessionid;
-		/* session parameters should be in upper context */
-		initStringInfo(&sessionid);
-		appendStringInfo(&sessionid, "%s_%d", PGXCNodeName, agent->pid);
-		agent_session_command(agent, POOL_CMD_GLOBAL_SET, "global_session",
-							  sessionid.data);
-		pfree(sessionid.data);
-	}
-#endif
-
 	/* Get needed info and allocate memory */
 	PgxcNodeGetOids(&agent->coord_conn_oids, &agent->dn_conn_oids,
 					&agent->num_coord_connections, &agent->num_dn_connections, false);
@@ -1039,6 +931,13 @@ agent_destroy(PoolAgent *agent)
 	/* Discard connections if any remaining */
 	if (agent->pool)
 	{
+#ifdef XCP
+		/*
+		 * If session is disconnecting while there are active connections
+		 * we can not know if they clean or not, so force destroy them
+		 */
+		agent_release_connections(agent, true);
+#else
 		/*
 		 * Agent is being destroyed, so reset session parameters
 		 * before putting back connections to pool.
@@ -1050,6 +949,7 @@ agent_destroy(PoolAgent *agent)
 		 * Force disconnection if there are temporary objects on agent.
 		 */
 		agent_release_connections(agent, agent->is_temp);
+#endif
 	}
 
 	/* find agent in the list */
@@ -1342,7 +1242,6 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 	int			qtype;
 
 	qtype = pool_getbyte(&agent->port);
-	elog(DEBUG1, "Pooler is handling command %c", (char) qtype);
 	/*
 	 * We can have multiple messages, so handle them all
 	 */
@@ -1352,8 +1251,8 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 		const char *user_name = NULL;
 #ifndef XCP
 		const char *pgoptions = NULL;
-#endif
 		PoolCommandType	command_type;
+#endif
 		int			datanodecount;
 		int			coordcount;
 		List	   *nodelist = NIL;
@@ -1372,6 +1271,8 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 		 */
 		if (is_pool_locked && (qtype == 'a' || qtype == 'c' || qtype == 'g'))
 			elog(WARNING,"Pool operation cannot run during pool lock");
+
+		elog(DEBUG1, "Pooler is handling command %c from %d", (char) qtype, agent->pid);
 
 		switch (qtype)
 		{
@@ -1585,55 +1486,23 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 				pool_sendres(&agent->port, res);
 				break;
 			case 'r':			/* RELEASE CONNECTIONS */
+#ifdef XCP
+				{
+					bool destroy;
+
+					pool_getmessage(&agent->port, s, 8);
+					destroy = (bool) pq_getmsgint(s, 4);
+					pq_getmsgend(s);
+					agent_release_connections(agent, destroy);
+				}
+#else
 				pool_getmessage(&agent->port, s, 4);
 				pq_getmsgend(s);
 				agent_release_connections(agent, false);
+#endif
 				break;
+#ifndef XCP
 			case 's':			/* Session-related COMMAND */
-#ifdef XCP
-				{
-					char 	   *name = NULL;
-					char 	   *value = NULL;
-					int			name_end;
-					int			value_end;
-					char		tmp_name;
-					char		tmp_value;
-
-					pool_getmessage(&agent->port, s, 0);
-					/* Determine if command is local or session */
-					command_type = (PoolCommandType) pq_getmsgint(s, 4);
-					/* Get the parameter name */
-					name_end = pq_getmsgint(s, 4);
-					if (name_end != -1)
-						name = (char *) pq_getmsgbytes(s, name_end);
-					/* Get the parameter value */
-					value_end = pq_getmsgint(s, 4);
-					if (value_end != -1)
-						value = (char *) pq_getmsgbytes(s, value_end);
-					pq_getmsgend(s);
-					/* Name and value should be null-terminated string */
-					if (name)
-					{
-						tmp_name = name[name_end];
-						name[name_end] = '\0';
-					}
-					if (value)
-					{
-						tmp_value = value[value_end];
-						value[value_end] = '\0';
-					}
-					/* perform the action */
-					agent_session_command(agent, command_type, name, value);
-					/*
-					 * restore original characters at positions where we set
-					 * terminating '\0's
-					 */
-					if (name)
-						name[name_end] = tmp_name;
-					if (value)
-						value[value_end] = tmp_value;
-				}
-#else
 				pool_getmessage(&agent->port, s, 0);
 				/* Determine if command is local or session */
 				command_type = (PoolCommandType) pq_getmsgint(s, 4);
@@ -1649,19 +1518,6 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 
 				/* Send success result */
 				pool_sendres(&agent->port, res);
-#endif
-				break;
-#ifdef XCP
-			case 'u':			/* Unset session specific setting */
-				/*
-				 * Forget all session related info, including SET commands, as
-				 * parent backend released back to pooler.
-				 */
-				pool_getmessage(&agent->port, s, 4);
-				/* no arguments expected */
-				pq_getmsgend(s);
-				agent_reset_session(agent);
-				/* no response expected */
 				break;
 #endif
 			default:			/* EOF or protocol violation */
@@ -1674,104 +1530,10 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
 	}
 }
 
+#ifndef XCP
 /*
  * Manage a session command for pooler
  */
-#ifdef XCP
-static void
-agent_session_command(PoolAgent *agent, PoolCommandType command_type,
-					  const char *name, const char *value)
-{
-	HTAB 		   *table;
-
-	if (command_type == POOL_CMD_TEMP)
-	{
-		agent->is_temp = true;
-		return;
-	}
-
-	if (command_type == POOL_CMD_LOCAL_SET)
-	{
-		/* Get the hash table */
-		if (agent->local_param_htab)
-		{
-			table = agent->local_param_htab;
-		}
-		else
-		{
-			HASHCTL hinfo;
-			int		hflags;
-
-			/* Init parameter hashtable */
-			MemSet(&hinfo, 0, sizeof(hinfo));
-			hflags = 0;
-
-			hinfo.keysize = NAMEDATALEN;
-			hinfo.entrysize = sizeof(ParamEntry);
-			hflags |= HASH_ELEM;
-
-			hinfo.hcxt = PoolerAgentContext;
-			hflags |= HASH_CONTEXT;
-
-			table = hash_create("Local parameters", 16, &hinfo, hflags);
-
-			agent->local_param_htab = table;
-		}
-		/* invalidate the string command */
-		if (agent->local_params)
-		{
-			pfree(agent->local_params);
-			agent->local_params = NULL;
-		}
-	}
-	if (command_type == POOL_CMD_GLOBAL_SET)
-	{
-		/* Get the hash table */
-		if (agent->session_param_htab)
-		{
-			table = agent->session_param_htab;
-		}
-		else
-		{
-			HASHCTL hinfo;
-			int		hflags;
-
-			/* Init parameter hashtable */
-			MemSet(&hinfo, 0, sizeof(hinfo));
-			hflags = 0;
-
-			hinfo.keysize = NAMEDATALEN;
-			hinfo.entrysize = sizeof(ParamEntry);
-			hflags |= HASH_ELEM;
-
-			hinfo.hcxt = PoolerAgentContext;
-			hflags |= HASH_CONTEXT;
-
-			table = hash_create("Session parameters", 16, &hinfo, hflags);
-
-			agent->session_param_htab = table;
-		}
-		/* invalidate the string command */
-		if (agent->session_params)
-		{
-			pfree(agent->session_params);
-			agent->session_params = NULL;
-		}
-	}
-	if (value)
-	{
-		ParamEntry *entry;
-		/* create entry or replace value for the parameter */
-		entry = (ParamEntry *) hash_search(table, name, HASH_ENTER, NULL);
-		strlcpy((char *) (&entry->value), value, NAMEDATALEN);
-	}
-	else
-	{
-		/* remove entry */
-		hash_search(table, name, HASH_REMOVE, NULL);
-	}
-}
-#else
 static int
 agent_session_command(PoolAgent *agent, const char *set_command, PoolCommandType command_type)
 {
@@ -1952,40 +1714,7 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 			 * Local parameters are fired only once BEGIN has been launched on
 			 * remote nodes.
 			 */
-#ifdef XCP
-			if (agent->session_param_htab)
-			{
-				/* create the set command and save for future reuse */
-				if (agent->session_params == NULL)
-					agent->session_params = get_set_command(
-							agent->session_param_htab, false);
-
-				if (agent->session_params)
-					PGXCNodeSendSetQuery(slot->conn, agent->session_params);
-				else
-				{
-					/* NULL result means empty table, we can destroy it now */
-					hash_destroy(agent->session_param_htab);
-					agent->session_param_htab = NULL;
-				}
-			}
-			if (agent->local_param_htab)
-			{
-				/* create the set command and save for future reuse */
-				if (agent->local_params == NULL)
-					agent->local_params = get_set_command(
-							agent->local_param_htab, true);
-
-				if (agent->local_params)
-					PGXCNodeSendSetQuery(slot->conn, agent->local_params);
-				else
-				{
-					/* NULL result means empty table, we can destroy it now */
-					hash_destroy(agent->local_param_htab);
-					agent->local_param_htab = NULL;
-				}
-			}
-#else
+#ifndef XCP
 			if (agent->session_params)
 				PGXCNodeSendSetQuery(slot->conn, agent->session_params);
 #endif
@@ -2020,40 +1749,7 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 			 * Local parameters are fired only once BEGIN has been launched on
 			 * remote nodes.
 			 */
-#ifdef XCP
-			if (agent->session_param_htab)
-			{
-				/* create the set command and save for future reuse */
-				if (agent->session_params == NULL)
-					agent->session_params = get_set_command(
-							agent->session_param_htab, false);
-
-				if (agent->session_params)
-					PGXCNodeSendSetQuery(slot->conn, agent->session_params);
-				else
-				{
-					/* NULL result means empty table, we can destroy it now */
-					hash_destroy(agent->session_param_htab);
-					agent->session_param_htab = NULL;
-				}
-			}
-			if (agent->local_param_htab)
-			{
-				/* create the set command and save for future reuse */
-				if (agent->local_params == NULL)
-					agent->local_params = get_set_command(
-							agent->local_param_htab, true);
-
-				if (agent->local_params)
-					PGXCNodeSendSetQuery(slot->conn, agent->local_params);
-				else
-				{
-					/* NULL result means empty table, we can destroy it now */
-					hash_destroy(agent->local_param_htab);
-					agent->local_param_htab = NULL;
-				}
-			}
-#else
+#ifndef XCP
 			if (agent->session_params)
 				PGXCNodeSendSetQuery(slot->conn, agent->session_params);
 #endif
@@ -2199,6 +1895,29 @@ cancel_query_on_connections(PoolAgent *agent, List *datanodelist, List *coordlis
 /*
  * Return connections back to the pool
  */
+#ifdef XCP
+void
+PoolManagerReleaseConnections(bool force)
+{
+	char msgtype = 'r';
+	int n32;
+	int msglen = 8;
+
+	Assert(poolHandle);
+
+	/* Message type */
+	pool_putbytes(&poolHandle->port, &msgtype, 1);
+
+	/* Message length */
+	n32 = htonl(msglen);
+	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
+
+	/* Lock information */
+	n32 = htonl((int) force);
+	pool_putbytes(&poolHandle->port, (char *) &n32, 4);
+	pool_flush(&poolHandle->port);
+}
+#else
 void
 PoolManagerReleaseConnections(void)
 {
@@ -2206,6 +1925,8 @@ PoolManagerReleaseConnections(void)
 	pool_putmessage(&poolHandle->port, 'r', NULL, 0);
 	pool_flush(&poolHandle->port);
 }
+#endif
+
 
 /*
  * Cancel Query
@@ -2272,26 +1993,7 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
 	if (!agent->dn_connections && !agent->coord_connections)
 		return;
 
-#ifdef XCP
-	/* Discard local parameters if any */
-	if (agent->local_param_htab)
-	{
-		hash_destroy(agent->local_param_htab);
-		agent->local_param_htab = NULL;
-	}
-	if (agent->local_params)
-	{
-		pfree(agent->local_params);
-		agent->local_params = NULL;
-	}
-	/*
-	 * It is not a problem to restore environment by running SET commands
-	 * on newly acquired connections. We may even allow to release connections
-	 * with temporary objects, but additional testing is required.
-	 */
-	if (agent->is_temp && !force_destroy)
-		return;
-#else
+#ifndef XCP
 	/*
 	 * If there are some session parameters or temporary objects,
 	 * do not put back connections to pool.
@@ -2326,18 +2028,8 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
 		 * Release connection.
 		 * If connection has temporary objects on it, destroy connection slot.
 		 */
-#ifdef XCP
-		if (slot)
-		{
-			/* Reset parameters if we going to keep connection in the pool */
-			if (!force_destroy && agent->session_param_htab)
-				PGXCNodeSendSetQuery(slot->conn, "DISCARD ALL;");
-			release_connection(agent->pool, slot, agent->dn_conn_oids[i], force_destroy);
-		}
-#else
 		if (slot)
 			release_connection(agent->pool, slot, agent->dn_conn_oids[i], force_destroy);
-#endif
 		agent->dn_connections[i] = NULL;
 	}
 	/* Then clean up for Coordinator connections */
@@ -2349,24 +2041,16 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
 		 * Release connection.
 		 * If connection has temporary objects on it, destroy connection slot.
 		 */
-#ifdef XCP
-		if (slot)
-		{
-			/* Reset parameters if we going to keep connection in the pool */
-			if (!force_destroy && agent->session_param_htab)
-				PGXCNodeSendSetQuery(slot->conn, "DISCARD ALL;");
-			release_connection(agent->pool, slot, agent->coord_conn_oids[i], force_destroy);
-		}
-#else
 		if (slot)
 			release_connection(agent->pool, slot, agent->coord_conn_oids[i], force_destroy);
-#endif
 		agent->coord_connections[i] = NULL;
 	}
 
 	MemoryContextSwitchTo(oldcontext);
 }
 
+
+#ifndef XCP
 /*
  * Reset session parameters for given connections in the agent.
  * This is done before putting back to pool connections that have been
@@ -2377,13 +2061,8 @@ agent_reset_session(PoolAgent *agent)
 {
 	int			i;
 
-#ifdef XCP
-	if (!agent->session_param_htab && !agent->local_param_htab)
-		return;
-#else
 	if (!agent->session_params && !agent->local_params)
 		return;
-#endif
 
 	/* Reset connection params */
 	/* Check agent slot for each Datanode */
@@ -2413,18 +2092,6 @@ agent_reset_session(PoolAgent *agent)
 	}
 
 	/* Parameters are reset, so free commands */
-#ifdef XCP
-	if (agent->session_param_htab)
-	{
-		hash_destroy(agent->session_param_htab);
-		agent->session_param_htab = NULL;
-	}
-	if (agent->local_param_htab)
-	{
-		hash_destroy(agent->local_param_htab);
-		agent->local_param_htab = NULL;
-	}
-#endif
 	if (agent->session_params)
 	{
 		pfree(agent->session_params);
@@ -2436,6 +2103,7 @@ agent_reset_session(PoolAgent *agent)
 		agent->local_params = NULL;
 	}
 }
+#endif
 
 
 /*
@@ -3189,27 +2857,3 @@ build_node_conn_str(Oid node, DatabasePool *dbPool)
 
 	return connstr;
 }
-
-#ifdef XCP
-static char *
-get_set_command(HTAB *table, bool local)
-{
-	HASH_SEQ_STATUS hseq_status;
-	ParamEntry	   *entry;
-	StringInfoData  result;
-
-	initStringInfo(&result);
-
-	hash_seq_init(&hseq_status, table);
-	while ((entry = (ParamEntry *) hash_seq_search(&hseq_status)))
-	{
-		appendStringInfo(&result, "SET %s %s TO %s;", local ? "LOCAL" : "",
-						 NameStr(entry->name), NameStr(entry->value));
-	}
-
-	if (result.len > 0)
-		return result.data;
-	else
-		return NULL;
-}
-#endif

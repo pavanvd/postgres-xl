@@ -106,7 +106,9 @@ extern char *PGXCNodeConnStr(char *host, int port, char *dbname, char *user,
 	                         char *pgoptions, char *remote_type);
 #endif
 extern NODE_CONNECTION *PGXCNodeConnect(char *connstr);
+#ifndef XCP
 extern int PGXCNodeSendSetQuery(NODE_CONNECTION *conn, const char *sql_command);
+#endif
 extern void PGXCNodeClose(NODE_CONNECTION * conn);
 extern int PGXCNodeConnected(NODE_CONNECTION * conn);
 extern int PGXCNodeConnClean(NODE_CONNECTION * conn);
@@ -192,5 +194,13 @@ extern char get_message(PGXCNodeHandle *conn, int *len, char **msg);
 extern void add_error_message(PGXCNodeHandle * handle, const char *message);
 
 extern Datum pgxc_execute_on_nodes(int numnodes, Oid *nodelist, char *query);
+
+#ifdef XCP
+extern void PGXCNodeSetParam(bool local, const char *name, const char *value);
+extern void PGXCNodeResetParams(bool only_local);
+extern char *PGXCNodeGetSessionParamStr(void);
+extern char *PGXCNodeGetTransactionParamStr(void);
+extern void pgxc_node_set_query(PGXCNodeHandle *handle, const char *set_query);
+#endif
 
 #endif

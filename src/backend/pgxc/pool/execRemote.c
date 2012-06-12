@@ -123,12 +123,10 @@ static List *XactWriteNodes;
 static List *XactReadNodes;
 static char *preparedNodes;
 
-#ifndef XCP
 /*
  * Flag to track if a temporary object is accessed by the current transaction
  */
 static bool temp_object_included = false;
-#endif
 
 static int	pgxc_node_begin(int conn_count, PGXCNodeHandle ** connections,
 				GlobalTransactionId gxid, bool need_tran_block,
@@ -2249,6 +2247,7 @@ generate_begin_command(void)
 	return begin_cmd;
 }
 
+
 /*
  * Send BEGIN command to the Datanodes or Coordinators and receive responses.
  * Also send the GXID for the transaction.
@@ -2268,8 +2267,12 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 	TimestampTz timestamp = GetCurrentGTMStartTimestamp();
 	PGXCNodeHandle *new_connections[conn_count];
 	int new_count = 0;
+#ifdef XCP
+	char 		   *init_str;
+#else
 	int 			con[conn_count];
 	int				j = 0;
+#endif
 
 	/*
 	 * If no remote connections, we don't have anything to do
@@ -2318,9 +2321,7 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 			if (pgxc_node_send_query(connections[i], generate_begin_command()))
 				return EOF;
 
-#ifdef XCP
-			con[j++] = PGXCNodeGetNodeId(connections[i]->nodeoid, &node_type);
-#else
+#ifndef XCP
 			con[j++] = PGXCNodeGetNodeId(connections[i]->nodeoid, node_type);
 #endif
 			/*
@@ -2360,6 +2361,16 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 	/* Verify status */
 	if (!ValidateAndCloseCombiner(&combiner))
 		return EOF;
+
+	/* after transactions are started send down local set commands */
+	init_str = PGXCNodeGetTransactionParamStr();
+	if (init_str)
+	{
+		for (i = 0; i < new_count; i++)
+		{
+			pgxc_node_set_query(new_connections[i], init_str);
+		}
+	}
 #else
 	combiner = CreateResponseCombiner(new_count, COMBINE_TYPE_NONE);
 
@@ -2392,6 +2403,111 @@ pgxc_node_begin(int conn_count, PGXCNodeHandle **connections,
 	/* No problem, let's get going */
 	return 0;
 }
+
+
+#ifdef XCP
+/*
+ * Execute DISCARD ALL command on all allocated nodes to remove all session
+ * specific stuff before releasing them to pool for reuse by other sessions.
+ */
+static void
+pgxc_node_remote_cleanup_all(void)
+{
+	PGXCNodeAllHandles *handles = get_current_handles();
+	PGXCNodeHandle *new_connections[handles->co_conn_count + handles->dn_conn_count];
+	int				new_conn_count = 0;
+	Snapshot		snapshot;
+	int				i;
+
+	/*
+	 * We must handle reader and writer connections both since even a read-only
+	 * needs to be cleaned up.
+	 */
+	if (handles->co_conn_count + handles->dn_conn_count == 0)
+		return;
+
+	/*
+	 * Send down snapshot followed by DISCARD ALL command.
+	 */
+	snapshot = ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
+	for (i = 0; i < handles->co_conn_count; i++)
+	{
+		PGXCNodeHandle *handle = handles->coord_handles[i];
+
+		/* At this point connection should be in IDLE state */
+		if (handle->state != DN_CONNECTION_STATE_IDLE)
+		{
+			handle->state = DN_CONNECTION_STATE_ERROR_FATAL;
+			continue;
+		}
+
+		/*
+		 * We must go ahead and release connections anyway, so do not throw
+		 * an error if we have a problem here.
+		 */
+		if (snapshot && pgxc_node_send_snapshot(handle, snapshot))
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to clean up data nodes")));
+			handle->state = DN_CONNECTION_STATE_ERROR_FATAL;
+			continue;
+		}
+		if (pgxc_node_send_query(handle, "DISCARD ALL"))
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to clean up data nodes")));
+			handle->state = DN_CONNECTION_STATE_ERROR_FATAL;
+			continue;
+		}
+		new_connections[new_conn_count++] = handle;
+	}
+	for (i = 0; i < handles->dn_conn_count; i++)
+	{
+		PGXCNodeHandle *handle = handles->datanode_handles[i];
+
+		/* At this point connection should be in IDLE state */
+		if (handle->state != DN_CONNECTION_STATE_IDLE)
+		{
+			handle->state = DN_CONNECTION_STATE_ERROR_FATAL;
+			continue;
+		}
+
+		/*
+		 * We must go ahead and release connections anyway, so do not throw
+		 * an error if we have a problem here.
+		 */
+		if (snapshot && pgxc_node_send_snapshot(handle, snapshot))
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to clean up data nodes")));
+			handle->state = DN_CONNECTION_STATE_ERROR_FATAL;
+			continue;
+		}
+		if (pgxc_node_send_query(handle, "DISCARD ALL"))
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to clean up data nodes")));
+			handle->state = DN_CONNECTION_STATE_ERROR_FATAL;
+			continue;
+		}
+		new_connections[new_conn_count++] = handle;
+	}
+
+	if (new_conn_count)
+	{
+		ResponseCombiner combiner;
+		InitResponseCombiner(&combiner, new_conn_count, COMBINE_TYPE_NONE);
+		/* Receive responses */
+		pgxc_node_receive_responses(new_conn_count, new_connections, NULL, &combiner);
+		CloseCombiner(&combiner);
+	}
+}
+#endif
+
 
 /*
  * Prepare all remote nodes involved in this transaction. The local node is
@@ -3116,7 +3232,6 @@ DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
 			|| !ValidateAndCloseCombiner(&combiner))
 	{
 		DataNodeCopyFinish(conn_count, connections);
-		release_handles();
 		freeLocator(result);
 		return NULL;
 	}
@@ -3493,8 +3608,6 @@ DataNodeCopyOut(PGXCNodeHandle** copy_connections,
 
 	if (!ValidateAndCloseCombiner(&combiner) || error)
 	{
-		if (!PersistentConnections)
-			release_handles();
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("Unexpected response from the data nodes when combining, request type %d", combiner.request_type)));
@@ -5187,12 +5300,12 @@ PGXCNodeCleanAndRelease(int code, Datum arg)
 #ifndef XCP
 	/* Clean up prepared transactions before releasing connections */
 	DropAllPreparedStatements();
+
+	/* Release data node connections to the pool */
+	release_handles();
 #endif
 
-	/* Release data node connections */
-	release_handles();
-
-	/* Disconnect from Pooler */
+	/* Disconnect from Pooler, if any connection is still held Pooler close it */
 	PoolManagerDisconnect();
 
 	/* Close connection with GTM */
@@ -5509,7 +5622,9 @@ ForgetTransactionNodes(void)
 void
 AtEOXact_Remote(void)
 {
-#ifndef XCP
+#ifdef XCP
+	PGXCNodeResetParams(true);
+#else
 	ExecClearTempObjectIncluded();
 #endif
 	ForgetTransactionNodes();
@@ -5541,6 +5656,18 @@ AtEOXact_Remote(void)
 void
 PreCommit_Remote(char *prepareGID, bool preparedLocalNode)
 {
+	/*
+	 * Made node connections persistent if we are committing transaction
+	 * that touched temporary tables. We never drop that flag, so after some
+	 * transaction has created a temp table the session's remote connections
+	 * become persistent.
+	 * We do not need to set that flag if transaction that has created a temp
+	 * table finally aborts - remote connections are not holding temporary
+	 * objects in this case.
+	 */
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && MyXactAccessedTempRel)
+		temp_object_included = true;
+
 	if (!preparedLocalNode)
 		PrePrepare_Remote(prepareGID, preparedLocalNode, false);
 
@@ -5578,8 +5705,17 @@ PreCommit_Remote(char *prepareGID, bool preparedLocalNode)
 	 * (XXX How about the local node ?). It can now be cleaned up from the GTM
 	 * as well
 	 */
+#ifdef XCP
+	if (!temp_object_included && !PersistentConnections)
+	{
+		/* Clean up remote sessions */
+		pgxc_node_remote_cleanup_all();
+		release_handles();
+	}
+#else
 	if (!PersistentConnections)
 		release_handles();
+#endif
 }
 
 /*
@@ -5738,8 +5874,17 @@ PreAbort_Remote(void)
 
 	clear_RemoteXactState();
 
+#ifdef XCP
+	if (!temp_object_included && !PersistentConnections)
+	{
+		/* Clean up remote sessions */
+		pgxc_node_remote_cleanup_all();
+		release_handles();
+	}
+#else
 	if (!PersistentConnections)
 		release_handles();
+#endif
 
 	return true;
 }

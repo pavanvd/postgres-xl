@@ -35,6 +35,9 @@
 #include "catalog/pg_authid.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#ifdef XCP
+#include "pgxc/execRemote.h"
+#endif
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
 #include "storage/fd.h"
@@ -623,7 +626,19 @@ retry:
 
 	if (reset)
 	{
-		PoolManagerReset();
+		RemoteQuery    *step;
+
+		PGXCNodeResetParams(false);
+
+		step = makeNode(RemoteQuery);
+		step->combine_type = COMBINE_TYPE_SAME;
+		step->exec_nodes = NULL;
+		step->sql_statement = "DISCARD ALL";
+		step->force_autocommit = false;
+		step->exec_type = EXEC_ON_CURRENT;
+		ExecRemoteUtility(step);
+		pfree(step);
+
 		/*
 		 * Next time when backend will be assigned to a global session it will
 		 * be referencing different temp namespace

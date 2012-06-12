@@ -6134,13 +6134,13 @@ set_config_option(const char *name, const char *value,
 		if (action == GUC_ACTION_LOCAL)
 		{
 			if (IsTransactionBlock())
-				PoolManagerSetCommand(POOL_CMD_LOCAL_SET, name, value);
+				PGXCNodeSetParam(true, name, value);
 			appendStringInfo(&poolcmd, "SET LOCAL %s TO %s", name,
 					(value ? value : "DEFAULT"));
 		}
 		else
 		{
-			PoolManagerSetCommand(POOL_CMD_GLOBAL_SET, name, value);
+			PGXCNodeSetParam(false, name, value);
 			appendStringInfo(&poolcmd, "SET %s TO %s", name,
 					(value ? value : "DEFAULT"));
 		}
