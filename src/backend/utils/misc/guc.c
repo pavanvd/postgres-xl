@@ -2512,6 +2512,40 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 #ifdef PGXC
+#ifdef XCP
+	{
+		{"pool_conn_keepalive", PGC_SIGHUP, DATA_NODES,
+			gettext_noop("Close connections if they are idle in the pool for that time."),
+			gettext_noop("A value of -1 turns autoclose off."),
+			GUC_UNIT_S
+		},
+		&PoolConnKeepAlive,
+		600, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"pool_maintenance_timeout", PGC_SIGHUP, DATA_NODES,
+			gettext_noop("Launch maintenance routine if pooler idle for that time."),
+			gettext_noop("A value of -1 turns feature off."),
+			GUC_UNIT_S
+		},
+		&PoolMaintenanceTimeout,
+		30, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"max_pool_size", PGC_SIGHUP, DATA_NODES,
+			gettext_noop("Max pool size."),
+			gettext_noop("If number of active connections reaches this value, "
+						 "other connection requests will be refused")
+		},
+		&MaxPoolSize,
+		100, 1, 65535,
+		NULL, NULL, NULL
+	},
+#else
 	{
 		{"min_pool_size", PGC_POSTMASTER, DATA_NODES,
 			gettext_noop("Initial pool size."),
@@ -2533,6 +2567,7 @@ static struct config_int ConfigureNamesInt[] =
 		100, 1, 65535,
 		NULL, NULL, NULL
 	},
+#endif
 
 	{
 		{"pooler_port", PGC_POSTMASTER, DATA_NODES,

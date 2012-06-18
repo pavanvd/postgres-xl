@@ -550,10 +550,13 @@
 
 #pooler_port = 6667			# Pool Manager TCP port
 					# (change requires restart)
-#min_pool_size = 1			# Initial pool size
-					# (change requires restart)
 #max_pool_size = 100			# Maximum pool size
-					# (change requires restart)
+#pool_conn_keepalive = 600		# Close connections if they are idle
+					# in the pool for that time
+					# A value of -1 turns autoclose off
+#pool_maintenance_timeout = 30		# Launch maintenance routine if pooler
+					# is idle for that time
+					# A value of -1 turns feature off
 #persistent_datanode_connections = off	# Set persistent connection mode for pooler
 					# if set at on, connections taken for session
 					# are not put back to pool
