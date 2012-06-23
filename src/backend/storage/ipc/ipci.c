@@ -43,6 +43,7 @@
 #ifdef XCP
 #include "pgxc/pgxc.h"
 #include "pgxc/squeue.h"
+#include "pgxc/pause.h"
 #endif
 
 shmem_startup_hook_type shmem_startup_hook = NULL;
@@ -132,6 +133,8 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 #ifdef XCP
 		if (IS_PGXC_DATANODE)
 			size = add_size(size, SharedQueueShmemSize());
+		if (IS_PGXC_COORDINATOR)
+			size = add_size(size, ClusterLockShmemSize());
 #endif
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
@@ -249,6 +252,8 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	 */
 	if (IS_PGXC_DATANODE)
 		SharedQueuesInit();
+	if (IS_PGXC_COORDINATOR)
+		ClusterLockShmemInit();
 #endif
 
 	/*

@@ -76,7 +76,6 @@ typedef enum LWLockId
 	NodeTableLock,
 #endif
 #ifdef XCP
-	ClusterLock,
 	SQueuesLock,
 #endif
 	RelationMappingLock,
