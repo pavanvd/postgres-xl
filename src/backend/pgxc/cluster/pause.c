@@ -18,10 +18,13 @@
 #include "miscadmin.h"
 
 /* globals */
+bool cluster_lock_held;
 bool cluster_ex_lock_held;
 
 static void HandleClusterPause(bool pause, bool initiator);
 static void ProcessClusterPauseRequest(bool pause);
+
+ClusterLockInfo *ClustLinfo = NULL;
 
 /*
  * ProcessClusterPauseRequest:
@@ -57,8 +60,8 @@ ProcessClusterPauseRequest(bool pause)
 	 * TODO: Think of some timeout mechanism here, if the locking takes too
 	 * much time...
 	 */
-	LWLockRelease(ClusterLock);
-	LWLockAcquire(ClusterLock, pause? LW_EXCLUSIVE:LW_SHARED);
+	ReleaseClusterLock(pause? false:true);
+	AcquireClusterLock(pause? true:false);
 
 	if (pause)
 		cluster_ex_lock_held = true;
@@ -134,8 +137,8 @@ HandleClusterPause(bool pause, bool initiator)
 	 *
 	 * TODO: Start a timer to cancel the request in case of a timeout
 	 */
-	LWLockRelease(ClusterLock);
-	LWLockAcquire(ClusterLock, pause? LW_EXCLUSIVE:LW_SHARED);
+	ReleaseClusterLock(pause? false:true);
+	AcquireClusterLock(pause? true:false);
 
 	if (pause)
 		cluster_ex_lock_held = true;
@@ -232,7 +235,9 @@ HandleClusterPause(bool pause, bool initiator)
 			 */
 		}
 
-		/* The cluster lock will be released as part of error processing */
+		/* cleanup locally.. */
+		ReleaseClusterLock(pause? true:false);
+		AcquireClusterLock(pause? false:true);
 		cluster_ex_lock_held = false;
 		PG_RE_THROW();
 	}
@@ -288,6 +293,12 @@ PGXCCleanClusterLock(int code, Datum arg)
 	PGXCNodeAllHandles *coord_handles;
 	int conn;
 
+	if (cluster_lock_held && !cluster_ex_lock_held)
+	{
+		ReleaseClusterLock (false);
+		cluster_lock_held = false;
+	}
+
 	/* Do nothing if cluster lock not held */
 	if (!cluster_ex_lock_held)
 		return;
@@ -305,5 +316,157 @@ PGXCCleanClusterLock(int code, Datum arg)
 		/* No error checking here... */
 		(void)pgxc_node_send_query(handle, "UNPAUSE CLUSTER");
 	}
+
+	/* Release locally too. We do not want a dangling value in cl_holder_pid! */
+	ReleaseClusterLock(true);
+	cluster_ex_lock_held = false;
+}
+
+/* Report shared memory space needed by ClusterLockShmemInit */
+Size
+ClusterLockShmemSize(void)
+{
+	Size		size = 0;
+
+	size = add_size(size, sizeof(ClusterLockInfo));
+
+	return size;
+}
+
+/* Allocate and initialize cluster locking related shared memory */
+void
+ClusterLockShmemInit(void)
+{
+	bool		found;
+
+	ClustLinfo = (ClusterLockInfo *)
+		ShmemInitStruct("Cluster Lock Info", ClusterLockShmemSize(), &found);
+
+	if (!found)
+	{
+		/* First time through, so initialize */
+		MemSet(ClustLinfo, 0, ClusterLockShmemSize());
+		SpinLockInit(&ClustLinfo->cl_mutex);
+	}
+}
+
+/*
+ * AcquireClusterLock
+ *
+ *  Based on the argument passed in, try to update the shared memory
+ *  appropriately. In case the conditions cannot be satisfied immediately this
+ *  function resorts to a simple sleep. We don't envision PAUSE CLUSTER to
+ *  occur that frequently so most of the calls will come out immediately here
+ *  without any sleeps at all
+ *
+ *  We could have used a semaphore to allow the processes to sleep while the
+ *  cluster lock is held. But again we are really not worried about performance
+ *  and immediate wakeups around PAUSE CLUSTER functionality. Using the sleep
+ *  in an infinite loop keeps things simple yet correct
+ */
+void
+AcquireClusterLock(bool exclusive)
+{
+	volatile ClusterLockInfo *clinfo = ClustLinfo;
+
+	/*
+	 * In the normal case, none of the backends will ask for exclusive lock, so
+	 * they will just update the cl_process_count value and exit immediately
+	 * from the below loop
+	 */
+	for (;;)
+	{
+		bool wait = false;
+
+		SpinLockAcquire(&clinfo->cl_mutex);
+		if (!exclusive)
+		{
+			if (clinfo->cl_holder_pid == 0)
+				clinfo->cl_process_count++;
+			else
+				wait = true;
+		}
+		else /* PAUSE CLUSTER handling */
+		{
+			if (clinfo->cl_holder_pid != 0)
+			{
+				SpinLockRelease(&clinfo->cl_mutex);
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("PAUSE CLUSTER already in progress")));
+			}
+
+			/*
+			 * There should be no other process
+			 * holding the lock including ourself
+			 */
+			if (clinfo->cl_process_count !=0)
+				wait = true;
+			else
+				clinfo->cl_holder_pid = MyProcPid;
+		}
+		SpinLockRelease(&clinfo->cl_mutex);
+
+		/*
+		 * We use a simple sleep mechanism. If PAUSE CLUSTER has been invoked,
+		 * we are not worried about immediate performance characteristics..
+		 */
+		if (wait)
+		{
+			CHECK_FOR_INTERRUPTS();
+			pg_usleep(100000L);
+		}
+		else /* Got the proper semantic read/write lock.. */
+			break;
+	}
+}
+
+/*
+ * ReleaseClusterLock
+ *
+ * 		Update the shared memory appropriately across the release call. We
+ * 		really do not need the bool argument, but it's there for some
+ * 		additional sanity checking
+ */
+void
+ReleaseClusterLock(bool exclusive)
+{
+	volatile ClusterLockInfo *clinfo = ClustLinfo;
+
+	SpinLockAcquire(&clinfo->cl_mutex);
+	if (exclusive)
+	{
+		if (clinfo->cl_process_count > 1 ||
+				clinfo->cl_holder_pid == 0)
+		{
+			SpinLockRelease(&clinfo->cl_mutex);
+			ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("Inconsistent state while doing UNPAUSE CLUSTER")));
+		}
+
+		/*
+		 * Reset the holder pid. Any waiters in AcquireClusterLock will
+		 * eventually come out of their sleep and notice this new value and
+		 * move ahead
+		 */
+		clinfo->cl_holder_pid = 0;
+	}
+	else
+	{
+		if (clinfo->cl_holder_pid != 0)
+		{
+			SpinLockRelease(&clinfo->cl_mutex);
+			ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("Inconsistent state while releasing CLUSTER lock")));
+		}
+		/*
+		 * Decrement our count. If a PAUSE is waiting inside AcquireClusterLock
+		 * elsewhere, it will wake out of sleep and do the needful
+		 */
+		clinfo->cl_process_count--;
+	}
+	SpinLockRelease(&clinfo->cl_mutex);
 }
 #endif
