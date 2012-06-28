@@ -1745,11 +1745,11 @@ standard_ProcessUtility(Node *parsetree,
 #endif /* PGXC */
 			vacuum((VacuumStmt *) parsetree, InvalidOid, true, NULL, false,
 				   isTopLevel);
-#ifdef XCP
-			/* Have other coordinators updating their local catalogs */
-			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_COORDS, false);
-#endif
+//#ifdef XCP
+//			/* Have other coordinators updating their local catalogs */
+//			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+//				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_COORDS, false);
+//#endif
 			break;
 
 		case T_ExplainStmt:
