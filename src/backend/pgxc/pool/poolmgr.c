@@ -2965,8 +2965,8 @@ build_node_conn_str(Oid node, DatabasePool *dbPool)
 /*
  * Check all pooled connections, and close which have been released more then
  * PooledConnKeepAlive seconds ago.
- * Return true if shrink operation closed all the connections, false if there
- * are still connections either in pool or in use.
+ * Return true if shrink operation closed all the connections and pool can be
+ * ddestroyed, false if there are still connections or pool is in use.
  */
 static bool
 shrink_pool(DatabasePool *pool)
@@ -2974,6 +2974,7 @@ shrink_pool(DatabasePool *pool)
 	time_t 			now = time(NULL);
 	HASH_SEQ_STATUS hseq_status;
 	PGXCNodePool   *nodePool;
+	int 			i;
 	bool			empty = true;
 
 	/* Negative PooledConnKeepAlive disables automatic connection cleanup */
@@ -2984,7 +2985,6 @@ shrink_pool(DatabasePool *pool)
 	hash_seq_init(&hseq_status, pool->nodePools);
 	while ((nodePool = (PGXCNodePool *) hash_seq_search(&hseq_status)))
 	{
-		int i;
 		/* Go thru the free slots and destroy those that are free too long */
 		for (i = 0; i < nodePool->freeSize; )
 		{
@@ -3016,6 +3016,22 @@ shrink_pool(DatabasePool *pool)
 		{
 			destroy_node_pool(nodePool);
 			hash_search(pool->nodePools, &nodePool->nodeoid, HASH_REMOVE, NULL);
+		}
+	}
+
+	/*
+	 * Last check, if any active agent is referencing the pool do not allow to
+	 * destroy it, because there will be a problem if session wakes up and try
+	 * to get a connection from non existing pool.
+	 * If all such sessions will eventually disconnect the pool will be
+	 * destroyed during next maintenance procedure.
+	 */
+	if (empty)
+	{
+		for (i = 0; i < agentCount; i++)
+		{
+			if (poolAgents[i]->pool == pool)
+				return false;
 		}
 	}
 
