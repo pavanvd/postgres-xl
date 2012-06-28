@@ -2416,7 +2416,6 @@ pgxc_node_remote_cleanup_all(void)
 	PGXCNodeAllHandles *handles = get_current_handles();
 	PGXCNodeHandle *new_connections[handles->co_conn_count + handles->dn_conn_count];
 	int				new_conn_count = 0;
-	Snapshot		snapshot;
 	int				i;
 
 	/*
@@ -2429,7 +2428,6 @@ pgxc_node_remote_cleanup_all(void)
 	/*
 	 * Send down snapshot followed by DISCARD ALL command.
 	 */
-	snapshot = ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
 	for (i = 0; i < handles->co_conn_count; i++)
 	{
 		PGXCNodeHandle *handle = handles->coord_handles[i];
@@ -2445,15 +2443,7 @@ pgxc_node_remote_cleanup_all(void)
 		 * We must go ahead and release connections anyway, so do not throw
 		 * an error if we have a problem here.
 		 */
-		if (snapshot && pgxc_node_send_snapshot(handle, snapshot))
-		{
-			ereport(WARNING,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Failed to clean up data nodes")));
-			handle->state = DN_CONNECTION_STATE_ERROR_FATAL;
-			continue;
-		}
-		if (pgxc_node_send_query(handle, "DISCARD ALL"))
+		if (pgxc_node_send_query(handle, "RESET ALL"))
 		{
 			ereport(WARNING,
 					(errcode(ERRCODE_INTERNAL_ERROR),
@@ -2478,15 +2468,7 @@ pgxc_node_remote_cleanup_all(void)
 		 * We must go ahead and release connections anyway, so do not throw
 		 * an error if we have a problem here.
 		 */
-		if (snapshot && pgxc_node_send_snapshot(handle, snapshot))
-		{
-			ereport(WARNING,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Failed to clean up data nodes")));
-			handle->state = DN_CONNECTION_STATE_ERROR_FATAL;
-			continue;
-		}
-		if (pgxc_node_send_query(handle, "DISCARD ALL"))
+		if (pgxc_node_send_query(handle, "RESET ALL"))
 		{
 			ereport(WARNING,
 					(errcode(ERRCODE_INTERNAL_ERROR),
