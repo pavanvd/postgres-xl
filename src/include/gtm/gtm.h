@@ -30,6 +30,9 @@ typedef enum GTM_ThreadStatus
 	GTM_THREAD_STARTING,
 	GTM_THREAD_RUNNING,
 	GTM_THREAD_EXITING,
+#ifdef XCP
+	GTM_THREAD_BACKUP, 		/* Backup to standby is in progress */
+#endif
 	/* Must be the last */
 	GTM_THREAD_INVALID
 } GTM_ThreadStatus;
@@ -47,9 +50,9 @@ typedef struct GTM_ThreadInfo
 	uint32				thr_localid;
 	bool				is_main_thread;
 	void * (* thr_startroutine)(void *);
-	
+
 	MemoryContext	thr_thread_context;
-	MemoryContext	thr_message_context;	
+	MemoryContext	thr_message_context;
 	MemoryContext	thr_current_context;
 	MemoryContext	thr_error_context;
 	MemoryContext	thr_parent_context;
