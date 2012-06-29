@@ -80,18 +80,18 @@ gtm_serialize_snapshotdata(GTM_SnapshotData *data, char *buf, size_t buflen)
 	/* GTM_SnapshotData.sn_xmax */
 	memcpy(buf + len, &(data->sn_xmax), sizeof(GlobalTransactionId));
 	len += sizeof(GlobalTransactionId);
-	
+
 	/* GTM_SnapshotData.sn_recent_global_xmin */
 	memcpy(buf + len, &(data->sn_recent_global_xmin), sizeof(GlobalTransactionId));
 	len += sizeof(GlobalTransactionId);
-	
+
 	/* GTM_SnapshotData.sn_xcnt */
 	memcpy(buf + len, &(data->sn_xcnt), sizeof(uint32));
 	len += sizeof(uint32);
-	
+
 	/* GTM_SnapshotData.sn_xip */
 #if 0
-	/* 
+	/*
 	 * This block of code seems to be wrong.  data->sn_xip is an array of GlobalTransacionIDs
 	 * and the number of elements are indicated by sn_xcnt.
 	 */
@@ -415,7 +415,12 @@ gtm_deserialize_transactioninfo(GTM_TransactionInfo *data, const char *buf, size
 	{
 		data->nodestring = (char *)genAllocTop(string_len + 1);	/* Should allocate at TopMostMemoryContext */
 		memcpy(data->nodestring, buf + len, string_len);
+#ifdef XCP
+		// copy/paste error in the original code
+		data->nodestring[string_len] = 0;
+#else
 		data->gti_gid[string_len] = 0;		/* null-terminated */
+#endif
 		len += string_len;
 	}
 	else
