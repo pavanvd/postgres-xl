@@ -117,7 +117,14 @@ exec_prog(const char *log_file, const char *opt_log_file,
 				   "Consult the last few lines of \"%s\" for\n"
 				   "the probable cause of the failure.\n",
 				   log_file);
+		pg_log(throw_error ? PG_FATAL : PG_REPORT,
+			   "Consult the last few lines of \"%s\" for\n"
+			   "the probable cause of the failure.\n",
+			   log_file);
+		retval = 1;
 	}
+	else
+		retval = 0;
 
 #ifndef WIN32
 	/* 
