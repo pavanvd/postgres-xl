@@ -514,6 +514,14 @@ GTM_GetGlobalTransactionIdMulti(GTM_TransactionHandle handle[], int txn_count)
 	GTM_TransactionInfo *gtm_txninfo = NULL;
 	int ii;
 
+#ifdef XCP
+	if (Recovery_IsStandby())
+	{
+		ereport(ERROR, (EINVAL, errmsg("GTM is running in STANDBY mode -- can not issue new transaction ids")));
+		return InvalidGlobalTransactionId;
+	}
+#endif
+
 	GTM_RWLockAcquire(&GTMTransactions.gt_XidGenLock, GTM_LOCKMODE_WRITE);
 
 	if (GTMTransactions.gt_gtm_state == GTM_SHUTTING_DOWN)
@@ -2636,23 +2644,23 @@ GTM_RestoreTxnInfo(int ctlfd, GlobalTransactionId next_gxid)
 }
 
 #ifdef XCP
-/* 
- * 
+/*
+ *
  */
 void
 GTM_SaveTxnInfo(FILE *ctlf, GlobalTransactionId saveXid)
 {
 	GlobalTransactionId next_gxid;
 
-	/* 
-	 * If this is 0, go look it up, otherwise use passed in value 
+	/*
+	 * If this is 0, go look it up, otherwise use passed in value
 	 * Note that ReadNewGlobalTransactionId will take a lock
          */
 	if (saveXid == 0)
 		next_gxid = ReadNewGlobalTransactionId();
 	else
 		next_gxid = saveXid;
-	
+
 	elog(LOG, "Saving transaction info - next_gxid: %u", saveXid);
 
 	fprintf(ctlf, "%u\n", next_gxid);
