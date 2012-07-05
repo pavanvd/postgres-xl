@@ -251,6 +251,7 @@ gtm_serialize_transactioninfo(GTM_TransactionInfo *data, char *buf, size_t bufle
 		len += sizeof(uint32);
 	}
 
+#ifndef XCP
 	/* GTM_TransactionInfo.gti_coordname */
 	if (data->gti_coordname != NULL)
 	{
@@ -266,6 +267,7 @@ gtm_serialize_transactioninfo(GTM_TransactionInfo *data, char *buf, size_t bufle
 		memcpy(buf + len, &namelen, sizeof(uint32));
 		len += sizeof(uint32);
 	}
+#endif
 
 	/* GTM_TransactionInfo.gti_xmin */
 	memcpy(buf + len, &(data->gti_xmin), sizeof(GlobalTransactionId));
