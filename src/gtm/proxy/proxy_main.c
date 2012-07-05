@@ -71,18 +71,24 @@ char		*GTMProxyDataDir;
 char		*GTMProxyConfigFileName;
 char		*GTMConfigFileName;
 
+#ifndef XCP
 /* GTM communication error handling options */
 int			GTMErrorWaitIdle = 0;
 int			GTMErrorWaitInterval = 0;		/* Duration of each wait */
 int			GTMErrorWaitCount = 0;			/* How many durations to wait */
+#endif
 
 char		*GTMServerHost;
 int			GTMServerPortNumber;
 
+#ifdef XCP
+int			GTMConnectRetryInterval = 60;
+#else
 /* GTM connection retry info */
 int			GTMConnectRetryIdle = 0;
 int			GTMConnectRetryCount = 0;
 int			GTMConnectRetryInterval = 0;
+#endif
 
 /*
  * Keepalives setup for the connection with GTM server
@@ -194,14 +200,14 @@ static void workerThreadReconnectToGTM(void);
 /*
  * One-time initialization. It's called immediately after the main process
  * starts
- */ 
+ */
 static GTMProxy_ThreadInfo *
 MainThreadInit()
 {
 	GTMProxy_ThreadInfo *thrinfo;
 
 	pthread_key_create(&threadinfo_key, NULL);
-	
+
 	/*
 	 * Initialize the lock protecting the global threads info
 	 */
@@ -541,7 +547,7 @@ GTMProxy_SigleHandler(int signal)
 }
 
 /*
- * Help display should match 
+ * Help display should match
  */
 static void
 help(const char *progname)
@@ -702,7 +708,7 @@ main(int argc, char *argv[])
 	 * Setup configuration file
 	 */
 	if (!SelectConfigFiles(data_dir, progname))
-		exit(1); 
+		exit(1);
 
 	/*
 	 * Parse config file
@@ -1014,7 +1020,7 @@ ServerLoop(void)
 		{
 			/*
 			 * Tell everybody that we are shutting down
-			 * 
+			 *
 			 * !! TODO
 			 */
 			exit(1);
@@ -1157,12 +1163,14 @@ GTMProxy_ThreadMain(void *argp)
 
 	initStringInfo(&input_message);
 
+#ifndef XCP
 	/*
 	 * Set GTM communication error handling options.
 	 */
 	thrinfo->thr_gtm_conn->gtmErrorWaitIdle = GTMErrorWaitIdle;
 	thrinfo->thr_gtm_conn->gtmErrorWaitInterval = GTMErrorWaitInterval;
 	thrinfo->thr_gtm_conn->gtmErrorWaitCount = GTMErrorWaitCount;
+#endif
 
 	thrinfo->reconnect_issued = FALSE;
 
@@ -1312,13 +1320,13 @@ GTMProxy_ThreadMain(void *argp)
 
 					/*
 					 * Detect if the connection has been dropped to avoid
-					 * a segmentation fault. 
+					 * a segmentation fault.
 					 */
 					if (conninfo->con_port == NULL)
 					{
 						conninfo->con_disconnected = true;
 						continue;
-					} 
+					}
 
 					/*
 					 * If this is a newly added connection, complete the handshake
@@ -1403,7 +1411,7 @@ setjmp_again:
 		 * handle any memory leaks
 		 */
 		resetStringInfo(&input_message);
-			
+
 		/*
 		 * Now, read command from each of the connections that has some data to
 		 * be read.
@@ -1574,7 +1582,7 @@ GTMProxyAddConnection(Port *port)
 					errmsg("Out of memory")));
 		return STATUS_ERROR;
 	}
-		
+
 	elog(DEBUG3, "Started new connection");
 	conninfo->con_port = port;
 
@@ -1665,17 +1673,64 @@ ProcessCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn,
 static GTM_Conn *
 HandleGTMError(GTM_Conn *gtm_conn)
 {
-	GTM_Conn *new_gtm_conn;
+#ifdef XCP
+	char gtm_connect_string[1024];
+#else
 	int		 ii;
+#endif
 
 	Assert(gtm_conn && gtm_conn->last_errno != 0);
 
+#ifdef XCP
+	elog(NOTICE,
+		 "GTM communication error was detected.  Retrying connection, interval = %d.",
+		 GTMConnectRetryInterval);
+	sprintf(gtm_connect_string, "host=%s port=%d node_name=%s remote_type=%d",
+			GTMServerHost, GTMServerPortNumber, GTMProxyNodeName, GTM_NODE_GTM_PROXY);
+	for (;;)
+	{
+
+		/* Wait and retry reconnect */
+		elog(DEBUG1, "Waiting %d secs.", GTMConnectRetryInterval);
+		pg_usleep((long)GTMConnectRetryInterval * 1000000L);
+
+		/*
+		 * Connect retry
+		 * Because this proxy has been registered to current
+		 * GTM, we don't re-register it.
+		 *
+		 * Please note that GTM-Proxy accepts "reconnect" from gtm_ctl
+		 * even while it is retrying to connect to GTM.
+		 */
+		elog(DEBUG1, "Try to reconnect to GTM");
+		/* Make sure RECONNECT command would not come while we reconnecting */
+		Disable_Longjmp();
+		/* Close and free previous connection object if still active */
+		GTMPQfinish(gtm_conn);
+		/* Reconnect */
+		gtm_conn = PQconnectGTM(gtm_connect_string);
+		/*
+		 * If reconnect succeeded the connection will be ready to use out of
+		 * there, otherwise thr_gtm_conn will be set to NULL preventing double
+		 * free.
+		 */
+		GetMyThreadInfo->thr_gtm_conn = gtm_conn;
+		Enable_Longjmp();
+		if (gtm_conn)
+		{
+			/* Success, update thread info and return new connection */
+			elog(NOTICE, "GTM connection retry succeeded.");
+			return gtm_conn;
+		}
+		elog(NOTICE, "GTM connection retry failed.");
+	}
+#else
 	if (GTMConnectRetryCount > 0)
 	{
 		int ii;
 		char gtm_connect_string[1024];
 
-		elog(NOTICE, 
+		elog(NOTICE,
 			 "GTM communication error was detected.  Retrying connection. idle: %d, count = %d, interval = %d.",
 			 GTMConnectRetryIdle, GTMConnectRetryCount, GTMConnectRetryInterval);
 		GTMPQfinish(gtm_conn);
@@ -1689,8 +1744,8 @@ HandleGTMError(GTM_Conn *gtm_conn)
 		/* GTM connection retry */
 		for (ii = 0; ii < GTMConnectRetryCount; ii++)
 		{
-			/* 
-			 * Connect retry 
+			/*
+			 * Connect retry
 			 * Because this proxy has been registered to current
 			 * GTM, we don't re-register it.
 			 *
@@ -1724,7 +1779,7 @@ HandleGTMError(GTM_Conn *gtm_conn)
 		 * GTM communication error detected, retry failed
 		 * but cannot wait for reconnect.
 		 */
-		elog(FATAL, 
+		elog(FATAL,
 			 "No action specified to wait for reconnect.");
 		exit(1);		/* Just in case */
 	}
@@ -1738,8 +1793,8 @@ HandleGTMError(GTM_Conn *gtm_conn)
 	 *
 	 * For details, see gtm_proxy.h.
 	 */
-	elog(NOTICE, 
-		 "Waiting for reconnect action from gtm_ctl. idie: %d, count: %d, interval:%d", 
+	elog(NOTICE,
+		 "Waiting for reconnect action from gtm_ctl. idie: %d, count: %d, interval:%d",
 		 GTMErrorWaitIdle, GTMErrorWaitCount, GTMErrorWaitInterval);
 	Disable_Longjmp();
 	elog(DEBUG1, "Witing %d secs.", GTMErrorWaitIdle);
@@ -1759,6 +1814,7 @@ HandleGTMError(GTM_Conn *gtm_conn)
 	elog(FATAL,
 		 "No reconnect command recdeived frm gtm_ctl.");
 	exit(1);		/* Just in case */
+#endif
 }
 
 static GTM_Conn *
@@ -1989,7 +2045,7 @@ ProcessResponse(GTMProxy_ThreadInfo *thrinfo, GTMProxy_CommandInfo *cmdinfo,
 			 *
 			 * !!TODO As we start adding support for message grouping for
 			 * messages, those message types would be removed from the above
-			 * and handled separately. 
+			 * and handled separately.
 			 */
 			switch (res->gr_status)
 			{
@@ -2034,12 +2090,14 @@ ReadCommand(GTMProxy_ConnectionInfo *conninfo, StringInfo inBuf)
 	int 			qtype;
 	int				connIdx = conninfo->con_id;
 	int				anyBackup;
+#ifndef XCP
 	int				myLocalId;
 
 	myLocalId = GetMyThreadInfo->thr_localid;
+#endif
 	anyBackup = (GetMyThreadInfo->thr_any_backup[connIdx] ? TRUE : FALSE);
-	
-	
+
+
 	/*
 	 * Get message type code from the frontend.
 	 */
@@ -2108,9 +2166,9 @@ ReadCommand(GTMProxy_ConnectionInfo *conninfo, StringInfo inBuf)
 
 		copyStringInfo(&(GetMyThreadInfo->thr_inBufData[connIdx]), inBuf);
 
-		/* 
+		/*
 		 * The next line is added because we added the code to clear backup
-		 * when the response is processed. 
+		 * when the response is processed.
 		 */
 		GetMyThreadInfo->thr_any_backup[connIdx] = TRUE;
 	}
@@ -2310,7 +2368,7 @@ ProcessTransactionCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn,
 			GTMProxy_CommandPending(conninfo, mtype, cmd_data);
 			break;
 
-		case MSG_TXN_BEGIN:	
+		case MSG_TXN_BEGIN:
 		case MSG_TXN_GET_GXID:
 			elog(FATAL, "Support not yet added for these message types");
 			break;
@@ -2576,7 +2634,7 @@ GTMProxy_HandshakeConnection(GTMProxy_ConnectionInfo *conninfo)
 					 startup_type)));
 
 	initStringInfo(&inBuf);
-	
+
 	/*
 	 * All frontend messages have a length word next
 	 * after the type code; we can read the message contents independently of
@@ -3234,7 +3292,7 @@ failed:
  * Register Proxy on GTM
  *
  * If reconnect is specified, then existing connection is closed
- * and the target GTM is taken from NewGTMServerHost and 
+ * and the target GTM is taken from NewGTMServerHost and
  * NewGTMServerPortNumber.
  */
 static void
@@ -3390,10 +3448,12 @@ workerThreadReconnectToGTM(void)
 		elog(FATAL, "Worker thread GTM connection failed.");
 	elog(LOG, "Worker thread connection done.");
 
+#ifndef XCP
 	/* Set GTM communication error handling option */
 	GetMyThreadInfo->thr_gtm_conn->gtmErrorWaitIdle = GTMErrorWaitIdle;
 	GetMyThreadInfo->thr_gtm_conn->gtmErrorWaitInterval = GTMErrorWaitInterval;
 	GetMyThreadInfo->thr_gtm_conn->gtmErrorWaitCount = GTMErrorWaitCount;
+#endif
 
 	/* Initialize the command processing */
 	GetMyThreadInfo->reconnect_issued = FALSE;

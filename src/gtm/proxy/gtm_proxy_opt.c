@@ -49,9 +49,11 @@ extern int tcp_keepalives_count;
 extern int tcp_keepalives_interval;
 extern char *GTMServerHost;
 extern int GTMProxyPortNumber;
+#ifndef XCP
 extern bool IsGTMConnectRetryRequired;
 extern int GTMConnectRetryIdle;
 extern int GTMConnectRetryCount;
+#endif
 extern int GTMConnectRetryInterval;
 extern int GTMServerPortNumber;
 /*
@@ -59,9 +61,11 @@ extern int GTMServerKeepalivesIdle;
 extern int GTMServerKeepalivesInterval;
 extern int GTMServerKeepalivesCount;
 */
+#ifndef XCP
 extern int GTMErrorWaitIdle;
 extern int GTMErrorWaitInterval;
 extern int GTMErrorWaitCount;
+#endif
 extern int GTMProxyWorkerThreads;
 extern char *GTMProxyDataDir;
 extern char *GTMProxyConfigFileName;
@@ -183,6 +187,7 @@ struct config_int ConfigureNamesInt[] =
 		0, 0, INT_MAX,
 	    0, NULL
 	},
+#ifndef XCP
 	{
 		{
 			GTM_OPTNAME_CONNECT_RETRY_COUNT, GTMC_SIGHUP,
@@ -206,6 +211,7 @@ struct config_int ConfigureNamesInt[] =
 		0, 0, INT_MAX,
 		0, NULL
 	},
+#endif
 	{
 		{
 			GTM_OPTNAME_CONNECT_RETRY_INTERVAL, GTMC_SIGHUP,
@@ -214,7 +220,11 @@ struct config_int ConfigureNamesInt[] =
 			GTMOPT_UNIT_TIME
 		},
 		&GTMConnectRetryInterval,
+#ifdef XCP
+		60, 0, INT_MAX,
+#else
 		0, 0, INT_MAX,
+#endif
 		0, NULL
 	},
 	{
@@ -243,13 +253,14 @@ struct config_int ConfigureNamesInt[] =
 		{
 			GTM_OPTNAME_KEEPALIVES_COUNT, GTMC_STARTUP,
 			gettext_noop("Sets \"keepalives_count\" option to the connection to GTM."),
-			NULL, 
+			NULL,
 			0
 		},
 		&tcp_keepalives_count,
 		0, 0, INT_MAX,
 		0, NULL
 	},
+#ifndef XCP
 	{
 		{
 			GTM_OPTNAME_ERR_WAIT_IDLE, GTMC_SIGHUP,
@@ -287,6 +298,7 @@ struct config_int ConfigureNamesInt[] =
 		0, 0, INT_MAX,
 		0, NULL
 	},
+#endif
 	{
 		{
 			GTM_OPTNAME_WORKER_THREADS, GTMC_STARTUP,

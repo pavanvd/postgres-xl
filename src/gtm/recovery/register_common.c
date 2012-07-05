@@ -48,7 +48,7 @@ static char GTMPGXCNodeFile[GTM_NODE_FILE_MAX_PATH];
 static GTM_RWLock RegisterFileLock;
 
 static int NodeRegisterMagic = 0xeaeaeaea;
-static int NodeUnregisterMagic = 0xebebebeb; 
+static int NodeUnregisterMagic = 0xebebebeb;
 static int NodeEndMagic = 0xefefefef;
 
 static GTM_PGXCNodeInfoHashBucket GTM_PGXCNodes[NODE_HASH_TABLE_SIZE];
@@ -633,6 +633,7 @@ Recovery_RecordRegisterInfo(GTM_PGXCNodeInfo *nodeinfo, bool is_register)
 void
 Recovery_RestoreRegisterInfo(void)
 {
+#ifndef XCP
 	int magic;
 	int ctlfd;
 
@@ -701,6 +702,7 @@ Recovery_RestoreRegisterInfo(void)
 	}
 
 	close(ctlfd);
+#endif
 }
 
 void
