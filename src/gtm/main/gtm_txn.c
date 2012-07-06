@@ -598,6 +598,7 @@ GTM_GetGlobalTransactionIdMulti(GTM_TransactionHandle handle[], int txn_count)
 	if (start_xid - ControlXid > CONTROL_INTERVAL || start_xid < CONTROL_INTERVAL)
 	{
 		SaveControlInfoWithTransactionId(start_xid);
+		ControlXid = start_xid;
 	}
 #endif
 	GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);

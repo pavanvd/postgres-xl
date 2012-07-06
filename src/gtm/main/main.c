@@ -291,8 +291,8 @@ gtm_status()
 }
 
 #ifdef XCP
-/* 
- * Save control file info. 
+/*
+ * Save control file info.
  * if next_gxid = 0, determine what the id is, otherwise use passed in value
  */
 void
@@ -322,8 +322,8 @@ SaveControlInfoWithTransactionId(GlobalTransactionId next_gxid)
 
 	GTM_MutexLockRelease(&control_lock);
 }
-/* 
- * Save control file info 
+/*
+ * Save control file info
  */
 void
 SaveControlInfo(void)
@@ -2104,6 +2104,25 @@ static void
 PromoteToActive(void)
 {
 	elog(LOG, "Promote signal received. Becoming an active...");
+
+#ifdef XCP
+	/*
+	 * Just in case if there was locally generated xids on datanodes skip some.
+	 * If we do not do that we may return duplicate xids which is causing
+	 * problems on data node that can not be automatically recovered.
+	 */
+	GTM_RWLockAcquire(&GTMTransactions.gt_XidGenLock, GTM_LOCKMODE_WRITE);
+	if (GlobalTransactionIdIsValid(GTMTransactions.gt_nextXid))
+	{
+		GTMTransactions.gt_nextXid += CONTROL_INTERVAL;
+		/* Handle wraparound */
+		if (!GlobalTransactionIdIsNormal(GTMTransactions.gt_nextXid))
+			GTMTransactions.gt_nextXid = FirstNormalGlobalTransactionId;
+	}
+	else
+		GTMTransactions.gt_nextXid = InitialGXIDValue_Default;
+	GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
+#endif
 
 	/*
 	 * Do promoting things here.
