@@ -792,6 +792,9 @@ pg_analyze_and_rewrite_params(Node *parsetree,
 
 	query = transformStmt(pstate, parsetree);
 
+	if (post_parse_analyze_hook)
+		(*post_parse_analyze_hook) (pstate, query);
+
 	free_parsestate(pstate);
 
 	if (log_parser_stats)

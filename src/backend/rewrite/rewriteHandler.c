@@ -2408,6 +2408,7 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 List *
 QueryRewrite(Query *parsetree)
 {
+	uint32		input_query_id = parsetree->queryId;
 	List	   *querylist;
 	List	   *results;
 	ListCell   *l;
@@ -2432,6 +2433,8 @@ QueryRewrite(Query *parsetree)
 	 * Step 2
 	 *
 	 * Apply all the RIR rules on each query
+	 *
+	 * This is also a handy place to mark each query with the original queryId
 	 */
 	results = NIL;
 	foreach(l, querylist)
@@ -2439,6 +2442,9 @@ QueryRewrite(Query *parsetree)
 		Query	   *query = (Query *) lfirst(l);
 
 		query = fireRIRrules(query, NIL, false);
+
+		query->queryId = input_query_id;
+
 		results = lappend(results, query);
 	}
 

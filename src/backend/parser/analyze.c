@@ -57,6 +57,9 @@
 #include "utils/rel.h"
 
 
+/* Hook for plugins to get control at end of parse analysis */
+post_parse_analyze_hook_type post_parse_analyze_hook = NULL;
+
 static Query *transformDeleteStmt(ParseState *pstate, DeleteStmt *stmt);
 static Query *transformInsertStmt(ParseState *pstate, InsertStmt *stmt);
 static List *transformInsertRow(ParseState *pstate, List *exprlist,
@@ -114,6 +117,9 @@ parse_analyze(Node *parseTree, const char *sourceText,
 
 	query = transformStmt(pstate, parseTree);
 
+	if (post_parse_analyze_hook)
+		(*post_parse_analyze_hook) (pstate, query);
+
 	free_parsestate(pstate);
 
 	return query;
@@ -143,6 +149,9 @@ parse_analyze_varparams(Node *parseTree, const char *sourceText,
 
 	/* make sure all is well with parameter types */
 	check_variable_parameters(pstate, query);
+
+	if (post_parse_analyze_hook)
+		(*post_parse_analyze_hook) (pstate, query);
 
 	free_parsestate(pstate);
 
