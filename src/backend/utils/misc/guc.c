@@ -231,6 +231,10 @@ static const char *show_log_file_mode(void);
 static char *config_enum_get_options(struct config_enum * record,
 						const char *prefix, const char *suffix,
 						const char *separator);
+#ifdef XCP
+static bool check_storm_catalog_remap_string(char **newval,
+									void **extra, GucSource source);
+#endif
 
 
 /*
@@ -476,6 +480,10 @@ char	   *application_name;
 int			tcp_keepalives_idle;
 int			tcp_keepalives_interval;
 int			tcp_keepalives_count;
+
+#ifdef XCP
+char	   *storm_catalog_remap_string;
+#endif
 
 /*
  * These variables are all dummies that don't do anything, except in some
@@ -3087,6 +3095,18 @@ static struct config_string ConfigureNamesString[] =
 		&global_session_string,
 		"none",
 		check_global_session, assign_global_session, NULL
+	},
+
+	{
+		{"pgxc_catalog_remap", PGC_SIGHUP, XC_HOUSEKEEPING_OPTIONS,
+			gettext_noop("List of catalog tables/views that always need to be "
+						 "mapped to the storm_catalog."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_SUPERUSER_ONLY
+		},
+		&storm_catalog_remap_string,
+		"pg_roles, pg_shdescription, pg_database, pg_db_role_setting, pg_tablespace, pg_auth_members, pg_shdepend, pg_stat_database, pg_stat_database_conflicts, pg_stat_activity, pg_locks, pg_prepared_xacts, pg_settings, pg_user, pg_group, pg_shadow, pg_user_mappings, pg_database_size, pg_show_all_settings, pg_stat_get_activity, pg_lock_status",
+		check_storm_catalog_remap_string, NULL, NULL
 	},
 #endif
 
@@ -9151,4 +9171,73 @@ show_log_file_mode(void)
 	return buf;
 }
 
+#ifdef XCP
+/*
+ * remove all unwanted spaces from the input, lowercase all the characters and
+ * also add a ',' towards the end if it does not exist. This makes calling
+ * strstr easier on it
+ */
+static bool
+check_storm_catalog_remap_string(char **newval, void **extra, GucSource source)
+{
+	/*
+	 * Check syntax. newval must be a comma separated list of identifiers.
+	 * Whitespace is allowed but removed from the result.
+	 */
+	bool		hasSpaceAfterToken = false;
+	const char *cp = *newval;
+	int			symLen = 0;
+	char		c;
+	StringInfoData buf;
+
+	/* Default NULL is OK */
+	if (cp == NULL)
+		return true;
+
+	initStringInfo(&buf);
+	while ((c = *cp++) != '\0')
+	{
+		if (isspace((unsigned char) c))
+		{
+			if (symLen > 0)
+				hasSpaceAfterToken = true;
+			continue;
+		}
+
+		if (c == ',')
+		{
+			if (symLen > 0)		/* terminate identifier */
+			{
+				appendStringInfoChar(&buf, ',');
+				symLen = 0;
+			}
+			hasSpaceAfterToken = false;
+			continue;
+		}
+
+		if (hasSpaceAfterToken)
+		{
+			/*
+			 * Syntax error due to token following space after token
+			 */
+			pfree(buf.data);
+			return false;
+		}
+		/* We lower case everything */
+		appendStringInfoChar(&buf, pg_tolower(c));
+		symLen++;
+	}
+
+	/* Append ',' at end if not present already */
+	if (symLen != 0 && buf.len > 0)
+		appendStringInfoChar(&buf, ',');
+
+	/* GUC wants the result malloc'd */
+	free(*newval);
+	*newval = guc_strdup(LOG, buf.data);
+
+	pfree(buf.data);
+	return true;
+}
+#endif
 #include "guc-file.c"

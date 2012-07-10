@@ -124,16 +124,6 @@ GRANT SELECT on storm_catalog.pg_prepared_xacts TO PUBLIC;
 
 REVOKE ALL on pg_catalog.pg_prepared_xacts FROM public;
 
-CREATE VIEW storm_catalog.pg_settings AS
-    SELECT *
-      FROM pg_catalog.pg_settings
-     WHERE context != 'postmaster'
-       AND context != 'sighup';
-
-GRANT SELECT on storm_catalog.pg_settings TO PUBLIC;
-
-REVOKE ALL on pg_catalog.pg_settings FROM public;
-
 CREATE VIEW storm_catalog.pg_user AS
     SELECT *
       FROM pg_catalog.pg_user
@@ -252,11 +242,19 @@ BEGIN
         AND s.context != 'sighup';
 END
 $BODY$
-LANGUAGE 'plpgsql' ;
+LANGUAGE 'plpgsql' SECURITY DEFINER;
 
 GRANT EXECUTE on FUNCTION storm_catalog.pg_show_all_settings() TO PUBLIC;
 
 REVOKE ALL on FUNCTION pg_catalog.pg_show_all_settings() FROM PUBLIC;
+
+CREATE VIEW storm_catalog.pg_settings AS
+    SELECT *
+      FROM pg_show_all_settings();
+
+GRANT SELECT on storm_catalog.pg_settings TO PUBLIC;
+
+REVOKE ALL on pg_catalog.pg_settings FROM public;
 
 CREATE FUNCTION storm_catalog.pg_stat_get_activity(
         pid integer, OUT datid oid, OUT procpid integer, OUT usesysid oid,

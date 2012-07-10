@@ -25,6 +25,11 @@
 #include "postgres.h"
 
 #include "access/sysattr.h"
+#ifdef XCP
+#include "catalog/pg_namespace.h"
+#include "catalog/namespace.h"
+#include "utils/builtins.h"
+#endif
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -89,6 +94,9 @@ static bool IsExecDirectUtilityStmt(Node *node);
 static void transformLockingClause(ParseState *pstate, Query *qry,
 					   LockingClause *lc, bool pushedDown);
 
+#ifdef XCP
+static void ParseAnalyze_rtable_walk(List *rtable);
+#endif
 
 /*
  * parse_analyze
@@ -2755,3 +2763,106 @@ applyLockingClause(Query *qry, Index rtindex,
 	rc->pushedDown = pushedDown;
 	qry->rowMarks = lappend(qry->rowMarks, rc);
 }
+
+#ifdef XCP
+/*
+ * Check if the query contains references to any pg_catalog tables that should
+ * be remapped to storm_catalog. The list is obtained from the
+ * storm_catalog_remap_string GUC. Also do this only for normal users
+ */
+void
+ParseAnalyze_callback(ParseState *pstate, Query *query)
+{
+	ParseAnalyze_rtable_walk(query->rtable);
+}
+
+static void
+ParseAnalyze_rtable_walk(List *rtable)
+{
+	ListCell 		*item;
+	StringInfoData 	buf;
+
+	if (!IsUnderPostmaster || superuser())
+		return;
+
+	initStringInfo(&buf);
+	foreach(item, rtable)
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) lfirst(item);
+
+		resetStringInfo(&buf);
+		if (rte->rtekind == RTE_RELATION &&
+				get_rel_namespace(rte->relid) == PG_CATALOG_NAMESPACE)
+		{
+			Oid relid = InvalidOid;
+			const char *relname = get_rel_name(rte->relid);
+
+			/* Check if the relname is in storm_catalog_remap_string */
+			appendStringInfoString(&buf, relname);
+			appendStringInfoChar(&buf, ',');
+
+			elog(DEBUG2, "the constructed name is %s", buf.data);
+
+			/*
+			 * The unqualified relation name should be satisfied from the
+			 * storm_catalog appropriately. Just provide a warning for now if
+			 * it is not..
+			 */
+			if (strstr(storm_catalog_remap_string, buf.data))
+				relid = RelnameGetRelid((const char *)relname);
+			else
+				continue;
+
+			if (get_rel_namespace(relid) != STORM_CATALOG_NAMESPACE)
+				ereport(WARNING,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("Entry (%s) present in storm_catalog_remap_string "
+							"but object not picked from STORM_CATALOG",relname)));
+			else /* change the relid to the storm_catalog one */
+				rte->relid = relid;
+		}
+		else if (rte->rtekind == RTE_FUNCTION &&
+				 get_func_namespace(((FuncExpr *) rte->funcexpr)->funcid) ==
+				 PG_CATALOG_NAMESPACE)
+		{
+			Oid funcid = InvalidOid;
+
+			FuncExpr *funcexpr = (FuncExpr *) rte->funcexpr;
+			const char *funcname = get_func_name(funcexpr->funcid);
+
+			/* Check if the funcname is in storm_catalog_remap_string */
+			appendStringInfoString(&buf, funcname);
+			appendStringInfoChar(&buf, ',');
+
+			elog(DEBUG2, "the constructed name is %s", buf.data);
+
+			/*
+			 * The unqualified function name should be satisfied from the
+			 * storm_catalog appropriately. Just provide a warning for now if
+			 * it is not..
+			 */
+			if (strstr(storm_catalog_remap_string, buf.data))
+			{
+				Oid *argtypes = NULL;
+				int nargs;
+
+				get_func_signature(funcexpr->funcid, &argtypes, &nargs);
+				funcid = get_funcid(funcname, buildoidvector(argtypes, nargs),
+									STORM_CATALOG_NAMESPACE);
+			}
+			else
+				continue;
+
+			if (get_func_namespace(funcid) != STORM_CATALOG_NAMESPACE)
+				ereport(WARNING,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("Entry (%s) present in storm_catalog_remap_string "
+							"but object not picked from STORM_CATALOG", funcname)));
+			else /* change the funcid to the storm_catalog one */
+				funcexpr->funcid = funcid;
+		}
+		else if (rte->rtekind == RTE_SUBQUERY) /* recurse for subqueries */
+				 ParseAnalyze_rtable_walk(rte->subquery->rtable);
+	}
+}
+#endif

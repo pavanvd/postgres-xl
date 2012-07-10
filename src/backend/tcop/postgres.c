@@ -4190,6 +4190,9 @@ PostgresMain(int argc, char *argv[], const char *username)
 		finish_xact_command();
 	}
 
+	/* Set up the post parse analyze hook */
+	post_parse_analyze_hook = ParseAnalyze_callback;
+
 	/* if we exit, try to release cluster lock properly */
 	on_shmem_exit(PGXCCleanClusterLock, 0);
 

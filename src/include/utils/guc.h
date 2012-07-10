@@ -223,6 +223,10 @@ extern int	tcp_keepalives_idle;
 extern int	tcp_keepalives_interval;
 extern int	tcp_keepalives_count;
 
+#ifdef XCP
+extern char	*storm_catalog_remap_string;
+#endif
+
 /*
  * Functions exported by guc.c
  */

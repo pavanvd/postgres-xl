@@ -38,4 +38,7 @@ extern void CheckSelectLocking(Query *qry);
 extern void applyLockingClause(Query *qry, Index rtindex,
 				   bool forUpdate, bool noWait, bool pushedDown);
 
+#ifdef XCP
+extern void ParseAnalyze_callback(ParseState *pstate, Query *query);
+#endif
 #endif   /* ANALYZE_H */
