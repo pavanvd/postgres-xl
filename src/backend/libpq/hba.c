@@ -2034,3 +2034,61 @@ hba_getauthmethod(hbaPort *port)
 	else
 		return STATUS_ERROR;
 }
+
+#ifdef XCP
+List* get_parsed_hba(void) {
+	FILE	   *file;
+	List	   *hba_lines = NIL;
+	List	   *hba_line_nums = NIL;
+	ListCell   *line,
+			   *line_num;
+	List	   *new_parsed_lines = NIL;
+	bool		ok = true;
+
+	file = AllocateFile(HbaFileName, "r");
+	if (file == NULL)
+	{
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open configuration file \"%s\": %m",
+						HbaFileName)));
+	}
+
+	tokenize_file(HbaFileName, file, &hba_lines, &hba_line_nums);
+	FreeFile(file);
+
+	/* Now parse all the lines */
+	forboth(line, hba_lines, line_num, hba_line_nums)
+	{
+		HbaLine    *newline;
+
+		newline = palloc0(sizeof(HbaLine));
+
+		if (!parse_hba_line(lfirst(line), lfirst_int(line_num), newline))
+		{
+			/* Parse error in the file, so indicate there's a problem */
+			free_hba_record(newline);
+			ok = false;
+
+			/* Do cleanup at the end of this loop */
+			continue;
+		}
+
+		new_parsed_lines = lappend(new_parsed_lines, newline);
+	}
+
+	/* Free the temporary lists */
+	free_lines(&hba_lines, &hba_line_nums);
+
+	if (!ok)
+	{
+		/* Parsing failed at one or more rows, so bail out */
+		clean_hba_list(new_parsed_lines);
+		ereport(ERROR,
+				(errmsg("error parsing the pg_hba.conf file")));
+	}
+
+	/* Loaded new file successfully, return it back */
+	return new_parsed_lines;
+}
+#endif
