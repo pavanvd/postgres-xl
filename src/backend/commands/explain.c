@@ -908,22 +908,30 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				{
 					if (nodeNameList)
 					{
-						bool 			first = true;
-						ListCell 	   *lc;
-						foreach(lc, nodeNameList)
+						if (es->nodes)
 						{
-							char *nodename = (char *) lfirst(lc);
-							if (first)
+							bool 			first = true;
+							ListCell 	   *lc;
+							foreach(lc, nodeNameList)
 							{
-								appendStringInfo(es->str, " on %s (%s",
-												 rsubplan->execOnAll ? "all" : "any",
-												 nodename);
-								first = false;
+								char *nodename = (char *) lfirst(lc);
+								if (first)
+								{
+									appendStringInfo(es->str, " on %s (%s",
+													 rsubplan->execOnAll ? "all" : "any",
+													 nodename);
+									first = false;
+								}
+								else
+									appendStringInfo(es->str, ",%s", nodename);
 							}
-							else
-								appendStringInfo(es->str, ",%s", nodename);
+							appendStringInfoChar(es->str, ')');
 						}
-						appendStringInfoChar(es->str, ')');
+						else
+						{
+							appendStringInfo(es->str, " on %s",
+										 rsubplan->execOnAll ? "all" : "any");
+						}
 					}
 					else
 					{
