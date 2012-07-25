@@ -17,8 +17,12 @@
 
 #include "parser/parse_node.h"
 
-
+#ifdef XCP
+extern List *transformCreateStmt(CreateStmt *stmt, const char *queryString,
+					bool autodistribute);
+#else
 extern List *transformCreateStmt(CreateStmt *stmt, const char *queryString);
+#endif
 extern List *transformAlterTableStmt(AlterTableStmt *stmt,
 						const char *queryString);
 extern IndexStmt *transformIndexStmt(IndexStmt *stmt, const char *queryString);

@@ -940,13 +940,13 @@ cmp_nodes(const void *p1, const void *p2)
 }
 
 /* --------------------------------
- *		AddRelationDistribution 
+ *		AddRelationDistribution
  *
  *		Add to pgxc_class table
  * --------------------------------
  */
-void 
-AddRelationDistribution(Oid relid, 
+void
+AddRelationDistribution(Oid relid,
 				DistributeBy *distributeby,
 				PGXCSubCluster *subcluster,
 				List 		 *parentOids,
@@ -962,7 +962,10 @@ AddRelationDistribution(Oid relid,
 
 	if (!distributeby)
 	{
-		/* 
+#ifdef XCP
+		return;
+#else
+		/*
 		 * No distribution specified.
 		 * See if we are a child table, and get distribution information
 		 * from there.
@@ -975,7 +978,7 @@ AddRelationDistribution(Oid relid,
 		}
 		else if (list_length(parentOids) == 1)
 		{
-			/* 
+			/*
 			 * Use parent's distribution
 			 */
 			int parentOid;
@@ -1008,7 +1011,7 @@ AddRelationDistribution(Oid relid,
 		}
 		else
 		{
-			/* 
+			/*
 			 * If no distribution was specified, and we have not chosen
 			 * one based on primary key or foreign key, use first column with
 			 * a supported data type.
@@ -1033,10 +1036,11 @@ AddRelationDistribution(Oid relid,
 			if (attnum == 0)
 				locatortype = LOCATOR_TYPE_RROBIN;
 		}
+#endif
 	}
-	else 
+	else
 	{
-		/* 
+		/*
 		 * User specified distribution type
 		 */
 		switch (distributeby->disttype)
@@ -1050,12 +1054,12 @@ AddRelationDistribution(Oid relid,
 						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 						 errmsg("Invalid distribution column specified")));
 				}
-				
-				if (!IsHashDistributable(descriptor->attrs[attnum-1]->atttypid)) 
+
+				if (!IsHashDistributable(descriptor->attrs[attnum-1]->atttypid))
 				{
 					ereport(ERROR,
 						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-						 errmsg("Column %s is not a hash distributable data type", 
+						 errmsg("Column %s is not a hash distributable data type",
 							distributeby->colname)));
 				}
 				locatortype = LOCATOR_TYPE_HASH;
@@ -1113,9 +1117,9 @@ AddRelationDistribution(Oid relid,
 	nodeoids = build_subcluster_data(subcluster, &numnodes);
 
 	/*
-	 * Sort the list of nodes in ascending order before storing them 
+	 * Sort the list of nodes in ascending order before storing them
 	 * This is required so that indices are stored in ascending order
-	 * and later when node number is found by modulo, it points to the right node 
+	 * and later when node number is found by modulo, it points to the right node
 	 */
 	qsort(nodeoids, numnodes, sizeof(Oid), cmp_nodes);
 

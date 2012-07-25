@@ -7,7 +7,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -73,23 +73,22 @@
 #include "pgxc/nodemgr.h"
 #include "pgxc/groupmgr.h"
 #include "utils/lsyscache.h"
+#include "utils/rel.h"
+#include "pgxc/xc_maintenance_mode.h"
 #ifdef XCP
 #include "pgxc/pause.h"
-#include "access/transam.h"
-#include "utils/fmgroids.h"
-#include "utils/lsyscache.h"
-#include "utils/snapmgr.h"
-#include "utils/tqual.h"
 #endif
-#include "pgxc/xc_maintenance_mode.h"
 
-static void ExecUtilityStmtOnNodes(const char *queryString, ExecNodes *nodes,
+static void ExecUtilityStmtOnNodes(const char *queryString, ExecNodes *nodes, bool sentToRemote,
 								   bool force_autocommit, RemoteQueryExecType exec_type,
 								   bool is_temp);
 static RemoteQueryExecType ExecUtilityFindNodes(ObjectType objectType,
 												Oid relid,
 												bool *is_temp);
 static RemoteQueryExecType ExecUtilityFindNodesRelkind(Oid relid, bool *is_temp);
+static RemoteQueryExecType GetNodesForCommentUtility(CommentStmt *stmt, bool *is_temp);
+static RemoteQueryExecType GetNodesForRulesUtility(RangeVar *relation, bool *is_temp);
+
 #endif
 
 
@@ -606,8 +605,20 @@ standard_ProcessUtility(Node *parsetree,
 #endif
 
 				/* Run parse analysis ... */
+#ifdef XCP
+				/*
+				 * If sentToRemote is set it is either EXECUTE DIRECT or part
+				 * of extencion definition script, that is a kind of extension
+				 * specific metadata table. So it makes sense do not distribute
+				 * the relation. If someone sure he needs the table distributed
+				 * it should explicitly specify distribution.
+				 */
+				stmts = transformCreateStmt((CreateStmt *) parsetree,
+											queryString, !sentToRemote);
+#else
 				stmts = transformCreateStmt((CreateStmt *) parsetree,
 											queryString);
+#endif
 #ifdef PGXC
 				if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 				{
@@ -667,13 +678,11 @@ standard_ProcessUtility(Node *parsetree,
 				 * Coordinator, if not already done so
 				 */
 				if (!sentToRemote)
-				{
 #ifdef XCP
 					stmts = AddRemoteQueryNode(stmts, queryString, is_temp ? EXEC_ON_DATANODES : EXEC_ON_ALL_NODES);
 #else
 					stmts = AddRemoteQueryNode(stmts, queryString, EXEC_ON_ALL_NODES, is_temp);
 #endif
-				}
 #endif
 
 				/* ... and do it */
@@ -751,7 +760,7 @@ standard_ProcessUtility(Node *parsetree,
 			CreateTableSpace((CreateTableSpaceStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -760,7 +769,7 @@ standard_ProcessUtility(Node *parsetree,
 			DropTableSpace((DropTableSpaceStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -768,7 +777,7 @@ standard_ProcessUtility(Node *parsetree,
 			AlterTableSpaceOptions((AlterTableSpaceOptionsStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -776,11 +785,7 @@ standard_ProcessUtility(Node *parsetree,
 			CreateExtension((CreateExtensionStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-#ifdef XCP
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
-#else
 				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
-#endif
 #endif
 			break;
 
@@ -788,11 +793,7 @@ standard_ProcessUtility(Node *parsetree,
 			ExecAlterExtensionStmt((AlterExtensionStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-#ifdef XCP
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
-#else
 				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
-#endif
 #endif
 			break;
 
@@ -800,11 +801,7 @@ standard_ProcessUtility(Node *parsetree,
 			ExecAlterExtensionContentsStmt((AlterExtensionContentsStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-#ifdef XCP
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
-#else
 				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
-#endif
 #endif
 			break;
 
@@ -1004,7 +1001,7 @@ standard_ProcessUtility(Node *parsetree,
 #ifdef PGXC
 				/* DROP is done depending on the object type and its temporary type */
 				if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-					ExecUtilityStmtOnNodes(queryString, NULL, false, exec_type, is_temp);
+					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, exec_type, is_temp);
 #endif
 			}
 			break;
@@ -1036,7 +1033,7 @@ standard_ProcessUtility(Node *parsetree,
 					}
 				}
 
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_DATANODES, is_temp);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_DATANODES, is_temp);
 			}
 #endif
 			break;
@@ -1049,18 +1046,9 @@ standard_ProcessUtility(Node *parsetree,
 			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 			{
 				bool is_temp = false;
-				RemoteQueryExecType exec_type = EXEC_ON_ALL_NODES;
 				CommentStmt *stmt = (CommentStmt *) parsetree;
-				Oid relid = GetCommentObjectId(stmt);
-
-				/* Commented object may not have a valid object ID, so move to default */
-				if (OidIsValid(relid))
-				{
-					exec_type = ExecUtilityFindNodes(stmt->objtype,
-													 relid,
-													 &is_temp);
-				}
-				ExecUtilityStmtOnNodes(queryString, NULL, false, exec_type, is_temp);
+				RemoteQueryExecType exec_type = GetNodesForCommentUtility(stmt, &is_temp);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, exec_type, is_temp);
 			}
 #endif
 			break;
@@ -1115,6 +1103,7 @@ standard_ProcessUtility(Node *parsetree,
 
 				ExecUtilityStmtOnNodes(queryString,
 									   NULL,
+									   sentToRemote,
 									   false,
 									   exec_type,
 									   is_temp);
@@ -1140,6 +1129,7 @@ standard_ProcessUtility(Node *parsetree,
 
 				ExecUtilityStmtOnNodes(queryString,
 									   NULL,
+									   sentToRemote,
 									   false,
 									   exec_type,
 									   is_temp);
@@ -1153,7 +1143,7 @@ standard_ProcessUtility(Node *parsetree,
 
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1262,7 +1252,7 @@ standard_ProcessUtility(Node *parsetree,
 			}
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1310,7 +1300,7 @@ standard_ProcessUtility(Node *parsetree,
 						}
 					}
 				}
-				ExecUtilityStmtOnNodes(queryString, NULL, false, remoteExecType, is_temp);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, remoteExecType, is_temp);
 			}
 #endif
 			ExecuteGrantStmt((GrantStmt *) parsetree);
@@ -1321,7 +1311,7 @@ standard_ProcessUtility(Node *parsetree,
 
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1330,7 +1320,7 @@ standard_ProcessUtility(Node *parsetree,
 
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1383,7 +1373,7 @@ standard_ProcessUtility(Node *parsetree,
 			}
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1395,7 +1385,7 @@ standard_ProcessUtility(Node *parsetree,
 			}
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1403,7 +1393,7 @@ standard_ProcessUtility(Node *parsetree,
 			DefineEnum((CreateEnumStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1421,25 +1411,17 @@ standard_ProcessUtility(Node *parsetree,
 		case T_ViewStmt:		/* CREATE VIEW */
 			DefineView((ViewStmt *) parsetree, queryString);
 #ifdef PGXC
-#ifdef XCP
-			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+			if (IS_PGXC_COORDINATOR)
 			{
+#ifdef XCP
 				ViewStmt *stmt = (ViewStmt *) parsetree;
 
 				if (stmt->view->relpersistence != RELPERSISTENCE_TEMP)
-					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_COORDS, false);
-			}
 #else
-			if (IS_PGXC_COORDINATOR)
-			{
-				/*
-				 * If view is temporary, no need to send this query to other
-				 * remote Coordinators
-				 */
 				if (!ExecIsTempObjectIncluded())
-					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_COORDS, false);
-			}
 #endif
+					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_COORDS, false);
+			}
 #endif
 			break;
 
@@ -1447,7 +1429,7 @@ standard_ProcessUtility(Node *parsetree,
 			CreateFunction((CreateFunctionStmt *) parsetree, queryString);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1455,7 +1437,7 @@ standard_ProcessUtility(Node *parsetree,
 			AlterFunction((AlterFunctionStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1514,7 +1496,7 @@ standard_ProcessUtility(Node *parsetree,
 							stmt->concurrent);	/* concurrent */
 #ifdef PGXC
 				if (IS_PGXC_COORDINATOR && !stmt->isconstraint && !IsConnFromCoord())
-					ExecUtilityStmtOnNodes(queryString, NULL,
+					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote,
 										   stmt->concurrent, exec_type, is_temp);
 #endif
 			}
@@ -1523,15 +1505,13 @@ standard_ProcessUtility(Node *parsetree,
 		case T_RuleStmt:		/* CREATE RULE */
 			DefineRule((RuleStmt *) parsetree, queryString);
 #ifdef PGXC
-			/* If a rule is created on a view, define it only on Coordinator */
 			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 			{
-				RemoteQueryExecType remoteExecType;
-				bool is_temp;
-				Oid relid = RangeVarGetRelid(((RuleStmt *) parsetree)->relation, false);
-
-				remoteExecType = ExecUtilityFindNodesRelkind(relid, &is_temp);
-				ExecUtilityStmtOnNodes(queryString, NULL, false, remoteExecType, is_temp);
+				RemoteQueryExecType exec_type;
+				bool	is_temp;
+				exec_type = GetNodesForRulesUtility(((RuleStmt *) parsetree)->relation,
+													&is_temp);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, exec_type, is_temp);
 			}
 #endif
 			break;
@@ -1554,7 +1534,7 @@ standard_ProcessUtility(Node *parsetree,
 						PoolManagerSetCommand(POOL_CMD_TEMP, NULL);
 #endif
 
-					ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, is_temp);
+					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, is_temp);
 				}
 			}
 #endif
@@ -1577,7 +1557,7 @@ standard_ProcessUtility(Node *parsetree,
 													 RangeVarGetRelid(stmt->sequence, false),
 													 &is_temp);
 
-					ExecUtilityStmtOnNodes(queryString, NULL, false, exec_type, is_temp);
+					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, exec_type, is_temp);
 				}
 			}
 #endif
@@ -1606,7 +1586,7 @@ standard_ProcessUtility(Node *parsetree,
 			}
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1619,7 +1599,7 @@ standard_ProcessUtility(Node *parsetree,
 			createdb((CreatedbStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1627,7 +1607,7 @@ standard_ProcessUtility(Node *parsetree,
 			AlterDatabase((AlterDatabaseStmt *) parsetree, isTopLevel);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1635,7 +1615,7 @@ standard_ProcessUtility(Node *parsetree,
 			AlterDatabaseSet((AlterDatabaseSetStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1654,9 +1634,9 @@ standard_ProcessUtility(Node *parsetree,
 					sprintf(query, "CLEAN CONNECTION TO ALL FOR DATABASE %s;", stmt->dbname);
 
 #ifdef XCP
-					ExecUtilityStmtOnNodes(query, NULL, true, EXEC_ON_ALL_NODES, false);
+					ExecUtilityStmtOnNodes(query, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
 #else
-					ExecUtilityStmtOnNodes(query, NULL, true, EXEC_ON_COORDS, false);
+					ExecUtilityStmtOnNodes(query, NULL, sentToRemote, true, EXEC_ON_COORDS, false);
 #endif
 				}
 #endif
@@ -1666,7 +1646,7 @@ standard_ProcessUtility(Node *parsetree,
 			}
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1713,7 +1693,7 @@ standard_ProcessUtility(Node *parsetree,
 			}
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_DATANODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_DATANODES, false);
 #endif
 			break;
 
@@ -1723,7 +1703,7 @@ standard_ProcessUtility(Node *parsetree,
 			cluster((ClusterStmt *) parsetree, isTopLevel);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_DATANODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_DATANODES, false);
 #endif
 			break;
 
@@ -1732,24 +1712,14 @@ standard_ProcessUtility(Node *parsetree,
 			PreventCommandDuringRecovery("VACUUM");
 #ifdef PGXC
 			/*
-			 * We have to run the command on nodes before coordinator because
+			 * We have to run the command on nodes before Coordinator because
 			 * vacuum() pops active snapshot and we can not send it to nodes
- 			 */
-#ifdef XCP
-			/* Force prepare statistics on the datanodes */
-			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-#else
+			 */
 			if (IS_PGXC_COORDINATOR)
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_DATANODES, false);
 #endif
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_DATANODES, false);
-#endif /* PGXC */
 			vacuum((VacuumStmt *) parsetree, InvalidOid, true, NULL, false,
 				   isTopLevel);
-//#ifdef XCP
-//			/* Have other coordinators updating their local catalogs */
-//			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-//				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_COORDS, false);
-//#endif
 			break;
 
 		case T_ExplainStmt:
@@ -1805,7 +1775,7 @@ standard_ProcessUtility(Node *parsetree,
 			 * and Coordinators.
 			 */
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1820,14 +1790,14 @@ standard_ProcessUtility(Node *parsetree,
 					 errdetail("The feature is not currently supported")));
 
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
 		case T_DropPropertyStmt:
 			{
-				DropPropertyStmt *stmt = (DropPropertyStmt *) parsetree;
-				Oid			relId;
+				DropPropertyStmt   *stmt = (DropPropertyStmt *) parsetree;
+				Oid					relId;
 
 				relId = RangeVarGetRelid(stmt->relation, false);
 
@@ -1838,15 +1808,13 @@ standard_ProcessUtility(Node *parsetree,
 						RemoveRewriteRule(relId, stmt->property,
 										  stmt->behavior, stmt->missing_ok);
 #ifdef PGXC
-						/* If rule is defined on a view, drop it only on Coordinators */
 						if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 						{
-							RemoteQueryExecType remoteExecType = EXEC_ON_ALL_NODES;
-							bool is_temp = false;
-							Oid relid = RangeVarGetRelid(stmt->relation, false);
-
-							remoteExecType = ExecUtilityFindNodesRelkind(relid, &is_temp);
-							ExecUtilityStmtOnNodes(queryString, NULL, false, remoteExecType, is_temp);
+							RemoteQueryExecType exec_type;
+							bool	is_temp;
+							exec_type = GetNodesForRulesUtility(((RuleStmt *) parsetree)->relation,
+																&is_temp);
+							ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, exec_type, is_temp);
 						}
 #endif
 						break;
@@ -1856,7 +1824,7 @@ standard_ProcessUtility(Node *parsetree,
 									stmt->behavior, stmt->missing_ok);
 #ifdef PGXC
 						if (IS_PGXC_COORDINATOR)
-							ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+							ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 						break;
 					default:
@@ -1871,7 +1839,7 @@ standard_ProcessUtility(Node *parsetree,
 			CreateProceduralLanguage((CreatePLangStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1879,7 +1847,7 @@ standard_ProcessUtility(Node *parsetree,
 			DropProceduralLanguage((DropPLangStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1890,7 +1858,7 @@ standard_ProcessUtility(Node *parsetree,
 			DefineDomain((CreateDomainStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1901,7 +1869,7 @@ standard_ProcessUtility(Node *parsetree,
 			CreateRole((CreateRoleStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1909,7 +1877,7 @@ standard_ProcessUtility(Node *parsetree,
 			AlterRole((AlterRoleStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1917,7 +1885,7 @@ standard_ProcessUtility(Node *parsetree,
 			AlterRoleSet((AlterRoleSetStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1925,7 +1893,7 @@ standard_ProcessUtility(Node *parsetree,
 			DropRole((DropRoleStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1933,7 +1901,7 @@ standard_ProcessUtility(Node *parsetree,
 			DropOwnedObjects((DropOwnedStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1941,7 +1909,7 @@ standard_ProcessUtility(Node *parsetree,
 			ReassignOwnedObjects((ReassignOwnedStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1955,7 +1923,7 @@ standard_ProcessUtility(Node *parsetree,
 			LockTableCommand((LockStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1993,7 +1961,7 @@ standard_ProcessUtility(Node *parsetree,
 							  (RecoveryInProgress() ? 0 : CHECKPOINT_FORCE));
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_DATANODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_DATANODES, false);
 #endif
 			break;
 
@@ -2001,12 +1969,12 @@ standard_ProcessUtility(Node *parsetree,
 		case T_BarrierStmt:
 			RequestBarrier(((BarrierStmt *) parsetree)->id, completionTag);
 			break;
-
 #ifdef XCP
 		case T_PauseClusterStmt:
 			RequestClusterPause(((PauseClusterStmt *) parsetree)->pause, completionTag);
 			break;
 #endif
+
 
 		/*
 		 * Node DDL is an operation local to Coordinator.
@@ -2017,7 +1985,7 @@ standard_ProcessUtility(Node *parsetree,
 			PgxcNodeAlter((AlterNodeStmt *) parsetree);
 #ifdef XCP
 			if (((AlterNodeStmt *) parsetree)->cluster)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2033,14 +2001,14 @@ standard_ProcessUtility(Node *parsetree,
 			PgxcGroupCreate((CreateGroupStmt *) parsetree);
 
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
 			break;
 
 		case T_DropGroupStmt:
 			PgxcGroupRemove((DropGroupStmt *) parsetree);
 
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
 			break;
 #endif
 
@@ -2078,7 +2046,7 @@ standard_ProcessUtility(Node *parsetree,
 				}
 #ifdef PGXC
 				if (IS_PGXC_COORDINATOR)
-					ExecUtilityStmtOnNodes(queryString, NULL,
+					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote,
 										   stmt->kind == OBJECT_DATABASE, EXEC_ON_ALL_NODES, false);
 #endif
 				break;
@@ -2089,7 +2057,7 @@ standard_ProcessUtility(Node *parsetree,
 			CreateConversionCommand((CreateConversionStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2097,7 +2065,7 @@ standard_ProcessUtility(Node *parsetree,
 			CreateCast((CreateCastStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2105,7 +2073,7 @@ standard_ProcessUtility(Node *parsetree,
 			DropCast((DropCastStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2113,7 +2081,7 @@ standard_ProcessUtility(Node *parsetree,
 			DefineOpClass((CreateOpClassStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2121,7 +2089,7 @@ standard_ProcessUtility(Node *parsetree,
 			DefineOpFamily((CreateOpFamilyStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2129,7 +2097,7 @@ standard_ProcessUtility(Node *parsetree,
 			AlterOpFamily((AlterOpFamilyStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2137,7 +2105,7 @@ standard_ProcessUtility(Node *parsetree,
 			RemoveOpClass((RemoveOpClassStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2145,7 +2113,7 @@ standard_ProcessUtility(Node *parsetree,
 			RemoveOpFamily((RemoveOpFamilyStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2153,7 +2121,7 @@ standard_ProcessUtility(Node *parsetree,
 			AlterTSDictionary((AlterTSDictionaryStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -2161,14 +2129,14 @@ standard_ProcessUtility(Node *parsetree,
 			AlterTSConfiguration((AlterTSConfigurationStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, false, EXEC_ON_ALL_NODES, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 #ifdef PGXC
 		case T_RemoteQuery:
 			Assert(IS_PGXC_COORDINATOR);
 			/*
-			 * Do not launch query on Other Datanodes if remote connection is a coordinator one
+			 * Do not launch query on Other Datanodes if remote connection is a Coordinator one
 			 * it will cause a deadlock in the cluster at Datanode levels.
 			 */
 			if (!IsConnFromCoord())
@@ -2181,14 +2149,15 @@ standard_ProcessUtility(Node *parsetree,
 			 * First send command to other nodes via probably existing
 			 * connections, then clean local pooler
 			 */
-			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_ALL_NODES, false);
+			if (IS_PGXC_COORDINATOR)
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
 			CleanConnection((CleanConnStmt *) parsetree);
 #else
-			Assert(IS_PGXC_COORDINATOR);
+ 			Assert(IS_PGXC_COORDINATOR);
 			CleanConnection((CleanConnStmt *) parsetree);
+
 			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, true, EXEC_ON_COORDS, false);
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_COORDS, false);
 #endif
 			break;
 #endif
@@ -2207,11 +2176,15 @@ standard_ProcessUtility(Node *parsetree,
  * as it is taken in charge by the remote Coordinator.
  */
 static void
-ExecUtilityStmtOnNodes(const char *queryString, ExecNodes *nodes,
+ExecUtilityStmtOnNodes(const char *queryString, ExecNodes *nodes, bool sentToRemote,
 					   bool force_autocommit, RemoteQueryExecType exec_type, bool is_temp)
 {
 	/* Return if query is launched on no nodes */
 	if (exec_type == EXEC_ON_NONE)
+		return;
+
+	/* Nothing to be done if this statement has been sent to the nodes */
+	if (sentToRemote)
 		return;
 
 	/* If no Datanodes defined, the query cannot be launched */
@@ -2245,10 +2218,13 @@ ExecUtilityStmtOnNodes(const char *queryString, ExecNodes *nodes,
  * Determine the list of nodes to launch query on.
  * This depends on temporary nature of object and object type.
  * Return also a flag indicating if relation is temporary.
+ *
+ * If object is a RULE, the object id sent is that of the object to which the
+ * rule is applicable.
  */
 static RemoteQueryExecType
 ExecUtilityFindNodes(ObjectType object_type,
-					 Oid relid,
+					 Oid object_id,
 					 bool *is_temp)
 {
 	RemoteQueryExecType exec_type;
@@ -2256,18 +2232,23 @@ ExecUtilityFindNodes(ObjectType object_type,
 	switch (object_type)
 	{
 		case OBJECT_SEQUENCE:
-			*is_temp = IsTempTable(relid);
+			*is_temp = IsTempTable(object_id);
 			exec_type = EXEC_ON_ALL_NODES;
 			break;
 
 		case OBJECT_TABLE:
 			/* Do the check on relation kind */
-			exec_type = ExecUtilityFindNodesRelkind(relid, is_temp);
+			exec_type = ExecUtilityFindNodesRelkind(object_id, is_temp);
 			break;
 
+		case OBJECT_RULE:
+			/*
+			 * For RULEs, we get the object id of the relation to which the rule
+			 * is applicable.
+			 */
 		case OBJECT_VIEW:
 			/* Check if object is a temporary view */
-			if ((*is_temp = IsTempTable(relid)))
+			if ((*is_temp = IsTempTable(object_id)))
 				exec_type = EXEC_ON_NONE;
 			else
 				exec_type = EXEC_ON_COORDS;
@@ -2275,7 +2256,7 @@ ExecUtilityFindNodes(ObjectType object_type,
 
 		case OBJECT_INDEX:
 			/* Check if given index uses temporary tables */
-			if ((*is_temp = IsTempTable(relid)))
+			if ((*is_temp = IsTempTable(object_id)))
 				exec_type = EXEC_ON_DATANODES;
 			else
 				exec_type = EXEC_ON_ALL_NODES;
@@ -2310,15 +2291,8 @@ ExecUtilityFindNodesRelkind(Oid relid, bool *is_temp)
 			break;
 
 		case RELKIND_RELATION:
-#ifdef XCP
-			if ((*is_temp = IsTempTable(relid)))
-				exec_type = EXEC_ON_DATANODES;
-			else
-				exec_type = EXEC_ON_ALL_NODES;
-#else
 			*is_temp = IsTempTable(relid);
 			exec_type = EXEC_ON_ALL_NODES;
-#endif
 			break;
 
 		case RELKIND_VIEW:
@@ -3816,3 +3790,88 @@ GetCommandLogLevel(Node *parsetree)
 
 	return lev;
 }
+
+#ifdef PGXC
+/*
+ * GetCommentObjectId
+ * TODO Change to return the nodes to execute the utility on
+ *
+ * Return Object ID of object commented
+ * Note: This function uses portions of the code of CommentObject,
+ * even if this code is duplicated this is done like this to facilitate
+ * merges with PostgreSQL head.
+ */
+static RemoteQueryExecType
+GetNodesForCommentUtility(CommentStmt *stmt, bool *is_temp)
+{
+	ObjectAddress		address;
+	Relation			relation;
+	RemoteQueryExecType	exec_type = EXEC_ON_ALL_NODES;	/* By default execute on all nodes */
+	Oid					object_id;
+
+	if (stmt->objtype == OBJECT_DATABASE && list_length(stmt->objname) == 1)
+	{
+		char	   *database = strVal(linitial(stmt->objname));
+		if (!OidIsValid(get_database_oid(database, true)))
+			ereport(WARNING,
+					(errcode(ERRCODE_UNDEFINED_DATABASE),
+					 errmsg("database \"%s\" does not exist", database)));
+		/* No clue, return the default one */
+		return exec_type;
+	}
+
+	address = get_object_address(stmt->objtype, stmt->objname, stmt->objargs,
+								 &relation, ShareUpdateExclusiveLock);
+	object_id = address.objectId;
+
+	/*
+	 * If the object being commented is a rule, the nodes are decided by the
+	 * object to which rule is applicable, so get the that object's oid
+	 */
+	if (stmt->objtype == OBJECT_RULE)
+	{
+		if (!relation && !OidIsValid(relation->rd_id))
+		{
+			/* This should not happen, but prepare for the worst */
+			char *rulename = strVal(llast(stmt->objname));
+			ereport(WARNING,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("can not find relation for rule \"%s\" does not exist", rulename)));
+			object_id = InvalidOid;
+		}
+		else
+			object_id = RelationGetRelid(relation);
+	}
+
+	if (relation != NULL)
+		relation_close(relation, NoLock);
+
+	/* Commented object may not have a valid object ID, so move to default */
+	if (OidIsValid(object_id))
+		exec_type = ExecUtilityFindNodes(stmt->objtype,
+										 object_id,
+										 is_temp);
+	return exec_type;
+}
+
+/*
+ * GetNodesForRulesUtility
+ * Get the nodes to execute this RULE related utility statement.
+ * A rule is expanded on Coordinator itself, and does not need any
+ * existence on Datanode. In fact, if it were to exist on Datanode,
+ * there is a possibility that it would expand again
+ */
+static RemoteQueryExecType
+GetNodesForRulesUtility(RangeVar *relation, bool *is_temp)
+{
+	Oid relid = RangeVarGetRelid(relation, false);
+	RemoteQueryExecType exec_type;
+	/*
+	 * PGXCTODO: See if it's a temporary object, do we really need
+	 * to care about temporary objects here? What about the
+	 * temporary objects defined inside the rule?
+	 */
+	exec_type =	ExecUtilityFindNodes(OBJECT_RULE, relid, is_temp);
+	return exec_type;
+}
+#endif

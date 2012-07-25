@@ -612,9 +612,13 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId)
 #ifdef PGXC
 	/*
 	 * Add to pgxc_class.
-	 * we need to do this after CommandCounterIncrement 
+	 * we need to do this after CommandCounterIncrement
 	 */
+#ifdef XCP
+	if (IS_PGXC_COORDINATOR && stmt->distributeby)
+#else
 	if (IS_PGXC_COORDINATOR && relkind == RELKIND_RELATION)
+#endif
 	{
 		AddRelationDistribution(relationId, stmt->distributeby,
 								stmt->subcluster, inheritOids, descriptor);
@@ -3399,7 +3403,7 @@ ATRewriteTables(List **wqueue, LOCKMODE lockmode)
 	}
 
 #ifdef PGXC
-	/* 
+	/*
 	 * In PGXC, do not check the FK constraints on the Coordinator, and just return
 	 * That is because a SELECT is generated whose plan will try and use
 	 * the data nodes. We (currently) do not want to do that on the Coordinator,

@@ -153,8 +153,14 @@ static void checkLocalFKConstraints(CreateStmtContext *cxt);
  * then expand those into multiple IndexStmt blocks.
  *	  - thomas 1997-12-02
  */
+#ifdef XCP
+List *
+transformCreateStmt(CreateStmt *stmt, const char *queryString,
+					bool autodistribute)
+#else
 List *
 transformCreateStmt(CreateStmt *stmt, const char *queryString)
+#endif
 {
 	ParseState *pstate;
 	CreateStmtContext cxt;
@@ -302,12 +308,28 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	 * If the user did not specify any distribution clause and there is no
 	 * inherits clause, try and use PK or unique index
 	 */
+#ifdef XCP
+	if (autodistribute && !stmt->distributeby)
+	{
+		stmt->distributeby = (DistributeBy *) palloc0(sizeof(DistributeBy));
+		if (cxt.fallback_dist_col)
+		{
+			stmt->distributeby->disttype = DISTTYPE_HASH;
+			stmt->distributeby->colname = cxt.fallback_dist_col;
+		}
+		else
+		{
+			stmt->distributeby->disttype = DISTTYPE_ROUNDROBIN;
+		}
+	}
+#else
 	if (!stmt->distributeby && !stmt->inhRelations && cxt.fallback_dist_col)
 	{
 		stmt->distributeby = (DistributeBy *) palloc0(sizeof(DistributeBy));
 		stmt->distributeby->disttype = DISTTYPE_HASH;
 		stmt->distributeby->colname = cxt.fallback_dist_col;
 	}
+#endif
 #endif
 
 	return result;
@@ -1825,7 +1847,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	}
 #ifdef PGXC
 		if (IS_PGXC_COORDINATOR && cxt->distributeby
-				&& ( cxt->distributeby->disttype == DISTTYPE_HASH || 
+				&& ( cxt->distributeby->disttype == DISTTYPE_HASH ||
 					cxt->distributeby->disttype == DISTTYPE_MODULO)
 				&& !isLocalSafe)
 			ereport(ERROR,
@@ -2691,6 +2713,15 @@ transformColumnType(CreateStmtContext *cxt, ColumnDef *column)
 					 parser_errposition(cxt->pstate,
 										column->collClause->location)));
 	}
+#ifdef XCP
+	if (cxt->fallback_dist_col == NULL)
+	{
+		if (IsHashDistributable(HeapTupleGetOid(ctype)))
+		{
+			cxt->fallback_dist_col = pstrdup(column->colname);
+		}
+	}
+#endif
 
 	ReleaseSysCache(ctype);
 }
