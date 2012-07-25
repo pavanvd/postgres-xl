@@ -38,6 +38,7 @@ typedef struct SQueueHeader *SharedQueue;
 
 extern Size SharedQueueShmemSize(void);
 extern void SharedQueuesInit(void);
+extern void SharedQueueAcquire(const char *sqname, int ncons);
 extern SharedQueue SharedQueueBind(const char *sqname, List *consNodes,
 				List *distNodes, int *myindex, int *consMap);
 extern void SharedQueueUnBind(SharedQueue squeue);

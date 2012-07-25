@@ -427,6 +427,22 @@ StoreCachedPlan(CachedPlanSource *plansource,
 								   &plan->invalItems);
 	}
 
+#ifdef XCP
+	if (list_length(plan->stmt_list) == 1)
+	{
+		PlannedStmt *pstmt;
+
+		pstmt = (PlannedStmt *) linitial(plan->stmt_list);
+		if (IsA(pstmt, PlannedStmt) && pstmt->pname &&
+				list_length(pstmt->distributionRestrict) > 1)
+		{
+			SharedQueueAcquire(pstmt->pname,
+							   list_length(pstmt->distributionRestrict) -1);
+
+		}
+	}
+#endif
+
 	Assert(plansource->plan == NULL);
 	plansource->plan = plan;
 

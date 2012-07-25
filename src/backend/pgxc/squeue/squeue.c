@@ -2,13 +2,12 @@
  *
  * squeue.c
  *
- *	  Shared queue for data exchange in shared memory between sessions,
- * one of which is producer, providing data rows. Others are consumer agents -
+ *	  Shared queue is for data exchange in shared memory between sessions,
+ * one of which is a producer, providing data rows. Others are consumer agents -
  * sessions initiated from other datanodes, the main purpose of them is to read
  * rows from the shared queue and send then to the parent data node.
- *    The producer is usually a consumer at the same time, it receives data from
- * consumer agents running on other data nodes. So we should be careful with
- * blocking on full or empty queue to avoid deadlock.
+ *    The producer is usually a consumer at the same time, it sends back tuples
+ * to the parent node without putting it to the queue.
  *
  * Copyright (c) 2011 StormDB
  *
@@ -35,6 +34,7 @@
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/hsearch.h"
+#include "utils/resowner.h"
 
 
 int NSQueues = 64;
@@ -85,11 +85,13 @@ typedef struct
 	int			cs_qlength;		/* The size of the consumer queue */
 	int			cs_qreadpos;	/* The read position in the consumer queue */
 	int			cs_qwritepos;	/* The write position in the consumer queue */
+#ifdef SQUEUE_STAT
 	long 		stat_writes;
 	long		stat_reads;
 	long 		stat_buff_writes;
 	long		stat_buff_reads;
 	long		stat_buff_returns;
+#endif
 } ConsState;
 
 /* Shared queue header */
@@ -100,8 +102,10 @@ typedef struct SQueueHeader
 	int			sq_pid; 		/* Process id of the producer session */
 	int			sq_nodeid;		/* Node id of the producer parent */
 	SQueueSync *sq_sync;        /* Associated sinchronization objects */
+#ifdef SQUEUE_STAT
 	bool		stat_finish;
 	long		stat_paused;
+#endif
 	int			sq_nconsumers;	/* Number of consumers */
 	ConsState 	sq_consumers[0];/* variable length array */
 } SQueueHeader;
@@ -237,28 +241,106 @@ SharedQueueShmemSize(void)
 	return add_size(sq_size, sqs_size);
 }
 
+/*
+ * SharedQueueAcquire
+ *     Reserve a named shared queue for future data exchange between processes
+ * supplying tuples to remote Datanodes. Invoked when a remote query plan is
+ * registered on the Datanode. The number of consumers is known at this point,
+ * so shared queue may be formatted during reservation. The first process that
+ * is acquiring the shared queue on the Datanode does the formatting.
+ */
+void
+SharedQueueAcquire(const char *sqname, int ncons)
+{
+	bool		found;
+	SharedQueue sq;
+
+	Assert(IsConnFromDatanode());
+	Assert(ncons > 0);
+
+	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
+
+	sq = (SharedQueue) hash_search(SharedQueues, sqname, HASH_ENTER, &found);
+	/* First process acquiring queue should format it */
+	if (!found)
+	{
+		int		qsize;   /* Size of one queue */
+		int		i;
+		char   *heapPtr;
+
+		elog(DEBUG1, "Format squeue %s for %d consumers", sqname, ncons);
+
+		/* Initialize the shared queue */
+		sq->sq_pid = 0;
+		sq->sq_nodeid = -1;
+#ifdef SQUEUE_STAT
+		sq->stat_finish = false;
+		sq->stat_paused = 0;
+#endif
+		/*
+		 * Assign sync object (latches to wait on)
+		 * XXX We may want to optimize this and do smart search instead of
+		 * iterating the array.
+		 */
+		for (i = 0; i < NUM_SQUEUES; i++)
+		{
+			SQueueSync *sqs = GET_SQUEUE_SYNC(i);
+			if (sqs->queue == NULL)
+			{
+				sqs->queue = (void *) sq;
+				sq->sq_sync = sqs;
+				break;
+			}
+		}
+
+		sq->sq_nconsumers = ncons;
+		/* Determine queue size for a single consumer */
+		qsize = (SQUEUE_SIZE - SQUEUE_HDR_SIZE(sq->sq_nconsumers)) / sq->sq_nconsumers;
+
+		heapPtr = (char *) sq;
+		/* Skip header */
+		heapPtr += SQUEUE_HDR_SIZE(sq->sq_nconsumers);
+		/* Set up consumer queues */
+		for (i = 0; i < ncons; i++)
+		{
+			ConsState *cstate = &(sq->sq_consumers[i]);
+
+			cstate->cs_pid = 0;
+			cstate->cs_node = -1;
+			cstate->cs_ntuples = 0;
+			cstate->cs_status = CONSUMER_ACTIVE;
+			cstate->cs_qstart = heapPtr;
+			cstate->cs_qlength = qsize;
+			cstate->cs_qreadpos = 0;
+			cstate->cs_qwritepos = 0;
+			heapPtr += qsize;
+		}
+		Assert(heapPtr <= ((char *) sq) + SQUEUE_SIZE);
+	}
+	else
+	{
+		Assert(sq->sq_nconsumers == ncons);
+	}
+	LWLockRelease(SQueuesLock);
+}
+
 
 /*
  * SharedQueueBind
- *    Bind to the shared queue specified by sqname. Function searches the queue
- * by the name in the SharedQueue hash table.
- * The consNodes int list identifies the consumers of the current step.
+ *    Bind to the shared queue specified by sqname either as a consumer or as a
+ * producer. The first process that binds to the shared queue becomes a producer
+ * and receives the consumer map, others become consumers and receive queue
+ * indexes to read tuples from.
+ * The consNodes int list identifies the nodes involved in the current step.
  * The distNodes int list describes result distribution of the current step.
  * The consNodes should be a subset of distNodes.
- * The function is automatically determine if caller is a producer or a consumer
- * in the current step caller may rely on the function to pick up random process
- * to be a producer.
- * The producer should be the first process that binds to the queue. This is
- * normally the case, the producer binds to the buffer when plan is initialized,
- * while consumers do that on execution time. When some node is a producer and
- * not a consumer, all remote processes are trying to bind to the queue, and
- * first bound is becoming a producer.
  * The myindex and consMap parameters are binding results. If caller process
- * is bound to the query as a producer myindex is set to -1 and index of the each
- * consumer (order number in the consNodes) is stored to the consMap array at
- * the position of the node in the distNodes. For the producer node SQ_CONS_SELF
- * is stored, nodes from distNodes list which are not members of consNodes are
- * represented as SQ_CONS_NONE.
+ * is bound to the query as a producer myindex is set to -1 and index of the
+ * each consumer (order number in the consNodes) is stored to the consMap array
+ * at the position of the node in the distNodes. For the producer node
+ * SQ_CONS_SELF is stored, nodes from distNodes list which are not members of
+ * consNodes or if it was reported they won't read results, they are represented
+ * as SQ_CONS_NONE.
  */
 SharedQueue
 SharedQueueBind(const char *sqname, List *consNodes,
@@ -273,12 +355,13 @@ SharedQueueBind(const char *sqname, List *consNodes,
 
 	selfid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE, &ntype);
 
-	sq = (SharedQueue) hash_search(SharedQueues, sqname, HASH_ENTER, &found);
+	sq = (SharedQueue) hash_search(SharedQueues, sqname, HASH_FIND, &found);
 	if (!found)
+		elog(PANIC, "Shared queue %s not found", sqname);
+	if (sq->sq_pid == 0)
 	{
-		int		qsize;   /* Size of one queue */
+		/* Producer */
 		int		i;
-		char   *heapPtr;
 		ListCell *lc;
 
 		Assert(consMap);
@@ -289,26 +372,9 @@ SharedQueueBind(const char *sqname, List *consNodes,
 		/* Initialize the shared queue */
 		sq->sq_pid = MyProcPid;
 		sq->sq_nodeid = selfid;
-		sq->stat_finish = false;
-		sq->stat_paused = 0;
-		/*
-		 * XXX We may want to optimize this and do smart search instead of
-		 * iterating the array.
-		 */
-		for (i = 0; i < NUM_SQUEUES; i++)
-		{
-			SQueueSync *sqs = GET_SQUEUE_SYNC(i);
-			if (sqs->queue == NULL)
-			{
-				OwnLatch(&sqs->sqs_producer_latch);
-				sqs->queue = (void *) sq;
-				sq->sq_sync = sqs;
-				break;
-			}
-		}
+		OwnLatch(&sq->sq_sync->sqs_producer_latch);
 
 		i = 0;
-		sq->sq_nconsumers = 0;
 		foreach(lc, distNodes)
 		{
 			int			nodeid = lfirst_int(lc);
@@ -329,22 +395,29 @@ SharedQueueBind(const char *sqname, List *consNodes,
 			 */
 			else if (list_member_int(consNodes, nodeid))
 			{
-				ConsState  *cstate = &(sq->sq_consumers[sq->sq_nconsumers]);
-				consMap[i++] = sq->sq_nconsumers++;
-				cstate->cs_pid = 0; /* not yet known */
-				cstate->cs_node = nodeid;
-				cstate->cs_ntuples = 0;
-				cstate->cs_status = CONSUMER_ACTIVE;
-				cstate->cs_qstart = 0;
-				cstate->cs_qlength = 0;
-				cstate->cs_qreadpos = 0;
-				cstate->cs_qwritepos = 0;
-				cstate->stat_writes = 0;
-				cstate->stat_reads = 0;
-				cstate->stat_buff_writes = 0;
-				cstate->stat_buff_reads = 0;
-				cstate->stat_buff_returns = 0;
-			}
+				ConsState  *cstate;
+				int 		j;
+
+				for (j = 0; j < sq->sq_nconsumers; j++)
+				{
+					cstate = &(sq->sq_consumers[j]);
+					if (cstate->cs_node == nodeid)
+					{
+						/* The process already reported that queue won't read */
+						elog(DEBUG1, "Node %d of step %s is released already",
+							 nodeid, sqname);
+						consMap[i++] = SQ_CONS_NONE;
+						break;
+					}
+					else if (cstate->cs_node == -1)
+					{
+						/* found unused slot, assign the consumer to it */
+						consMap[i++] = j;
+						cstate->cs_node = nodeid;
+						break;
+					}
+				}
+ 			}
 			/*
 			 * Consumer from this node won't ever connect as upper level step
 			 * is not executed on the node. Discard resuls that may go to that
@@ -356,23 +429,6 @@ SharedQueueBind(const char *sqname, List *consNodes,
 			}
 		}
 
-		Assert(sq->sq_nconsumers > 0);
-
-		/* Determine queue size for a single consumer */
-		qsize = (SQUEUE_SIZE - SQUEUE_HDR_SIZE(sq->sq_nconsumers)) / sq->sq_nconsumers;
-
-		heapPtr = (char *) sq;
-		/* Skip header */
-		heapPtr += SQUEUE_HDR_SIZE(sq->sq_nconsumers);
-		for (i = 0; i < sq->sq_nconsumers; i++)
-		{
-			ConsState *cstate = &(sq->sq_consumers[i]);
-
-			cstate->cs_qstart = heapPtr;
-			cstate->cs_qlength = qsize;
-			heapPtr += qsize;
-		}
-		Assert(heapPtr <= ((char *) sq) + SQUEUE_SIZE);
 		if (myindex)
 			*myindex = -1;
 	}
@@ -516,7 +572,9 @@ SharedQueueDump(SharedQueue squeue, int consumerIdx,
 			/* false means the tuplestore in EOF state */
 			break;
 		}
+#ifdef SQUEUE_STAT
 		cstate->stat_buff_reads++;
+#endif
 
 		/* The slot should contain a data row */
 		Assert(tmpslot->tts_datarow);
@@ -547,7 +605,9 @@ SharedQueueDump(SharedQueue squeue, int consumerIdx,
 
 			/* Restore read position to get same tuple next time */
 			tuplestore_copy_read_pointer(tuplestore, 0, 1);
+#ifdef SQUEUE_STAT
 			cstate->stat_buff_returns++;
+#endif
 
 			/* We may have advanced the mark, try to truncate */
 			tuplestore_trim(tuplestore);
@@ -603,7 +663,9 @@ SharedQueueWrite(SharedQueue squeue, int consumerIdx,
 
 	LWLockAcquire(clwlock, LW_EXCLUSIVE);
 
+#ifdef SQUEUE_STAT
 	cstate->stat_writes++;
+#endif
 
 	/*
 	 * If we have anything in the local storage try to dump this first,
@@ -626,7 +688,9 @@ SharedQueueWrite(SharedQueue squeue, int consumerIdx,
 		{
 			/* No room to even dump local store, append the tuple to the store
 			 * and exit */
+#ifdef SQUEUE_STAT
 			cstate->stat_buff_writes++;
+#endif
 			LWLockRelease(clwlock);
 			tuplestore_puttupleslot(*tuplestore, slot);
 			return;
@@ -663,8 +727,10 @@ SharedQueueWrite(SharedQueue squeue, int consumerIdx,
 			int			ptrno;
 			char 		storename[64];
 
+#ifdef SQUEUE_STAT
 			elog(DEBUG1, "Start buffering %s node %d, %d tuples in queue, %ld writes and %ld reads so far",
 				 squeue->sq_key, cstate->cs_node, cstate->cs_ntuples, cstate->stat_writes, cstate->stat_reads);
+#endif
 			*tuplestore = tuplestore_begin_datarow(false, work_mem, tmpcxt);
 			/* We need is to be able to remember/restore the read position */
 			snprintf(storename, 64, "%s node %d", squeue->sq_key, cstate->cs_node);
@@ -677,7 +743,9 @@ SharedQueueWrite(SharedQueue squeue, int consumerIdx,
 			Assert(ptrno == 1);
 		}
 
+#ifdef SQUEUE_STAT
 		cstate->stat_buff_writes++;
+#endif
 		/* Append the slot to the store... */
 		tuplestore_puttupleslot(*tuplestore, slot);
 
@@ -778,7 +846,9 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 	QUEUE_READ(cstate, datalen, datarow->msg);
 	ExecStoreDataRowTuple(datarow, slot, true);
 	(cstate->cs_ntuples)--;
+#ifdef SQUEUE_STAT
 	cstate->stat_reads++;
+#endif
 	/* sanity check */
 	Assert((cstate->cs_ntuples == 0) == (cstate->cs_qreadpos == cstate->cs_qwritepos));
 	LWLockRelease(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock);
@@ -905,8 +975,10 @@ SharedQueueCanPause(SharedQueue squeue)
 	 */
 	if (result)
 		result = (usedspace / ncons > squeue->sq_consumers[0].cs_qlength / 2);
+#ifdef SQUEUE_STAT
 	if (result)
 		squeue->stat_paused++;
+#endif
 	return result;
 }
 
@@ -924,9 +996,11 @@ SharedQueueFinish(SharedQueue squeue, TupleDesc tupDesc,
 	{
 		ConsState *cstate = &squeue->sq_consumers[i];
 		LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock, LW_EXCLUSIVE);
+#ifdef SQUEUE_STAT
 		if (!squeue->stat_finish)
 			elog(DEBUG1, "Finishing %s node %d, %ld writes and %ld reads so far, %ld buffer writes, %ld buffer reads, %ld tuples returned to buffer",
 				 squeue->sq_key, cstate->cs_node, cstate->stat_writes, cstate->stat_reads, cstate->stat_buff_writes, cstate->stat_buff_reads, cstate->stat_buff_returns);
+#endif
 		/*
 		 * if the tuplestore has data and consumer queue has space for some
 		 * try to push rows to the queue. We do not want to do that often
@@ -978,7 +1052,9 @@ SharedQueueFinish(SharedQueue squeue, TupleDesc tupDesc,
 	if (tmpslot)
 		ExecDropSingleTupleTableSlot(tmpslot);
 
+#ifdef SQUEUE_STAT
 	squeue->stat_finish = true;
+#endif
 
 	return nstores;
 }
@@ -1017,9 +1093,11 @@ SharedQueueUnBind(SharedQueue squeue)
 				/* producer will continue waiting */
 				ResetLatch(&sqsync->sqs_producer_latch);
 			}
+#ifdef SQUEUE_STAT
 			else
 				elog(DEBUG1, "Done %s node %d, %ld writes and %ld reads, %ld buffer writes, %ld buffer reads, %ld tuples returned to buffer",
 					 squeue->sq_key, cstate->cs_node, cstate->stat_writes, cstate->stat_reads, cstate->stat_buff_writes, cstate->stat_buff_reads, cstate->stat_buff_returns);
+#endif
 
 			LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
 		}
@@ -1030,7 +1108,9 @@ SharedQueueUnBind(SharedQueue squeue)
 		WaitLatch(&sqsync->sqs_producer_latch, -1);
 		/* got notification, continue loop */
 	}
+#ifdef SQUEUE_STAT
 	elog(DEBUG1, "Producer %s is done, there were %ld pauses", squeue->sq_key, squeue->stat_paused);
+#endif
 
 	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
 	/* All is done, clean up */
@@ -1142,32 +1222,47 @@ SharedQueueRelease(const char *sqname)
 		}
 		else
 		{
+			ConsState *cstate;
 			elog(DEBUG1, "Looking for consumer %d in %s", myid, sqname);
 			/* find specified node in the consumer lists */
 			for (i = 0; i < sq->sq_nconsumers; i++)
 			{
-				ConsState *cstate = &(sq->sq_consumers[i]);
+				cstate = &(sq->sq_consumers[i]);
 				if (cstate->cs_node == myid)
+					break;
+				cstate = NULL;
+			}
+			if (cstate == NULL)
+			{
+				for (i = 0; i < sq->sq_nconsumers; i++)
 				{
-					LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock,
-								  LW_EXCLUSIVE);
-					if (cstate->cs_status != CONSUMER_DONE)
-					{
-						/* Inform producer the consumer have done the job */
-						cstate->cs_status = CONSUMER_DONE;
-						/* no need to receive notifications */
-						if (cstate->cs_pid > 0)
-							DisownLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
-						/*
-						 * notify the producer, it may be waiting while
-						 * consumers are finishing
-						 */
-						SetLatch(&sqsync->sqs_producer_latch);
-						elog(DEBUG1, "Release consumer %d of %s", i, sqname);
-					}
-					LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
+					cstate = &(sq->sq_consumers[i]);
+					if (cstate->cs_node == -1)
+						break;
+					cstate = NULL;
 				}
 			}
+
+			LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock,
+						  LW_EXCLUSIVE);
+			if (cstate->cs_status != CONSUMER_DONE)
+			{
+				/* Inform producer the consumer have done the job */
+				cstate->cs_status = CONSUMER_DONE;
+				/* no need to receive notifications */
+				if (cstate->cs_pid > 0)
+				{
+					DisownLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
+					cstate->cs_pid = 0;
+				}
+				/*
+				 * notify the producer, it may be waiting while
+				 * consumers are finishing
+				 */
+				SetLatch(&sqsync->sqs_producer_latch);
+				elog(DEBUG1, "Release consumer %d of %s", i, sqname);
+			}
+			LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
 		}
 	}
 	LWLockRelease(SQueuesLock);
@@ -1180,10 +1275,19 @@ SharedQueueRelease(const char *sqname)
 void
 SharedQueuesCleanup(int code, Datum arg)
 {
+	/* Need to be able to look into catalogs */
+	CurrentResourceOwner = ResourceOwnerCreate(NULL, "SharedQueuesCleanup");
+
 	/*
 	 * Release all registered prepared statements.
 	 * If a shared queue name is associated with the statement this queue will
 	 * be released.
 	 */
 	DropAllPreparedStatements();
+
+	/* Release everything */
+	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_BEFORE_LOCKS, true, true);
+	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
+	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
+	CurrentResourceOwner = NULL;
 }
