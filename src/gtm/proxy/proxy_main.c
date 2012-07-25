@@ -2305,6 +2305,16 @@ ProcessPGXCNodeCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn,
 			/* Unregistering has to be saved in a place where it can be seen by all the threads */
 			oldContext = MemoryContextSwitchTo(TopMostMemoryContext);
 
+#ifdef XCP
+			/*
+			 * Unregister node. Ignore any error here, otherwise we enter
+			 * endless loop trying to execute command again and again
+			 */
+			Recovery_PGXCNodeUnregister(cmd_data.cd_reg.type,
+										cmd_data.cd_reg.nodename,
+										false,
+										conninfo->con_port->sock);
+#else
 			/* Unregister Node also on Proxy */
 			if (Recovery_PGXCNodeUnregister(cmd_data.cd_reg.type,
 								cmd_data.cd_reg.nodename,
@@ -2315,7 +2325,7 @@ ProcessPGXCNodeCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn,
 						(EINVAL,
 						 errmsg("Failed to Unregister node")));
 			}
-
+#endif
 			MemoryContextSwitchTo(oldContext);
 
 			GTMProxy_ProxyPGXCNodeCommand(conninfo, gtm_conn, mtype, cmd_data);
