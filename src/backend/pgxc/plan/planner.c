@@ -2151,7 +2151,7 @@ AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType rem
 		return result;
 
 	/* Only a remote Coordinator is allowed to send a query to backend nodes */
-	if (remoteExecType == EXEC_ON_CURRENT || 
+	if (remoteExecType == EXEC_ON_CURRENT ||
 			IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
 		RemoteQuery *step = makeNode(RemoteQuery);
@@ -2208,7 +2208,9 @@ pgxc_direct_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 
 	result->planTree = (Plan *) query_step;
 
+#ifndef XCP
 	query->qry_finalise_aggs = false;
+#endif
 	query_step->scan.plan.targetlist = query->targetList;
 
 	return result;

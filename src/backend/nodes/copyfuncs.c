@@ -2613,7 +2613,9 @@ _copyQuery(Query *from)
 	COPY_NODE_FIELD(setOperations);
 	COPY_NODE_FIELD(constraintDeps);
 #ifdef PGXC
+#ifndef XCP
 	COPY_STRING_FIELD(sql_statement);
+#endif
 #endif
 
 	return newnode;

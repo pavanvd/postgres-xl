@@ -103,7 +103,9 @@ typedef struct
 	int			indentLevel;	/* current indent level for prettyprint */
 	bool		varprefix;		/* TRUE to print prefixes on Vars */
 #ifdef PGXC
+#ifndef XCP
 	bool		finalise_aggs;	/* should datanode finalise the aggregates? */
+#endif /* XCP */
 #endif /* PGXC */
 } deparse_context;
 
@@ -690,7 +692,9 @@ pg_get_triggerdef_worker(Oid trigid, bool pretty)
 		context.varprefix = true;
 		context.prettyFlags = pretty ? PRETTYFLAG_PAREN : 0;
 #ifdef PGXC
+#ifndef XCP
 		context.finalise_aggs = false;
+#endif /* XCP */
 #endif /* PGXC */
 		context.indentLevel = PRETTYINDENT_STD;
 
@@ -2136,7 +2140,9 @@ deparse_expression_pretty(Node *expr, List *dpcontext,
 	context.varprefix = forceprefix;
 	context.prettyFlags = prettyFlags;
 #ifdef PGXC
+#ifndef XCP
 	context.finalise_aggs = false;
+#endif /* XCP */
 #endif /* PGXC */
 	context.indentLevel = startIndent;
 
@@ -2366,7 +2372,7 @@ set_deparse_plan(deparse_namespace *dpns, Plan *plan)
 
 		dpns->outer_planstate = (PlanState *) makeNode(PlanState);
 		dpns->outer_plan = dpns->outer_planstate->plan = nestloop->join.plan.lefttree;
-		
+
 		dpns->inner_planstate = (PlanState *) makeNode(PlanState);
 		dpns->inner_plan = dpns->inner_planstate->plan = nestloop->join.plan.righttree;
 	}
@@ -2639,7 +2645,9 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 		context.prettyFlags = prettyFlags;
 		context.indentLevel = PRETTYINDENT_STD;
 #ifdef PGXC
+#ifndef XCP
 		context.finalise_aggs = false;
+#endif /* XCP */
 #endif /* PGXC */
 
 		memset(&dpns, 0, sizeof(dpns));
@@ -2777,7 +2785,7 @@ deparse_query(Query *query, StringInfo buf, List *parentnamespace)
 void
 get_query_def_from_valuesList(Query *query, StringInfo buf)
 {
-	
+
 	RangeTblEntry *select_rte = NULL;
 	RangeTblEntry *values_rte = NULL;
 	RangeTblEntry *rte;
@@ -2804,7 +2812,9 @@ get_query_def_from_valuesList(Query *query, StringInfo buf)
 	context.prettyFlags = 0;
 	context.indentLevel = 0;
 #ifdef PGXC
+#ifndef XCP
 	context.finalise_aggs = query->qry_finalise_aggs;
+#endif /* XCP */
 #endif /* PGXC */
 
 	dpns.rtable = query->rtable;
@@ -2962,7 +2972,9 @@ get_query_def(Query *query, StringInfo buf, List *parentnamespace,
 	context.prettyFlags = prettyFlags;
 	context.indentLevel = startIndent;
 #ifdef PGXC
+#ifndef XCP
 	context.finalise_aggs = query->qry_finalise_aggs;
+#endif /* XCP */
 #endif /* PGXC */
 
 	memset(&dpns, 0, sizeof(dpns));
@@ -3398,7 +3410,7 @@ get_target_list(List *targetList, deparse_context *context,
 	}
 
 #ifdef PGXC
-	/* 
+	/*
 	 * Because the empty target list can generate invalid SQL
 	 * clause. Here, just fill a '*' to process a table without
 	 * any columns, this statement will be sent to data nodes
@@ -3752,6 +3764,7 @@ get_insert_query_def(Query *query, deparse_context *context)
 	get_with_clause(query, context);
 
 #ifdef PGXC
+#ifndef XCP
 	/*
 	 * In the case of "INSERT ... DEFAULT VALUES" analyzed in pgxc planner,
 	 * return the sql statement directly if the table has no default values.
@@ -3761,6 +3774,7 @@ get_insert_query_def(Query *query, deparse_context *context)
 		appendStringInfo(buf, "%s", query->sql_statement);
 		return;
 	}
+#endif
 #endif
 
 	/*
@@ -3789,8 +3803,9 @@ get_insert_query_def(Query *query, deparse_context *context)
 		elog(ERROR, "both subquery and values RTEs in INSERT");
 
 #ifdef PGXC
+#ifndef XCP
 	/*
-	 * If it's an INSERT ... SELECT or VALUES (...), (...), ... 
+	 * If it's an INSERT ... SELECT or VALUES (...), (...), ...
 	 * sql_statement is rewritten and assigned in RewriteQuery.
 	 * Just return it here.
 	 */
@@ -3799,6 +3814,7 @@ get_insert_query_def(Query *query, deparse_context *context)
 		appendStringInfo(buf, "%s", query->sql_statement);
 		return;
 	}
+#endif
 #endif
 	/*
 	 * Start the query with INSERT INTO relname
@@ -4056,7 +4072,7 @@ get_utility_query_def(Query *query, deparse_context *context)
 			simple_quote_literal(buf, stmt->payload);
 		}
 	}
-#ifdef PGXC	
+#ifdef PGXC
 	else if (query->utilityStmt && IsA(query->utilityStmt, CreateStmt))
 	{
 		CreateStmt *stmt = (CreateStmt *) query->utilityStmt;
@@ -4203,7 +4219,7 @@ get_utility_query_def(Query *query, deparse_context *context)
 			}
 		}
 	}
-#endif	
+#endif
 	else
 	{
 		/* Currently only NOTIFY utility commands can appear in rules */
@@ -6415,6 +6431,7 @@ get_agg_expr(Aggref *aggref, deparse_context *context)
 	}
 
 #ifdef PGXC
+#ifndef XCP
 	/*
 	 * Datanode should send finalised aggregate results. Datanodes evaluate only
 	 * transition results. In order to get the finalised aggregate, we enclose
@@ -6441,6 +6458,7 @@ get_agg_expr(Aggref *aggref, deparse_context *context)
 		}
 		ReleaseSysCache(aggTuple);
 	}
+#endif /* XCP */
 #endif /* PGXC */
 
 	appendStringInfo(buf, "%s(%s",

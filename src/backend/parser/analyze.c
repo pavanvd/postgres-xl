@@ -2391,8 +2391,10 @@ transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
 		result = parse_analyze(parsetree, query, NULL, 0);
 	}
 
+#ifndef XCP
 	/* Needed by planner */
 	result->sql_statement = pstrdup(query);
+#endif
 
 	/* Default list of parameters to set */
 	step->sql_statement = NULL;
@@ -2492,7 +2494,9 @@ transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
 	step->exec_nodes->nodeList = lappend_int(step->exec_nodes->nodeList, nodeIndex);
 
 	/* Associate newly-created RemoteQuery node to the returned Query result */
+#ifndef XCP
 	result->is_local = is_local;
+#endif
 	if (!is_local)
 		result->utilityStmt = (Node *) step;
 
