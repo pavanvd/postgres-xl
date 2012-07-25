@@ -423,7 +423,7 @@ DATA(insert ( 2243 bitor		  bitor			  -					0	1560	1560	_null_ _null_ ));
 
 /* xml */
 #ifdef PGXC
-DATA(insert ( 2901 xmlconcat2	  xmlconcat2	  -					0	142		142		_null_ _null_ ));
+DATA(insert ( 2901 xmlconcat2	  -	  -					0	142		0		_null_ _null_ ));
 #endif
 #ifdef PGXC
 //DATA(insert ( 2901 xmlconcat2	  -					0	142		_null_ ));
@@ -431,8 +431,7 @@ DATA(insert ( 2901 xmlconcat2	  xmlconcat2	  -					0	142		142		_null_ _null_ ));
 
 /* array */
 #ifdef PGXC
-/* PGXCTODO */
-//DATA(insert ( 2335	array_agg_transfn	array_agg_finalfn		0	2281	_null_ ));
+DATA(insert ( 2335	array_agg_transfn	-	array_agg_finalfn		0	2281	0		_null_ _null_ ));
 #endif
 #ifdef PGXC
 //DATA(insert ( 2335	array_agg_transfn	array_agg_finalfn		0	2281	_null_ ));
@@ -440,7 +439,12 @@ DATA(insert ( 2901 xmlconcat2	  xmlconcat2	  -					0	142		142		_null_ _null_ ));
 
 /* text */
 #ifdef PGXC
-//DATA(insert (3537	string_agg_transfn			string_agg_finalfn	0	2281	_null_ ));
+DATA(insert (3538	string_agg_transfn			-	string_agg_finalfn	0	2281	0	_null_ _null_ ));
+// XXX function string_agg_delim_transfn is not defined?
+//DATA(insert (3538	string_agg_delim_transfn	-	string_agg_finalfn	0	2281	0	_null_ _null_ ));
+#endif
+#ifdef PGXC
+//DATA(insert (3535	string_agg_transfn			string_agg_finalfn	0	2281	_null_ ));
 //DATA(insert (3538	string_agg_delim_transfn	string_agg_finalfn	0	2281	_null_ ));
 #endif
 

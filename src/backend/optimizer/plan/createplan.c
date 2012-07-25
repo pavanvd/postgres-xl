@@ -5425,6 +5425,7 @@ find_referenced_cols_walker(Node *node, find_referenced_cols_context *context)
 			HeapTuple	aggTuple;
 			Form_pg_aggregate aggform;
 			Oid 	aggtranstype;
+			Oid 	aggcollecttype;
 
 			aggTuple = SearchSysCache1(AGGFNOID,
 									   ObjectIdGetDatum(aggref->aggfnoid));
@@ -5433,7 +5434,13 @@ find_referenced_cols_walker(Node *node, find_referenced_cols_context *context)
 					 aggref->aggfnoid);
 			aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
 			aggtranstype = aggform->aggtranstype;
+			aggcollecttype = aggform->aggcollecttype;
 			ReleaseSysCache(aggTuple);
+
+			/* Can not split two-phase aggregate */
+			if (!OidIsValid(aggcollecttype))
+				return true;
+
 			if (IsPolymorphicType(aggtranstype))
 			{
 				Oid 	   *inputTypes;

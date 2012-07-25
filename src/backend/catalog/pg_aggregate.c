@@ -174,6 +174,27 @@ AggregateCreate(const char *aggName,
 	ReleaseSysCache(tup);
 
 #ifdef PGXC
+#ifdef XCP
+	if (aggcollectfnName)
+	{
+		/*
+		 * Collection function must be of two arguments
+		 * First must be of aggCollectType, second must be of aggTransType
+		 * Return value must be of aggCollectType
+		 */
+		fnArgs[0] = aggCollectType;
+		fnArgs[1] = aggTransType;
+		collectfn = lookup_agg_function(aggcollectfnName, 2, fnArgs,
+										  &rettype);
+		if (rettype != aggCollectType)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("return type of collection function %s is not %s",
+							NameListToString(aggcollectfnName),
+							format_type_be(aggCollectType)
+						   )));
+	}
+#else
 	if (aggcollectfnName)
 	{
 		/*
@@ -192,32 +213,16 @@ AggregateCreate(const char *aggName,
 							format_type_be(aggTransType))));
 	}
 #endif
-#ifdef XCP
-	/*
-	 * Collection function must be of two arguments
-	 * First must be of aggCollectType, second must be of aggTransType
-	 * Return value must be of aggCollectType
-	 */
-	fnArgs[0] = aggCollectType;
-	fnArgs[1] = aggTransType;
-	collectfn = lookup_agg_function(aggcollectfnName, 2, fnArgs,
-									  &rettype);
-	if (rettype != aggCollectType)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
-				 errmsg("return type of collection function %s is not %s",
-						NameListToString(aggcollectfnName),
-						format_type_be(aggCollectType)
-					   )));
 #endif
 	/* handle finalfn, if supplied */
 	if (aggfinalfnName)
 	{
 #ifdef XCP
-		fnArgs[0] = aggCollectType;
-#else
-		fnArgs[0] = aggTransType;
+		if (OidIsValid(aggCollectType))
+			fnArgs[0] = aggCollectType;
+		else
 #endif
+		fnArgs[0] = aggTransType;
 		finalfn = lookup_agg_function(aggfinalfnName, 1, fnArgs,
 									  &finaltype);
 	}
@@ -227,10 +232,11 @@ AggregateCreate(const char *aggName,
 		 * If no finalfn, aggregate result type is type of the state value
 		 */
 #ifdef XCP
-		finaltype = aggCollectType;
-#else
-		finaltype = aggTransType;
+		if (OidIsValid(aggCollectType))
+			finaltype = aggCollectType;
+		else
 #endif
+		finaltype = aggTransType;
 	}
 	Assert(OidIsValid(finaltype));
 

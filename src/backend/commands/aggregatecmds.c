@@ -137,14 +137,14 @@ DefineAggregate(List *name, List *args, bool oldstyle, List *parameters)
 				 errmsg("aggregate sfunc must be specified")));
 
 #ifdef XCP
-	if (collectType == NULL)
+	if (collectfuncName && collectType == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-				 errmsg("aggregate ctype must be specified")));
-	if (collectfuncName == NIL)
+				 errmsg("if aggregate cfunc is defined aggregate ctype must be specified")));
+	if (collectType && collectfuncName == NIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-				 errmsg("aggregate cfunc must be specified")));
+				 errmsg("if aggregate ctype is defined aggregate cfunc must be specified")));
 #endif
 
 	/*
@@ -229,18 +229,23 @@ DefineAggregate(List *name, List *args, bool oldstyle, List *parameters)
 	 *
 	 * to the collecttype applied all the limitations as to the transtype.
 	 */
-	collectTypeId = typenameTypeId(NULL, collectType);
-	if (get_typtype(collectTypeId) == TYPTYPE_PSEUDO &&
-		!IsPolymorphicType(collectTypeId))
+	if (collectType)
 	{
-		if (collectTypeId == INTERNALOID && superuser())
-			 /* okay */ ;
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("aggregate collection data type cannot be %s",
-							format_type_be(collectTypeId))));
+		collectTypeId = typenameTypeId(NULL, collectType);
+		if (get_typtype(collectTypeId) == TYPTYPE_PSEUDO &&
+			!IsPolymorphicType(collectTypeId))
+		{
+			if (collectTypeId == INTERNALOID && superuser())
+				 /* okay */ ;
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+						 errmsg("aggregate collection data type cannot be %s",
+								format_type_be(collectTypeId))));
+		}
 	}
+	else
+		collectTypeId = InvalidOid;
 #endif
 
 	/*
