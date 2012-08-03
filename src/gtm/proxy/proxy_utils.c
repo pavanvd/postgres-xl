@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2010, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * src/gtm/proxy/proxy_utils.c
  *
@@ -40,7 +40,7 @@
  * gtm.h and gtm_proxy.h and depends on the context.
  *
  * This is the reason why this dummy function is needed here.
- * 
+ *
  * The object and module structure of GTM/GTM Proxy needs review, and
  * fix to remove this kind of tricks.
  */

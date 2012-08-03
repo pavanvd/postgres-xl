@@ -5,7 +5,7 @@
  *	  This includes support for DDL on objects NODE GROUP
  *
  * Copyright (c) 1996-2010, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -29,7 +29,7 @@
 
 /*
  * PgxcGroupCreate
- * 
+ *
  * Create a PGXC node group
  */
 void
@@ -106,7 +106,7 @@ PgxcGroupCreate(CreateGroupStmt *stmt)
 
 	/* Do the insertion */
 	(void) simple_heap_insert(rel, tup);
-		
+
 	CatalogUpdateIndexes(rel, tup);
 
 	heap_close(rel, RowExclusiveLock);
@@ -115,7 +115,7 @@ PgxcGroupCreate(CreateGroupStmt *stmt)
 
 /*
  * PgxcNodeGroupsRemove():
- * 
+ *
  * Remove a PGXC node group
  */
 void

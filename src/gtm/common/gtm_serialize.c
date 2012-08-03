@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2010, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -251,24 +251,6 @@ gtm_serialize_transactioninfo(GTM_TransactionInfo *data, char *buf, size_t bufle
 		len += sizeof(uint32);
 	}
 
-#ifndef XCP
-	/* GTM_TransactionInfo.gti_coordname */
-	if (data->gti_coordname != NULL)
-	{
-		namelen = (uint32)strlen(data->gti_coordname);
-		memcpy(buf + len, &namelen, sizeof(uint32));
-		len += sizeof(uint32);
-		memcpy(buf + len, data->gti_coordname, namelen);
-		len += namelen;
-	}
-	else
-	{
-		namelen = 0;
-		memcpy(buf + len, &namelen, sizeof(uint32));
-		len += sizeof(uint32);
-	}
-#endif
-
 	/* GTM_TransactionInfo.gti_xmin */
 	memcpy(buf + len, &(data->gti_xmin), sizeof(GlobalTransactionId));
 	len += sizeof(GlobalTransactionId);
@@ -417,12 +399,7 @@ gtm_deserialize_transactioninfo(GTM_TransactionInfo *data, const char *buf, size
 	{
 		data->nodestring = (char *)genAllocTop(string_len + 1);	/* Should allocate at TopMostMemoryContext */
 		memcpy(data->nodestring, buf + len, string_len);
-#ifdef XCP
-		// copy/paste error in the original code
-		data->nodestring[string_len] = 0;
-#else
-		data->gti_gid[string_len] = 0;		/* null-terminated */
-#endif
+		data->nodestring[string_len] = 0;		/* null-terminated */
 		len += string_len;
 	}
 	else

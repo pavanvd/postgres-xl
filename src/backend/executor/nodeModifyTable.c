@@ -52,6 +52,7 @@
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 #include "utils/tqual.h"
 
 
@@ -251,6 +252,14 @@ ExecInsert(TupleTableSlot *slot,
 		if (IS_PGXC_COORDINATOR && resultRemoteRel)
 		{
 			ExecRemoteQueryStandard(resultRelationDesc, (RemoteQueryState *)resultRemoteRel, slot);
+
+			/*
+			 * PGXCTODO: If target table uses WITH OIDS, this should be set to the Oid inserted
+			 * but Oids are not consistent among nodes in Postgres-XC, so this is set to the
+			 * default value InvalidOid for the time being. It corrects at least tags for all
+			 * the other INSERT commands.
+			 */
+			newId = InvalidOid;
 		}
 		else
 #endif
@@ -897,6 +906,8 @@ ExecModifyTable(ModifyTableState *node)
 				subplanstate = node->mt_plans[node->mt_whichplan];
 #ifdef PGXC
 #ifndef XCP
+				/* Move to next remote plan */
+				estate->es_result_remoterel = node->mt_remoterels[node->mt_whichplan];
 				remoterelstate = node->mt_plans[node->mt_whichplan];
 #endif
 #endif

@@ -4,11 +4,9 @@
  *		Externally declared locator functions
  *
  *
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
- *
- * IDENTIFICATION
- *	  $$
+ * src/include/pgxc/locator.h
  *
  *-------------------------------------------------------------------------
  */
@@ -30,16 +28,12 @@
 										 * scheme, e.g. result of JOIN of
 										 * replicated and distributed table */
 
-/* Maximum number of preferred datanodes that can be defined in cluster */
+/* Maximum number of preferred Datanodes that can be defined in cluster */
 #define MAX_PREFERRED_NODES 64
 
 #define HASH_SIZE 4096
 #define HASH_MASK 0x00000FFF;
 
-#ifdef XCP
-#define IsReplicated(x) ((x) == LOCATOR_TYPE_REPLICATED)
-#else
-#define IsLocatorReplicated(x) (x == LOCATOR_TYPE_REPLICATED)
 #define IsLocatorNone(x) (x == LOCATOR_TYPE_NONE)
 #define IsLocatorReplicated(x) (x == LOCATOR_TYPE_REPLICATED)
 #define IsLocatorColumnDistributed(x) (x == LOCATOR_TYPE_HASH || \
@@ -49,7 +43,6 @@
 #define IsLocatorDistributedByValue(x) (x == LOCATOR_TYPE_HASH || \
 										x == LOCATOR_TYPE_MODULO || \
 										x == LOCATOR_TYPE_RANGE)
-#endif
 
 #include "nodes/primnodes.h"
 #include "utils/relcache.h"
@@ -185,31 +178,34 @@ extern RelationLocInfo *GetRelationLocInfo(Oid relid);
 extern RelationLocInfo *CopyRelationLocInfo(RelationLocInfo *src_info);
 extern char GetRelationLocType(Oid relid);
 extern bool IsTableDistOnPrimary(RelationLocInfo *rel_loc_info);
+extern bool IsLocatorInfoEqual(RelationLocInfo *rel_loc_info1, RelationLocInfo *rel_loc_info2);
 #ifndef XCP
 extern ExecNodes *GetRelationNodes(RelationLocInfo *rel_loc_info, Datum valueForDistCol,
 									bool isValueNull, Oid typeOfValueForDistCol,
 									RelationAccessType accessType);
+extern ExecNodes *GetRelationNodesByQuals(Oid reloid, Index varno, Node *quals,
+											RelationAccessType relaccess);
 #endif
 extern bool IsHashColumn(RelationLocInfo *rel_loc_info, char *part_col_name);
 extern bool IsHashColumnForRelId(Oid relid, char *part_col_name);
 extern int	GetRoundRobinNode(Oid relid);
 
-extern bool IsHashDistributable(Oid col_type);
+extern bool IsTypeHashDistributable(Oid col_type);
 extern List *GetAllDataNodes(void);
 extern List *GetAllCoordNodes(void);
 #ifdef XCP
 extern int GetAnyDataNode(Bitmapset *nodes);
 #else
-extern List *GetAnyDataNode(List *relNodes);
+extern List *GetPreferredReplicationNode(List *relNodes);
 #endif
 extern void RelationBuildLocator(Relation rel);
 extern void FreeRelationLocInfo(RelationLocInfo *relationLocInfo);
 
-extern bool IsModuloDistributable(Oid col_type);
-extern char *GetRelationModuloColumn(RelationLocInfo * rel_loc_info);
+extern bool IsTypeModuloDistributable(Oid col_type);
+extern char *GetRelationModuloColumn(RelationLocInfo *rel_loc_info);
 extern bool IsModuloColumn(RelationLocInfo *rel_loc_info, char *part_col_name);
 extern bool IsModuloColumnForRelId(Oid relid, char *part_col_name);
-extern char *GetRelationDistColumn(RelationLocInfo * rel_loc_info);
+extern char *GetRelationDistColumn(RelationLocInfo *rel_loc_info);
 extern bool IsDistColumnForRelId(Oid relid, char *part_col_name);
 extern void FreeExecNodes(ExecNodes **exec_nodes);
 

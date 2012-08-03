@@ -33,6 +33,7 @@
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
 
@@ -3001,6 +3002,15 @@ exec_stmt_execsql(PLpgSQL_execstate *estate,
 						p->commandType == CMD_UPDATE ||
 						p->commandType == CMD_DELETE)
 						stmt->mod_stmt = true;
+#ifdef PGXC
+					/* PGXCTODO: Support a better parameter interface for XC with DMLs */
+					if (p->commandType == CMD_INSERT ||
+						p->commandType == CMD_UPDATE ||
+						p->commandType == CMD_DELETE)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("Postgres-XC does not support DML queries in PL/pgSQL")));
+#endif
 				}
 			}
 		}

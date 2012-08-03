@@ -5,11 +5,10 @@
  *	  Utility functions to communicate to Datanodes and Coordinators
  *
  *
- * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group ?
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group ?
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
- * IDENTIFICATION
- *	  $$
+ * src/include/pgxc/pgxcnode.h
  *
  *-------------------------------------------------------------------------
  */
@@ -25,11 +24,11 @@
 
 #define NO_SOCKET -1
 
-/* Connection to data node maintained by Pool Manager */
+/* Connection to Datanode maintained by Pool Manager */
 typedef struct PGconn NODE_CONNECTION;
 typedef struct PGcancel NODE_CANCEL;
 
-/* Helper structure to access data node from Session */
+/* Helper structure to access Datanode from Session */
 typedef enum
 {
 	DN_CONNECTION_STATE_IDLE,			/* idle, ready for query */
@@ -45,6 +44,26 @@ typedef enum
 	HANDLE_ERROR,
 	HANDLE_DEFAULT
 }	PGXCNode_HandleRequested;
+
+/*
+ * Enumeration for two purposes
+ * 1. To indicate to the HandleCommandComplete function whether response checking is required or not
+ * 2. To enable HandleCommandComplete function to indicate whether the response was a ROLLBACK or not
+ * Response checking is required in case of PREPARE TRANSACTION and should not be done for the rest
+ * of the cases for performance reasons, hence we have an option to ignore response checking.
+ * The problem with PREPARE TRANSACTION is that it can result in a ROLLBACK response
+ * yet Coordinator would think it got done on all nodes.
+ * If we ignore ROLLBACK response then we would try to COMMIT a transaction that
+ * never got prepared, which in an incorrect behavior.
+ */
+typedef enum
+{
+	RESP_ROLLBACK_IGNORE,			/* Ignore response checking */
+	RESP_ROLLBACK_CHECK,			/* Check whether response was ROLLBACK */
+	RESP_ROLLBACK_RECEIVED,			/* Response is ROLLBACK */
+	RESP_ROLLBACK_NOT_RECEIVED		/* Response is NOT ROLLBACK */
+}RESP_ROLLBACK;
+
 
 #define DN_CONNECTION_STATE_ERROR(dnconn) \
 		((dnconn)->state == DN_CONNECTION_STATE_ERROR_FATAL \
@@ -82,6 +101,14 @@ struct pgxc_node_handle
 	size_t		inStart;
 	size_t		inEnd;
 	size_t		inCursor;
+
+	/*
+	 * Have a variable to enable/disable response checking and
+	 * if enable then read the result of response checking
+	 *
+	 * For details see comments of RESP_ROLLBACK
+	 */
+	RESP_ROLLBACK	ck_resp_rollback;
 };
 typedef struct pgxc_node_handle PGXCNodeHandle;
 
@@ -172,6 +199,7 @@ extern int  pgxc_node_send_plan(PGXCNodeHandle * handle, const char *statement,
 					short num_params, Oid *param_types);
 #endif
 extern int	pgxc_node_send_gxid(PGXCNodeHandle * handle, GlobalTransactionId gxid);
+extern int	pgxc_node_send_cmd_id(PGXCNodeHandle *handle, CommandId cid);
 extern int	pgxc_node_send_snapshot(PGXCNodeHandle * handle, Snapshot snapshot);
 extern int	pgxc_node_send_timestamp(PGXCNodeHandle * handle, TimestampTz timestamp);
 

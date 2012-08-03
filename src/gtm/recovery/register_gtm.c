@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -139,8 +139,7 @@ ProcessPGXCNodeRegister(Port *myport, StringInfo message, bool is_backup)
 		 *
 		 * Be sure that all ther threads are locked by other
 		 * means, typically by receiving MSG_BEGIN_BACKUP.
-		 */
-		/*
+		 *
 		 * First try to unregister GTM which is now connected.  We don't care
 		 * if it failed.
 		 */
@@ -445,9 +444,7 @@ ProcessGTMBeginBackup(Port *myport, StringInfo message)
 		if (GTMThreads->gt_threads[ii] && GTMThreads->gt_threads[ii] != my_threadinfo)
 			GTM_RWLockAcquire(&GTMThreads->gt_threads[ii]->thr_lock, GTM_LOCKMODE_WRITE);
 	}
-#ifdef XCP
 	my_threadinfo->thr_status = GTM_THREAD_BACKUP;
-#endif
 	pq_beginmessage(&buf, 'S');
 	pq_sendint(&buf, BEGIN_BACKUP_RESULT, 4);
 	pq_endmessage(myport, &buf);
@@ -469,9 +466,7 @@ ProcessGTMEndBackup(Port *myport, StringInfo message)
 		if (GTMThreads->gt_threads[ii] && GTMThreads->gt_threads[ii] != my_threadinfo)
 			GTM_RWLockRelease(&GTMThreads->gt_threads[ii]->thr_lock);
 	}
-#ifdef XCP
 	my_threadinfo->thr_status = GTM_THREAD_RUNNING;
-#endif
 	pq_beginmessage(&buf, 'S');
 	pq_sendint(&buf, END_BACKUP_RESULT, 4);
 	pq_endmessage(myport, &buf);
@@ -488,4 +483,3 @@ finishStandbyConn(GTM_ThreadInfo *thrinfo)
 		thrinfo->thr_conn->standby = NULL;
 	}
 }
-

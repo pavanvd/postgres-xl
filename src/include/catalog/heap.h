@@ -6,7 +6,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * src/include/catalog/heap.h
  *
@@ -31,6 +31,7 @@ typedef struct CookedConstraint
 	char	   *name;			/* name, or NULL if none */
 	AttrNumber	attnum;			/* which attr (only for DEFAULT) */
 	Node	   *expr;			/* transformed default or check expr */
+	bool		skip_validation;	/* skip validation? (only for CHECK) */
 	bool		is_local;		/* constraint has local (non-inherited) def */
 	int			inhcount;		/* number of times constraint is inherited */
 } CookedConstraint;
@@ -123,11 +124,23 @@ extern void CheckAttributeType(const char *attname,
 				   bool allow_system_table_mods);
 
 #ifdef PGXC
-extern void AddRelationDistribution(Oid relid, 
+/* Functions related to distribution data of relations */
+extern void AddRelationDistribution(Oid relid,
 				DistributeBy *distributeby,
 				PGXCSubCluster *subcluster,
 				List 		 *parentOids,
 				TupleDesc	 descriptor);
+extern void GetRelationDistributionItems(Oid relid,
+										 DistributeBy *distributeby,
+										 TupleDesc descriptor,
+										 char *locatortype,
+										 int *hashalgorithm,
+										 int *hashbuckets,
+										 AttrNumber *attnum);
+extern Oid *GetRelationDistributionNodes(PGXCSubCluster *subcluster,
+										 int *numnodes);
+extern Oid *BuildRelationDistributionNodes(List *nodes, int *numnodes);
+extern Oid *SortRelationDistributionNodes(Oid *nodeoids, int numnodes);
 #endif
 
 #endif   /* HEAP_H */

@@ -20,7 +20,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * IDENTIFICATION
  *	  src/backend/nodes/equalfuncs.c
@@ -934,6 +934,12 @@ _equalQuery(Query *a, Query *b)
 	COMPARE_NODE_FIELD(rowMarks);
 	COMPARE_NODE_FIELD(setOperations);
 	COMPARE_NODE_FIELD(constraintDeps);
+
+#ifdef PGXC
+#ifndef XCP
+	COMPARE_SCALAR_FIELD(is_ins_child_sel_parent);
+#endif
+#endif
 
 	return true;
 }

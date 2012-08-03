@@ -122,16 +122,17 @@ static int	port = -1;
  * Additional port numbers for Coordinator 2 and Datanode 1&2
  * Ports are chosen up to the default value which is 5432.
  */
-static int	port_coord2 = 5433;
-static int	port_dn1 = 5434;
-static int	port_dn2 = 5435;
-static int	port_gtm = 6666;
+static int	port_coord2 = -1;
+static int	port_dn1 = -1;
+static int	port_dn2 = -1;
+static int	port_gtm = -1;
 /*
- * Poolers of coordinators 1 and 2 need an additional port value
+ * Poolers of Coordinators 1 and 2 need an additional port value
  * taken as the default value and the next value.
  */
-static int	co1_pooler_port = 6667;
-static int	co2_pooler_port = 6668;
+static int	co1_pooler_port = -1;
+static int	co2_pooler_port = -1;
+
 /* Data folder of each node */
 const char *data_co1 = "data_co1"; /* Coordinator 1 */
 const char *data_co2 = "data_co2"; /* Coordinator 2 */
@@ -143,6 +144,9 @@ const char *name_co1 = "coord1"; /* Coordinator 1 */
 const char *name_co2 = "coord2"; /* Coordinator 2 */
 const char *name_dn1 = "dn1"; /* Datanode 1 */
 const char *name_dn2 = "dn2"; /* Datanode 2 */
+
+/* 7 port numbers are needed */
+#define PORT_NUM_INTERVAL 7
 #endif
 static bool port_specified_by_user = false;
 static char *dlpath = PKGLIBDIR;
@@ -382,7 +386,7 @@ stop_gtm(void)
 	fflush(stderr);
 
 	snprintf(buf, sizeof(buf),
-			 SYSTEMQUOTE "\"%s/gtm_ctl\" stop -S gtm -D \"%s/%s\" -m fast" SYSTEMQUOTE,
+			 SYSTEMQUOTE "\"%s/gtm_ctl\" stop -Z gtm -D \"%s/%s\" -m fast" SYSTEMQUOTE,
 			 bindir, temp_install, data_folder);
 	r = system(buf);
 	if (r != 0)
@@ -629,7 +633,12 @@ calculate_node_port(PGXCNodeTypeNum node, bool is_main)
 
 			fprintf(stderr, _("port %d apparently in use, trying %d\n"),
 					port_number, port_number + 1);
-			port_number++;
+
+			/*
+			 * If port is already in use, jump to a value that is not covered by
+			 * other nodes (Coordinator, Datanode, GTM and poolers)
+			 */
+			port_number += PORT_NUM_INTERVAL;
 
 			if (is_main)
 			{
@@ -709,37 +718,14 @@ start_gtm(void)
 	char		buf[MAXPGPATH * 4];
 	const char *data_folder = find_data_folder(PGXC_GTM);
 	PID_TYPE	node_pid;
-	FILE	   *gtm_conf_file;
 
-	/*
-	 * Before starting GTM, set up an empty configuration file as
-	 * all the necessary parameters are provided in command.
-	 */
-	snprintf(buf, sizeof(buf), "%s/%s", temp_install, data_folder);
-	make_directory(buf);
-
-	snprintf(buf, sizeof(buf), "%s/%s/gtm.conf", temp_install, data_folder);
-	gtm_conf_file = fopen(buf, PG_BINARY_W);
-    if (gtm_conf_file == NULL)
-	{
-		fprintf(stderr, _("%s: could not open file \"%s\" for writing: %s\n"),
-				progname, buf, strerror(errno));
-		exit_nicely(2);
-	}
-    if (fclose(gtm_conf_file))
-	{
-		fprintf(stderr, _("%s: could not write file \"%s\": %s\n"),
-				progname, buf, strerror(errno));
-		exit_nicely(2);
-	}
-
+	/* Start process */
 	header(_("starting GTM process"));
 	snprintf(buf, sizeof(buf),
 			 SYSTEMQUOTE "\"%s/gtm\" -D \"%s/%s\" -p %d -x 10000 > \"%s/log/gtm.log\" 2>&1" SYSTEMQUOTE,
 			 bindir, temp_install, data_folder, get_port_number(PGXC_GTM),
 			 outputdir);
 
-	/* Start process */
 	node_pid = spawn_process(buf);
 	if (node_pid == INVALID_PID)
 	{
@@ -802,7 +788,7 @@ start_node(PGXCNodeTypeNum node, bool is_coord, bool is_main)
 }
 
 /*
- * Inistialize given node with initdb
+ * Initialize given node with initdb
  */
 static void
 initdb_node(PGXCNodeTypeNum node)
@@ -819,6 +805,27 @@ initdb_node(PGXCNodeTypeNum node)
 	if (system(buf))
 	{
 		fprintf(stderr, _("\n%s: initdb failed\nExamine %s/log/initdb.log for the reason.\nCommand was: %s\n"), progname, outputdir, buf);
+		exit_nicely(2);
+	}
+}
+
+/*
+ * Initialize GTM
+ */
+static void
+init_gtm(void)
+{
+	const char *data_folder = find_data_folder(PGXC_GTM);
+	char		buf[MAXPGPATH * 4];
+
+	snprintf(buf, sizeof(buf),
+			 SYSTEMQUOTE "\"%s/initgtm\" -Z gtm -D \"%s/%s\" --noclean%s > \"%s/log/initgtm.log\" 2>&1" SYSTEMQUOTE,
+			 bindir, temp_install, data_folder,
+			 debug ? " --debug" : "",
+			 outputdir);
+	if (system(buf))
+	{
+		fprintf(stderr, _("\n%s: initgtm failed\nExamine %s/log/initgtm.log for the reason.\nCommand was: %s\n"), progname, outputdir, buf);
 		exit_nicely(2);
 	}
 }
@@ -926,7 +933,7 @@ psql_command_node(const char *database, PGXCNodeTypeNum node, const char *query,
 }
 
 /*
- * Setup connection information to remote nodes for coordinator running regression
+ * Setup connection information to remote nodes for Coordinator running regression
  */
 static void
 setup_connection_information(void)
@@ -2778,6 +2785,16 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		 */
 		port = 0xC000 | (PG_VERSION_NUM & 0x3FFF);
 
+#ifdef PGXC
+	/* Initialize the other port numbers, user has no control on them */
+	port_coord2 = (0xC000 | (PG_VERSION_NUM & 0x3FFF)) + 1;
+	port_dn1 = (0xC000 | (PG_VERSION_NUM & 0x3FFF)) + 2;
+	port_dn2 = (0xC000 | (PG_VERSION_NUM & 0x3FFF)) + 3;
+	port_gtm = (0xC000 | (PG_VERSION_NUM & 0x3FFF)) + 4;
+	co1_pooler_port = (0xC000 | (PG_VERSION_NUM & 0x3FFF)) + 5;
+	co2_pooler_port = (0xC000 | (PG_VERSION_NUM & 0x3FFF)) + 6;
+#endif
+
 	inputdir = make_absolute_path(inputdir);
 	outputdir = make_absolute_path(outputdir);
 	dlpath = make_absolute_path(dlpath);
@@ -2862,7 +2879,8 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		/* initdb */
 		header(_("initializing database system"));
 #ifdef PGXC
-		/* Initialize nodes */
+		/* Initialize nodes and GTM */
+		init_gtm();
 		initdb_node(PGXC_COORD_1);
 		initdb_node(PGXC_COORD_2);
 		initdb_node(PGXC_DATANODE_1);
@@ -3075,19 +3093,21 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 
 #ifdef PGXC
 		/* Print info for each node */
-		printf(_("running on port %d with pid %lu for Coordinator 1\n"),
-			   get_port_number(PGXC_COORD_1), ULONGPID(get_node_pid(PGXC_COORD_1)));
-		printf(_("running on port %d with pid %lu for Coordinator 2\n"),
-			   get_port_number(PGXC_COORD_2), ULONGPID(get_node_pid(PGXC_COORD_2)));
-		printf(_("running on port %d with pid %lu for Datanode 1\n"),
+		printf(_("running on port %d, pooler port %d with PID %lu for Coordinator 1\n"),
+			   get_port_number(PGXC_COORD_1), get_pooler_port(PGXC_COORD_1), ULONGPID(get_node_pid(PGXC_COORD_1)));       
+		printf(_("running on port %d, pooler port %d with PID %lu for Coordinator 2\n"),
+			   get_port_number(PGXC_COORD_2), get_pooler_port(PGXC_COORD_2), ULONGPID(get_node_pid(PGXC_COORD_2)));
+		printf(_("running on port %d with PID %lu for Datanode 1\n"),
 			   get_port_number(PGXC_DATANODE_1), ULONGPID(get_node_pid(PGXC_DATANODE_1)));
-		printf(_("running on port %d with pid %lu for Datanode 2\n"),
+		printf(_("running on port %d with PID %lu for Datanode 2\n"),
 			   get_port_number(PGXC_DATANODE_2), ULONGPID(get_node_pid(PGXC_DATANODE_2)));
+		printf(_("running on port %d with PID %lu for GTM\n"),
+			   get_port_number(PGXC_GTM), ULONGPID(get_node_pid(PGXC_GTM)));
 
 		/* Postmaster is finally running, so set up connection information on Coordinators */
 		setup_connection_information();
 #else
-		printf(_("running on port %d with pid %lu\n"),
+		printf(_("running on port %d with PID %lu\n"),
 			   port, ULONGPID(postmaster_pid));
 #endif
 	}

@@ -30,6 +30,7 @@
 #include "pgxc/pgxc.h"
 #include "pgxc/planner.h"
 #include "pgxc/execRemote.h"
+#include "access/relscan.h"
 #endif
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
@@ -1308,6 +1309,36 @@ PortalRunSelect(Portal portal,
 		else
 		{
 			PushActiveSnapshot(queryDesc->snapshot);
+
+#ifdef PGXC
+#ifndef XCP
+			if (portal->name != NULL &&
+			    portal->name[0] != '\0' &&
+			    IsA(queryDesc->planstate, RemoteQueryState))
+			{
+				/*
+				 * The snapshot in the query descriptor contains the
+				 * command id of the command creating the cursor. We copy
+				 * that snapshot in RemoteQueryState so that the do_query
+				 * function knows while sending the select (resulting from
+				 * a fetch) to the corresponding remote node with the command
+				 * id of the command that created the cursor.
+				 */
+				HeapScanDesc scan;
+				RemoteQueryState *rqs = (RemoteQueryState *)queryDesc->planstate;
+
+				/* Allocate and initialize scan descriptor */
+				scan = (HeapScanDesc) palloc0(sizeof(HeapScanDescData));
+				/* Copy snap shot into the scan descriptor */
+				scan->rs_snapshot = queryDesc->snapshot;
+				/* Copy scan descriptor in remote query state */
+				rqs->ss.ss_currentScanDesc = scan;
+
+				rqs->cursor = pstrdup(portal->name);
+			}
+#endif
+#endif
+
 			ExecutorRun(queryDesc, direction, count);
 			nprocessed = queryDesc->estate->es_processed;
 			PopActiveSnapshot();

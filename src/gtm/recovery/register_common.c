@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -864,4 +864,3 @@ retry:
 		elog(LOG, "MSG_BACKEND_DISCONNECT rc=%d done.", _rc);
 	}
 }
-

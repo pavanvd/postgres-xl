@@ -6,7 +6,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * IDENTIFICATION
  *	  src/backend/catalog/dependency.c
@@ -391,6 +391,9 @@ doRename(const ObjectAddress *object, const char *oldname, const char *newname)
 					ereport(ERROR,
 							(errcode(ERRCODE_CONNECTION_FAILURE),
 							 errmsg("GTM error, could not rename sequence")));
+
+				/* Register a rename callback in case transaction is dropped */
+				register_sequence_rename_cb(seqname, newseqname);
 
 				pfree(seqname);
 				pfree(newseqname);
@@ -1187,7 +1190,7 @@ doDeletion(const ObjectAddress *object)
 						if (!IsTempSequence(object->objectId))
 						{
 							/*
-							 * The sequence has already been removed from coordinator,
+							 * The sequence has already been removed from Coordinator,
 							 * finish the stuff on GTM too
 							 */
 

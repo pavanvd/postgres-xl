@@ -197,9 +197,9 @@ transformAggregateCall(ParseState *pstate, Aggref *agg,
 #ifdef PGXC
 #ifndef XCP
 	/*
-	 * Return data type of PGXC datanode's aggregate should always return the
+	 * Return data type of PGXC Datanode's aggregate should always return the
 	 * result of transition function, that is expected by collection function
-	 * on the coordinator.
+	 * on the Coordinator.
 	 * Look up the aggregate definition and replace agg->aggtype
 	 */
 

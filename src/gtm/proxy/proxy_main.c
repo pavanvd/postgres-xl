@@ -4,7 +4,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -71,24 +71,10 @@ char		*GTMProxyDataDir;
 char		*GTMProxyConfigFileName;
 char		*GTMConfigFileName;
 
-#ifndef XCP
-/* GTM communication error handling options */
-int			GTMErrorWaitIdle = 0;
-int			GTMErrorWaitInterval = 0;		/* Duration of each wait */
-int			GTMErrorWaitCount = 0;			/* How many durations to wait */
-#endif
-
 char		*GTMServerHost;
 int			GTMServerPortNumber;
 
-#ifdef XCP
 int			GTMConnectRetryInterval = 60;
-#else
-/* GTM connection retry info */
-int			GTMConnectRetryIdle = 0;
-int			GTMConnectRetryCount = 0;
-int			GTMConnectRetryInterval = 0;
-#endif
 
 /*
  * Keepalives setup for the connection with GTM server
@@ -585,8 +571,6 @@ main(int argc, char *argv[])
 	char	*log_file = NULL;
 	char	*gtm_host = NULL;
 	char	*gtm_port = NULL;
-	char	*gtm_err_wait_secs = NULL;
-	char   	*gtm_err_wait_count = NULL;
 
 	isStartUp = true;
 
@@ -618,7 +602,7 @@ main(int argc, char *argv[])
 	/*
 	 * Parse the command like options and set variables
 	 */
-	while ((opt = getopt(argc, argv, "h:i:p:n:D:l:s:t:w:z:")) != -1)
+	while ((opt = getopt(argc, argv, "h:i:p:n:D:l:s:t:")) != -1)
 	{
 		switch (opt)
 		{
@@ -676,20 +660,6 @@ main(int argc, char *argv[])
 				if (gtm_port)
 					free(gtm_port);
 				gtm_port = strdup(optarg);
-				break;
-
-			case 'w':
-				/* Duration to wait at GTM communication error */
-				if (gtm_err_wait_secs)
-					free(gtm_err_wait_secs);
-				gtm_err_wait_secs = strdup(optarg);
-				break;
-
-			case 'z':
-				/* How many durations to wait */
-				if (gtm_err_wait_count)
-					free(gtm_err_wait_count);
-				gtm_err_wait_count = strdup(optarg);
 				break;
 
 			default:
@@ -759,18 +729,6 @@ main(int argc, char *argv[])
 		SetConfigOption(GTM_OPTNAME_GTM_PORT, gtm_port, GTMC_STARTUP, GTMC_S_OVERRIDE);
 		free(gtm_port);
 		gtm_port = NULL;
-	}
-	if (gtm_err_wait_secs)
-	{
-		SetConfigOption(GTM_OPTNAME_ERR_WAIT_INTERVAL, gtm_err_wait_secs, GTMC_STARTUP, GTMC_S_OVERRIDE);
-		free(gtm_err_wait_secs);
-		gtm_err_wait_secs = NULL;
-	}
-	if (gtm_err_wait_count)
-	{
-		SetConfigOption(GTM_OPTNAME_ERR_WAIT_COUNT, gtm_err_wait_count, GTMC_STARTUP, GTMC_S_OVERRIDE);
-		free(gtm_err_wait_count);
-		gtm_err_wait_count = NULL;
 	}
 
 
@@ -1162,15 +1120,6 @@ GTMProxy_ThreadMain(void *argp)
 	 */
 
 	initStringInfo(&input_message);
-
-#ifndef XCP
-	/*
-	 * Set GTM communication error handling options.
-	 */
-	thrinfo->thr_gtm_conn->gtmErrorWaitIdle = GTMErrorWaitIdle;
-	thrinfo->thr_gtm_conn->gtmErrorWaitInterval = GTMErrorWaitInterval;
-	thrinfo->thr_gtm_conn->gtmErrorWaitCount = GTMErrorWaitCount;
-#endif
 
 	thrinfo->reconnect_issued = FALSE;
 
@@ -1673,22 +1622,14 @@ ProcessCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn,
 static GTM_Conn *
 HandleGTMError(GTM_Conn *gtm_conn)
 {
-#ifdef XCP
-	char gtm_connect_string[1024];
-#else
-	int		 ii;
-#endif
-
 	Assert(gtm_conn && gtm_conn->last_errno != 0);
 
-#ifdef XCP
 	elog(NOTICE,
 		 "GTM communication error was detected.  Retrying connection, interval = %d.",
 		 GTMConnectRetryInterval);
-	sprintf(gtm_connect_string, "host=%s port=%d node_name=%s remote_type=%d",
-			GTMServerHost, GTMServerPortNumber, GTMProxyNodeName, GTM_NODE_GTM_PROXY);
 	for (;;)
 	{
+		char gtm_connect_string[1024];
 
 		/* Wait and retry reconnect */
 		elog(DEBUG1, "Waiting %d secs.", GTMConnectRetryInterval);
@@ -1708,6 +1649,8 @@ HandleGTMError(GTM_Conn *gtm_conn)
 		/* Close and free previous connection object if still active */
 		GTMPQfinish(gtm_conn);
 		/* Reconnect */
+		sprintf(gtm_connect_string, "host=%s port=%d node_name=%s remote_type=%d",
+				GTMServerHost, GTMServerPortNumber, GTMProxyNodeName, GTM_NODE_GTM_PROXY);
 		gtm_conn = PQconnectGTM(gtm_connect_string);
 		/*
 		 * If reconnect succeeded the connection will be ready to use out of
@@ -1724,97 +1667,6 @@ HandleGTMError(GTM_Conn *gtm_conn)
 		}
 		elog(NOTICE, "GTM connection retry failed.");
 	}
-#else
-	if (GTMConnectRetryCount > 0)
-	{
-		int ii;
-		char gtm_connect_string[1024];
-
-		elog(NOTICE,
-			 "GTM communication error was detected.  Retrying connection. idle: %d, count = %d, interval = %d.",
-			 GTMConnectRetryIdle, GTMConnectRetryCount, GTMConnectRetryInterval);
-		GTMPQfinish(gtm_conn);
-		sprintf(gtm_connect_string, "host=%s port=%d node_name=%s remote_type=%d",
-				GTMServerHost, GTMServerPortNumber, GTMProxyNodeName, GTM_NODE_GTM_PROXY);
-		/* Wait and retry reconnect */
-		if (GTMConnectRetryIdle > 0) {
-			elog(DEBUG1, "Waiting %d secs.", GTMConnectRetryIdle);
-			pg_usleep((long)GTMConnectRetryIdle * 1000000L);
-		}
-		/* GTM connection retry */
-		for (ii = 0; ii < GTMConnectRetryCount; ii++)
-		{
-			/*
-			 * Connect retry
-			 * Because this proxy has been registered to current
-			 * GTM, we don't re-register it.
-			 *
-			 * Please note that GTM-Proxy accepts "reconnect" from gtm_ctl
-			 * even while it is retrying to connect to GTM.
-			 */
-			elog(DEBUG1, "Try to reconnect to GTM, count %d.", ii);
-			Disable_Longjmp();
-			new_gtm_conn = PQconnectGTM(gtm_connect_string);
-			Enable_Longjmp();
-			if (new_gtm_conn != NULL) {
-				elog(NOTICE, "GTM connection retry succeeded, count %d.", ii);
-				break;
-			}
-			/* Wait if not successful */
-			elog(DEBUG1, "Reconnect failed.  Sleeping %d secs.", GTMConnectRetryInterval);
-			Disable_Longjmp();
-			pg_usleep((long)GTMConnectRetryInterval * 1000000L);
-			Enable_Longjmp();
-		}
-		if (new_gtm_conn != NULL)
-		{
-			GetMyThreadInfo->thr_gtm_conn = new_gtm_conn;
-			return(new_gtm_conn);
-		}
-		elog(NOTICE, "GTM connection retry failed.");
-	}
-	if (GTMErrorWaitIdle == 0 && GTMErrorWaitInterval == 0 && GTMErrorWaitCount == 0)
-	{
-		/*
-		 * GTM communication error detected, retry failed
-		 * but cannot wait for reconnect.
-		 */
-		elog(FATAL,
-			 "No action specified to wait for reconnect.");
-		exit(1);		/* Just in case */
-	}
-	/*
-	 * Now wait for reconnect, SIGUSR2.
-	 *
-	 * All the controls are done by Disable_Logjmp() and Enable_Longjmp().
-	 * No longjump occurs after Disable_longjmp() and before Enable_longjmp().
-	 * Longjmp occurs inside Enable_longjmp(), only when SIGUSR2 was handled
-	 * correctly.
-	 *
-	 * For details, see gtm_proxy.h.
-	 */
-	elog(NOTICE,
-		 "Waiting for reconnect action from gtm_ctl. idie: %d, count: %d, interval:%d",
-		 GTMErrorWaitIdle, GTMErrorWaitCount, GTMErrorWaitInterval);
-	Disable_Longjmp();
-	elog(DEBUG1, "Witing %d secs.", GTMErrorWaitIdle);
-	pg_usleep((long)GTMErrorWaitIdle * 1000000L);
-	Enable_Longjmp();
-
-	for (ii = 0; ii < GTMErrorWaitCount; ii++)
-	{
-		Disable_Longjmp();
-		elog(DEBUG1, "Waiting %d secs, count %d.", GTMErrorWaitInterval, ii);
-		pg_usleep((long)GTMErrorWaitInterval * 1000000L);
-		Enable_Longjmp();
-	}
-	/*
-	 * No reconnect received.
-	 */
-	elog(FATAL,
-		 "No reconnect command recdeived frm gtm_ctl.");
-	exit(1);		/* Just in case */
-#endif
 }
 
 static GTM_Conn *
@@ -2090,13 +1942,8 @@ ReadCommand(GTMProxy_ConnectionInfo *conninfo, StringInfo inBuf)
 	int 			qtype;
 	int				connIdx = conninfo->con_id;
 	int				anyBackup;
-#ifndef XCP
-	int				myLocalId;
 
-	myLocalId = GetMyThreadInfo->thr_localid;
-#endif
 	anyBackup = (GetMyThreadInfo->thr_any_backup[connIdx] ? TRUE : FALSE);
-
 
 	/*
 	 * Get message type code from the frontend.
@@ -3457,13 +3304,6 @@ workerThreadReconnectToGTM(void)
 	if (GetMyThreadInfo->thr_gtm_conn == NULL)
 		elog(FATAL, "Worker thread GTM connection failed.");
 	elog(LOG, "Worker thread connection done.");
-
-#ifndef XCP
-	/* Set GTM communication error handling option */
-	GetMyThreadInfo->thr_gtm_conn->gtmErrorWaitIdle = GTMErrorWaitIdle;
-	GetMyThreadInfo->thr_gtm_conn->gtmErrorWaitInterval = GTMErrorWaitInterval;
-	GetMyThreadInfo->thr_gtm_conn->gtmErrorWaitCount = GTMErrorWaitCount;
-#endif
 
 	/* Initialize the command processing */
 	GetMyThreadInfo->reconnect_issued = FALSE;

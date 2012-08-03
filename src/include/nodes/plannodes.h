@@ -638,7 +638,7 @@ typedef struct Agg
 #ifdef PGXC
 #ifndef XCP
 	bool		skip_trans;		/* apply collection directly on the data received
-								 * from remote data nodes
+								 * from remote Datanodes
 								 */
 #endif /* XCP */
 #endif /* PGXC */

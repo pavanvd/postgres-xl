@@ -2,14 +2,13 @@
  *
  * execRemote.h
  *
- *	  Functions to execute commands on multiple Data Nodes
+ *	  Functions to execute commands on multiple Datanodes
  *
  *
- * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group ?
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
- * IDENTIFICATION
- *	  $$
+ * src/include/pgxc/execRemote.h
  *
  *-------------------------------------------------------------------------
  */
@@ -22,14 +21,15 @@
 #include "planner.h"
 #ifdef XCP
 #include "squeue.h"
+#include "remotecopy.h"
 #endif
 #include "access/tupdesc.h"
 #include "executor/tuptable.h"
 #include "nodes/execnodes.h"
 #include "nodes/pg_list.h"
 #include "tcop/dest.h"
-#include "utils/snapshot.h"
 #include "tcop/pquery.h"
+#include "utils/snapshot.h"
 
 /* GUC parameters */
 extern bool EnforceTwoPhaseCommit;
@@ -59,6 +59,17 @@ typedef enum
 	REQUEST_TYPE_ERROR			/* Error, ignore responses */
 #endif
 }	RequestType;
+
+/*
+ * Type of requests associated to a remote COPY OUT
+ */
+typedef enum
+{
+	REMOTE_COPY_NONE,		/* Not defined yet */
+	REMOTE_COPY_STDOUT,		/* Send back to client */
+	REMOTE_COPY_FILE,		/* Write in file */
+	REMOTE_COPY_TUPLESTORE	/* Store data in tuplestore */
+} RemoteCopyType;
 
 /* Combines results of INSERT statements using multiple values */
 typedef struct CombineTag
@@ -96,7 +107,7 @@ typedef struct RemoteQueryState
 {
 	ScanState	ss;						/* its first field is NodeTag */
 	int			node_count;				/* total count of participating nodes */
-	PGXCNodeHandle **connections;		/* data node connections being combined */
+	PGXCNodeHandle **connections;		/* Datanode connections being combined */
 	int			conn_count;				/* count of active connections */
 	int			current_conn;			/* used to balance load when reading from connections */
 	CombineType combine_type;			/* see CombineType enum */
@@ -147,6 +158,9 @@ typedef struct RemoteQueryState
 	int 	   *tapenodes;
 #endif
 	void	   *tuplesortstate;			/* for merge sort */
+	/* COPY support */
+	RemoteCopyType remoteCopyType;
+	Tuplestorestate *tuplestorestate;
 	/* cursor support */
 	char	   *cursor;					/* cursor name */
 	char	   *update_cursor;			/* throw this cursor current tuple can be updated */
@@ -159,7 +173,7 @@ typedef struct RemoteQueryState
 {
 	ResponseCombiner combiner;			/* see ResponseCombiner struct */
 #endif
-	bool		query_Done;				/* query has been sent down to data nodes */
+	bool		query_Done;				/* query has been sent down to Datanodes */
 	/*
 	 * While we are not supporting grouping use this flag to indicate we need
 	 * to initialize collecting of aggregates from the DNs
@@ -174,8 +188,9 @@ typedef struct RemoteQueryState
 
 	int			eflags;			/* capability flags to pass to tuplestore */
 	bool		eof_underlying; /* reached end of underlying plan? */
-	Tuplestorestate *tuplestorestate;
-
+#ifndef XCP
+	CommandId	rqs_cmd_id;			/* Cmd id to use in some special cases */
+#endif
 }	RemoteQueryState;
 
 
@@ -261,19 +276,21 @@ extern void PGXCNodeCommitPrepared(char *gid);
 
 /* Copy command just involves Datanodes */
 #ifdef XCP
-extern Locator* DataNodeCopyBegin(const char *query, RelationLocInfo *rel_loc,
-								  Oid partType, bool is_from);
+extern void DataNodeCopyBegin(RemoteCopyData *rcstate);
 extern int DataNodeCopyIn(char *data_row, int len, int conn_count,
 						  PGXCNodeHandle** copy_connections);
 extern uint64 DataNodeCopyOut(PGXCNodeHandle** copy_connections,
 							  int conn_count, FILE* copy_file);
+extern uint64 DataNodeCopyStore(PGXCNodeHandle** copy_connections,
+								int conn_count, Tuplestorestate* store);
 extern void DataNodeCopyFinish(int conn_count, PGXCNodeHandle** connections);
 extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, int conn_count,
 									  PGXCNodeHandle** connections);
 #else
-extern PGXCNodeHandle** DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot, bool is_from);
+extern PGXCNodeHandle** DataNodeCopyBegin(const char *query, List *nodelist, Snapshot snapshot);
 extern int DataNodeCopyIn(char *data_row, int len, ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections);
-extern uint64 DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, FILE* copy_file);
+extern uint64 DataNodeCopyOut(ExecNodes *exec_nodes, PGXCNodeHandle** copy_connections, TupleDesc tupleDesc,
+							  FILE* copy_file, Tuplestorestate *store, RemoteCopyType remoteCopyType);
 extern void DataNodeCopyFinish(PGXCNodeHandle** copy_connections, int primary_dn_index, CombineType combine_type);
 extern int DataNodeCopyInBinaryForAll(char *msg_buf, int len, PGXCNodeHandle** copy_connections);
 #endif

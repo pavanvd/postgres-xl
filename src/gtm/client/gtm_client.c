@@ -4,7 +4,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -1837,19 +1837,11 @@ bkup_begin_transaction_multi(GTM_Conn *conn, int txn_count,
 	{
 		if (gxid == InvalidGlobalTransactionId)
 			gxid = FirstNormalGlobalTransactionId;
-#ifdef XCP
 		if (gtmpqPutInt(txn[ii], sizeof(GTM_TransactionHandle), conn) ||
 			gtmpqPutInt(gxid, sizeof(GlobalTransactionId), conn) ||
 			gtmpqPutInt(isolevel[ii], sizeof(GTM_IsolationLevel), conn) ||
 			gtmpqPutc(read_only[ii], conn) ||
 			gtmpqPutInt(txn_connid[ii], sizeof(GTMProxy_ConnID), conn))
-#else
-		if (gtmpqPutInt(txn[ii], sizeof(GTM_TransactionHandle), conn) ||
-			gtmpqPutInt(gxid, sizeof(GlobalTransactionId), conn) ||
-			gtmpqPutInt(isolevel[ii], sizeof(int), conn) ||
-			gtmpqPutc(read_only[ii], conn) ||
-			gtmpqPutInt(txn_connid[ii], sizeof(int), conn))
-#endif
 			goto send_failed;
 	}
 
@@ -1865,7 +1857,6 @@ bkup_begin_transaction_multi(GTM_Conn *conn, int txn_count,
 
 send_failed:
 	return -1;
-
 }
 
 int

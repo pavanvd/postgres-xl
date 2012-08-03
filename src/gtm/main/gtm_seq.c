@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -34,9 +34,6 @@ typedef struct GTM_SeqInfoHashBucket
 	gtm_List   *shb_list;
 	GTM_RWLock	shb_lock;
 } GTM_SeqInfoHashBucket;
-
-static int SeqStartMagic =	0xfafafafa;
-static int SeqEndMagic =	0xfefefefe;
 
 #define SEQ_HASH_TABLE_SIZE		1024
 static GTM_SeqInfoHashBucket GTMSequences[SEQ_HASH_TABLE_SIZE];
@@ -371,7 +368,6 @@ int GTM_SeqAlter(GTM_SequenceKey seqkey,
 	GTM_RWLockAcquire(&seqinfo->gs_lock, GTM_LOCKMODE_WRITE);
 
 	/* Modify the data if necessary */
-
 	if (seqinfo->gs_cycle != cycle)
 		seqinfo->gs_cycle = cycle;
 	if (seqinfo->gs_min_value != minval)
@@ -381,19 +377,22 @@ int GTM_SeqAlter(GTM_SequenceKey seqkey,
 	if (seqinfo->gs_increment_by != increment_by)
 		seqinfo->gs_increment_by = increment_by;
 
-	/* Here Restart has been used with a value, reinitialize last_value to a new value */
-	if (seqinfo->gs_last_value != lastval)
-		seqinfo->gs_last_value = lastval;
-
-	/* Start has been used, reinitialize init value */
-	if (seqinfo->gs_init_value != startval)
-		seqinfo->gs_last_value = seqinfo->gs_init_value = startval;
-
-	/* Restart command has been used, reset the sequence */
+	/*
+	 * Check start/restart processes.
+	 * Check first if restart is necessary and reset sequence in that case.
+	 * If not, check if a simple start is necessary and update sequence.
+	 */
 	if (is_restart)
 	{
+		/* Restart command has been used, reset the sequence */
 		seqinfo->gs_called = false;
-		seqinfo->gs_init_value = seqinfo->gs_last_value;
+		seqinfo->gs_init_value = seqinfo->gs_last_value = lastval;
+	}
+	else
+	{
+		/* Start has been used, reinitialize init value */
+		if (seqinfo->gs_init_value != startval)
+			seqinfo->gs_init_value = seqinfo->gs_last_value = startval;
 	}
 
 	/* Remove the old key with the old name */
@@ -506,11 +505,11 @@ seq_key_dbname_equal(GTM_SequenceKey nsp, GTM_SequenceKey seq)
 	 * Check also if first part of sequence key name has a dot at the right place.
 	 * This accelerates process instead of making numerous memcmp.
 	 */
-	if (seq->gsk_key[nsp->gsk_keylen] != '.')
+	if (seq->gsk_key[nsp->gsk_keylen - 1] != '.')
 		return false;
 
 	/* Then Check the strings */
-	return (memcmp(nsp->gsk_key, seq->gsk_key, nsp->gsk_keylen) == 0);
+	return (memcmp(nsp->gsk_key, seq->gsk_key, nsp->gsk_keylen - 1) == 0);
 }
 
 /*
@@ -915,10 +914,6 @@ ProcessSequenceInitCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "open_sequence() returns rc %d.", rc);
 		}
-#ifdef XCP
-		/* Save control file with new seq info */
-                SaveControlInfo();
-#endif
 		/*
 		 * Send a SUCCESS message back to the client
 		 */
@@ -1033,10 +1028,6 @@ ProcessSequenceAlterCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "alter_sequence() returns rc %d.", rc);
 		}
-#ifdef XCP
-		/* Save control file info */
-                SaveControlInfo();
-#endif
 		pq_beginmessage(&buf, 'S');
 		pq_sendint(&buf, SEQUENCE_ALTER_RESULT, 4);
 		if (myport->remote_type == GTM_NODE_GTM_PROXY)
@@ -1362,10 +1353,6 @@ ProcessSequenceSetValCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "set_val() returns rc %d.", rc);
 		}
-#ifdef XCP
-		/* Save control file info */
-                SaveControlInfo();
-#endif
 		/* Respond to the client */
 		pq_beginmessage(&buf, 'S');
 		pq_sendint(&buf, SEQUENCE_SET_VAL_RESULT, 4);
@@ -1436,10 +1423,6 @@ ProcessSequenceResetCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "reset_sequence() returns rc %d.", rc);
 		}
-#ifdef XCP
-		/* Save control file info */
-                SaveControlInfo();
-#endif
 		/* Respond to the client */
 		pq_beginmessage(&buf, 'S');
 		pq_sendint(&buf, SEQUENCE_RESET_RESULT, 4);
@@ -1512,10 +1495,6 @@ ProcessSequenceCloseCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "close_sequence() returns rc %d.", rc);
 		}
-#ifdef XCP
-		/* Save control file */
-                SaveControlInfo();
-#endif
 		/* Respond to the client */
 		pq_beginmessage(&buf, 'S');
 		pq_sendint(&buf, SEQUENCE_CLOSE_RESULT, 4);
@@ -1603,10 +1582,6 @@ ProcessSequenceRenameCommand(Port *myport, StringInfo message, bool is_backup)
 
 			elog(LOG, "rename_sequence() returns rc %d.", rc);
 		}
-#ifdef XCP
-		/* Save control file info */
-                SaveControlInfo();
-#endif
 		/* Send a SUCCESS message back to the client */
 		pq_beginmessage(&buf, 'S');
 		pq_sendint(&buf, SEQUENCE_RENAME_RESULT, 4);
@@ -1633,7 +1608,6 @@ ProcessSequenceRenameCommand(Port *myport, StringInfo message, bool is_backup)
 }
 
 
-#ifdef XCP
 /*
  * Escape whitespace and non-printable characters in the sequence name to
  * store it to the control file.
@@ -1750,18 +1724,12 @@ decode_seq_key(char* value, GTM_SequenceKey seqkey)
 
 void
 GTM_SaveSeqInfo(FILE *ctlf)
-#else
-void
-GTM_SaveSeqInfo(int ctlfd)
-#endif
 {
 	GTM_SeqInfoHashBucket *bucket;
 	gtm_ListCell *elem;
 	GTM_SeqInfo *seqinfo = NULL;
 	int hash;
-#ifdef XCP
 	char buffer[1024];
-#endif
 
 	for (hash = 0; hash < SEQ_HASH_TABLE_SIZE; hash++)
 	{
@@ -1780,7 +1748,6 @@ GTM_SaveSeqInfo(int ctlfd)
 
 			GTM_RWLockAcquire(&seqinfo->gs_lock, GTM_LOCKMODE_READ);
 
-#ifdef XCP
 			encode_seq_key(seqinfo->gs_key, buffer);
 			fprintf(ctlf, "%s\t%ld\t%ld\t%ld\t%ld\t%ld\t%c\t%c\t%x\n",
 					buffer, seqinfo->gs_value,
@@ -1789,20 +1756,6 @@ GTM_SaveSeqInfo(int ctlfd)
 					(seqinfo->gs_cycle ? 't' : 'f'),
 					(seqinfo->gs_called ? 't' : 'f'),
 					seqinfo->gs_state);
-#else
-			write(ctlfd, &SeqStartMagic, sizeof (SeqStartMagic));
-			write(ctlfd, &seqinfo->gs_key->gsk_keylen, sizeof (uint32));
-			write(ctlfd, seqinfo->gs_key->gsk_key, seqinfo->gs_key->gsk_keylen);
-			write(ctlfd, &seqinfo->gs_value, sizeof (GTM_Sequence));
-			write(ctlfd, &seqinfo->gs_init_value, sizeof (GTM_Sequence));
-			write(ctlfd, &seqinfo->gs_increment_by, sizeof (GTM_Sequence));
-			write(ctlfd, &seqinfo->gs_min_value, sizeof (GTM_Sequence));
-			write(ctlfd, &seqinfo->gs_max_value, sizeof (GTM_Sequence));
-			write(ctlfd, &seqinfo->gs_cycle, sizeof (bool));
-			write(ctlfd, &seqinfo->gs_called, sizeof (bool));
-			write(ctlfd, &seqinfo->gs_state, sizeof (int32));
-			write(ctlfd, &SeqEndMagic, sizeof(SeqEndMagic));
-#endif
 
 			GTM_RWLockRelease(&seqinfo->gs_lock);
 		}
@@ -1813,7 +1766,6 @@ GTM_SaveSeqInfo(int ctlfd)
 }
 
 
-#ifdef XCP
 void
 GTM_RestoreSeqInfo(FILE *ctlf)
 {
@@ -1885,73 +1837,7 @@ GTM_RestoreSeqInfo(FILE *ctlf)
 			elog(WARNING, "Corrupted control file");
 			return;
 		}
-		/* increment current value by control interval in case restarting */
-		curval = curval + CONTROL_INTERVAL;
-		if (curval > maxval)
-		{
-			if (cycle)
-				curval = minval + (curval - maxval);
-			else
-				curval = maxval;
-		}
 		GTM_SeqRestore(&seqkey, increment_by, minval, maxval, startval, curval,
 					   state, cycle, called);
 	}
 }
-#else
-void
-GTM_RestoreSeqInfo(int ctlfd)
-{
-	int magic;
-
-	if (ctlfd == -1)
-		return;
-
-	while (read(ctlfd, &magic, sizeof (SeqStartMagic)) == sizeof (SeqStartMagic))
-	{
-		GTM_SequenceKeyData seqkey;
-		GTM_Sequence increment_by;
-		GTM_Sequence minval;
-		GTM_Sequence maxval;
-		GTM_Sequence startval;
-		GTM_Sequence curval;
-		int32 state;
-		bool cycle;
-		bool called;
-
-		if (magic != SeqStartMagic)
-		{
-			elog(LOG, "Start magic mismatch %x - %x", magic, SeqStartMagic);
-			break;
-		}
-
-		if (read(ctlfd, &seqkey.gsk_keylen, sizeof (uint32)) != sizeof (uint32))
-		{
-			elog(LOG, "Failed to read keylen");
-			break;
-		}
-
-		seqkey.gsk_key = palloc(seqkey.gsk_keylen);
-		read(ctlfd, seqkey.gsk_key, seqkey.gsk_keylen);
-
-		read(ctlfd, &curval, sizeof (GTM_Sequence));
-		read(ctlfd, &startval, sizeof (GTM_Sequence));
-		read(ctlfd, &increment_by, sizeof (GTM_Sequence));
-		read(ctlfd, &minval, sizeof (GTM_Sequence));
-		read(ctlfd, &maxval, sizeof (GTM_Sequence));
-		read(ctlfd, &cycle, sizeof (bool));
-		read(ctlfd, &called, sizeof (bool));
-		read(ctlfd, &state, sizeof (int32));
-		read(ctlfd, &magic, sizeof(SeqEndMagic));
-
-		if (magic != SeqEndMagic)
-		{
-			elog(WARNING, "Corrupted control file");
-			return;
-		}
-
-		GTM_SeqRestore(&seqkey, increment_by, minval, maxval, startval, curval,
-					   state, cycle, called);
-	}
-}
-#endif

@@ -147,6 +147,8 @@ DROP TABLE tmp;
 -- rename - check on both non-temp and temp tables
 --
 CREATE TABLE tmp (regtable int);
+-- Enforce use of COMMIT instead of 2PC for temporary objects
+SET enforce_two_phase_commit TO off;
 CREATE TEMP TABLE tmp (tmptable int);
 
 ALTER TABLE tmp RENAME TO tmp_new;
@@ -188,9 +190,9 @@ alter table pg_toast_stud_emp rename to stud_emp;
 
 -- FOREIGN KEY CONSTRAINT adding TEST
 
-CREATE TABLE tmp2 (a int primary key);
+CREATE TABLE tmp2 (a int primary key) DISTRIBUTE BY REPLICATION;
 
-CREATE TABLE tmp3 (a int, b int);
+CREATE TABLE tmp3 (a int, b int) DISTRIBUTE BY REPLICATION;
 
 CREATE TABLE tmp4 (a int, b int, unique(a,b));
 
@@ -236,11 +238,40 @@ DELETE FROM tmp3 where a=5;
 ALTER TABLE tmp3 validate constraint tmpconstr;
 ALTER TABLE tmp3 validate constraint tmpconstr;
 
+-- Try a non-verified CHECK constraint
+ALTER TABLE tmp3 ADD CONSTRAINT b_greater_than_ten CHECK (b > 10); -- fail
+ALTER TABLE tmp3 ADD CONSTRAINT b_greater_than_ten CHECK (b > 10) NOT VALID; -- succeeds
+ALTER TABLE tmp3 VALIDATE CONSTRAINT b_greater_than_ten; -- fails
+DELETE FROM tmp3 WHERE NOT b > 10;
+ALTER TABLE tmp3 VALIDATE CONSTRAINT b_greater_than_ten; -- succeeds
+ALTER TABLE tmp3 VALIDATE CONSTRAINT b_greater_than_ten; -- succeeds
+
+-- Test inherited NOT VALID CHECK constraints
+select * from tmp3;
+CREATE TABLE tmp6 () INHERITS (tmp3);
+CREATE TABLE tmp7 () INHERITS (tmp3);
+
+INSERT INTO tmp6 VALUES (6, 30), (7, 16);
+ALTER TABLE tmp3 ADD CONSTRAINT b_le_20 CHECK (b <= 20) NOT VALID;
+ALTER TABLE tmp3 VALIDATE CONSTRAINT b_le_20;	-- fails
+DELETE FROM tmp6 WHERE b > 20;
+ALTER TABLE tmp3 VALIDATE CONSTRAINT b_le_20;	-- succeeds
+
+-- An already validated constraint must not be revalidated
+CREATE FUNCTION boo(int) RETURNS int IMMUTABLE STRICT LANGUAGE plpgsql AS $$ BEGIN RAISE NOTICE 'boo: %', $1; RETURN $1; END; $$;
+INSERT INTO tmp7 VALUES (8, 18);
+ALTER TABLE tmp7 ADD CONSTRAINT identity CHECK (b = boo(b));
+ALTER TABLE tmp3 ADD CONSTRAINT IDENTITY check (b = boo(b)) NOT VALID;
+ALTER TABLE tmp3 VALIDATE CONSTRAINT identity;
 
 -- Try (and fail) to create constraint from tmp5(a) to tmp4(a) - unique constraint on
 -- tmp4 is a,b
 
 ALTER TABLE tmp5 add constraint tmpconstr foreign key(a) references tmp4(a) match full;
+
+DROP TABLE tmp7;
+
+DROP TABLE tmp6;
 
 DROP TABLE tmp5;
 
@@ -250,14 +281,31 @@ DROP TABLE tmp3;
 
 DROP TABLE tmp2;
 
+-- NOT VALID with plan invalidation -- ensure we don't use a constraint for
+-- exclusion until validated
+set constraint_exclusion TO 'partition';
+create table nv_parent (d date); 
+create table nv_child_2010 () inherits (nv_parent);
+create table nv_child_2011 () inherits (nv_parent);
+alter table nv_child_2010 add check (d between '2010-01-01'::date and '2010-12-31'::date) not valid;
+alter table nv_child_2011 add check (d between '2011-01-01'::date and '2011-12-31'::date) not valid;
+explain (costs off, nodes off) select * from nv_parent where d between '2011-08-01' and '2011-08-31';
+create table nv_child_2009 (check (d between '2009-01-01'::date and '2009-12-31'::date)) inherits (nv_parent);
+explain (costs off, nodes off) select * from nv_parent where d between '2011-08-01'::date and '2011-08-31'::date;
+explain (costs off, nodes off) select * from nv_parent where d between '2009-08-01'::date and '2009-08-31'::date;
+-- after validation, the constraint should be used
+alter table nv_child_2011 VALIDATE CONSTRAINT nv_child_2011_d_check;
+explain (costs off, nodes off) select * from nv_parent where d between '2009-08-01'::date and '2009-08-31'::date;
+
+
 -- Foreign key adding test with mixed types
 
 -- Note: these tables are TEMP to avoid name conflicts when this test
 -- is run in parallel with foreign_key.sql.
 
-CREATE TEMP TABLE PKTABLE (ptest1 int PRIMARY KEY);
+CREATE TEMP TABLE PKTABLE (ptest1 int PRIMARY KEY) DISTRIBUTE BY REPLICATION;
 INSERT INTO PKTABLE VALUES(42);
-CREATE TEMP TABLE FKTABLE (ftest1 inet);
+CREATE TEMP TABLE FKTABLE (ftest1 inet) DISTRIBUTE BY REPLICATION;
 -- This next should fail, because int=inet does not exist
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable;
 -- This should also fail for the same reason, but here we
@@ -266,7 +314,7 @@ ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable(ptest1);
 DROP TABLE FKTABLE;
 -- This should succeed, even though they are different types,
 -- because int=int8 exists and is a member of the integer opfamily
-CREATE TEMP TABLE FKTABLE (ftest1 int8);
+CREATE TEMP TABLE FKTABLE (ftest1 int8) DISTRIBUTE BY REPLICATION;
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable;
 -- Check it actually works
 INSERT INTO FKTABLE VALUES(42);		-- should succeed
@@ -275,13 +323,13 @@ DROP TABLE FKTABLE;
 -- This should fail, because we'd have to cast numeric to int which is
 -- not an implicit coercion (or use numeric=numeric, but that's not part
 -- of the integer opfamily)
-CREATE TEMP TABLE FKTABLE (ftest1 numeric);
+CREATE TEMP TABLE FKTABLE (ftest1 numeric) DISTRIBUTE BY REPLICATION;
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable;
 DROP TABLE FKTABLE;
 DROP TABLE PKTABLE;
 -- On the other hand, this should work because int implicitly promotes to
 -- numeric, and we allow promotion on the FK side
-CREATE TEMP TABLE PKTABLE (ptest1 numeric PRIMARY KEY);
+CREATE TEMP TABLE PKTABLE (ptest1 numeric PRIMARY KEY) DISTRIBUTE BY REPLICATION;
 INSERT INTO PKTABLE VALUES(42);
 CREATE TEMP TABLE FKTABLE (ftest1 int);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable;
@@ -294,16 +342,16 @@ DROP TABLE PKTABLE;
 CREATE TEMP TABLE PKTABLE (ptest1 int, ptest2 inet,
                            PRIMARY KEY(ptest1, ptest2));
 -- This should fail, because we just chose really odd types
-CREATE TEMP TABLE FKTABLE (ftest1 cidr, ftest2 timestamp);
+CREATE TEMP TABLE FKTABLE (ftest1 cidr, ftest2 timestamp) DISTRIBUTE BY REPLICATION;
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1, ftest2) references pktable;
 DROP TABLE FKTABLE;
 -- Again, so should this...
-CREATE TEMP TABLE FKTABLE (ftest1 cidr, ftest2 timestamp);
+CREATE TEMP TABLE FKTABLE (ftest1 cidr, ftest2 timestamp) DISTRIBUTE BY REPLICATION;
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1, ftest2)
      references pktable(ptest1, ptest2);
 DROP TABLE FKTABLE;
 -- This fails because we mixed up the column ordering
-CREATE TEMP TABLE FKTABLE (ftest1 int, ftest2 inet);
+CREATE TEMP TABLE FKTABLE (ftest1 int, ftest2 inet) DISTRIBUTE BY REPLICATION;
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1, ftest2)
      references pktable(ptest2, ptest1);
 -- As does this...
@@ -423,7 +471,7 @@ drop table atacc1;
 
 -- test unique constraint adding
 
-create table atacc1 ( test int ) with oids;
+create table atacc1 ( test int ) with oids distribute by replication;
 -- add a unique constraint
 alter table atacc1 add constraint atacc_test1 unique (test);
 -- insert first value
@@ -439,7 +487,7 @@ alter table atacc1 alter column test type integer using 0;
 drop table atacc1;
 
 -- let's do one where the unique constraint fails when added
-create table atacc1 ( test int );
+create table atacc1 ( test int ) distribute by replication;
 -- insert soon to be failing rows
 insert into atacc1 (test) values (2);
 insert into atacc1 (test) values (2);
@@ -450,7 +498,7 @@ drop table atacc1;
 
 -- let's do one where the unique constraint fails
 -- because the column doesn't exist
-create table atacc1 ( test int );
+create table atacc1 ( test int ) distribute by round robin;
 -- add a unique constraint (fails)
 alter table atacc1 add constraint atacc_test1 unique (test1);
 drop table atacc1;
@@ -470,7 +518,7 @@ insert into atacc1 (test,test2) values (5,5);
 drop table atacc1;
 
 -- lets do some naming tests
-create table atacc1 (test int, test2 int, unique(test));
+create table atacc1 (test int, test2 int, unique(test)) distribute by replication;
 alter table atacc1 add unique (test2);
 -- should fail for @@ second one @@
 insert into atacc1 (test2, test) values (3, 3);
@@ -479,7 +527,7 @@ drop table atacc1;
 
 -- test primary key constraint adding
 
-create table atacc1 ( test int ) with oids;
+create table atacc1 ( test int ) with oids distribute by replication;
 -- add a primary key constraint
 alter table atacc1 add constraint atacc_test1 primary key (test);
 -- insert first value
@@ -519,14 +567,14 @@ drop table atacc1;
 
 -- let's do one where the primary key constraint fails
 -- because the column doesn't exist
-create table atacc1 ( test int );
+create table atacc1 ( test int ) distribute by replication;
 -- add a primary key constraint (fails)
 alter table atacc1 add constraint atacc_test1 primary key (test1);
 drop table atacc1;
 
 -- adding a new column as primary key to a non-empty table.
 -- should fail unless the column has a non-null default value.
-create table atacc1 ( test int );
+create table atacc1 ( test int ) distribute by replication;
 insert into atacc1 (test) values (0);
 -- add a primary key column without a default (fails).
 alter table atacc1 add column test2 int primary key;
@@ -669,7 +717,7 @@ alter table pg_class drop column relname;
 alter table nosuchtable drop column bar;
 
 -- test dropping columns
-create table atacc1 (a int4 not null, b int4, c int4 not null, d int4) with oids;
+create table atacc1 (a int4 not null, b int4, c int4 not null, d int4) with oids distribute by replication;
 insert into atacc1 values (1, 2, 3, 4);
 alter table atacc1 drop a;
 alter table atacc1 drop a;
@@ -758,7 +806,7 @@ alter table atacc1 add unique(a);
 alter table atacc1 add unique("........pg.dropped.1........");
 alter table atacc1 add check (a > 3);
 alter table atacc1 add check ("........pg.dropped.1........" > 3);
-create table atacc2 (id int4 unique);
+create table atacc2 (id int4 unique) distribute by replication;
 alter table atacc1 add foreign key (a) references atacc2(id);
 alter table atacc1 add foreign key ("........pg.dropped.1........") references atacc2(id);
 alter table atacc2 add foreign key (id) references atacc1(a);
@@ -785,7 +833,7 @@ select * from atacc1;
 drop table atacc1;
 
 -- test inheritance
-create table parent (a int, b int, c int);
+create table parent (a int, b int, c int) distribute by round robin;
 insert into parent values (1, 2, 3);
 alter table parent drop a;
 create table child (d varchar(255)) inherits (parent);
@@ -801,7 +849,7 @@ drop table child;
 drop table parent;
 
 -- test copy in/out
-create table test (a int4, b int4, c int4);
+create table test (a int4, b int4, c int4) distribute by round robin;
 insert into test values (1,2,3);
 alter table test drop a;
 copy test to stdout;
@@ -825,8 +873,8 @@ drop table test;
 
 -- test inheritance
 
-create table dropColumn (a int, b int, e int);
-create table dropColumnChild (c int) inherits (dropColumn);
+create table dropColumn (a int, b int, e int) distribute by replication;
+create table dropColumnChild (c int) inherits (dropColumn) distribute by replication;
 create table dropColumnAnother (d int) inherits (dropColumnChild);
 
 -- these two should fail
@@ -862,8 +910,8 @@ alter table only renameColumn add column x int;
 
 -- Test corner cases in dropping of inherited columns
 
-create table p1 (f1 int, f2 int);
-create table c1 (f1 int not null) inherits(p1);
+create table p1 (f1 int, f2 int) distribute by round robin;
+create table c1 (f1 int not null) inherits(p1) distribute by round robin;
 
 -- should be rejected since c1.f1 is inherited
 alter table c1 drop column f1;
@@ -876,8 +924,8 @@ select f1 from c1;
 
 drop table p1 cascade;
 
-create table p1 (f1 int, f2 int);
-create table c1 () inherits(p1);
+create table p1 (f1 int, f2 int) distribute by round robin;
+create table c1 () inherits(p1) distribute by round robin;
 
 -- should be rejected since c1.f1 is inherited
 alter table c1 drop column f1;
@@ -887,8 +935,8 @@ select f1 from c1;
 
 drop table p1 cascade;
 
-create table p1 (f1 int, f2 int);
-create table c1 () inherits(p1);
+create table p1 (f1 int, f2 int) distribute by round robin;
+create table c1 () inherits(p1) distribute by round robin;
 
 -- should be rejected since c1.f1 is inherited
 alter table c1 drop column f1;
@@ -898,8 +946,8 @@ alter table c1 drop column f1;
 
 drop table p1 cascade;
 
-create table p1 (f1 int, f2 int);
-create table c1 (f1 int not null) inherits(p1);
+create table p1 (f1 int, f2 int) distribute by round robin;
+create table c1 (f1 int not null) inherits(p1) distribute by round robin;
 
 -- should be rejected since c1.f1 is inherited
 alter table c1 drop column f1;
@@ -1175,7 +1223,6 @@ group by c.relname;
 
 create table alterlock (f1 int primary key, f2 text);
 
--- share update exclusive
 begin; alter table alterlock alter column f2 set statistics 150;
 select * from my_locks order by 1;
 rollback;
@@ -1212,7 +1259,6 @@ begin; alter table alterlock alter column f2 set storage extended;
 select * from my_locks order by 1;
 rollback;
 
--- share row exclusive
 begin; alter table alterlock alter column f2 set default 'x';
 select * from my_locks order by 1;
 rollback;

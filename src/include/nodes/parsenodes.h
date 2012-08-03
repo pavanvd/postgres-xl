@@ -12,7 +12,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * src/include/nodes/parsenodes.h
  *
@@ -161,10 +161,12 @@ typedef struct Query
 #ifndef XCP
 	/* need this info for PGXC Planner, may be temporary */
 	char		*sql_statement;		/* original query */
-	bool		qry_finalise_aggs;	/* used for queries intended for datanodes,
-						 * should datanode finalise the aggregates? */
+	bool		qry_finalise_aggs;	/* used for queries intended for Datanodes,
+						 * should Datanode finalise the aggregates? */
 	bool		is_local;		/* enforce query execution on local node
 						 * this is used by EXECUTE DIRECT especially. */
+	bool		is_ins_child_sel_parent;/* true if the query is such an INSERT SELECT that
+						 * inserts into a child by selecting from its parent */
 #endif
 #endif
 } Query;
@@ -1216,6 +1218,7 @@ typedef enum AlterTableType
 	AT_AddConstraint,			/* add constraint */
 	AT_AddConstraintRecurse,	/* internal to commands/tablecmds.c */
 	AT_ValidateConstraint,		/* validate constraint */
+	AT_ValidateConstraintRecurse, /* internal to commands/tablecmds.c */
 	AT_ProcessedConstraint,		/* pre-processed add constraint (local in
 								 * parser/parse_utilcmd.c) */
 	AT_AddIndexConstraint,		/* add constraint using existing index */
@@ -1247,7 +1250,13 @@ typedef enum AlterTableType
 	AT_DropInherit,				/* NO INHERIT parent */
 	AT_AddOf,					/* OF <type_name> */
 	AT_DropOf,					/* NOT OF */
-	AT_GenericOptions,			/* OPTIONS (...) */
+#ifdef PGXC
+	AT_DistributeBy,			/* DISTRIBUTE BY ... */
+	AT_SubCluster,				/* TO [ NODE nodelist | GROUP groupname ] */
+	AT_AddNodeList,				/* ADD NODE nodelist */
+	AT_DeleteNodeList,			/* DELETE NODE nodelist */
+#endif
+	AT_GenericOptions			/* OPTIONS (...) */
 } AlterTableType;
 
 typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
@@ -1260,7 +1269,6 @@ typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
 								 * constraint, or parent table */
 	DropBehavior behavior;		/* RESTRICT or CASCADE for DROP cases */
 	bool		missing_ok;		/* skip error if missing? */
-	bool		validated;
 } AlterTableCmd;
 
 
@@ -1499,8 +1507,9 @@ typedef struct CreateStmt
  *
  * If skip_validation is true then we skip checking that the existing rows
  * in the table satisfy the constraint, and just install the catalog entries
- * for the constraint.	This is currently used only during CREATE TABLE
- * (when we know the table must be empty).
+ * for the constraint.  A new FK constraint is marked as valid iff
+ * initially_valid is true.  (Usually skip_validation and initially_valid
+ * are inverses, but we can set both true if the table is known empty.)
  *
  * Constraint attributes (DEFERRABLE etc) are initially represented as
  * separate Constraint nodes for simplicity of parsing.  parse_utilcmd.c makes
@@ -1573,8 +1582,10 @@ typedef struct Constraint
 	char		fk_matchtype;	/* FULL, PARTIAL, UNSPECIFIED */
 	char		fk_upd_action;	/* ON UPDATE action */
 	char		fk_del_action;	/* ON DELETE action */
+
+	/* Fields used for constraints that allow a NOT VALID specification */
 	bool		skip_validation;	/* skip validation of existing rows? */
-	bool		initially_valid;	/* start the new constraint as valid */
+	bool		initially_valid;	/* mark the new constraint as valid? */
 } Constraint;
 
 /* ----------------------
@@ -2453,7 +2464,7 @@ typedef enum VacuumOption
 	VACOPT_VERBOSE = 1 << 2,	/* print progress info */
 	VACOPT_FREEZE = 1 << 3,		/* FREEZE option */
 	VACOPT_FULL = 1 << 4,		/* FULL (non-concurrent) vacuum */
-	VACOPT_NOWAIT = 1 << 5
+	VACOPT_NOWAIT = 1 << 5		/* don't wait to get lock (autovacuum only) */
 } VacuumOption;
 
 typedef struct VacuumStmt

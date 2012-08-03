@@ -108,7 +108,15 @@ CheckRelationOwnership(RangeVar *rel, bool noCatalogs)
 	Oid			relOid;
 	HeapTuple	tuple;
 
-	relOid = RangeVarGetRelid(rel, false);
+	/*
+	 * XXX: This is unsafe in the presence of concurrent DDL, since it is
+	 * called before acquiring any lock on the target relation.  However,
+	 * locking the target relation (especially using something like
+	 * AccessExclusiveLock) before verifying that the user has permissions
+	 * is not appealing either.
+	 */
+	relOid = RangeVarGetRelid(rel, NoLock, false, false);
+
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relOid));
 	if (!HeapTupleIsValid(tuple))		/* should not happen */
 		elog(ERROR, "cache lookup failed for relation %u", relOid);
@@ -898,7 +906,7 @@ standard_ProcessUtility(Node *parsetree,
 									 * Do not print result at all, error is thrown
 									 * after if necessary
 									 */
-									relid = RangeVarGetRelid(rel, true);
+									relid = RangeVarGetRelid(rel, NoLock, true, false);
 
 									/*
 									 * In case this relation ID is incorrect throw
@@ -1025,7 +1033,7 @@ standard_ProcessUtility(Node *parsetree,
 					Oid relid;
 					RangeVar *rel = (RangeVar *) lfirst(cell);
 
-					relid = RangeVarGetRelid(rel, true);
+					relid = RangeVarGetRelid(rel, NoLock, true, false);
 					if (IsTempTable(relid))
 					{
 						is_temp = true;
@@ -1096,7 +1104,7 @@ standard_ProcessUtility(Node *parsetree,
 				/* Relation is not set for a schema */
 				if (stmt->relation)
 					exec_type = ExecUtilityFindNodes(stmt->renameType,
-													 RangeVarGetRelid(stmt->relation, false),
+													 RangeVarGetRelid(stmt->relation, NoLock, false, false),
 													 &is_temp);
 				else
 					exec_type = EXEC_ON_ALL_NODES;
@@ -1122,7 +1130,7 @@ standard_ProcessUtility(Node *parsetree,
 
 				if (stmt->relation)
 					exec_type = ExecUtilityFindNodes(stmt->objectType,
-													 RangeVarGetRelid(stmt->relation, false),
+													 RangeVarGetRelid(stmt->relation, NoLock, false, false),
 													 &is_temp);
 				else
 					exec_type = EXEC_ON_ALL_NODES;
@@ -1166,7 +1174,7 @@ standard_ProcessUtility(Node *parsetree,
 					AlterTableStmt *stmt = (AlterTableStmt *) parsetree;
 					RemoteQueryExecType exec_type;
 					exec_type = ExecUtilityFindNodes(stmt->relkind,
-													 RangeVarGetRelid(stmt->relation, false),
+													 RangeVarGetRelid(stmt->relation, NoLock, false, false),
 													 &is_temp);
 
 #ifdef XCP
@@ -1244,6 +1252,10 @@ standard_ProcessUtility(Node *parsetree,
 												  stmt->name,
 												  stmt->behavior);
 						break;
+					case 'V':	/* VALIDATE CONSTRAINT */
+						AlterDomainValidateConstraint(stmt->typeName,
+													  stmt->name);
+						break;
 					default:	/* oops */
 						elog(ERROR, "unrecognized alter domain type: %d",
 							 (int) stmt->subtype);
@@ -1280,7 +1292,7 @@ standard_ProcessUtility(Node *parsetree,
 					foreach (cell, stmt->objects)
 					{
 						RangeVar   *relvar = (RangeVar *) lfirst(cell);
-						Oid			relid = RangeVarGetRelid(relvar, false);
+						Oid			relid = RangeVarGetRelid(relvar, NoLock, false, false);
 
 						remoteExecType = ExecUtilityFindNodesRelkind(relid, &is_temp);
 
@@ -1459,7 +1471,7 @@ standard_ProcessUtility(Node *parsetree,
 				}
 
 				/* INDEX on a temporary table cannot use 2PC at commit */
-				relid = RangeVarGetRelid(stmt->relation, true);
+				relid = RangeVarGetRelid(stmt->relation, NoLock, true, true);
 
 				if (OidIsValid(relid))
 					exec_type = ExecUtilityFindNodes(OBJECT_INDEX, relid, &is_temp);
@@ -1554,7 +1566,7 @@ standard_ProcessUtility(Node *parsetree,
 					RemoteQueryExecType exec_type;
 
 					exec_type = ExecUtilityFindNodes(OBJECT_SEQUENCE,
-													 RangeVarGetRelid(stmt->sequence, false),
+													 RangeVarGetRelid(stmt->sequence, NoLock, false, false),
 													 &is_temp);
 
 					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, exec_type, is_temp);
@@ -1796,16 +1808,13 @@ standard_ProcessUtility(Node *parsetree,
 
 		case T_DropPropertyStmt:
 			{
-				DropPropertyStmt   *stmt = (DropPropertyStmt *) parsetree;
-				Oid					relId;
-
-				relId = RangeVarGetRelid(stmt->relation, false);
+				DropPropertyStmt *stmt = (DropPropertyStmt *) parsetree;
 
 				switch (stmt->removeType)
 				{
 					case OBJECT_RULE:
 						/* RemoveRewriteRule checks permissions */
-						RemoveRewriteRule(relId, stmt->property,
+						RemoveRewriteRule(stmt->relation, stmt->property,
 										  stmt->behavior, stmt->missing_ok);
 #ifdef PGXC
 						if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
@@ -1820,7 +1829,7 @@ standard_ProcessUtility(Node *parsetree,
 						break;
 					case OBJECT_TRIGGER:
 						/* DropTrigger checks permissions */
-						DropTrigger(relId, stmt->property,
+						DropTrigger(stmt->relation, stmt->property,
 									stmt->behavior, stmt->missing_ok);
 #ifdef PGXC
 						if (IS_PGXC_COORDINATOR)
@@ -2286,13 +2295,21 @@ ExecUtilityFindNodesRelkind(Oid relid, bool *is_temp)
 	switch (relkind_str)
 	{
 		case RELKIND_SEQUENCE:
+#ifndef XCP
 			*is_temp = IsTempTable(relid);
 			exec_type = EXEC_ON_ALL_NODES;
 			break;
-
+#endif
 		case RELKIND_RELATION:
+#ifdef XCP
+			if ((*is_temp = IsTempTable(relid)))
+				exec_type = EXEC_ON_DATANODES;
+			else
+				exec_type = EXEC_ON_ALL_NODES;
+#else
 			*is_temp = IsTempTable(relid);
 			exec_type = EXEC_ON_ALL_NODES;
+#endif
 			break;
 
 		case RELKIND_VIEW:
@@ -3821,7 +3838,7 @@ GetNodesForCommentUtility(CommentStmt *stmt, bool *is_temp)
 	}
 
 	address = get_object_address(stmt->objtype, stmt->objname, stmt->objargs,
-								 &relation, ShareUpdateExclusiveLock);
+								 &relation, ShareUpdateExclusiveLock, false);
 	object_id = address.objectId;
 
 	/*
@@ -3864,7 +3881,7 @@ GetNodesForCommentUtility(CommentStmt *stmt, bool *is_temp)
 static RemoteQueryExecType
 GetNodesForRulesUtility(RangeVar *relation, bool *is_temp)
 {
-	Oid relid = RangeVarGetRelid(relation, false);
+	Oid relid = RangeVarGetRelid(relation, NoLock, false, false);
 	RemoteQueryExecType exec_type;
 	/*
 	 * PGXCTODO: See if it's a temporary object, do we really need

@@ -32,10 +32,12 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #ifdef XCP
+#include "access/heapam.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "pgxc/locator.h"
 #include "pgxc/nodemgr.h"
+#include "utils/rel.h"
 #endif
 
 static List *translate_sub_tlist(List *tlist, int relid);
@@ -571,9 +573,10 @@ set_scanpath_distribution(PlannerInfo *root, RelOptInfo *rel, Path *pathnode)
 			if (!lc)
 			{
 				Relation 	relation = heap_open(rte->relid, NoLock);
+				TupleDesc	tdesc = RelationGetDescr(relation);
 				Form_pg_attribute att_tup;
 
-				att_tup = relation->rd_att->attrs[rel_loc_info->partAttrNum - 1];
+				att_tup = tdesc->attrs[rel_loc_info->partAttrNum - 1];
 				var = makeVar(rel->relid, rel_loc_info->partAttrNum,
 							  att_tup->atttypid, att_tup->atttypmod,
 							  att_tup->attcollation, 0);
@@ -622,7 +625,7 @@ redistribute_path(Path *subpath, char distributionType,
 	cost_remote_subplan((Path *) pathnode, subpath->startup_cost,
 						subpath->total_cost, subpath->parent->tuples,
 						subpath->parent->width,
-						IsReplicated(distributionType) ?
+						IsLocatorReplicated(distributionType) ?
 								bms_num_members(nodes) : 1);
 	return (Path *) pathnode;
 }
@@ -678,8 +681,8 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 	 * Catalog tables are the same on all nodes, so treat them as replicated
 	 * on all nodes.
 	 */
-	if ((!innerd || IsReplicated(innerd->distributionType)) &&
-		(!outerd || IsReplicated(outerd->distributionType)))
+	if ((!innerd || IsLocatorReplicated(innerd->distributionType)) &&
+		(!outerd || IsLocatorReplicated(outerd->distributionType)))
 	{
 		/* Determine common nodes */
 		Bitmapset *common;
@@ -713,7 +716,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 	 * nullable data nodes will produce joined rows with NULLs for cases when
 	 * matching row exists, but on other data node.
 	 */
-	if ((!innerd || IsReplicated(innerd->distributionType)) &&
+	if ((!innerd || IsLocatorReplicated(innerd->distributionType)) &&
 			(pathnode->jointype == JOIN_INNER ||
 			 pathnode->jointype == JOIN_LEFT ||
 			 pathnode->jointype == JOIN_SEMI ||
@@ -741,7 +744,7 @@ set_joinpath_distribution(PlannerInfo *root, JoinPath *pathnode)
 	 * nullable data nodes will produce joined rows with NULLs for cases when
 	 * matching row exists, but on other data node.
 	 */
-	if ((!outerd || IsReplicated(outerd->distributionType)) &&
+	if ((!outerd || IsLocatorReplicated(outerd->distributionType)) &&
 			(pathnode->jointype == JOIN_INNER ||
 			 pathnode->jointype == JOIN_RIGHT))
 	{
@@ -923,10 +926,11 @@ not_allowed_join:
 	 */
 
 	/* These join types allow replicated inner */
-	if (pathnode->jointype == JOIN_INNER ||
-			pathnode->jointype == JOIN_LEFT ||
-			pathnode->jointype == JOIN_SEMI ||
-			pathnode->jointype == JOIN_ANTI)
+	if (outerd &&
+			(pathnode->jointype == JOIN_INNER ||
+			 pathnode->jointype == JOIN_LEFT ||
+			 pathnode->jointype == JOIN_SEMI ||
+			 pathnode->jointype == JOIN_ANTI))
 	{
 		/*
 		 * Since we discard all alternate pathes except one it is OK if all they
@@ -950,8 +954,9 @@ not_allowed_join:
 	}
 
 	/* These join types allow replicated outer */
-	if (pathnode->jointype == JOIN_INNER ||
-			pathnode->jointype == JOIN_RIGHT)
+	if (innerd &&
+			(pathnode->jointype == JOIN_INNER ||
+			 pathnode->jointype == JOIN_RIGHT))
 	{
 		/*
 		 * Since we discard all alternate pathes except one it is OK if all they
@@ -1020,7 +1025,7 @@ not_allowed_join:
 					 * hash function (for now last is true if data types of the
 					 * expressions are the same.
 					 */
-					if (leftType != rightType && !IsHashDistributable(leftType))
+					if (leftType != rightType && !IsTypeHashDistributable(leftType))
 						continue;
 
 					/*
@@ -1243,17 +1248,22 @@ not_allowed_join:
      * larger join, it will be handled as replicated.
 	 * To do that leave join distribution NULL and place a RemoteSubPath node on
 	 * top of each subpath to provide access to joined result sets.
+	 * Do not redistribute pathes that already have NULL distribution, this is
+	 * possible if performing outer join on a coordinator and a datanode
+	 * relations.
 	 */
-	pathnode->innerjoinpath = redistribute_path(pathnode->innerjoinpath,
-												LOCATOR_TYPE_NONE,
-												NULL,
-												NULL,
-												NULL);
-	pathnode->outerjoinpath = redistribute_path(pathnode->outerjoinpath,
-												LOCATOR_TYPE_NONE,
-												NULL,
-												NULL,
-												NULL);
+	if (innerd)
+		pathnode->innerjoinpath = redistribute_path(pathnode->innerjoinpath,
+													LOCATOR_TYPE_NONE,
+													NULL,
+													NULL,
+													NULL);
+	if (outerd)
+		pathnode->outerjoinpath = redistribute_path(pathnode->outerjoinpath,
+													LOCATOR_TYPE_NONE,
+													NULL,
+													NULL,
+													NULL);
 	return alternate;
 }
 #endif
@@ -1697,7 +1707,7 @@ create_merge_append_path(PlannerInfo *root,
 	 * TODO implement check of the second condition (distribution key is the
 	 * first pathkey)
 	 */
-	if (distribution == NULL || IsReplicated(distribution->distributionType))
+	if (distribution == NULL || IsLocatorReplicated(distribution->distributionType))
 	{
 		/*
 		 * Check remaining subpaths, if all distributions equal to the first set
@@ -2065,7 +2075,7 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	 * distribution expression.
 	 */
 	if (subpath->distribution &&
-		!IsReplicated(subpath->distribution->distributionType))
+		!IsLocatorReplicated(subpath->distribution->distributionType))
 	{
 		/* Punt if no distribution key */
 		if (subpath->distribution->distributionExpr == NULL)

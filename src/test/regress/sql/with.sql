@@ -75,7 +75,7 @@ SELECT n, n IS OF (text) as is_text FROM t ORDER BY n;
 
 CREATE TEMP TABLE department (
 	id INTEGER PRIMARY KEY,  -- department ID
-	parent_department INTEGER REFERENCES department, -- upper department ID
+	parent_department INTEGER ,
 	name TEXT -- department name
 );
 
@@ -179,15 +179,15 @@ SELECT pg_get_viewdef('vsubdepartment'::regclass);
 SELECT pg_get_viewdef('vsubdepartment'::regclass, true);
 
 -- corner case in which sub-WITH gets initialized first
-with recursive q as (
+select * from (with recursive q as (
       (select * from department order by id)
     union all
       (with x as (select * from q)
        select * from x)
     )
-select * from q limit 24;
+select * from q limit 24) rel_alias order by 1, 2, 3;
 
-with recursive q as (
+select * from (with recursive q as (
       (select * from department order by id)
     union all
       (with recursive x as (
@@ -197,7 +197,7 @@ with recursive q as (
         )
        select * from x)
     )
-select * from q limit 32;
+select * from q limit 32) rel_alias order by 1, 2, 3;
 
 -- recursive term has sub-UNION
 WITH RECURSIVE t(i,j) AS (
@@ -214,7 +214,7 @@ WITH RECURSIVE t(i,j) AS (
 --
 CREATE TEMPORARY TABLE tree(
     id INTEGER PRIMARY KEY,
-    parent_id INTEGER REFERENCES tree(id)
+    parent_id INTEGER 
 );
 
 INSERT INTO tree
@@ -351,14 +351,14 @@ WITH t AS (
 INSERT INTO y
 SELECT a+20 FROM t RETURNING *;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 WITH t AS (
 	SELECT a FROM y
 )
 UPDATE y SET a = y.a-10 FROM t WHERE y.a > 20 AND t.a = y.a RETURNING y.a;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 WITH RECURSIVE t(a) AS (
 	SELECT 11
@@ -367,7 +367,7 @@ WITH RECURSIVE t(a) AS (
 )
 DELETE FROM y USING t WHERE t.a = y.a RETURNING y.a;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 DROP TABLE y;
 
@@ -561,7 +561,7 @@ WITH t AS (
 )
 SELECT * FROM t;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 -- UPDATE ... RETURNING
 WITH t AS (
@@ -571,7 +571,7 @@ WITH t AS (
 )
 SELECT * FROM t;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 -- DELETE ... RETURNING
 WITH t AS (
@@ -581,7 +581,7 @@ WITH t AS (
 )
 SELECT * FROM t;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 -- forward reference
 WITH RECURSIVE t AS (
@@ -595,7 +595,7 @@ SELECT * FROM t
 UNION ALL
 SELECT * FROM t2;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 -- unconditional DO INSTEAD rule
 CREATE RULE y_rule AS ON DELETE TO y DO INSTEAD
@@ -606,7 +606,7 @@ WITH t AS (
 )
 SELECT * FROM t;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 DROP RULE y_rule ON y;
 
@@ -614,12 +614,12 @@ DROP RULE y_rule ON y;
 CREATE TEMP TABLE bug6051 AS
   select i from generate_series(1,3) as t(i);
 
-SELECT * FROM bug6051;
+SELECT * FROM bug6051 ORDER BY 1;
 
 WITH t1 AS ( DELETE FROM bug6051 RETURNING * )
 INSERT INTO bug6051 SELECT * FROM t1;
 
-SELECT * FROM bug6051;
+SELECT * FROM bug6051 ORDER BY 1;
 
 CREATE TEMP TABLE bug6051_2 (i int);
 
@@ -630,7 +630,7 @@ CREATE RULE bug6051_ins AS ON INSERT TO bug6051 DO INSTEAD
 WITH t1 AS ( DELETE FROM bug6051 RETURNING * )
 INSERT INTO bug6051 SELECT * FROM t1;
 
-SELECT * FROM bug6051;
+SELECT * FROM bug6051 ORDER BY 1;
 SELECT * FROM bug6051_2;
 
 -- a truly recursive CTE in the same list
@@ -644,7 +644,7 @@ WITH RECURSIVE t(a) AS (
 )
 SELECT * FROM t2 JOIN y USING (a) ORDER BY a;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 -- data-modifying WITH in a modifying statement
 WITH t AS (
@@ -654,7 +654,7 @@ WITH t AS (
 )
 INSERT INTO y SELECT -a FROM t RETURNING *;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 -- check that WITH query is run to completion even if outer query isn't
 WITH t AS (
@@ -662,7 +662,7 @@ WITH t AS (
 )
 SELECT * FROM t LIMIT 10;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 -- check that run to completion happens in proper ordering
 
@@ -677,7 +677,7 @@ WITH RECURSIVE t1 AS (
 )
 SELECT 1;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 SELECT * FROM yy;
 
 WITH RECURSIVE t1 AS (
@@ -687,8 +687,8 @@ WITH RECURSIVE t1 AS (
 )
 SELECT 1;
 
-SELECT * FROM y;
-SELECT * FROM yy;
+SELECT * FROM y order by 1;
+SELECT * FROM yy order by 1;
 
 -- triggers
 
@@ -715,7 +715,7 @@ WITH t AS (
 )
 SELECT * FROM t;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 DROP TRIGGER y_trig ON y;
 
@@ -732,7 +732,7 @@ WITH t AS (
 )
 SELECT * FROM t LIMIT 1;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 DROP TRIGGER y_trig ON y;
 
@@ -756,7 +756,7 @@ WITH t AS (
 )
 SELECT * FROM t;
 
-SELECT * FROM y;
+SELECT * FROM y order by 1;
 
 DROP TRIGGER y_trig ON y;
 DROP FUNCTION y_trigger();

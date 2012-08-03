@@ -834,7 +834,7 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 		ResetLatch(&sqsync->sqs_consumer_sync[consumerIdx].cs_latch);
 		LWLockRelease(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock);
 		/* Wait for notification about available info */
-		WaitLatch(&sqsync->sqs_consumer_sync[consumerIdx].cs_latch, -1);
+		WaitLatch(&sqsync->sqs_consumer_sync[consumerIdx].cs_latch, WL_LATCH_SET | WL_POSTMASTER_DEATH, -1);
 		/* got the notification, restore lock and try again */
 		LWLockAcquire(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock, LW_EXCLUSIVE);
 	}
@@ -1105,7 +1105,7 @@ SharedQueueUnBind(SharedQueue squeue)
 			break;
 		elog(DEBUG1, "Wait while %d squeue readers finishing", c_count);
 		/* wait for a notification */
-		WaitLatch(&sqsync->sqs_producer_latch, -1);
+		WaitLatch(&sqsync->sqs_producer_latch, WL_LATCH_SET | WL_POSTMASTER_DEATH, -1);
 		/* got notification, continue loop */
 	}
 #ifdef SQUEUE_STAT
@@ -1206,7 +1206,7 @@ SharedQueueRelease(const char *sqname)
 				{
 					elog(DEBUG1, "Wait while %d squeue readers finishing", ncons);
 					/* wait for a notification */
-					WaitLatch(&sqsync->sqs_producer_latch, -1);
+					WaitLatch(&sqsync->sqs_producer_latch, WL_LATCH_SET | WL_POSTMASTER_DEATH, -1);
 				}
 				else
 					break;

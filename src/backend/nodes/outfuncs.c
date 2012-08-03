@@ -708,6 +708,8 @@ _outRemoteQuery(StringInfo str, RemoteQuery *node)
 #ifndef XCP
 	WRITE_BOOL_FIELD(is_temp);
 #endif
+	WRITE_BOOL_FIELD(has_row_marks);
+	WRITE_BOOL_FIELD(has_ins_child_sel_parent);
 }
 
 static void
@@ -2721,6 +2723,7 @@ _outPlannerInfo(StringInfo str, PlannerInfo *node)
 #ifdef PGXC
 #ifndef XCP
 	WRITE_INT_FIELD(rs_alias_index);
+	WRITE_NODE_FIELD(xc_rowMarks);
 #endif /* XCP */
 #endif /* PGXC */
 	WRITE_INT_FIELD(wt_param_id);

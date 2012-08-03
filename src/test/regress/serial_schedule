@@ -74,9 +74,7 @@ test: select_having
 test: subselect
 test: union
 test: case
-#aggregates with join, order by are crashing server, hence commented out for
-#now. Bug ID 3284321 tracks this crash.
-#test: join
+test: join
 test: aggregates
 test: transactions
 # SELECT INTO and INSERT SELECT seem do not work properly
@@ -132,6 +130,7 @@ test: largeobject
 test: with
 test: xml
 test: stats
+test: xc_create_function
 test: xc_groupby
 test: xc_distkey
 test: xc_having
@@ -141,4 +140,8 @@ test: xc_node
 test: xc_FQS
 test: xc_FQS_join
 test: xc_misc
-
+test: xc_copy
+test: xc_for_update
+test: xc_alter_table
+test: xc_sequence
+test: xc_prepared_xacts

@@ -43,7 +43,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -166,9 +166,9 @@ static void DisplayXidCache(void);
 typedef enum
 {
 	SNAPSHOT_UNDEFINED,   /* Coordinator has not sent snapshot or not yet connected */
-	SNAPSHOT_LOCAL,       /* Coordinator has instructed data node to build up snapshot from the local procarray */
+	SNAPSHOT_LOCAL,       /* Coordinator has instructed Datanode to build up snapshot from the local procarray */
 	SNAPSHOT_COORDINATOR, /* Coordinator has sent snapshot data */
-	SNAPSHOT_DIRECT       /* Data Node obtained directly from GTM */
+	SNAPSHOT_DIRECT       /* Datanode obtained directly from GTM */
 } SnapshotSource;
 
 static bool GetSnapshotDataDataNode(Snapshot snapshot);
@@ -430,7 +430,7 @@ ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 #ifdef PGXC
 		/*
 		 * Remove this assertion. We have seen this failing because a ROLLBACK
-		 * statement may get canceled by a coordinator, leading to recursive
+		 * statement may get canceled by a Coordinator, leading to recursive
 		 * abort of a transaction. This must be a PostgreSQL issue, highlighted
 		 * by XC. See thread on hackers with subject "Canceling ROLLBACK
 		 * statement"
@@ -1250,12 +1250,15 @@ GetSnapshotData(Snapshot snapshot)
 
 #ifdef PGXC  /* PGXC_DATANODE */
 	/*
- 	 * The typical case is that the coordinator passes down the snapshot to the
- 	 * data nodes to use, while it itselfs obtains them from GTM.
- 	 * The data nodes may however connect directly to GTM themselves to obtain
- 	 * XID and snapshot information for autovacuum worker threads.
+ 	 * The typical case is that the local Coordinator passes down the snapshot to the
+ 	 * remote nodes to use, while it itself obtains it from GTM. Autovacuum processes
+	 * need however to connect directly to GTM themselves to obtain XID and snapshot
+	 * information for autovacuum worker threads.
+	 * A vacuum analyze uses a special function to get a transaction ID and signal
+	 * GTM not to include this transaction ID in snapshot.
+	 * A vacuum worker starts as a normal transaction would.
  	 */
-	if (IS_PGXC_DATANODE || IsConnFromCoord())
+	if (IS_PGXC_DATANODE || IsConnFromCoord() || IsAutoVacuumWorkerProcess())
 	{
 		if (GetSnapshotDataDataNode(snapshot))
 			return snapshot;
@@ -2445,7 +2448,7 @@ DisplayXidCache(void)
 
 #ifdef PGXC
 /*
- * Store snapshot data received from the coordinator
+ * Store snapshot data received from the Coordinator
  */
 void
 SetGlobalSnapshotData(int xmin, int xmax, int xcnt, int *xip)
@@ -2461,7 +2464,7 @@ SetGlobalSnapshotData(int xmin, int xmax, int xcnt, int *xip)
 }
 
 /*
- * Force datanode to use local snapshot data
+ * Force Datanode to use local snapshot data
  */
 void
 UnsetGlobalSnapshotData(void)
@@ -2477,16 +2480,15 @@ UnsetGlobalSnapshotData(void)
 }
 
 /*
- * Get snapshot data for data node
- * This is usually passed down from the coordinator
+ * Get snapshot data for Datanode
+ * This is usually passed down from the Coordinator
  *
  * returns whether or not to return immediately with snapshot
  */
 static bool
 GetSnapshotDataDataNode(Snapshot snapshot)
 {
-	Assert(IS_PGXC_DATANODE || IsConnFromCoord());
-
+	Assert(IS_PGXC_DATANODE || IsConnFromCoord() || IsAutoVacuumWorkerProcess());
 
 	if (IsAutoVacuumWorkerProcess() || GetForceXidFromGTM())
 	{
@@ -2674,8 +2676,8 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 }
 
 /*
- * Get snapshot data for coordinator
- * It will later be passed down to data nodes
+ * Get snapshot data for Coordinator
+ * It will later be passed down to Datanodes
  *
  * returns whether or not to return immediately with snapshot
  */

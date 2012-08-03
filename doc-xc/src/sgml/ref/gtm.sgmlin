@@ -42,12 +42,12 @@ PostgreSQL documentation
   <para>
    You must provide gtm configuration
    file <filename>gtm.conf</filename> placed at gtm working directory
-   as specified by <literal>-D</literal> command line option.  The
-   configuration file specifies gtm running envinment and resources.
+   as specified by <literal>-D</literal> command line option. The
+   configuration file specifies gtm running environment and resources.
   </para>
 
   <para>
-   Some of the parameters specified in the control file can be overriden by 
+   Some of the parameters specified in the control file can be overridden by 
    command line options.
   </para>
 
@@ -59,7 +59,7 @@ PostgreSQL documentation
 &xconly
   <para>
    <literal>GTM</literal> configuration parameters are specified in the configuration file 
-   <filename>gtm.conf</filename> placed in the working directory
+   <filename>gtm.conf</filename><indexterm><primary>gtm.conf</></> placed in the working directory
    specified as <literal>-D</literal> option
    of <application>gtm</application> command line option as described
    in the next section.
@@ -247,7 +247,7 @@ PostgreSQL documentation
       Valied values are <literal>act</literal> or <literal>standby</literal>.
       <literal>act</literal> means to start up
       this <application>gtm</application> as usual so
-      that <application>gtm</application> clients (coordinators, data
+      that <application>gtm</application> clients (Coordinators, data
       nodes or gtm-proxies) can connect for transaction
       management.  <literal>standby</literal> means
       this <application>gtm</application> starts up as a backup
@@ -348,7 +348,7 @@ PostgreSQL documentation
        To find the precise value to start with, you should
        run <application>pg_controldata</application> to
        find <literal>Latest checkpoint's NextXID</literal> of all the
-       coordinators and datanodes and choose the value larger than or
+       Coordinators and Datanodes and choose the value larger than or
        equals to the maximum value found.
       </para>
      </listitem>

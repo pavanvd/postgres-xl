@@ -100,10 +100,10 @@ isViewOnTempTable_walker(Node *node, void *context)
  *---------------------------------------------------------------------
  */
 static Oid
-DefineVirtualRelation(const RangeVar *relation, List *tlist, bool replace)
+DefineVirtualRelation(const RangeVar *relation, List *tlist, bool replace,
+					  Oid namespaceId)
 {
-	Oid			viewOid,
-				namespaceId;
+	Oid			viewOid;
 	CreateStmt *createStmt = makeNode(CreateStmt);
 	List	   *attrList;
 	ListCell   *t;
@@ -163,7 +163,6 @@ DefineVirtualRelation(const RangeVar *relation, List *tlist, bool replace)
 	/*
 	 * Check to see if we want to replace an existing view.
 	 */
-	namespaceId = RangeVarGetCreationNamespace(relation);
 	viewOid = get_relname_relid(relation->relname, namespaceId);
 
 	if (OidIsValid(viewOid) && replace)
@@ -420,6 +419,7 @@ DefineView(ViewStmt *stmt, const char *queryString)
 {
 	Query	   *viewParse;
 	Oid			viewOid;
+	Oid			namespaceId;
 	RangeVar   *view;
 
 	/*
@@ -483,13 +483,19 @@ DefineView(ViewStmt *stmt, const char *queryString)
 							"names than columns")));
 	}
 
+	/* Unlogged views are not sensible. */
+	if (stmt->view->relpersistence == RELPERSISTENCE_UNLOGGED)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+		errmsg("views cannot be unlogged because they do not have storage")));
+
 	/*
 	 * If the user didn't explicitly ask for a temporary view, check whether
 	 * we need one implicitly.	We allow TEMP to be inserted automatically as
 	 * long as the CREATE command is consistent with that --- no explicit
 	 * schema name.
 	 */
-	view = stmt->view;
+	view = copyObject(stmt->view);  /* don't corrupt original command */
 	if (view->relpersistence == RELPERSISTENCE_PERMANENT
 		&& isViewOnTempTable(viewParse))
 	{
@@ -515,11 +521,9 @@ DefineView(ViewStmt *stmt, const char *queryString)
 #endif
 #endif
 
-	/* Unlogged views are not sensible. */
-	if (view->relpersistence == RELPERSISTENCE_UNLOGGED)
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-		errmsg("views cannot be unlogged because they do not have storage")));
+	/* Might also need to make it temporary if placed in temp schema. */
+	namespaceId = RangeVarGetCreationNamespace(view);
+	RangeVarAdjustRelationPersistence(view, namespaceId);
 
 	/*
 	 * Create the view relation
@@ -528,7 +532,7 @@ DefineView(ViewStmt *stmt, const char *queryString)
 	 * aborted.
 	 */
 	viewOid = DefineVirtualRelation(view, viewParse->targetList,
-									stmt->replace);
+									stmt->replace, namespaceId);
 
 	/*
 	 * The relation we have just created is not visible to any other commands

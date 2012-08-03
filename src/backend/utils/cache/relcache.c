@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -1913,7 +1913,7 @@ RelationClearRelation(Relation relation, bool rebuild)
 		 * on next access.	Meanwhile it's not any less valid than it was
 		 * before, so any code that might expect to continue accessing it
 		 * isn't hurt by the rebuild failure.  (Consider for example a
-		 * subtransaction that ALTERs a table and then gets cancelled partway
+		 * subtransaction that ALTERs a table and then gets canceled partway
 		 * through the cache entry rebuild.  The outer transaction should
 		 * still see the not-modified cache entry as valid.)  The worst
 		 * consequence of an error is leaking the necessarily-unreferenced new
@@ -3271,6 +3271,7 @@ CheckConstraintFetch(Relation relation)
 			elog(ERROR, "unexpected constraint record found for rel %s",
 				 RelationGetRelationName(relation));
 
+		check[found].ccvalid = conform->convalidated;
 		check[found].ccname = MemoryContextStrdup(CacheMemoryContext,
 												  NameStr(conform->conname));
 

@@ -43,7 +43,7 @@ create unique index WSlot_name on WSlot using btree (slotname bpchar_ops);
 create table PField (
     name	text,
     comment	text
-);
+) distribute by replication;
 
 create unique index PField_name on PField using btree (name text_ops);
 
@@ -1400,6 +1400,7 @@ update PSlot set slotlink = 'HS.base.hub1.1' where slotname = 'PS.base.b2';
 --
 -- Now we take a look at the patchfield
 --
+-- PGXCTODO: This is failing due to issue 3522907, complicated SELECT queries in plpgsql functions
 select * from PField_v1 where pfname = 'PF0_1' order by slotname;
 select * from PField_v1 where pfname = 'PF0_2' order by slotname;
 
@@ -1442,7 +1443,7 @@ SELECT recursion_test(4,3);
 --
 -- Test the FOUND magic variable
 --
-CREATE TABLE found_test_tbl (a int);
+CREATE TABLE found_test_tbl (a int) distribute by round robin;
 
 create function test_found()
   returns boolean as '
@@ -1738,9 +1739,11 @@ begin
 	return x;
 end$$ language plpgsql;
 
+-- PGXCTODO: This is failing due to issue 3522907, complicated SELECT queries in plpgsql functions
 select trap_matching_test(50);
 select trap_matching_test(0);
 select trap_matching_test(100000);
+-- PGXCTODO: This is failing due to issue 3522907, complicated SELECT queries in plpgsql functions
 select trap_matching_test(1);
 
 create temp table foo (f1 int);
@@ -1942,6 +1945,7 @@ begin
 end
 $$ language plpgsql;
 
+-- PGXCTODO: This is failing due to issue 3522907, complicated SELECT queries in plpgsql functions
 select refcursor_test2(20000, 20000) as "Should be false",
        refcursor_test2(20, 20) as "Should be true";
 
@@ -2522,7 +2526,7 @@ declare
   c refcursor;
   x integer;
 begin
-  open c scroll for execute 'select f1 from int4_tbl';
+  open c scroll for execute 'select f1 from int4_tbl order by 1';
   fetch last from c into x;
   while found loop
     return next x;
@@ -2532,14 +2536,14 @@ begin
 end;
 $$ language plpgsql;
 
-select * from sc_test() order by 1;
+select * from sc_test();
 
 create or replace function sc_test() returns setof integer as $$
 declare
   c refcursor;
   x integer;
 begin
-  open c scroll for execute 'select f1 from int4_tbl';
+  open c scroll for execute 'select f1 from int4_tbl order by 1';
   fetch last from c into x;
   while found loop
     return next x;
@@ -2589,7 +2593,7 @@ begin
 end;
 $$ language plpgsql;
 
-select * from sc_test();
+select * from sc_test() order by 1;
 
 drop function sc_test();
 
@@ -2754,7 +2758,7 @@ $$ language plpgsql;
 
 select forc01();
 
-select * from forc_test;
+select * from forc_test order by 1;
 
 drop function forc01();
 
@@ -2797,19 +2801,19 @@ begin
 end;
 $$ language plpgsql;
 
-select * from returnqueryf();
+select * from returnqueryf() order by 1,2,3,4;
 
 alter table tabwithcols drop column b;
 
-select * from returnqueryf();
+select * from returnqueryf() order by 1,2,3;
 
 alter table tabwithcols drop column d;
 
-select * from returnqueryf();
+select * from returnqueryf() order by 1,2;
 
 alter table tabwithcols add column d int;
 
-select * from returnqueryf();
+select * from returnqueryf() order by 1,2,3;
 
 drop function returnqueryf();
 drop table tabwithcols;
@@ -3331,7 +3335,7 @@ begin
 end;
 $$ language plpgsql;
 
-select * from conflict_test();
+select * from conflict_test() order by 1,2;
 
 create or replace function conflict_test() returns setof int8_tbl as $$
 #variable_conflict use_variable
@@ -3344,7 +3348,8 @@ begin
 end;
 $$ language plpgsql;
 
-select * from conflict_test();
+-- PGXCTODO: This is failing due to issue 3522907, complicated SELECT queries in plpgsql functions
+select * from conflict_test() order by 1,2;
 
 create or replace function conflict_test() returns setof int8_tbl as $$
 #variable_conflict use_column
@@ -3357,7 +3362,7 @@ begin
 end;
 $$ language plpgsql;
 
-select * from conflict_test();
+select * from conflict_test() order by 1,2;
 
 drop function conflict_test();
 

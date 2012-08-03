@@ -35,6 +35,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/rel.h"
 #include "utils/syscache.h"
 #ifdef PGXC
 #include "pgxc/execRemote.h"
@@ -309,6 +310,7 @@ ProcedureCreate(const char *procedureName,
 	values[Anum_pg_proc_procost - 1] = Float4GetDatum(procost);
 	values[Anum_pg_proc_prorows - 1] = Float4GetDatum(prorows);
 	values[Anum_pg_proc_provariadic - 1] = ObjectIdGetDatum(variadicType);
+	values[Anum_pg_proc_protransform - 1] = ObjectIdGetDatum(InvalidOid);
 	values[Anum_pg_proc_proisagg - 1] = BoolGetDatum(isAgg);
 	values[Anum_pg_proc_proiswindow - 1] = BoolGetDatum(isWindowFunc);
 	values[Anum_pg_proc_prosecdef - 1] = BoolGetDatum(security_definer);
@@ -857,6 +859,18 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 				Node	   *parsetree = (Node *) lfirst(lc);
 				List	   *querytree_sublist;
 
+#ifdef PGXC
+				/* Block CTAS in SQL functions */
+				if (IsA(parsetree, SelectStmt))
+				{
+					SelectStmt *stmt = (SelectStmt *) parsetree;
+					if (stmt->intoClause)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								errmsg("In XC, SQL functions cannot contain utility statements")));
+				}
+#endif
+
 				querytree_sublist = pg_analyze_and_rewrite_params(parsetree,
 																  prosrc,
 									   (ParserSetupHook) sql_fn_parser_setup,
@@ -867,6 +881,11 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 				/* Check if the list of queries contains temporary objects */
 				if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 				{
+					if (pgxc_query_contains_utility(querytree_sublist))
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								errmsg("In XC, SQL functions cannot contain utility statements")));
+
 					if (pgxc_query_contains_temp_tables(querytree_sublist))
 						ExecSetTempObjectIncluded();
 				}

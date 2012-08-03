@@ -3,7 +3,7 @@
  * pg_ctl --- start/stops/restarts the PostgreSQL server
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * src/bin/pg_ctl/pg_ctl.c
  *
@@ -1585,7 +1585,7 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_ser
 		 * NT4 doesn't have CreateRestrictedToken, so just call ordinary
 		 * CreateProcess
 		 */
-		write_stderr("WARNING: cannot create restricted tokens on this platform\n");
+		write_stderr(_("%s: WARNING: cannot create restricted tokens on this platform\n"), progname);
 		if (Advapi32Handle != NULL)
 			FreeLibrary(Advapi32Handle);
 		return CreateProcess(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, processInfo);
@@ -1594,7 +1594,7 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_ser
 	/* Open the current token to use as a base for the restricted one */
 	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &origToken))
 	{
-		write_stderr("Failed to open process token: %lu\n", GetLastError());
+		write_stderr(_("%s: could not open process token: %lu\n"), progname, GetLastError());
 		return 0;
 	}
 
@@ -1607,7 +1607,7 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_ser
 	SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_POWER_USERS, 0, 0, 0, 0, 0,
 								  0, &dropSids[1].Sid))
 	{
-		write_stderr("Failed to allocate SIDs: %lu\n", GetLastError());
+		write_stderr(_("%s: could not allocate SIDs: %lu\n"), progname, GetLastError());
 		return 0;
 	}
 
@@ -1626,7 +1626,7 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_ser
 
 	if (!b)
 	{
-		write_stderr("Failed to create restricted token: %lu\n", GetLastError());
+		write_stderr(_("%s: could not create restricted token: %lu\n"), progname, GetLastError());
 		return 0;
 	}
 
@@ -1664,7 +1664,7 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_ser
 			 * Log error if we can't get version, or if we're on WinXP/2003 or
 			 * newer
 			 */
-			write_stderr("WARNING: could not locate all job object functions in system API\n");
+			write_stderr(_("%s: WARNING: could not locate all job object functions in system API\n"), progname);
 	}
 	else
 	{
@@ -1785,11 +1785,11 @@ do_help(void)
 	printf(_("  -D, --pgdata DATADIR   location of the database storage area\n"));
 	printf(_("  -s, --silent           only print errors, no informational messages\n"));
 	printf(_("  -t SECS                seconds to wait when using -w option\n"));
+	printf(_("  -w                     wait until operation completes\n"));
+	printf(_("  -W                     do not wait until operation completes\n"));
 #ifdef PGXC
 	printf(_("  -Z NODE-TYPE           can be \"coordinator\" or \"datanode\" (Postgres-XC)\n"));
 #endif
-	printf(_("  -w                     wait until operation completes\n"));
-	printf(_("  -W                     do not wait until operation completes\n"));
 	printf(_("  --help                 show this help, then exit\n"));
 	printf(_("  --version              output version information, then exit\n"));
 	printf(_("(The default is to wait for shutdown, but not for start or restart.)\n\n"));
@@ -1828,7 +1828,11 @@ do_help(void)
 	printf(_("  demand     start service on demand\n"));
 #endif
 
+#ifdef PGXC
+	printf(_("\nReport bugs to <postgres-xc-bugs@lists.sourceforge.net>.\n"));
+#else
 	printf(_("\nReport bugs to <pgsql-bugs@postgresql.org>.\n"));
+#endif
 }
 
 
@@ -2155,11 +2159,11 @@ main(int argc, char **argv)
 	}
 
 #ifdef PGXC
-	/* stop command does not need to have coordinator or datanode options */
+	/* stop command does not need to have Coordinator or Datanode options */
 	if ((ctl_command == START_COMMAND || ctl_command == RESTART_COMMAND)
 		&& !pgxcCommand)
 	{
-		write_stderr(_("%s: coordinator or datanode option not specified (-Z)\n"),
+		write_stderr(_("%s: Coordinator or Datanode option not specified (-Z)\n"),
 					progname);
 		do_advice();
 		exit(1);

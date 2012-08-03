@@ -5,7 +5,7 @@
  * Utilities for Postgres-XC pooler
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * IDENTIFICATION
  *    $$
@@ -50,7 +50,7 @@ pgxc_pool_check(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to manage pooler"))));
 
-	/* A datanode has no pooler active, so do not bother about that */
+	/* A Datanode has no pooler active, so do not bother about that */
 	if (IS_PGXC_DATANODE)
 		PG_RETURN_BOOL(true);
 
@@ -121,7 +121,7 @@ pgxc_pool_reload(PG_FUNCTION_ARGS)
 	if (superuser())
 		ReloadConnInfoOnBackends();
 #else
-	/* A datanode has no pooler active, so do not bother about that */
+	/* A Datanode has no pooler active, so do not bother about that */
 	if (IS_PGXC_DATANODE)
 		PG_RETURN_BOOL(true);
 
@@ -226,7 +226,6 @@ CleanConnection(CleanConnStmt *stmt)
 	char	   *username = stmt->username;
 	bool		is_coord = stmt->is_coord;
 	bool		is_force = stmt->is_force;
-	int			max_node_number = 0;
 
 	/* Only a DB administrator can clean pooler connections */
 	if (!superuser())
@@ -308,12 +307,6 @@ CleanConnection(CleanConnStmt *stmt)
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("All Transactions have not been aborted")));
 	}
-
-	/* Check node list */
-	if (stmt->nodes && is_coord)
-		max_node_number = NumCoords;
-	else
-		max_node_number = NumDataNodes;
 
 	foreach(nodelist_item, stmt->nodes)
 	{

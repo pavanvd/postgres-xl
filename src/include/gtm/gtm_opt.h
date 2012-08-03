@@ -4,7 +4,7 @@
  * External declarations pertaining to gtm/main/gtm_opt.c, gtm/proxy/gtm_proxy_opt.c and
  * gtm/common/gtm_opt_file.l
  *
- * Portions Copyright (c) 2011, Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2011, Postgres-XC Development Group
  * Portions Copyright (c) 2000-2011, PostgreSQL Global Development Group
  * Written by Peter Eisentraut <peter_e@gmx.net>.
  * Modified by Koichi Suzuki <koichi.szk@gmail.com>
@@ -332,12 +332,7 @@ const char *const config_type_names[] =\
 #define GTM_OPTNAME_ACTIVE_PORT 		"active_port"
 #define GTM_OPTNAME_CONFIG_FILE			"config_file"
 #define GTM_OPTNAME_DATA_DIR			"data_dir"
-#define GTM_OPTNAME_ERR_WAIT_COUNT		"err_wait_count"
-#define GTM_OPTNAME_ERR_WAIT_INTERVAL	"err_wait_interval"
-#define GTM_OPTNAME_ERR_WAIT_IDLE		"err_wait_idle"
 #define GTM_OPTNAME_ERROR_REPORTER		"error_reporter"
-#define GTM_OPTNAME_CONNECT_RETRY_COUNT "gtm_connect_retry_count"
-#define GTM_OPTNAME_CONNECT_RETRY_IDLE  "gtm_connect_retry_idle"
 #define GTM_OPTNAME_CONNECT_RETRY_INTERVAL "gtm_connect_retry_interval"
 #define GTM_OPTNAME_GTM_HOST			"gtm_host"
 #define GTM_OPTNAME_GTM_PORT			"gtm_port"

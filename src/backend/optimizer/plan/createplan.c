@@ -44,6 +44,7 @@
 #include "pgxc/postgresql_fdw.h"
 #include "access/sysattr.h"
 #include "utils/builtins.h"
+#include "utils/rel.h"
 #include "utils/syscache.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -103,7 +104,9 @@ static WorkTableScan *create_worktablescan_plan(PlannerInfo *root, Path *best_pa
 						  List *tlist, List *scan_clauses);
 #ifdef PGXC
 #ifndef XCP
-static RemoteQuery *create_remotequery_plan(PlannerInfo *root, Path *best_path,
+static RowMarkClause *mk_row_mark_clause(PlanRowMark *prm);
+static bool compare_alias(Alias *a1, Alias *a2);
+static Plan *create_remotequery_plan(PlannerInfo *root, Path *best_path,
 						  List *tlist, List *scan_clauses);
 static Plan *create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path,
 					Plan *parent, Plan *outer_plan, Plan *inner_plan);
@@ -121,8 +124,10 @@ static List *pgxc_process_having_clause(PlannerInfo *root, List *remote_tlist,
 												Node *havingQual, List **local_qual,
 												List **remote_qual, bool *reduce_plan);
 static Expr *pgxc_set_en_expr(Oid tableoid, Index resultRelationIndex);
-#endif /* PGXC */
+static int pgxc_count_rowmarks_entries(List *rowMarks);
+static Oid *pgxc_build_rowmark_entries(List *rowMarks, List *rtable, Oid *types, int prepparams, int totparams);
 #endif /* XCP */
+#endif /* PGXC */
 static ForeignScan *create_foreignscan_plan(PlannerInfo *root, ForeignPath *best_path,
 						List *tlist, List *scan_clauses);
 static NestLoop *create_nestloop_plan(PlannerInfo *root, NestPath *best_path,
@@ -217,7 +222,7 @@ static Material *make_material(Plan *lefttree);
 
 #ifdef PGXC
 #ifndef XCP
-static void findReferencedVars(List *parent_vars, Plan *plan, List **out_tlist, Relids *out_relids);
+static void findReferencedVars(List *parent_vars, RemoteQuery *plan, List **out_tlist, Relids *out_relids);
 static void create_remote_clause_expr(PlannerInfo *root, Plan *parent, StringInfo clauses,
 	  List *qual, RemoteQuery *scan);
 static void create_remote_expr(PlannerInfo *root, Plan *parent, StringInfo expr,
@@ -445,6 +450,8 @@ create_scan_plan(PlannerInfo *root, Path *best_path)
 #ifdef PGXC
 #ifndef XCP
 		case T_RemoteQuery:
+			/* For RemoteQuery path always use relation tlist */
+			tlist = build_relation_tlist(rel);
 			plan = (Plan *) create_remotequery_plan(root,
 													  best_path,
 													  tlist,
@@ -769,9 +776,9 @@ static Plan *
 create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path, Plan *parent, Plan *outer_plan, Plan *inner_plan)
 {
 	NestLoop   *nest_parent;
-	RemoteQuery	*outer = NULL;
-	RemoteQuery	*inner = NULL;
 	ExecNodes	*join_exec_nodes;
+	RemoteQuery *outer;
+	RemoteQuery *inner;
 
 	if (!enable_remotejoin)
 		return parent;
@@ -794,22 +801,14 @@ create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path, Plan *parent, Pla
 	else
 		nest_parent = (NestLoop *)parent;
 
-	/*
-	 * Now RemoteQuery subnode is behind Matherial but this may be changed later
-	 */
-	if (IsA(outer_plan, Material) && IsA(outer_plan->lefttree, RemoteQuery))
-		outer = (RemoteQuery *) outer_plan->lefttree;
-	else if (IsA(outer_plan, RemoteQuery))
-		outer = (RemoteQuery *) outer_plan;
+	if (!IsA(outer_plan, RemoteQuery) || !IsA(inner_plan, RemoteQuery))
+		return parent;
 
-	if (IsA(inner_plan, Material) && IsA(inner_plan->lefttree, RemoteQuery))
-		inner = (RemoteQuery *) inner_plan->lefttree;
-	else if (IsA(inner_plan, RemoteQuery))
-		inner = (RemoteQuery *) inner_plan;
-
+	outer = (RemoteQuery *)outer_plan;
+	inner = (RemoteQuery *)inner_plan;
 
 	/* check if both the nodes qualify for reduction */
-	if (outer && inner && !outer->scan.plan.qual && !inner->scan.plan.qual)
+	if (!outer->scan.plan.qual && !inner->scan.plan.qual)
 	{
 		int		i;
 		List	*rtable_list = NIL;
@@ -841,10 +840,12 @@ create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path, Plan *parent, Pla
 		 * intermediate, the children vars may or may not be referenced
 		 * multiple times in it.
 		 */
-		parent_vars = pull_var_clause((Node *)parent->targetlist, PVC_REJECT_PLACEHOLDERS);
+		parent_vars = pull_var_clause((Node *)parent->targetlist,
+									  PVC_RECURSE_AGGREGATES,
+									  PVC_RECURSE_PLACEHOLDERS);
 
-		findReferencedVars(parent_vars, outer_plan, &out_tlist, &out_relids);
-		findReferencedVars(parent_vars, inner_plan, &in_tlist, &in_relids);
+		findReferencedVars(parent_vars, outer, &out_tlist, &out_relids);
+		findReferencedVars(parent_vars, inner, &in_tlist, &in_relids);
 
 		join_exec_nodes = IsJoinReducible(inner, outer, in_relids, out_relids,
 											&(nest_parent->join),
@@ -875,7 +876,7 @@ create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path, Plan *parent, Pla
 			 * If the JOIN ON clause has a local dependency then we cannot ship
 			 * the join to the remote side at all, bail out immediately.
 			 */
-			if (!is_foreign_expr((Node *)nest_parent->join.joinqual, NULL))
+			if (!pgxc_is_expr_shippable((Expr *)nest_parent->join.joinqual, NULL))
 			{
 				elog(DEBUG1, "cannot reduce: local dependencies in the joinqual");
 				return parent;
@@ -887,7 +888,7 @@ create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path, Plan *parent, Pla
 			 * entire list. These local quals will become part of the quals
 			 * list of the reduced remote scan node down later.
 			 */
-			if (!is_foreign_expr((Node *)nest_parent->join.plan.qual, NULL))
+			if (!pgxc_is_expr_shippable((Expr *)nest_parent->join.plan.qual, NULL))
 			{
 				elog(DEBUG1, "local dependencies in the join plan qual");
 
@@ -905,7 +906,7 @@ create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path, Plan *parent, Pla
 					 * is currentof clause, so keep that information intact and
 					 * pass a dummy argument here.
 					 */
-					if (!is_foreign_expr((Node *)clause, NULL))
+					if (!pgxc_is_expr_shippable((Expr *)clause, NULL))
 						local_scan_clauses	= lappend(local_scan_clauses, clause);
 					else
 						remote_scan_clauses = lappend(remote_scan_clauses, clause);
@@ -1008,33 +1009,21 @@ create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path, Plan *parent, Pla
 			 */
 			base_tlist = add_to_flat_tlist(NIL, list_concat(out_tlist, in_tlist));
 
-			dummy_rte = makeNode(RangeTblEntry);
-			dummy_rte->rtekind = RTE_REMOTE_DUMMY;
-
-			/* use a dummy relname... */
-			dummy_rte->relname	   = "__REMOTE_JOIN_QUERY__";
-			dummy_rte->eref		   = makeAlias("__REMOTE_JOIN_QUERY__", colnames);
-			/* not sure if we need to set the below explicitly.. */
-			dummy_rte->inh			 = false;
-			dummy_rte->inFromCl		 = false;
-			dummy_rte->requiredPerms = 0;
-			dummy_rte->checkAsUser   = 0;
-			dummy_rte->selectedCols  = NULL;
-			dummy_rte->modifiedCols  = NULL;
-
 			/*
-			 * Append the dummy range table entry to the range table.
+			 * Create and append the dummy range table entry to the range table.
 			 * Note that this modifies the master copy the caller passed us, otherwise
 			 * e.g EXPLAIN VERBOSE will fail to find the rte the Vars built below refer
 			 * to.
 			 */
+			dummy_rte = make_dummy_remote_rte("__REMOTE_JOIN_QUERY__",
+											makeAlias("__REMOTE_JOIN_QUERY__", colnames));
 			root->parse->rtable = lappend(root->parse->rtable, dummy_rte);
 			dummy_rtindex = list_length(root->parse->rtable);
 
 			result_plan = &result->scan.plan;
 
 			/* Set the join targetlist to the new base_tlist */
-			result_plan->targetlist = base_tlist;
+			result_plan->targetlist = parent->targetlist;
 			result_plan->lefttree 	= NULL;
 			result_plan->righttree 	= NULL;
 			result->scan.scanrelid 	= dummy_rtindex;
@@ -1088,7 +1077,7 @@ create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path, Plan *parent, Pla
 			result_plan->plan_rows 	  = outer_plan->plan_rows;
 			result_plan->plan_width   = outer_plan->plan_width;
 
-			return (Plan *) make_material(result_plan);
+			return (Plan *)result_plan;
 		}
 	}
 
@@ -1102,7 +1091,6 @@ create_remotejoin_plan(PlannerInfo *root, JoinPath *best_path, Plan *parent, Pla
 static Alias *
 generate_remote_rte_alias(RangeTblEntry *rte, int varno, char *aliasname, int reduce_level)
 {
-	TupleDesc 	tupdesc;
 	int			maxattrs;
 	int			varattno;
 	List	   *colnames = NIL;
@@ -1112,26 +1100,31 @@ generate_remote_rte_alias(RangeTblEntry *rte, int varno, char *aliasname, int re
 	if (rte->rtekind != RTE_RELATION)
 		elog(ERROR, "called in improper context");
 
-	if (reduce_level == 0)
-		return makeAlias(aliasname, NIL);
-
 	relation = heap_open(rte->relid, AccessShareLock);
 
-	tupdesc = RelationGetDescr(relation);
 	maxattrs = RelationGetNumberOfAttributes(relation);
 
 	for (varattno = 0; varattno < maxattrs; varattno++)
 	{
-		Form_pg_attribute  att = tupdesc->attrs[varattno];
-		Value			  *attrname;
+		char *attname = get_rte_attribute_name(rte, varattno + 1);
 
-		resetStringInfo(attr);
-		appendStringInfo(attr, "%s_%d_%d_%d",
-						 NameStr(att->attname), varno, varattno + 1, reduce_level);
+		if (reduce_level == 0)
+		{
+			/*
+			 * Even if reduce level is 0, we still need to copy column aliases
+			 * from rte because we don't want to loose any user-supplied table
+			 * column aliases, in case any.
+			 */
+			colnames = lappend(colnames, makeString(pstrdup((attname))));
+		}
+		else
+		{
+			resetStringInfo(attr);
+			appendStringInfo(attr, "%s_%d_%d_%d",
+		                 attname, varno, varattno + 1, reduce_level);
+			colnames = lappend(colnames, makeString(pstrdup(attr->data)));
+		}
 
-		attrname = makeString(pstrdup(attr->data));
-
-		colnames = lappend(colnames, attrname);
 	}
 
 	heap_close(relation, AccessShareLock);
@@ -1779,7 +1772,7 @@ adjustSubplanDistribution(PlannerInfo *root, Distribution *pathd,
 		 * If subpath is replicated without restriction choose one execution
 		 * datanode and set it as current restriction.
 		 */
-		if (IsReplicated(subd->distributionType) &&
+		if (IsLocatorReplicated(subd->distributionType) &&
 				bms_num_members(subd->restrictNodes) != 1)
 		{
 			Bitmapset  *result = NULL;
@@ -2658,11 +2651,93 @@ create_worktablescan_plan(PlannerInfo *root, Path *best_path,
 #ifdef PGXC
 #ifndef XCP
 /*
+ * mk_row_mark_clause
+ *	 Given a PlanRowMark, create a corresponding RowMarkClause
+ */
+static RowMarkClause *
+mk_row_mark_clause(PlanRowMark *prm)
+{
+	RowMarkClause *rmc;
+
+	if (prm == NULL)
+		return NULL;
+
+	/* We are intrested in either FOR UPDATE or FOR SHARE */
+	if (prm->markType != ROW_MARK_EXCLUSIVE && prm->markType != ROW_MARK_SHARE)
+		return NULL;
+
+	rmc = makeNode(RowMarkClause);
+
+	/* Copy rti as is form the PlanRowMark */
+	rmc->rti = prm->rti;
+
+	/* Assume FOR SHARE unless compelled FOR UPDATE */
+	rmc->forUpdate = false;
+	if (prm->markType == ROW_MARK_EXCLUSIVE)
+		rmc->forUpdate = true;
+
+	/* Copy noWait as is form the PlanRowMark */
+	rmc->noWait = prm->noWait;
+
+	/* true or false does not matter since we will use the result only while deparsing */
+	rmc->pushedDown = false;
+
+	return rmc;
+}
+
+/*
+ * compare_alias
+ *	 Compare two aliases
+ */
+static bool
+compare_alias(Alias *a1, Alias *a2)
+{
+	if (a1 == NULL && a2 == NULL)
+		return true;
+
+	if (a1 == NULL && a2 != NULL)
+		return false;
+
+	if (a2 == NULL && a1 != NULL)
+		return false;
+
+	if (strcmp(a1->aliasname, a2->aliasname) == 0)
+		return true;
+
+	return false;
+}
+
+/*
+ * contains_only_vars(tlist)
+ * Return true only if each element of tlist is a target entry having Var node
+ * as its containing expression.
+ */
+static bool
+contains_only_vars(List *tlist)
+{
+	ListCell	  *l;
+
+	foreach(l, (List *) tlist)
+	{
+		Node *tle = lfirst(l);
+		if (nodeTag(tle) != T_TargetEntry)
+			return false;
+		else
+		{
+			Expr *expr = ((TargetEntry *) tle)->expr;
+			if (nodeTag(expr) != T_Var)
+				return false;
+		}
+	}
+	return true;
+}
+
+/*
  * create_remotequery_plan
  *	 Returns a remotequery plan for the base relation scanned by 'best_path'
  *	 with restriction clauses 'scan_clauses' and targetlist 'tlist'.
  */
-static RemoteQuery *
+static Plan *
 create_remotequery_plan(PlannerInfo *root, Path *best_path,
 						  List *tlist, List *scan_clauses)
 {
@@ -2672,16 +2747,21 @@ create_remotequery_plan(PlannerInfo *root, Path *best_path,
 	List	   *remote_scan_clauses = NIL;
 	List	   *local_scan_clauses  = NIL;
 	StringInfoData	sql;
-	RelationLocInfo *rel_loc_info;
 	Query			*query;
 	RangeTblRef		*rtr;
 	List			*varlist;
 	ListCell		*varcell;
-	Expr			*distcol_expr = NULL;
-	Datum			distcol_value;
-	bool			distcol_isnull;
-	Oid				distcol_type;
 	Node			*tmp_node;
+	List			*rmlist;
+	List			*tvarlist;
+	bool			tlist_is_simple;
+	List			*base_tlist;		/* the target list representing the
+										 * result obtained from datanode
+										 */
+	RangeTblEntry	*dummy_rte;			/* RTE for the remote query node being
+										 * added.
+										 */
+	Index			dummy_rtindex;
 
 	Assert(scan_relid > 0);
 	Assert(best_path->parent->rtekind == RTE_RELATION);
@@ -2696,10 +2776,10 @@ create_remotequery_plan(PlannerInfo *root, Path *best_path,
 		ListCell	  *l;
 
 		foreach(l, (List *)scan_clauses)
-	    {
+		{
 			Node *clause = lfirst(l);
 
-			if (is_foreign_expr(clause, NULL))
+			if (pgxc_is_expr_shippable((Expr *)clause, NULL))
 				remote_scan_clauses = lappend(remote_scan_clauses, clause);
 			else
 				local_scan_clauses = lappend(local_scan_clauses, clause);
@@ -2707,7 +2787,16 @@ create_remotequery_plan(PlannerInfo *root, Path *best_path,
 	}
 
 	/*
-	 * Construct a Query structure for the query to be fired on the datanodes
+	 * The target list passed in may not contain the Vars required for
+	 * evaluating the quals. Add those quals in the targetlist
+	 */
+	tlist = add_to_flat_tlist(tlist, copyObject(pull_var_clause((Node *)local_scan_clauses,
+																PVC_RECURSE_AGGREGATES,
+																PVC_RECURSE_PLACEHOLDERS)));
+	tlist_is_simple = contains_only_vars(tlist);
+
+	/*
+	 * Construct a Query structure for the query to be fired on the Datanodes
 	 * and deparse it. Fields not set remain memzero'ed as set by makeNode.
 	 */
 	rte = rt_fetch(scan_relid, root->parse->rtable);
@@ -2729,16 +2818,44 @@ create_remotequery_plan(PlannerInfo *root, Path *best_path,
 
 	query->jointree->fromlist = list_make1(rtr);
 	query->jointree->quals = (Node *)make_ands_explicit(copyObject(remote_scan_clauses));
-	query->targetList = copyObject(tlist);
+
+	/*
+	 * RemoteQuery node cannot handle arbitrary expressions in the target list.
+	 * So if the target list has any elements that are not plain Vars, we need
+	 * to create a Result node above RemoteQuery, and assign a plain var tlist
+	 * in RemoteQuery node, and Result node will handle the expressions. So if
+	 * the passed-in tlist is not a simple vars tlist, derive one out of the
+	 * tlist.
+	 */
+	if (tlist_is_simple)
+		query->targetList = copyObject(tlist);
+	else
+	{
+		tvarlist = copyObject(pull_var_clause((Node *)tlist,
+											  PVC_RECURSE_AGGREGATES,
+											  PVC_RECURSE_PLACEHOLDERS));
+		query->targetList = add_to_flat_tlist(NIL, copyObject(tvarlist));
+	}
+
+	/*
+	 * We are going to change the Var nodes in the target list to be sent to the
+	 * datanode. We need the original tlist to establish the mapping of result
+	 * obtained from the datanode in this plan. It will be saved in
+	 * RemoteQuery->base_tlist. So, copy the target list before modifying it
+	 */
+	base_tlist = copyObject(query->targetList);
 
 	/*
 	 * Change the varno in Var nodes in the targetlist of the query to be shipped to the
-	 * datanode to 1, to match the rtable in the query. Do the same for Var
+	 * Datanode to 1, to match the rtable in the query. Do the same for Var
 	 * nodes in quals.
 	 */
-	varlist = list_concat(pull_var_clause((Node *)query->targetList, PVC_RECURSE_PLACEHOLDERS),
+	varlist = list_concat(pull_var_clause((Node *)query->targetList,
+										  PVC_RECURSE_AGGREGATES,
+										  PVC_RECURSE_PLACEHOLDERS),
 							pull_var_clause((Node *)query->jointree->quals,
-												PVC_RECURSE_PLACEHOLDERS));
+											PVC_RECURSE_AGGREGATES,
+											PVC_RECURSE_PLACEHOLDERS));
 
 	foreach(varcell, varlist)
 	{
@@ -2754,85 +2871,107 @@ create_remotequery_plan(PlannerInfo *root, Path *best_path,
 	 * we construct the query at the time of execution.
 	 */
 	tmp_node = pgxc_fix_scan_expr(root->glob, (Node *)query->targetList, 0);
-	Assert(IsA(tmp_node, List));
+	Assert(!tmp_node || IsA(tmp_node, List));
 	query->targetList = (List *)tmp_node;
 	tmp_node = pgxc_fix_scan_expr(root->glob, (Node *)query->jointree->quals, 0);
 	query->jointree->quals = tmp_node;
+
+	/*
+	 * Before deparsing the query we need to check whether there are any FOR UPDATE/SHARE clauses
+	 * in the query that we need to propagate to Datanodes
+	 */
+	rmlist = NULL;
+	if (root->xc_rowMarks != NULL)
+	{
+		ListCell		*rmcell;
+
+		foreach(rmcell, root->xc_rowMarks)
+		{
+			PlanRowMark *prm = lfirst(rmcell);
+			RangeTblEntry *rte_in_rm;
+
+			/*
+			 * One remote query node contains one table only, check to make sure that
+			 * this row mark clause is referring to the same table that this remote
+			 * query node is targeting.
+			 */
+			rte_in_rm = rt_fetch(prm->rti, root->parse->rtable);
+			if (rte_in_rm->relid == rte->relid && compare_alias(rte->alias, rte_in_rm->alias))
+			{
+				RowMarkClause *rmc;
+
+				/*
+				 * Change the range table index in the row mark clause to 1
+				 * to match the rtable in the query
+				 */
+				prm->rti = 1;
+
+				/* Come up with a Row Mark Clause given a Plan Row Mark */
+				rmc = mk_row_mark_clause(prm);
+
+				if (rmc != NULL)
+				{
+					/* Add this row mark clause to the list to be added in the query to deparse */
+					rmlist = lappend(rmlist, rmc);
+
+					/*
+					 * Although we can have mutiple row mark clauses even for a single table
+					 * but here we will have only one plan row mark clause per table
+					 * The reason is that here we are talking about only FOR UPDATE & FOR SHARE
+					 * If we have both FOR SHARE and FOR UPDATE mentioned for the same table
+					 * FOR UPDATE takes priority over FOR SHARE and in effect we will have only one clause.
+					 */
+					break;
+				}
+			}
+		}
+
+		/* copy the row mark clause list in the query to deparse */
+		query->rowMarks = rmlist;
+
+		/* If there is a row mark clause, set the flag for deprasing of the row mark clause */
+		if (rmlist != NULL)
+			query->hasForUpdate = true;
+	}
 	initStringInfo(&sql);
 	deparse_query(query, &sql, NIL);
 
-	rel_loc_info = GetRelationLocInfo(rte->relid);
-	if (!rel_loc_info)
-		elog(ERROR, "No distribution information found for relid %d", rte->relid);
-	scan_plan = make_remotequery(tlist, local_scan_clauses, scan_relid);
+	if (rmlist != NULL)
+		list_free_deep(rmlist);
+
+	/*
+	 * Create and append the dummy range table entry to the range table.
+	 * Note that this modifies the master copy the caller passed us, otherwise
+	 * e.g EXPLAIN VERBOSE will fail to find the rte the Vars built below refer
+	 * to.
+	 */
+	dummy_rte = make_dummy_remote_rte(get_rel_name(rte->relid),
+										makeAlias("_REMOTE_TABLE_QUERY_", NIL));
+	root->parse->rtable = lappend(root->parse->rtable, dummy_rte);
+	dummy_rtindex = list_length(root->parse->rtable);
+
+	scan_plan = make_remotequery(tlist, local_scan_clauses, dummy_rtindex);
+
 	/* Track if the remote query involves a temporary object */
 	scan_plan->is_temp = IsTempTable(rte->relid);
-
+	scan_plan->read_only = (query->commandType == CMD_SELECT && !query->hasForUpdate);
+	scan_plan->has_row_marks = query->hasForUpdate;
 	scan_plan->sql_statement = sql.data;
-	/*
-	 * If the table distributed by value, check if we can reduce the datanodes
-	 * by looking at the qualifiers for this relation
-	 */
-	if (IsLocatorDistributedByValue(rel_loc_info->locatorType))
-	{
-		Oid		disttype = get_atttype(rte->relid, rel_loc_info->partAttrNum);
-		int32	disttypmod = get_atttypmod(rte->relid, rel_loc_info->partAttrNum);
-		distcol_expr = pgxc_find_distcol_expr(rtr->rtindex, rel_loc_info->partAttrNum,
-													query->jointree->quals);
-		/*
-		 * If the type of expression used to find the datanode, is not same as
-		 * the distribution column type, try casting it. This is same as what
-		 * will happen in case of inserting that type of expression value as the
-		 * distribution column value.
-		 */
-		if (distcol_expr)
-		{
-			distcol_expr = (Expr *)coerce_to_target_type(NULL,
-													(Node *)distcol_expr,
-													exprType((Node *)distcol_expr),
-													disttype, disttypmod,
-													COERCION_ASSIGNMENT,
-													COERCE_IMPLICIT_CAST, -1);
-			/*
-			 * PGXC_FQS_TODO: We should set the bound parameters here, but we don't have
-			 * PlannerInfo struct and we don't handle them right now.
-			 * Even if constant expression mutator changes the expression, it will
-			 * only simplify it, keeping the semantics same
-			 */
-			distcol_expr = (Expr *)eval_const_expressions(NULL,
-															(Node *)distcol_expr);
-		}
-	}
-
-	if (distcol_expr && IsA(distcol_expr, Const))
-	{
-		Const *const_expr = (Const *)distcol_expr;
-		distcol_value = const_expr->constvalue;
-		distcol_isnull = const_expr->constisnull;
-		distcol_type = const_expr->consttype;
-	}
-	else
-	{
-		distcol_value = (Datum) 0;
-		distcol_isnull = true;
-		distcol_type = InvalidOid;
-	}
-
-	scan_plan->exec_nodes = GetRelationNodes(rel_loc_info, distcol_value,
-												distcol_isnull, distcol_type,
-												RELATION_ACCESS_READ);
-	Assert(scan_plan->exec_nodes);
-	if (rel_loc_info)
-		scan_plan->exec_nodes->baselocatortype = rel_loc_info->locatorType;
-	else
-		scan_plan->exec_nodes->baselocatortype = '\0';
+	scan_plan->base_tlist = base_tlist;
+	scan_plan->exec_nodes = GetRelationNodesByQuals(rte->relid, rtr->rtindex,
+													query->jointree->quals,
+													RELATION_ACCESS_READ);
+	if (!scan_plan->exec_nodes)
+		elog(ERROR, "No distribution information found for relid %d", rte->relid);
 
 	copy_path_costsize(&scan_plan->scan.plan, best_path);
 
 	/* PGXCTODO - get better estimates */
  	scan_plan->scan.plan.plan_rows = 1000;
 
-	return scan_plan;
+	scan_plan->has_ins_child_sel_parent = root->parse->is_ins_child_sel_parent;
+
+	return (Plan *)scan_plan;
 }
 #endif /* XCP */
 #endif /* PGXC */
@@ -4148,6 +4287,7 @@ make_remotequery(List *qptlist, List *qpqual, Index scanrelid)
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
 	node->read_only = true;
+	node->has_row_marks = false;
 
 	return node;
 }
@@ -4284,7 +4424,7 @@ make_remotesubplan(PlannerInfo *root,
 			node->nodeList = lappend_int(node->nodeList, nodenum);
 		bms_free(tmpset);
 		node->execOnAll = list_length(node->nodeList) == 1 ||
-				!IsReplicated(execDistribution->distributionType);
+				!IsLocatorReplicated(execDistribution->distributionType);
 	}
 	else
 	{
@@ -4424,6 +4564,7 @@ make_remotesubplan(PlannerInfo *root,
 							continue;
 						sortexpr = em->em_expr;
 						exprvars = pull_var_clause((Node *) sortexpr,
+												   PVC_INCLUDE_AGGREGATES,
 												   PVC_INCLUDE_PLACEHOLDERS);
 						foreach(k, exprvars)
 						{
@@ -5093,6 +5234,7 @@ prepare_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
 						continue;
 					sortexpr = em->em_expr;
 					exprvars = pull_var_clause((Node *) sortexpr,
+											   PVC_RECURSE_AGGREGATES,
 											   PVC_INCLUDE_PLACEHOLDERS);
 					foreach(k, exprvars)
 					{
@@ -6332,9 +6474,6 @@ is_projection_capable_plan(Plan *plan)
 		case T_Append:
 		case T_MergeAppend:
 		case T_RecursiveUnion:
-#ifdef PGXC
-		case T_RemoteQuery:
-#endif
 			return false;
 #ifdef XCP
 		/*
@@ -6390,7 +6529,7 @@ get_internal_cursor(void)
  *  also need to be selected..
  */
 static void
-findReferencedVars(List *parent_vars, Plan *plan, List **out_tlist, Relids *out_relids)
+findReferencedVars(List *parent_vars, RemoteQuery *plan, List **out_tlist, Relids *out_relids)
 {
 	List	 *vars;
 	Relids	  relids = NULL;
@@ -6398,7 +6537,9 @@ findReferencedVars(List *parent_vars, Plan *plan, List **out_tlist, Relids *out_
 	ListCell *l;
 
 	/* Pull vars from both the targetlist and the clauses attached to this plan */
-	vars = pull_var_clause((Node *)plan->targetlist, PVC_REJECT_PLACEHOLDERS);
+	vars = pull_var_clause((Node *)plan->base_tlist,
+						   PVC_RECURSE_AGGREGATES,
+						   PVC_REJECT_PLACEHOLDERS);
 
 	foreach(l, vars)
 	{
@@ -6412,7 +6553,9 @@ findReferencedVars(List *parent_vars, Plan *plan, List **out_tlist, Relids *out_
 	}
 
 	/* Now consider the local quals */
-	vars = pull_var_clause((Node *)plan->qual, PVC_REJECT_PLACEHOLDERS);
+	vars = pull_var_clause((Node *)plan->scan.plan.qual,
+						   PVC_RECURSE_AGGREGATES,
+						   PVC_REJECT_PLACEHOLDERS);
 
 	foreach(l, vars)
 	{
@@ -6453,12 +6596,14 @@ create_remoteinsert_plan(PlannerInfo *root, Plan *topplan)
 		Index			resultRelationIndex = lfirst_int(l);
 		RangeTblEntry	*ttab;
 		RelationLocInfo *rel_loc_info;
-		StringInfo		buf;
+		StringInfo		buf, buf2;
 		RemoteQuery	   *fstep;
 		Oid				nspid;
 		char		   *nspname;
 		int				natts, att;
 		Oid 		   *att_types;
+		char		   *relname;
+		bool			first_att_printed = false;
 
 		ttab = rt_fetch(resultRelationIndex, root->parse->rtable);
 
@@ -6471,11 +6616,15 @@ create_remoteinsert_plan(PlannerInfo *root, Plan *topplan)
 		if (rel_loc_info == NULL)
 			continue;
 
+		/* For main string */
 		buf = makeStringInfo();
+		/* For values */
+		buf2 = makeStringInfo();
 
 		/* Compose INSERT FROM target_table */
 		nspid = get_rel_namespace(ttab->relid);
 		nspname = get_namespace_name(nspid);
+		relname = get_rel_name(ttab->relid);
 
 		/*
 		 * Do not qualify with namespace for TEMP tables. The schema name may
@@ -6483,10 +6632,10 @@ create_remoteinsert_plan(PlannerInfo *root, Plan *topplan)
 		 */
 		if (IsTempTable(ttab->relid))
 			appendStringInfo(buf, "INSERT INTO %s (",
-					quote_identifier(ttab->relname));
+					quote_identifier(relname));
 		else
 			appendStringInfo(buf, "INSERT INTO %s.%s (", quote_identifier(nspname),
-					quote_identifier(ttab->relname));
+					quote_identifier(relname));
 
 		fstep = make_remotequery(NIL, NIL, resultRelationIndex);
 		fstep->is_temp = IsTempTable(ttab->relid);
@@ -6509,12 +6658,33 @@ create_remoteinsert_plan(PlannerInfo *root, Plan *topplan)
 			{
 				Form_pg_attribute att_tup = (Form_pg_attribute) GETSTRUCT(tp);
 
-				/* Add comma before all except first attributes */
-				if (att > 1)
-					appendStringInfoString(buf, ", ");
+				/* Bypass dropped attributes in query */
+				if (att_tup->attisdropped)
+				{
+					/* Dropped attributes are casted as int4 in prepared parameters */
+					att_types[att - 1] = INT4OID;
+				}
+				else
+				{
+					/* Add comma before all except first attributes */
+					if (first_att_printed)
+						appendStringInfoString(buf, ", ");
 
-				att_types[att - 1] = att_tup->atttypid;
-				appendStringInfoString(buf, quote_identifier(NameStr(att_tup->attname)));
+					/* Build the value part, parameters are filled at run time */
+					if (first_att_printed)
+						appendStringInfoString(buf2, ", ");
+
+					first_att_printed = true;
+
+					/* Append column name */
+					appendStringInfoString(buf, quote_identifier(NameStr(att_tup->attname)));
+
+					/* Append value in string */
+					appendStringInfo(buf2, "$%d", att);
+
+					/* Assign parameter type */
+					att_types[att - 1] = att_tup->atttypid;
+				}
 
 				ReleaseSysCache(tp);
 			}
@@ -6523,21 +6693,8 @@ create_remoteinsert_plan(PlannerInfo *root, Plan *topplan)
 						att, ttab->relid);
 		}
 
-		appendStringInfoString(buf, ") VALUES (");
-
-		/*
-		 * Create parameterized statement. The values will be filled at the run
-		 * time
-		 */
-		for (att = 1; att <= natts; att++)
-		{
-			if (att > 1)
-				appendStringInfoString(buf, ", ");
-
-			appendStringInfo(buf, "$%d", att);
-		}
-
-		appendStringInfoString(buf, ")");
+		/* Gather the two strings */
+		appendStringInfo(buf, ") VALUES (%s)", buf2->data);
 
 		fstep->sql_statement = pstrdup(buf->data);
 
@@ -6548,15 +6705,18 @@ create_remoteinsert_plan(PlannerInfo *root, Plan *topplan)
 		fstep->exec_nodes = makeNode(ExecNodes);
 		fstep->exec_nodes->baselocatortype = rel_loc_info->locatorType;
 		fstep->exec_nodes->primarynodelist = NULL;
-		fstep->exec_nodes->nodeList = NULL;
+		fstep->exec_nodes->nodeList = rel_loc_info->nodeList;
 		fstep->exec_nodes->en_relid = ttab->relid;
 		fstep->exec_nodes->accesstype = RELATION_ACCESS_INSERT;
 		fstep->exec_nodes->en_expr = pgxc_set_en_expr(ttab->relid, resultRelationIndex);
 
 		SetRemoteStatementName((Plan *) fstep, NULL, natts, att_types, 0);
 
+		/* Free everything */
 		pfree(buf->data);
 		pfree(buf);
+		pfree(buf2->data);
+		pfree(buf2);
 
 		mt->remote_plans = lappend(mt->remote_plans, fstep);
 	}
@@ -6575,7 +6735,7 @@ create_remoteinsert_plan(PlannerInfo *root, Plan *topplan)
  * Those are the non-junk expressions in target list of parser tree.
  * WHERE clause is completed by the other expressions in target tree that have been
  * marked as junk during target list rewriting to be able to identify consistently
- * tuples on remote coordinators. This target list is based on the information obtained
+ * tuples on remote Coordinators. This target list is based on the information obtained
  * from the inner plan that should be generated by create_remotequery_plan.
  */
 Plan *
@@ -6605,14 +6765,17 @@ create_remoteupdate_plan(PlannerInfo *root, Plan *topplan)
 		bool			is_where_printed = false;	/* Control of WHERE generation */
 		RemoteQuery	   *fstep;		/* Plan step generated */
 		ListCell	   *elt;
-		int				count = 1, where_count = 1;
+		int				count = 0, where_count = 1;
 		int				natts, count_prepparams, tot_prepparams;
+		char		   *relname;
 
 		ttab = rt_fetch(resultRelationIndex, parse->rtable);
 
 		/* Bad relation ? */
 		if (ttab == NULL || ttab->rtekind != RTE_RELATION)
 			continue;
+
+		relname = get_rel_name(ttab->relid);
 
 		/* Get location info of the target table */
 		rel_loc_info = GetRelationLocInfo(ttab->relid);
@@ -6633,18 +6796,17 @@ create_remoteupdate_plan(PlannerInfo *root, Plan *topplan)
 		 * vary on each node
 		 */
 		if (IsTempTable(ttab->relid))
-			appendStringInfo(buf, "UPDATE %s SET ",
-							 quote_identifier(ttab->relname));
+			appendStringInfo(buf, "UPDATE ONLY %s SET ",
+							 quote_identifier(relname));
 		else
-			appendStringInfo(buf, "UPDATE %s.%s SET ", quote_identifier(nspname),
-							 quote_identifier(ttab->relname));
+			appendStringInfo(buf, "UPDATE ONLY %s.%s SET ", quote_identifier(nspname),
+							 quote_identifier(relname));
 
 		/*
 		 * Count the number of junk entries before setting the parameter type list.
 		 * This helps to know how many parameters part of the WHERE clause need to
 		 * be sent down by extended query protocol.
 		 */
-		count = 0;
 		foreach(elt, parse->targetList)
 		{
 			TargetEntry *tle = lfirst(elt);
@@ -6652,15 +6814,8 @@ create_remoteupdate_plan(PlannerInfo *root, Plan *topplan)
 				count++;
 		}
 		count_prepparams = natts + count;
-
-		/* Add any non-parent relations if necessary */
-		foreach (elt, root->rowMarks)
-		{
-			PlanRowMark *rc = (PlanRowMark *) lfirst(elt);
-			if (!rc->isParent)
-				count++;
-		}
-		tot_prepparams = natts + count;
+		/* Count entries related to Rowmarks */
+		tot_prepparams = count_prepparams + pgxc_count_rowmarks_entries(root->rowMarks);
 
 		/* Then allocate the array for this purpose */
 		param_types = (Oid *) palloc0(sizeof (Oid) * tot_prepparams);
@@ -6687,11 +6842,6 @@ create_remoteupdate_plan(PlannerInfo *root, Plan *topplan)
 				else
 					appendStringInfoString(buf, ", ");
 
-				/* Complete string */
-				appendStringInfo(buf, "%s = $%d",
-								 tle->resname,
-								 tle->resno);
-
 				/* We need first to find the position of this element in attribute list */
 				for (i = 0; i < natts; i++)
 				{
@@ -6703,12 +6853,27 @@ create_remoteupdate_plan(PlannerInfo *root, Plan *topplan)
 					}
 				}
 
+				/* Complete string */
+				appendStringInfo(buf, "%s = $%d",
+								 tle->resname,
+								 attno);
+
 				/* Set parameter type correctly */
 				param_types[attno - 1] = exprType((Node *) tle->expr);
 			}
 			else
 			{
-				/* Add target list element to WHERE clause */
+				/* Set parameter type */
+				param_types[natts + where_count - 1] = exprType((Node *) tle->expr);
+				where_count++;
+
+				/*
+				 * ctid and xc_node_id are sufficient to identify
+				 * remote tuple.
+				 */
+				if (strcmp(tle->resname, "xc_node_id") != 0 &&
+					strcmp(tle->resname, "ctid") != 0)
+					continue;
 
 				/* Set the clause if necessary */
 				if (!is_where_printed)
@@ -6719,13 +6884,10 @@ create_remoteupdate_plan(PlannerInfo *root, Plan *topplan)
 				else
 					appendStringInfoString(buf2, "AND ");
 
+				/* Complete string */
 				appendStringInfo(buf2, "%s = $%d ",
 								 tle->resname,
-								 natts + where_count);
-				/* Set parameter type */
-				param_types[natts + where_count - 1] = exprType((Node *) tle->expr);
-
-				where_count++;
+								 natts + where_count - 1);
 			}
 		}
 
@@ -6749,21 +6911,14 @@ create_remoteupdate_plan(PlannerInfo *root, Plan *topplan)
 				{
 					Form_pg_attribute att_saved = (Form_pg_attribute) GETSTRUCT(tp);
 
-					/* Set the clause if necessary */
-					if (!is_where_printed)
-					{
-						is_where_printed = true;
-						appendStringInfoString(buf2, " WHERE ");
-					}
+					/*
+					 * Set parameter type of attribute
+					 * Dropped columns are casted as int4
+					 */
+					if (att_saved->attisdropped)
+						param_types[count - 1] = INT4OID;
 					else
-						appendStringInfoString(buf2, "AND ");
-
-					/* Complete string */
-					appendStringInfo(buf2, "%s = $%d ",
-									 NameStr(att_saved->attname),
-									 count);
-
-					param_types[count - 1] = att_saved->atttypid;
+						param_types[count - 1] = att_saved->atttypid;
 					ReleaseSysCache(tp);
 				}
 				else
@@ -6777,87 +6932,8 @@ create_remoteupdate_plan(PlannerInfo *root, Plan *topplan)
 		 * defined in RowMarks. This is essential for UPDATE queries running with child
 		 * entries as we need to bypass them correctly at executor level.
 		 */
-		elt = list_head(root->rowMarks);
-		while (elt != NULL)
-		{
-			PlanRowMark *rc = (PlanRowMark *) lfirst(elt);
-
-			if (rc->isParent)
-			{
-				elt = lnext(elt);
-				continue;
-			}
-
-			count_prepparams++;
-
-			/* Nullify non-parent entry here */
-			if (!is_where_printed)
-			{
-				is_where_printed = true;
-				appendStringInfoString(buf2, " WHERE ");
-			}
-			else
-				appendStringInfoString(buf2, "AND ");
-
-			/* Complete string */
-			appendStringInfo(buf2, "$%d = $%d ",
-							 count_prepparams,
-							 count_prepparams);
-
-			/* Determine the correct parameter type */
-			switch (rc->markType)
-			{
-				case ROW_MARK_COPY:
-					{
-						RangeTblEntry *rte = rt_fetch(rc->prti, parse->rtable);
-
-						/*
-						 * PGXCTODO: We still need to determine the rowtype
-						 * in case relation involved here is a view (see inherit.sql).
-						 */
-						if (!OidIsValid(rte->relid))
-							ereport(ERROR,
-									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("Cannot generate remote UPDATE plan"),
-									 errdetail("This relation rowtype cannot be fetched")));
-
-						/*
-						 * This is the complete copy of a row, so it is necessary
-						 * to set parameter as a rowtype
-						 */
-						param_types[count_prepparams - 1] = get_rel_type_id(rte->relid);
-					}
-					break;
-
-				case ROW_MARK_REFERENCE:
-					/* Here we have a ctid for sure */
-					param_types[count_prepparams - 1] = TIDOID;
-
-					if (rc->isParent)
-					{
-						/* For a child table, tableoid is also necessary */
-						count_prepparams++;
-						appendStringInfoString(buf2, "AND ");
-
-						/* Complete string */
-						appendStringInfo(buf2, "$%d = $%d ",
-										 count_prepparams,
-										 count_prepparams);
-
-						param_types[count_prepparams - 1] = OIDOID;
-						elt = lnext(elt);
-					}
-					break;
-
-				/* Ignore other entries */
-				case ROW_MARK_SHARE:
-				case ROW_MARK_EXCLUSIVE:
-				default:
-					break;
-			}
-
-			elt = lnext(elt);
-		}
+		param_types = pgxc_build_rowmark_entries(root->rowMarks, parse->rtable, param_types,
+												count_prepparams, tot_prepparams);
 
 		/* Finish building the query by gathering SET and WHERE clauses */
 		appendStringInfo(buf, "%s", buf2->data);
@@ -6877,6 +6953,7 @@ create_remoteupdate_plan(PlannerInfo *root, Plan *topplan)
 		fstep->exec_nodes = GetRelationNodes(rel_loc_info, 0, true, UNKNOWNOID, RELATION_ACCESS_UPDATE);
 		fstep->exec_nodes->baselocatortype = rel_loc_info->locatorType;
 		fstep->exec_nodes->en_relid = ttab->relid;
+		fstep->exec_nodes->nodeList = rel_loc_info->nodeList;
 		fstep->exec_nodes->accesstype = RELATION_ACCESS_UPDATE;
 		fstep->exec_nodes->en_expr = pgxc_set_en_expr(ttab->relid, resultRelationIndex);
 		SetRemoteStatementName((Plan *) fstep, NULL, tot_prepparams, param_types, 0);
@@ -6920,12 +6997,13 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 		StringInfo		buf;
 		Oid			    nspid;		/* Relation namespace Oid */
 		char		   *nspname;	/* Relation namespace name */
-		int				nparams;	/* Attribute used is CTID */
+		int				count_prepparams, tot_prepparams;	/* Attribute used is CTID */
 		Oid			   *param_types;	/* Types of query parameters */
 		RemoteQuery	   *fstep;		/* Plan step generated */
 		bool			is_where_created = false;
 		ListCell	   *elt;
 		int				count = 1;
+		char		   *relname;
 
 		ttab = rt_fetch(resultRelationIndex, parse->rtable);
 
@@ -6944,26 +7022,46 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 		/* Compose DELETE target_table */
 		nspid = get_rel_namespace(ttab->relid);
 		nspname = get_namespace_name(nspid);
+		relname = get_rel_name(ttab->relid);
 
 		/* Parameters are defined by target list */
-		nparams = list_length(parse->targetList);
-		param_types = (Oid *) palloc0(sizeof(Oid) * nparams);
+		count_prepparams = list_length(parse->targetList);
+
+		/* Count entries related to Rowmarks only if there are child relations here */
+		if (list_length(mt->resultRelations) != 1)
+			tot_prepparams = count_prepparams + pgxc_count_rowmarks_entries(root->rowMarks);
+		else
+			tot_prepparams = count_prepparams;
+
+		param_types = (Oid *) palloc0(sizeof(Oid) * tot_prepparams);
 
 		/*
 		 * Do not qualify with namespace for TEMP tables. The schema name may
 		 * vary on each node.
 		 */
 		if (IsTempTable(ttab->relid))
-			appendStringInfo(buf, "DELETE FROM %s ",
-							 quote_identifier(ttab->relname));
+			appendStringInfo(buf, "DELETE FROM ONLY %s ",
+							 quote_identifier(relname));
 		else
-			appendStringInfo(buf, "DELETE FROM %s.%s ", quote_identifier(nspname),
-							 quote_identifier(ttab->relname));
+			appendStringInfo(buf, "DELETE FROM ONLY %s.%s ", quote_identifier(nspname),
+							 quote_identifier(relname));
 
 		/* Generate WHERE clause for each target list item */
 		foreach(elt, parse->targetList)
 		{
 			TargetEntry *tle = lfirst(elt);
+
+			/* Set up the parameter type */
+			param_types[count - 1] = exprType((Node *) tle->expr);
+			count++;
+
+			/*
+			 * In WHERE clause, ctid and xc_node_id are
+			 * sufficient to fetch a tuple from remote node.
+			 */
+			if (strcmp(tle->resname, "xc_node_id") != 0 &&
+				strcmp(tle->resname, "ctid") != 0)
+				continue;
 
 			/* Set the clause if necessary */
 			if (!is_where_created)
@@ -6974,26 +7072,18 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 			else
 				appendStringInfoString(buf, "AND ");
 
-			Assert(IsA((Node *)tle->expr, Var));
-			if (IsA((Node *)tle->expr, Var))
-			{
-				Var *var = (Var *) tle->expr;
-
-				/* Nullify TLEs that are not from this relation */
-				if (var->varno != resultRelationIndex)
-					appendStringInfo(buf, "$%d = $%d ",
-									 count,
-									 count);
-				else
-					appendStringInfo(buf, "%s = $%d ",
-									quote_identifier(tle->resname),
-									count);
-			}
-
-			/* Associate type of parameter */
-			param_types[count - 1] = exprType((Node *) tle->expr);
-			count++;
+			appendStringInfo(buf, "%s = $%d ",
+							quote_identifier(tle->resname),
+							count - 1);
 		}
+
+		/*
+		 * The query needs to be completed by nullifying the non-parent entries
+		 * defined in RowMarks. This is essential for UPDATE queries running with child
+		 * entries as we need to bypass them correctly at executor level.
+		 */
+		param_types = pgxc_build_rowmark_entries(root->rowMarks, parse->rtable, param_types,
+												count_prepparams, tot_prepparams);
 
 		/* Finish by building the plan step */
 		fstep = make_remotequery(parse->targetList, NIL, resultRelationIndex);
@@ -7011,8 +7101,9 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 												RELATION_ACCESS_UPDATE);
 		fstep->exec_nodes->baselocatortype = rel_loc_info->locatorType;
 		fstep->exec_nodes->en_relid = ttab->relid;
+		fstep->exec_nodes->nodeList = rel_loc_info->nodeList;
 		fstep->exec_nodes->accesstype = RELATION_ACCESS_UPDATE;
-		SetRemoteStatementName((Plan *) fstep, NULL, nparams, param_types, 0);
+		SetRemoteStatementName((Plan *) fstep, NULL, tot_prepparams, param_types, 0);
 		pfree(buf->data);
 		pfree(buf);
 
@@ -7026,7 +7117,7 @@ create_remotedelete_plan(PlannerInfo *root, Plan *topplan)
 /*
  * create_remotegrouping_plan
  * Check if the grouping and aggregates can be pushed down to the
- * datanodes.
+ * Datanodes.
  * Right now we can push with following restrictions
  * 1. there are plain aggregates (no expressions involving aggregates) and/or
  *    expressions in group by clauses
@@ -7076,7 +7167,7 @@ create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan)
 	if (!enable_remotegroup)
 		return local_plan;
 	/*
-	 * We don't push aggregation and grouping to datanodes, in case there are
+	 * We don't push aggregation and grouping to Datanodes, in case there are
 	 * windowing aggregates, distinct, having clause or sort clauses.
 	 */
 	if (query->hasWindowFuncs ||
@@ -7130,10 +7221,10 @@ create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan)
 	/*
 	 * If the remote_scan has any quals on it, those need to be executed before
 	 * doing anything. Hence we won't be able to push any aggregates or grouping
-	 * to the data node.
+	 * to the Datanode.
 	 * If it has any SimpleSort in it, then sorting is intended to be applied
 	 * before doing anything. Hence can not push any aggregates or grouping to
-	 * the data node.
+	 * the Datanode.
 	 */
 	if (remote_scan->scan.plan.qual || remote_scan->sort)
 		return local_plan;
@@ -7164,8 +7255,9 @@ create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan)
 
 	/* find all the relations referenced by targetlist of Grouping node */
 	temp_vars = pull_var_clause((Node *)local_plan->targetlist,
-									PVC_REJECT_PLACEHOLDERS);
-	findReferencedVars(temp_vars, (Plan *)remote_scan, &temp_vartlist, &in_relids);
+								PVC_RECURSE_AGGREGATES,
+								PVC_REJECT_PLACEHOLDERS);
+	findReferencedVars(temp_vars, remote_scan, &temp_vartlist, &in_relids);
 
 	/*
 	 * process the targetlist of the grouping plan, also construct the
@@ -7173,7 +7265,7 @@ create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan)
 	 */
 	base_tlist = pgxc_process_grouping_targetlist(root, &(local_plan->targetlist));
 	/*
-	 * If can not construct a targetlist shippable to the datanode. Resort to
+	 * If can not construct a targetlist shippable to the Datanode. Resort to
 	 * the plan created by grouping_planner()
 	 */
 	if (!base_tlist)
@@ -7183,7 +7275,7 @@ create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan)
 												&local_qual, &remote_qual, &reduce_plan);
 	/*
 	 * Because of HAVING clause, we can not push the aggregates and GROUP BY
-	 * clause to the data node. Resort to the plan created by grouping planner.
+	 * clause to the Datanode. Resort to the plan created by grouping planner.
 	 */
 	if (!reduce_plan)
 		return local_plan;
@@ -7191,9 +7283,9 @@ create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan)
 
 	/*
 	 * We are now ready to create the RemoteQuery node to push the query to
-	 * datanode.
+	 * Datanode.
 	 * 1. Create a remote query node reflecting the query to be pushed to the
-	 *    datanode.
+	 *    Datanode.
 	 * 2. Modify the Grouping node passed in, to accept the results sent by the
 	 *    Datanodes, then group and aggregate them, if needed.
 	 */
@@ -7319,13 +7411,8 @@ create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan)
 	 * descriptor for the result of this query from the base_tlist (targetlist
 	 * we used to generate the remote node query).
 	 */
-	dummy_rte = makeNode(RangeTblEntry);
-	dummy_rte->rtekind = RTE_REMOTE_DUMMY;
-
-	/* Use a dummy relname... */
-	dummy_rte->relname	   = "__REMOTE_GROUP_QUERY__";
-	dummy_rte->eref		   = makeAlias("__REMOTE_GROUP_QUERY__", NIL);
-
+	dummy_rte = make_dummy_remote_rte("__REMOTE_GROUP_QUERY__",
+									makeAlias("__REMOTE_GROUP_QUERY__", NIL));
 	/* Rest will be zeroed out in makeNode() */
 	root->parse->rtable = lappend(root->parse->rtable, dummy_rte);
 	dummy_rtindex = list_length(root->parse->rtable);
@@ -7341,7 +7428,9 @@ create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan)
 	remote_group->sql_statement = remote_sql_stmt->data;
 
 	/* set_plan_refs needs this later */
-	remote_group->read_only = query->commandType == CMD_SELECT;
+	remote_group->read_only = (query->commandType == CMD_SELECT && !query->hasForUpdate);
+	remote_group->has_row_marks = query->hasForUpdate;
+	remote_group->base_tlist = base_tlist;
 
 	/* we actually need not worry about costs since this is the final plan */
 	remote_group_plan->startup_cost	= remote_scan->scan.plan.startup_cost;
@@ -7354,7 +7443,7 @@ create_remotegrouping_plan(PlannerInfo *root, Plan *local_plan)
 	 * Materialization is always needed for RemoteQuery in case we need to restart
 	 * the scan.
 	 */
-	local_plan->lefttree = (Plan *) make_material(remote_group_plan);
+	local_plan->lefttree = remote_group_plan;
 	local_plan->qual = local_qual;
 	/* indicate that we should apply collection function directly */
 	if (IsA(local_plan, Agg))
@@ -7400,9 +7489,9 @@ pgxc_locate_grouping_columns(PlannerInfo *root, List *tlist,
 
 /*
  * pgxc_add_node_to_grouping_tlist
- * Add the given node to the target list to be sent to the datanode. If it's
+ * Add the given node to the target list to be sent to the Datanode. If it's
  * Aggref node, also change the passed in node to point to the Aggref node in
- * the data node's target list
+ * the Datanode's target list
  */
 static List *
 pgxc_add_node_to_grouping_tlist(List *remote_tlist, Node *expr, Index ressortgroupref)
@@ -7438,7 +7527,6 @@ pgxc_add_node_to_grouping_tlist(List *remote_tlist, Node *expr, Index ressortgro
 	}
 	else
 	{
-
 		if (remote_tle->ressortgroupref == 0)
 			remote_tle->ressortgroupref = ressortgroupref;
 		else if (ressortgroupref == 0)
@@ -7480,20 +7568,20 @@ pgxc_add_node_to_grouping_tlist(List *remote_tlist, Node *expr, Index ressortgro
 /*
  * pgxc_process_grouping_targetlist
  * The function scans the targetlist to check if the we can push anything
- * from the targetlist to the datanode. Following rules govern the choice
- * 1. Either all of the aggregates are pushed to the datanode or none is pushed
+ * from the targetlist to the Datanode. Following rules govern the choice
+ * 1. Either all of the aggregates are pushed to the Datanode or none is pushed
  * 2. If there are no aggregates, the targetlist is good to be shipped as is
  * 3. If aggregates are involved in expressions, we push the aggregates to the
- *    datanodes but not the involving expressions.
+ *    Datanodes but not the involving expressions.
  *
  * The function constructs the targetlist for the query to be pushed to the
- * datanode. It modifies the local targetlist to point to the expressions in
+ * Datanode. It modifies the local targetlist to point to the expressions in
  * remote targetlist wherever necessary (e.g. aggregates)
  *
  * PGXCTODO: we should be careful while pushing the function expressions, it's
  * better to push functions like strlen() which can be evaluated at the
- * datanode, but we should avoid pushing functions which can only be evaluated
- * at coordinator.
+ * Datanode, but we should avoid pushing functions which can only be evaluated
+ * at Coordinator.
  */
 static List *
 pgxc_process_grouping_targetlist(PlannerInfo *root, List **local_tlist)
@@ -7505,22 +7593,21 @@ pgxc_process_grouping_targetlist(PlannerInfo *root, List **local_tlist)
 
 	/*
 	 * Walk through the target list and find out whether we can push the
-	 * aggregates and grouping to datanodes. Also while doing so, create the
-	 * targetlist for the query to be shipped to the datanode. Adjust the local
+	 * aggregates and grouping to Datanodes. Also while doing so, create the
+	 * targetlist for the query to be shipped to the Datanode. Adjust the local
 	 * targetlist accordingly.
 	 */
 	foreach(temp, *local_tlist)
 	{
 		TargetEntry				*local_tle = lfirst(temp);
 		Node					*expr = (Node *)local_tle->expr;
-		foreign_qual_context	context;
+		bool					has_aggs;
 
-		pgxc_foreign_qual_context_init(&context);
 		/*
 		 * If the expression is not Aggref but involves aggregates (has Aggref
 		 * nodes in the expression tree, we can not push the entire expression
-		 * to the datanode, but push those aggregates to the data node, if those
-		 * aggregates can be evaluated at the data nodes (if is_foreign_expr
+		 * to the Datanode, but push those aggregates to the Datanode, if those
+		 * aggregates can be evaluated at the Datanodes (if is_foreign_expr
 		 * returns true for entire expression). To evaluate the rest of the
 		 * expression, we need to fetch the values of VARs participating in the
 		 * expression. But, if we include the VARs under the aggregate nodes,
@@ -7529,13 +7616,11 @@ pgxc_process_grouping_targetlist(PlannerInfo *root, List **local_tlist)
 		 * expression tree rooted under Aggref node.
 		 * For example, the original query is
 		 * SELECT sum(val) * val2 FROM tab1 GROUP BY val2;
-		 * the query pushed to the data node is
+		 * the query pushed to the Datanode is
 		 * SELECT sum(val), val2 FROM tab1 GROUP BY val2;
 		 * Notice that, if we include val in the query, it will become invalid.
 		 */
-		context.collect_vars = true;
-
-		if (!is_foreign_expr(expr, &context))
+		if (!pgxc_is_expr_shippable((Expr *)expr, &has_aggs))
 		{
 				shippable_remote_tlist = false;
 				break;
@@ -7545,46 +7630,37 @@ pgxc_process_grouping_targetlist(PlannerInfo *root, List **local_tlist)
 		 * We are about to change the local_tlist, check if we have already
 		 * copied original local_tlist, if not take a copy
 		 */
-		if (!orig_local_tlist && (IsA(expr, Aggref) || context.aggs))
+		if (!orig_local_tlist && has_aggs)
 				orig_local_tlist = copyObject(*local_tlist);
 
 		/*
-		 * if there are aggregates involved in the expression, whole expression
-		 * can not be pushed to the data node. Pick up the aggregates and the
+		 * If there are aggregates involved in the expression, whole expression
+		 * can not be pushed to the Datanode. Pick up the aggregates and the
 		 * VAR nodes not covered by aggregates.
 		 */
-		if (context.aggs)
+		if (has_aggs)
 		{
-			ListCell				*lcell;
+			ListCell	*lcell;
+			List		*aggs_n_vars;
 			/*
-			 * if the target list expression is an Aggref, then the context should
-			 * have only one Aggref in the list and no VARs.
-			 */
-			Assert(!IsA(expr, Aggref) ||
-						(list_length(context.aggs) == 1 &&
-						linitial(context.aggs) == expr &&
-						!context.vars));
-			/*
-			 * this expression is not going to be pushed as whole, thus other
+			 * This expression is not going to be pushed as whole, thus other
 			 * clauses won't be able to find out this TLE in the results
-			 * obtained from data node. Hence can't optimize this query.
+			 * obtained from Datanode. Hence can't optimize this query.
+			 * PGXCTODO: with projection support in RemoteQuery node, this
+			 * condition can be worked around, please check.
 			 */
 			if (local_tle->ressortgroupref > 0)
 			{
 				shippable_remote_tlist = false;
 				break;
 			}
+
+			aggs_n_vars = pull_var_clause(expr, PVC_INCLUDE_AGGREGATES,
+															PVC_RECURSE_PLACEHOLDERS);
 			/* copy the aggregates into the remote target list */
-			foreach (lcell, context.aggs)
+			foreach (lcell, aggs_n_vars)
 			{
-				Assert(IsA(lfirst(lcell), Aggref));
-				remote_tlist = pgxc_add_node_to_grouping_tlist(remote_tlist, lfirst(lcell),
-																0);
-			}
-			/* copy the vars into the remote target list */
-			foreach (lcell, context.vars)
-			{
-				Assert(IsA(lfirst(lcell), Var));
+				Assert(IsA(lfirst(lcell), Aggref) || IsA(lfirst(lcell), Var));
 				remote_tlist = pgxc_add_node_to_grouping_tlist(remote_tlist, lfirst(lcell),
 																0);
 			}
@@ -7593,15 +7669,13 @@ pgxc_process_grouping_targetlist(PlannerInfo *root, List **local_tlist)
 		else
 			remote_tlist = pgxc_add_node_to_grouping_tlist(remote_tlist, expr,
 													local_tle->ressortgroupref);
-
-		pgxc_foreign_qual_context_free(&context);
 	}
 
 	if (!shippable_remote_tlist)
 	{
 		/*
 		 * If local_tlist has changed but we didn't find anything shippable to
-		 * datanode, we need to restore the local_tlist to original state,
+		 * Datanode, we need to restore the local_tlist to original state,
 		 */
 		if (orig_local_tlist)
 			*local_tlist = orig_local_tlist;
@@ -7624,13 +7698,13 @@ pgxc_process_grouping_targetlist(PlannerInfo *root, List **local_tlist)
 /*
  * pgxc_process_having_clause
  * For every expression in the havingQual take following action
- * 1. If it has aggregates, which can be evaluated at the data nodes, add those
+ * 1. If it has aggregates, which can be evaluated at the Datanodes, add those
  *    aggregates to the targetlist and modify the local aggregate expressions to
- *    point to the aggregate expressions being pushed to the data node. Add this
+ *    point to the aggregate expressions being pushed to the Datanode. Add this
  *    expression to the local qual to be evaluated locally.
  * 2. If the expression does not have aggregates and the whole expression can be
- *    evaluated at the data node, add the expression to the remote qual to be
- *    evaluated at the data node.
+ *    evaluated at the Datanode, add the expression to the remote qual to be
+ *    evaluated at the Datanode.
  * 3. If qual contains an expression which can not be evaluated at the data
  *    node, the parent group plan can not be reduced to a remote_query.
  */
@@ -7639,7 +7713,6 @@ pgxc_process_having_clause(PlannerInfo *root, List *remote_tlist, Node *havingQu
 												List **local_qual, List **remote_qual,
 												bool *reduce_plan)
 {
-	foreign_qual_context	context;
 	List		*qual;
 	ListCell	*temp;
 
@@ -7665,45 +7738,34 @@ pgxc_process_having_clause(PlannerInfo *root, List *remote_tlist, Node *havingQu
 	qual = copyObject(havingQual);
 	foreach(temp, qual)
 	{
-		Node *expr = lfirst(temp);
-		pgxc_foreign_qual_context_init(&context);
-		if (!is_foreign_expr(expr, &context))
+		Node	*expr = lfirst(temp);
+		bool	has_aggs;
+		List	*vars_n_aggs;
+
+		if (!pgxc_is_expr_shippable((Expr *)expr, &has_aggs))
 		{
 			*reduce_plan = false;
 			break;
 		}
 
-		if (context.aggs)
+		if (has_aggs)
 		{
-				ListCell				*lcell;
-				/*
-				 * if the target list havingQual is an Aggref, then the context should
-				 * have only one Aggref in the list and no VARs.
-				 */
-				Assert(!IsA(expr, Aggref) ||
-							(list_length(context.aggs) == 1 &&
-							linitial(context.aggs) == expr &&
-							!context.vars));
-				/* copy the aggregates into the remote target list */
-				foreach (lcell, context.aggs)
-				{
-					Assert(IsA(lfirst(lcell), Aggref));
-					remote_tlist = pgxc_add_node_to_grouping_tlist(remote_tlist, lfirst(lcell),
-																	0);
-				}
-				/* copy the vars into the remote target list */
-				foreach (lcell, context.vars)
-				{
-					Assert(IsA(lfirst(lcell), Var));
-					remote_tlist = pgxc_add_node_to_grouping_tlist(remote_tlist, lfirst(lcell),
-																	0);
-				}
-				*local_qual = lappend(*local_qual, expr);
+			ListCell	*lcell;
+
+			/* Pull the aggregates and var nodes from the quals */
+			vars_n_aggs = pull_var_clause(expr, PVC_INCLUDE_AGGREGATES,
+											PVC_RECURSE_PLACEHOLDERS);
+			/* copy the aggregates into the remote target list */
+			foreach (lcell, vars_n_aggs)
+			{
+				Assert(IsA(lfirst(lcell), Aggref) || IsA(lfirst(lcell), Var));
+				remote_tlist = pgxc_add_node_to_grouping_tlist(remote_tlist, lfirst(lcell),
+																0);
+			}
+			*local_qual = lappend(*local_qual, expr);
 		}
 		else
 			*remote_qual = lappend(*remote_qual, expr);
-
-		pgxc_foreign_qual_context_free(&context);
 	}
 
 	if (!(*reduce_plan))
@@ -7736,7 +7798,7 @@ pgxc_set_en_expr(Oid tableoid, Index resultRelationIndex)
 	 * For round robin distributed tables, tuples must be divided equally
 	 * between the nodes.
 	 *
-	 * For replicated tables, tuple must be inserted in all the data nodes
+	 * For replicated tables, tuple must be inserted in all the Datanodes
 	 *
 	 * XXX Need further testing for replicated and round-robin tables
 	 */
@@ -7766,6 +7828,149 @@ pgxc_set_en_expr(Oid tableoid, Index resultRelationIndex)
 	ReleaseSysCache(tp);
 
 	return (Expr *) var;
+}
+
+/*
+ * pgxc_count_rowmarks_entries
+ * Count the number of rowmarks that need to be added as prepared parameters
+ * for remote DML plan
+ */
+static int
+pgxc_count_rowmarks_entries(List *rowMarks)
+{
+	int res = 0;
+	ListCell *elt;
+
+	foreach(elt, rowMarks)
+	{
+		PlanRowMark *rc = (PlanRowMark *) lfirst(elt);
+
+		/* RowMarks with different parent are not needed */
+		if (rc->rti != rc->prti)
+			continue;
+
+		/*
+		 * Count the entry and move to next element
+		 * For a non-parent rowmark, only ctid is used.
+		 * For a parent rowmark, ctid and tableoid are used.
+		 */
+		if (!rc->isParent)
+			res++;
+		else
+			res = res + 2;
+	}
+
+	return res;
+}
+
+/*
+ * pgxc_build_rowmark_entries
+ * Complete type array for SetRemoteStatementName based on given RowMarks list
+ * The list of total parameters is calculated based on the current number of prepared
+ * parameters and the rowmark list.
+ */
+static Oid *
+pgxc_build_rowmark_entries(List *rowMarks, List *rtable, Oid *types, int prepparams, int totparams)
+{
+	Oid *newtypes = types;
+	int rowmark_entry_num;
+	int count = prepparams;
+	ListCell *elt;
+
+	/* No modifications is list is empty */
+	if (rowMarks == NIL)
+		return newtypes;
+
+	/* Nothing to do, total number of parameters is already correct */
+	if (prepparams == totparams)
+		return newtypes;
+
+	/* Fetch number of extra entries related to Rowmarks */
+	rowmark_entry_num = pgxc_count_rowmarks_entries(rowMarks);
+
+	/* Nothing to do */
+	if (rowmark_entry_num == 0)
+		return newtypes;
+
+	/* This needs to be absolutely verified */
+	Assert(totparams == (prepparams + rowmark_entry_num));
+
+	foreach(elt, rowMarks)
+	{
+		PlanRowMark *rc = (PlanRowMark *) lfirst(elt);
+
+		/* RowMarks with different parent are not needed */
+		if (rc->rti != rc->prti)
+			continue;
+
+		/* Determine the correct parameter type */
+		switch (rc->markType)
+		{
+			case ROW_MARK_COPY:
+			{
+				RangeTblEntry *rte = rt_fetch(rc->prti, rtable);
+
+				/*
+				 * PGXCTODO: We still need to determine the rowtype
+				 * in case relation involved here is a view (see inherit.sql).
+				 */
+				if (!OidIsValid(rte->relid))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("Cannot generate remote query plan"),
+							 errdetail("This relation rowtype cannot be fetched")));
+
+				/*
+				 * This is the complete copy of a row, so it is necessary
+				 * to set parameter as a rowtype
+				 */
+				count++;
+				newtypes[count - 1] = get_rel_type_id(rte->relid);
+			}
+			break;
+
+			case ROW_MARK_REFERENCE:
+				/* Here we have a ctid for sure */
+				count++;
+				newtypes[count - 1] = TIDOID;
+
+				if (rc->isParent)
+				{
+					/* For a parent table, tableoid is also necessary */
+					count++;
+					/* Set parameter type */
+					newtypes[count - 1] = OIDOID;
+				}
+				break;
+
+			/* Ignore other entries */
+			case ROW_MARK_SHARE:
+			case ROW_MARK_EXCLUSIVE:
+				default:
+				break;
+		}
+	}
+
+	/* This should not happen */
+	if (count != totparams)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_EXCEPTION),
+				 errmsg("Error when generating remote query plan")));
+
+	return newtypes;
+}
+
+static RangeTblEntry *
+make_dummy_remote_rte(char *relname, Alias *alias)
+{
+	RangeTblEntry *dummy_rte = makeNode(RangeTblEntry);
+	dummy_rte->rtekind = RTE_REMOTE_DUMMY;
+
+	/* use a dummy relname... */
+	dummy_rte->relname		 = relname;
+	dummy_rte->eref			 = alias;
+
+	return dummy_rte;
 }
 #endif /* XCP */
 #endif /* PGXC */

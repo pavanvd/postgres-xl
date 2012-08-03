@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -46,7 +46,7 @@ GTM_ThreadAdd(GTM_ThreadInfo *thrinfo)
 
 		/*
 		 * TODO Optimize lock management by not holding any locks during memory
-		 * allocation
+		 * allocation.
 		 */
 		if (GTMThreads->gt_array_size == GTM_MAX_THREADS)
 			elog(ERROR, "Too many threads active");
@@ -264,7 +264,6 @@ GTM_ThreadCleanup(void *argp)
 
 	elog(LOG, "Cleaning up thread state");
 
-#ifdef XCP
 	if (thrinfo->thr_status == GTM_THREAD_BACKUP)
 	{
 		int 			ii;
@@ -275,7 +274,6 @@ GTM_ThreadCleanup(void *argp)
 				GTM_RWLockRelease(&GTMThreads->gt_threads[ii]->thr_lock);
 		}
 	}
-#endif
 
 	/*
 	 * Close a connection to GTM standby.
@@ -306,7 +304,7 @@ GTM_ThreadCleanup(void *argp)
 	 * our memory contextes easily.
 	 *
 	 * XXX We don't setup cleanup handlers for the main process. So this
-	 * routine would never be called for the main process/thread
+	 * routine would never be called for the main process/thread.
 	 */
 	MemoryContextSwitchTo(thrinfo->thr_parent_context);
 
@@ -327,7 +325,7 @@ GTM_ThreadCleanup(void *argp)
 
 	/*
 	 * Reset the thread-specific information. This should be done only after we
-	 * are sure that memory contextes are not required
+	 * are sure that memory contextes are not required.
 	 *
 	 * Note: elog calls need memory contextes, so no elog calls beyond this
 	 * point.
@@ -340,7 +338,7 @@ GTM_ThreadCleanup(void *argp)
 /*
  * A wrapper around the start routine of the thread. This helps us doing any
  * initialization and setting up cleanup handlers before the main routine is
- * started
+ * started.
  */
 void *
 GTM_ThreadMainWrapper(void *argp)
@@ -397,4 +395,3 @@ GTM_DoForAllOtherThreads(void (* process_routine)(GTM_ThreadInfo *))
 			(process_routine)(GTMThreads->gt_threads[ii]);
 	}
 }
-

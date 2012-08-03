@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -77,7 +77,8 @@ set_portable_input(bool value)
 /* And a few guys need only the pg_strtok support fields */
 #define READ_TEMP_LOCALS()	\
 	char	   *token;		\
-	int			length
+	int			length;		\
+	(void) token /* possibly unused */
 
 /* ... but most need both */
 #define READ_LOCALS(nodeTypeName)			\

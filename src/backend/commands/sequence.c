@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -101,6 +101,15 @@ typedef struct drop_sequence_callback_arg
 	GTM_SequenceDropType type;
 	GTM_SequenceKeyType key;
 } drop_sequence_callback_arg;
+
+/*
+ * Arguments for callback of sequence rename on GTM
+ */
+typedef struct rename_sequence_callback_arg
+{
+	char *newseqname;
+	char *oldseqname;
+} rename_sequence_callback_arg;
 #endif
 
 /*
@@ -519,8 +528,8 @@ AlterSequence(AlterSeqStmt *stmt)
 	bool			is_restart;
 #endif
 
-	/* open and AccessShareLock sequence */
-	relid = RangeVarGetRelid(stmt->sequence, false);
+	/* Open and lock sequence. */
+	relid = RangeVarGetRelid(stmt->sequence, AccessShareLock, false, false);
 	init_sequence(relid, &elm, &seqrel);
 
 	/* allow ALTER to sequence owner only */
@@ -639,7 +648,16 @@ nextval(PG_FUNCTION_ARGS)
 	Oid			relid;
 
 	sequence = makeRangeVarFromNameList(textToQualifiedNameList(seqin));
-	relid = RangeVarGetRelid(sequence, false);
+
+	/*
+	 * XXX: This is not safe in the presence of concurrent DDL, but
+	 * acquiring a lock here is more expensive than letting nextval_internal
+	 * do it, since the latter maintains a cache that keeps us from hitting
+	 * the lock manager more than once per transaction.  It's not clear
+	 * whether the performance penalty is material in practice, but for now,
+	 * we do it this way.
+	 */
+	relid = RangeVarGetRelid(sequence, NoLock, false, false);
 
 	PG_RETURN_INT64(nextval_internal(relid));
 }
@@ -1916,6 +1934,71 @@ seq_desc(StringInfo buf, uint8 xl_info, char *rec)
 }
 
 #ifdef PGXC
+/*
+ * Register a callback for a sequence rename drop on GTM
+ */
+void
+register_sequence_rename_cb(char *oldseqname, char *newseqname)
+{
+	rename_sequence_callback_arg *args;
+	char *oldseqnamearg = NULL;
+	char *newseqnamearg = NULL;
+
+	/* All the arguments are transaction-dependent, so save them in TopTransactionContext */
+	args = (rename_sequence_callback_arg *)
+		MemoryContextAlloc(TopTransactionContext, sizeof(rename_sequence_callback_arg));
+
+	oldseqnamearg = MemoryContextAlloc(TopTransactionContext, strlen(oldseqname) + 1);
+	newseqnamearg = MemoryContextAlloc(TopTransactionContext, strlen(newseqname) + 1);
+	sprintf(oldseqnamearg, "%s", oldseqname);
+	sprintf(newseqnamearg, "%s", newseqname);
+
+	args->oldseqname = oldseqnamearg;
+	args->newseqname = newseqnamearg;
+
+	RegisterGTMCallback(rename_sequence_cb, (void *) args);
+}
+
+/*
+ * Callback a sequence rename
+ */
+void
+rename_sequence_cb(GTMEvent event, void *args)
+{
+	rename_sequence_callback_arg *cbargs = (rename_sequence_callback_arg *) args;
+	char *newseqname = cbargs->newseqname;
+	char *oldseqname = cbargs->oldseqname;
+	int err = 0;
+
+	/*
+	 * A sequence is here renamed to its former name only when a transaction
+	 * that involved a sequence rename was dropped.
+	 */
+	switch (event)
+	{
+		case GTM_EVENT_ABORT:
+			/*
+			 * Here sequence is renamed to its former name
+			 * so what was new becomes old.
+			 */
+			err = RenameSequenceGTM(newseqname, oldseqname);
+			break;
+		case GTM_EVENT_COMMIT:
+		case GTM_EVENT_PREPARE:
+			/* Nothing to do */
+			break;
+		default:
+			Assert(0);
+	}
+
+	/* Report error if necessary */
+	if (err < 0 && event != GTM_EVENT_ABORT)
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("GTM error, could not rename sequence")));
+}
+
+
 /*
  * Register a callback for a sequence drop on GTM
  */

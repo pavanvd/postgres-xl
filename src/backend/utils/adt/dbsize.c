@@ -51,9 +51,9 @@ static int64 pgxc_exec_sizefunc(Oid relOid, char *funcname, char *extra_arg);
 
 /*
  * Below macro is important when the object size functions are called
- * for system catalog tables. For pg_catalog tables and other coordinator-only
- * tables, we should return the data from coordinator. If we don't find
- * locator info, that means it is a coordinator-only table.
+ * for system catalog tables. For pg_catalog tables and other Coordinator-only
+ * tables, we should return the data from Coordinator. If we don't find
+ * locator info, that means it is a Coordinator-only table.
  */
 #define COLLECT_FROM_DATANODES(relid) \
 	(IS_PGXC_COORDINATOR && !IsConnFromCoord() && \
@@ -740,7 +740,7 @@ pg_relation_filepath(PG_FUNCTION_ARGS)
 
 /*
  * pgxc_tablespace_size
- * Given a tablespace oid, return sum of pg_tablespace_size() executed on all the datanodes
+ * Given a tablespace oid, return sum of pg_tablespace_size() executed on all the Datanodes
  */
 static Datum
 pgxc_tablespace_size(Oid tsOid)
@@ -765,7 +765,7 @@ pgxc_tablespace_size(Oid tsOid)
 
 /*
  * pgxc_database_size
- * Given a dboid, return sum of pg_database_size() executed on all the datanodes
+ * Given a dboid, return sum of pg_database_size() executed on all the Datanodes
  */
 static Datum
 pgxc_database_size(Oid dbOid)
@@ -875,15 +875,12 @@ pgxc_execute_on_nodes(int numnodes, Oid *nodelist, char *query)
 
 	initStringInfo(&buf);
 
-	/* Get pg_***_size function results from all data nodes */
+	/* Get pg_***_size function results from all Datanodes */
 	for (i = 0; i < numnodes; i++)
 	{
 		nodename = get_pgxc_nodename(nodelist[i]);
-		resetStringInfo(&buf);
-		appendStringInfo(&buf, "EXECUTE DIRECT ON %s %s",
-		                 nodename, quote_literal_cstr(query));
 
-		ret = SPI_execute(buf.data, false, 0);
+		ret = SPI_execute_direct(query, nodename);
 		spi_tupdesc = SPI_tuptable->tupdesc;
 
 		if (ret != SPI_OK_SELECT)
@@ -921,7 +918,7 @@ pgxc_execute_on_nodes(int numnodes, Oid *nodelist, char *query)
 
 /*
  * pgxc_exec_sizefunc
- * Execute the given object size system function on all the datanodes associated
+ * Execute the given object size system function on all the Datanodes associated
  * with relOid, and return the sum of all.
  *
  * Args:

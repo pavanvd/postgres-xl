@@ -1,8 +1,15 @@
-# Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
-
+#----------------------------------------------------------------------------
+#
+# Postgres-XC GTM client makefile
+#
+# Copyright(c) 2010-2012 Postgres-XC Development Group
+#
+# src/gtm/client/Makefile
+#
+#-----------------------------------------------------------------------------
 top_builddir=../../..
 include $(top_builddir)/src/Makefile.global
-
+subdir=src/gtm/client
 
 NAME=gtmclient
 SO_MAJOR_VERSION= 1
@@ -15,7 +22,7 @@ LIBS=-lpthread
 
 all:all-lib
 
-include $(top_builddir)/src/Makefile.shlib
+include $(top_srcdir)/src/Makefile.shlib
 
 clean:
 	rm -f $(OBJS)

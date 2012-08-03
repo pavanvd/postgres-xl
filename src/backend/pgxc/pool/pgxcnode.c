@@ -7,7 +7,7 @@
  *
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * IDENTIFICATION
  *	  $$
@@ -53,6 +53,8 @@
 #include "storage/ipc.h"
 #include "utils/snapmgr.h"
 #endif
+
+#define CMD_ID_MSG_LEN 8
 
 /* Number of connections held */
 static int	datanode_count = 0;
@@ -263,7 +265,7 @@ PGXCNodeConnStr(char *host, int port, char *dbname,
 
 	/*
 	 * Build up connection string
-	 * remote type can be coordinator, datanode or application.
+	 * remote type can be Coordinator, Datanode or application.
 	 */
 #ifdef XCP
 	num = snprintf(connstr, sizeof(connstr),
@@ -528,6 +530,10 @@ retry:
 	{
 		/* Handle timeout */
 		elog(DEBUG1, "timeout while waiting for response");
+#ifdef XCP
+		for (i = 0; i < conn_count; i++)
+			connections[i]->state = DN_CONNECTION_STATE_ERROR_FATAL;
+#endif
 		return NO_ERROR_OCCURED;
 	}
 
@@ -844,7 +850,13 @@ release_handles(void)
 		if (handle->sock != NO_SOCKET)
 		{
 #ifdef XCP
-			if (handle->state != DN_CONNECTION_STATE_IDLE)
+			/*
+			 * Connections at this point should be completely inactive,
+			 * otherwise abaandon them. We can not allow not cleaned up
+			 * connection is returned to pool.
+			 */
+			if (handle->state != DN_CONNECTION_STATE_IDLE ||
+					handle->transaction_status != 'I')
 			{
 				destroy = true;
 				elog(DEBUG1, "Connection to Datanode %d has unexpected state %d and will be dropped",
@@ -871,7 +883,13 @@ release_handles(void)
 		if (handle->sock != NO_SOCKET)
 		{
 #ifdef XCP
-			if (handle->state != DN_CONNECTION_STATE_IDLE)
+			/*
+			 * Connections at this point should be completely inactive,
+			 * otherwise abaandon them. We can not allow not cleaned up
+			 * connection is returned to pool.
+			 */
+			if (handle->state != DN_CONNECTION_STATE_IDLE ||
+					handle->transaction_status != 'I')
 			{
 				destroy = true;
 				elog(DEBUG1, "Connection to Coordinator %d has unexpected state %d and will be dropped",
@@ -1297,7 +1315,7 @@ pgxc_node_send_parse(PGXCNodeHandle * handle, const char* statement,
 	/*
 	 * instead of parameter ids we should send parameter names (qualified by
 	 * schema name if required). The OIDs of types can be different on
-	 * datanodes.
+	 * Datanodes.
 	 */
 	for (cnt_params = 0; cnt_params < num_params; cnt_params++)
 	{
@@ -1810,6 +1828,40 @@ pgxc_node_send_gxid(PGXCNodeHandle *handle, GlobalTransactionId gxid)
 	return 0;
 }
 
+/*
+ * Send the Command ID down to the PGXC node
+ */
+int
+pgxc_node_send_cmd_id(PGXCNodeHandle *handle, CommandId cid)
+{
+	int			msglen = CMD_ID_MSG_LEN;
+	int			i32;
+
+	/* No need to send command ID if its sending flag is not enabled */
+	if (!IsSendCommandId())
+		return 0;
+
+	/* Invalid connection state, return error */
+	if (handle->state != DN_CONNECTION_STATE_IDLE)
+		return EOF;
+
+	/* msgType + msgLen */
+	if (ensure_out_buffer_capacity(handle->outEnd + 1 + msglen, handle) != 0)
+	{
+		add_error_message(handle, "out of memory");
+		return EOF;
+	}
+
+	handle->outBuffer[handle->outEnd++] = 'M';
+	msglen = htonl(msglen);
+	memcpy(handle->outBuffer + handle->outEnd, &msglen, 4);
+	handle->outEnd += 4;
+	i32 = htonl(cid);
+	memcpy(handle->outBuffer + handle->outEnd, &i32, 4);
+	handle->outEnd += 4;
+
+	return 0;
+}
 
 /*
  * Send the snapshot down to the PGXC node
@@ -2134,7 +2186,7 @@ get_handles(List *datanodelist, List *coordlist, bool is_coord_only_query)
 	/*
 	 * Get Handles for Coordinators
 	 * If node list is empty execute request on current nodes
-	 * There are transactions where the coordinator list is NULL Ex:COPY
+	 * There are transactions where the Coordinator list is NULL Ex:COPY
 	 */
 
 	if (coordlist)

@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2010, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -35,7 +35,7 @@ Recovery_IsStandby(void)
 	GTM_RWLockAcquire(&StandbyLock, GTM_LOCKMODE_READ);
 	res = GTM_StandbyMode;
 	GTM_RWLockRelease(&StandbyLock);
-	return GTM_StandbyMode;
+	return res;
 }
 
 void

@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -57,6 +57,7 @@
 #include "nodes/nodeFuncs.h"
 #include "nodes/parsenodes.h"
 #include "optimizer/clauses.h"
+#include "optimizer/planner.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
@@ -88,8 +89,11 @@
 #ifdef PGXC
 #include "pgxc/pgxc.h"
 #include "access/gtm.h"
+#include "catalog/pgxc_class.h"
+#include "catalog/pgxc_node.h"
 #include "commands/sequence.h"
 #include "pgxc/execRemote.h"
+#include "pgxc/redistrib.h"
 #endif
 
 /*
@@ -138,7 +142,12 @@ static List *on_commits = NIL;
 #define AT_PASS_ADD_INDEX		6		/* ADD indexes */
 #define AT_PASS_ADD_CONSTR		7		/* ADD constraints, defaults */
 #define AT_PASS_MISC			8		/* other stuff */
+#ifdef PGXC
+#define AT_PASS_DISTRIB			9		/* Redistribution pass */
+#define AT_NUM_PASSES			10
+#else
 #define AT_NUM_PASSES			9
+#endif
 
 typedef struct AlteredTableInfo
 {
@@ -265,7 +274,8 @@ static void AlterIndexNamespaces(Relation classRel, Relation rel,
 static void AlterSeqNamespaces(Relation classRel, Relation rel,
 				   Oid oldNspOid, Oid newNspOid,
 				   const char *newNspName, LOCKMODE lockmode);
-static void ATExecValidateConstraint(Relation rel, const char *constrName);
+static void ATExecValidateConstraint(Relation rel, char *constrName,
+						 bool recurse, bool recursing, LOCKMODE lockmode);
 static int transformColumnNameList(Oid relId, List *colList,
 						int16 *attnums, Oid *atttypids);
 static int transformFkeyGetPrimaryKey(Relation pkrel, Oid *indexOid,
@@ -276,6 +286,7 @@ static Oid transformFkeyCheckAttrs(Relation pkrel,
 						int numattrs, int16 *attnums,
 						Oid *opclasses);
 static void checkFkeyPermissions(Relation rel, int16 *attnums, int natts);
+static void validateCheckConstraint(Relation rel, HeapTuple constrtup);
 static void validateForeignKeyConstraint(char *conname,
 							 Relation rel, Relation pkrel,
 							 Oid pkindOid, Oid constraintOid);
@@ -371,6 +382,16 @@ static void drop_parent_dependency(Oid relid, Oid refclassid, Oid refobjid);
 static void ATExecAddOf(Relation rel, const TypeName *ofTypename, LOCKMODE lockmode);
 static void ATExecDropOf(Relation rel, LOCKMODE lockmode);
 static void ATExecGenericOptions(Relation rel, List *options);
+#ifdef PGXC
+static void AtExecDistributeBy(Relation rel, DistributeBy *options);
+static void AtExecSubCluster(Relation rel, PGXCSubCluster *options);
+static void AtExecAddNode(Relation rel, List *options);
+static void AtExecDeleteNode(Relation rel, List *options);
+static void ATCheckCmd(Relation rel, AlterTableCmd *cmd);
+static RedistribState *BuildRedistribCommands(Oid relid, List *subCmds);
+static Oid *delete_node_list(Oid *old_oids, int old_num, Oid *del_oids, int del_num, int *new_num);
+static Oid *add_node_list(Oid *old_oids, int old_num, Oid *add_oids, int add_num, int *new_num);
+#endif
 
 static void copy_relation_data(SMgrRelation rel, SMgrRelation dst,
 				   ForkNumber forkNum, char relpersistence);
@@ -436,6 +457,13 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId)
 				 errmsg("constraints on foreign tables are not supported")));
 
 	/*
+	 * Look up the namespace in which we are supposed to create the relation,
+	 * and check we have permission to create there.
+	 */
+	namespaceId = RangeVarGetAndCheckCreationNamespace(stmt->relation);
+	RangeVarAdjustRelationPersistence(stmt->relation, namespaceId);
+
+	/*
 	 * Security check: disallow creating temp tables from security-restricted
 	 * code.  This is needed because calling code might not expect untrusted
 	 * tables to appear in pg_temp at the front of its search path.
@@ -445,12 +473,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId)
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("cannot create temporary table within security-restricted operation")));
-
-	/*
-	 * Look up the namespace in which we are supposed to create the relation,
-	 * and check we have permission to create there.
-	 */
-	namespaceId = RangeVarGetAndCheckCreationNamespace(stmt->relation);
 
 	/*
 	 * Select tablespace to use.  If not specified, use default tablespace
@@ -567,6 +589,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId)
 			cooked->name = NULL;
 			cooked->attnum = attnum;
 			cooked->expr = colDef->cooked_default;
+			cooked->skip_validation = false;
 			cooked->is_local = true;	/* not used for defaults */
 			cooked->inhcount = 0;		/* ditto */
 			cookedDefaults = lappend(cookedDefaults, cooked);
@@ -784,8 +807,15 @@ RemoveRelations(DropStmt *drop)
 		 */
 		AcceptInvalidationMessages();
 
-		/* Look up the appropriate relation using namespace search */
-		relOid = RangeVarGetRelid(rel, true);
+		/*
+		 * Look up the appropriate relation using namespace search.
+		 *
+		 * XXX: Doing this without a lock is unsafe in the presence of
+		 * concurrent DDL, but acquiring a lock here might violate the rule
+		 * that a table must be locked before its corresponding index.
+		 * So, for now, we ignore the hazard.
+		 */
+		relOid = RangeVarGetRelid(rel, NoLock, true, false);
 
 		/* Not there? */
 		if (!OidIsValid(relOid))
@@ -1592,6 +1622,7 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 					cooked->name = pstrdup(name);
 					cooked->attnum = 0; /* not used for constraints */
 					cooked->expr = expr;
+					cooked->skip_validation = false;
 					cooked->is_local = false;
 					cooked->inhcount = 1;
 					constraints = lappend(constraints, cooked);
@@ -2253,6 +2284,8 @@ RenameRelation(Oid myrelid, const char *newrelname, ObjectType reltype)
 	/*
 	 * Grab an exclusive lock on the target table, index, sequence or view,
 	 * which we will NOT release until end of transaction.
+	 *
+	 * Lock level used here should match ExecRenameStmt
 	 */
 	targetrelation = relation_open(myrelid, AccessExclusiveLock);
 
@@ -2311,6 +2344,9 @@ RenameRelation(Oid myrelid, const char *newrelname, ObjectType reltype)
 			ereport(ERROR,
 					(errcode(ERRCODE_CONNECTION_FAILURE),
 					 errmsg("GTM error, could not rename sequence")));
+
+		/* Register a rename callback in case transaction is dropped */
+		register_sequence_rename_cb(seqname, newseqname);
 
 		pfree(seqname);
 		pfree(newseqname);
@@ -2492,7 +2528,17 @@ CheckTableNotInUse(Relation rel, const char *stmt)
  * lock level we want as we recurse may well be higher than required for
  * that specific subcommand. So we pass down the overall lock requirement,
  * rather than reassess it at lower levels.
+ *
  */
+#ifdef PGXC
+/*
+ * In Postgres-XC, an extension is added to ALTER TABLE for modification
+ * of the data distribution. Depending on the old and new distribution type
+ * of the relation redistributed, a list of redistribution subcommands is built.
+ * Data redistribution cannot be done in parallel of operations that need
+ * the table to be rewritten like column addition/deletion.
+ */
+#endif
 void
 AlterTable(AlterTableStmt *stmt)
 {
@@ -2617,6 +2663,31 @@ AlterTableInternal(Oid relid, List *cmds, bool recurse)
 LOCKMODE
 AlterTableGetLockLevel(List *cmds)
 {
+	/*
+	 * Late in 9.1 dev cycle a number of issues were uncovered with access
+	 * to catalog relations, leading to the decision to re-enforce all DDL
+	 * at AccessExclusiveLock level by default.
+	 *
+	 * The issues are that there is a pervasive assumption in the code that
+	 * the catalogs will not be read unless an AccessExclusiveLock is held.
+	 * If that rule is relaxed, we must protect against a number of potential
+	 * effects - infrequent, but proven possible with test cases where
+	 * multiple DDL operations occur in a stream against frequently accessed
+	 * tables.
+	 *
+	 * 1. Catalog tables are read using SnapshotNow, which has a race bug
+	 * that allows a scan to return no valid rows even when one is present
+	 * in the case of a commit of a concurrent update of the catalog table.
+	 * SnapshotNow also ignores transactions in progress, so takes the
+	 * latest committed version without waiting for the latest changes.
+	 *
+	 * 2. Relcache needs to be internally consistent, so unless we lock the
+	 * definition during reads we have no way to guarantee that.
+	 *
+	 * 3. Catcache access isn't coordinated at all so refreshes can occur at
+	 * any time.
+	 */
+#ifdef REDUCED_ALTER_TABLE_LOCK_LEVELS
 	ListCell   *lcmd;
 	LOCKMODE	lockmode = ShareUpdateExclusiveLock;
 
@@ -2653,6 +2724,15 @@ AlterTableGetLockLevel(List *cmds)
 			case AT_GenericOptions:
 				cmd_lockmode = AccessExclusiveLock;
 				break;
+
+#ifdef PGXC
+			case AT_DistributeBy:		/* Changes table distribution type */
+			case AT_SubCluster:			/* Changes node list of distribution */
+			case AT_AddNodeList:		/* Adds nodes in distribution */
+			case AT_DeleteNodeList:		/* Deletes nodes in distribution */
+				cmd_lockmode = ExclusiveLock;
+				break;
+#endif
 
 				/*
 				 * These subcommands affect write operations only.
@@ -2765,6 +2845,9 @@ AlterTableGetLockLevel(List *cmds)
 		if (cmd_lockmode > lockmode)
 			lockmode = cmd_lockmode;
 	}
+#else
+	LOCKMODE	lockmode = AccessExclusiveLock;
+#endif
 
 	return lockmode;
 }
@@ -2774,20 +2857,98 @@ ATController(Relation rel, List *cmds, bool recurse, LOCKMODE lockmode)
 {
 	List	   *wqueue = NIL;
 	ListCell   *lcmd;
+#ifdef PGXC
+	RedistribState   *redistribState = NULL;
+#endif
 
 	/* Phase 1: preliminary examination of commands, create work queue */
 	foreach(lcmd, cmds)
 	{
 		AlterTableCmd *cmd = (AlterTableCmd *) lfirst(lcmd);
 
+#ifdef PGXC
+		/* Check restrictions of ALTER TABLE in cluster */
+		ATCheckCmd(rel, cmd);
+#endif
+
 		ATPrepCmd(&wqueue, rel, cmd, recurse, false, lockmode);
 	}
+
+#ifdef PGXC
+	/* Only check that on local Coordinator */
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		ListCell   *ltab;
+
+		/*
+		 * Redistribution is only applied to the parent table and not subsequent
+		 * children. It is also not applied in recursion. This needs to be done
+		 * once all the commands have been treated.
+		 */
+		foreach(ltab, wqueue)
+		{
+			AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
+
+			if (RelationGetRelid(rel) == tab->relid &&
+				list_length(tab->subcmds[AT_PASS_DISTRIB]) > 0)
+			{
+				/*
+				 * Check if there are any commands incompatible
+				 * with redistribution. For the time being no other commands
+				 * are authorized.
+				 */
+				if (list_length(tab->subcmds[AT_PASS_ADD_COL]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_DROP]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_ALTER_TYPE]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_OLD_CONSTR]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_COL_ATTRS]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_ADD_COL]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_ADD_INDEX]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_ADD_CONSTR]) > 0 ||
+					list_length(tab->subcmds[AT_PASS_MISC]) > 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+							 errmsg("Incompatible operation with data redistribution")));
+
+
+					/* Scan redistribution commands and improve operation */
+					redistribState = BuildRedistribCommands(RelationGetRelid(rel),
+														tab->subcmds[AT_PASS_DISTRIB]);
+					break;
+			}
+		}
+	}
+#endif
 
 	/* Close the relation, but keep lock until commit */
 	relation_close(rel, NoLock);
 
+#ifdef PGXC
+	/* Perform pre-catalog-update redistribution operations */
+	PGXCRedistribTable(redistribState, CATALOG_UPDATE_BEFORE);
+#endif
+
 	/* Phase 2: update system catalogs */
 	ATRewriteCatalogs(&wqueue, lockmode);
+
+#ifdef PGXC
+	/* Invalidate cache for redistributed relation */
+	if (redistribState)
+	{
+		Relation rel2 = relation_open(redistribState->relid, NoLock);
+
+		/* Invalidate all entries related to this relation */
+		CacheInvalidateRelcache(rel2);
+
+		/* Make sure locator info is rebuilt */
+		RelationCacheInvalidateEntry(redistribState->relid);
+		relation_close(rel2, NoLock);
+	}
+
+	/* Perform post-catalog-update redistribution operations */
+	PGXCRedistribTable(redistribState, CATALOG_UPDATE_AFTER);
+	FreeRedistribState(redistribState);
+#endif
 
 	/* Phase 3: scan/rewrite tables as needed */
 	ATRewriteTables(&wqueue, lockmode);
@@ -2977,7 +3138,14 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			ATPrepAddInherit(rel);
 			pass = AT_PASS_MISC;
 			break;
-		case AT_ValidateConstraint:
+		case AT_ValidateConstraint:		/* VALIDATE CONSTRAINT */
+			ATSimplePermissions(rel, ATT_TABLE);
+			/* Recursion occurs during execution phase */
+			/* No command-specific prep needed except saving recurse flag */
+			if (recurse)
+				cmd->subtype = AT_ValidateConstraintRecurse;
+			pass = AT_PASS_MISC;
+			break;
 		case AT_EnableTrig:		/* ENABLE TRIGGER variants */
 		case AT_EnableAlwaysTrig:
 		case AT_EnableReplicaTrig:
@@ -3003,6 +3171,16 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			/* No command-specific prep needed */
 			pass = AT_PASS_MISC;
 			break;
+#ifdef PGXC
+		case AT_DistributeBy:
+		case AT_SubCluster:
+		case AT_AddNodeList:
+		case AT_DeleteNodeList:
+			ATSimplePermissions(rel, ATT_TABLE);
+			/* No command-specific prep needed */
+			pass = AT_PASS_DISTRIB;
+			break;
+#endif
 		default:				/* oops */
 			elog(ERROR, "unrecognized alter table type: %d",
 				 (int) cmd->subtype);
@@ -3142,8 +3320,12 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		case AT_AddIndexConstraint:		/* ADD CONSTRAINT USING INDEX */
 			ATExecAddIndexConstraint(tab, rel, (IndexStmt *) cmd->def, lockmode);
 			break;
-		case AT_ValidateConstraint:
-			ATExecValidateConstraint(rel, cmd->name);
+		case AT_ValidateConstraint:		/* VALIDATE CONSTRAINT */
+			ATExecValidateConstraint(rel, cmd->name, false, false, lockmode);
+			break;
+		case AT_ValidateConstraintRecurse:	/* VALIDATE CONSTRAINT with
+											 * recursion */
+			ATExecValidateConstraint(rel, cmd->name, true, false, lockmode);
 			break;
 		case AT_DropConstraint:	/* DROP CONSTRAINT */
 			ATExecDropConstraint(rel, cmd->name, cmd->behavior,
@@ -3266,6 +3448,20 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		case AT_GenericOptions:
 			ATExecGenericOptions(rel, (List *) cmd->def);
 			break;
+#ifdef PGXC
+		case AT_DistributeBy:
+			AtExecDistributeBy(rel, (DistributeBy *) cmd->def);
+			break;
+		case AT_SubCluster:
+			AtExecSubCluster(rel, (PGXCSubCluster *) cmd->def);
+			break;
+		case AT_AddNodeList:
+			AtExecAddNode(rel, (List *) cmd->def);
+			break;
+		case AT_DeleteNodeList:
+			AtExecDeleteNode(rel, (List *) cmd->def);
+			break;
+#endif
 		default:				/* oops */
 			elog(ERROR, "unrecognized alter table type: %d",
 				 (int) cmd->subtype);
@@ -3291,6 +3487,17 @@ ATRewriteTables(List **wqueue, LOCKMODE lockmode)
 	foreach(ltab, *wqueue)
 	{
 		AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
+
+#ifdef PGXC
+		/* Forbid table rewrite operations with online data redistribution */
+		if (tab->rewrite &&
+			list_length(tab->subcmds[AT_PASS_DISTRIB]) > 0 &&
+			IS_PGXC_COORDINATOR &&
+			!IsConnFromCoord())
+			ereport(ERROR,
+					(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+					 errmsg("Incompatible operation with data redistribution")));
+#endif
 
 		/* Foreign tables have no storage. */
 		if (tab->relkind == RELKIND_FOREIGN_TABLE)
@@ -3406,8 +3613,8 @@ ATRewriteTables(List **wqueue, LOCKMODE lockmode)
 	/*
 	 * In PGXC, do not check the FK constraints on the Coordinator, and just return
 	 * That is because a SELECT is generated whose plan will try and use
-	 * the data nodes. We (currently) do not want to do that on the Coordinator,
-	 * when the command is passed down to the data nodes it will
+	 * the Datanodes. We (currently) do not want to do that on the Coordinator,
+	 * when the command is passed down to the Datanodes it will
 	 * peform the check locally.
 	 * This issue was introduced when we added multi-step handling,
 	 * it caused foreign key constraints to fail.
@@ -3439,14 +3646,12 @@ ATRewriteTables(List **wqueue, LOCKMODE lockmode)
 				Relation	refrel;
 
 				if (rel == NULL)
+				{
 					/* Long since locked, no need for another */
 					rel = heap_open(tab->relid, NoLock);
+				}
 
-				/*
-				 * We're adding a trigger to both tables, so the lock level
-				 * here should sensibly reflect that.
-				 */
-				refrel = heap_open(con->refrelid, ShareRowExclusiveLock);
+				refrel = heap_open(con->refrelid, RowShareLock);
 
 				validateForeignKeyConstraint(fkconstraint->conname, rel, refrel,
 											 con->refindid,
@@ -3554,7 +3759,8 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	{
 		NewColumnValue *ex = lfirst(l);
 
-		ex->exprstate = ExecPrepareExpr((Expr *) ex->expr, estate);
+		/* expr already planned */
+		ex->exprstate = ExecInitExpr((Expr *) ex->expr, NULL);
 	}
 
 	notnull_attrs = NIL;
@@ -4025,28 +4231,28 @@ find_composite_type_dependencies(Oid typeOid, Relation origRelation,
 			if (origTypeName)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter type \"%s\" because column \"%s\".\"%s\" uses it",
+						 errmsg("cannot alter type \"%s\" because column \"%s.%s\" uses it",
 								origTypeName,
 								RelationGetRelationName(rel),
 								NameStr(att->attname))));
 			else if (origRelation->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter type \"%s\" because column \"%s\".\"%s\" uses it",
+						 errmsg("cannot alter type \"%s\" because column \"%s.%s\" uses it",
 								RelationGetRelationName(origRelation),
 								RelationGetRelationName(rel),
 								NameStr(att->attname))));
 			else if (origRelation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter foreign table \"%s\" because column \"%s\".\"%s\" uses its rowtype",
+						 errmsg("cannot alter foreign table \"%s\" because column \"%s.%s\" uses its row type",
 								RelationGetRelationName(origRelation),
 								RelationGetRelationName(rel),
 								NameStr(att->attname))));
 			else
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter table \"%s\" because column \"%s\".\"%s\" uses its rowtype",
+						 errmsg("cannot alter table \"%s\" because column \"%s.%s\" uses its row type",
 								RelationGetRelationName(origRelation),
 								RelationGetRelationName(rel),
 								NameStr(att->attname))));
@@ -4457,7 +4663,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 
 			newval = (NewColumnValue *) palloc0(sizeof(NewColumnValue));
 			newval->attnum = attribute.attnum;
-			newval->expr = defval;
+			newval->expr = expression_planner(defval);
 
 			tab->newvals = lappend(tab->newvals, newval);
 			tab->rewrite = true;
@@ -5441,19 +5647,23 @@ ATAddCheckConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 										list_make1(copyObject(constr)),
 										recursing, !recursing);
 
-	/* Add each constraint to Phase 3's queue */
+	/* Add each to-be-validated constraint to Phase 3's queue */
 	foreach(lcon, newcons)
 	{
 		CookedConstraint *ccon = (CookedConstraint *) lfirst(lcon);
-		NewConstraint *newcon;
 
-		newcon = (NewConstraint *) palloc0(sizeof(NewConstraint));
-		newcon->name = ccon->name;
-		newcon->contype = ccon->contype;
-		/* ExecQual wants implicit-AND format */
-		newcon->qual = (Node *) make_ands_implicit((Expr *) ccon->expr);
+		if (!ccon->skip_validation)
+		{
+			NewConstraint *newcon;
 
-		tab->constraints = lappend(tab->constraints, newcon);
+			newcon = (NewConstraint *) palloc0(sizeof(NewConstraint));
+			newcon->name = ccon->name;
+			newcon->contype = ccon->contype;
+			/* ExecQual wants implicit-AND format */
+			newcon->qual = (Node *) make_ands_implicit((Expr *) ccon->expr);
+
+			tab->constraints = lappend(tab->constraints, newcon);
+		}
 
 		/* Save the actually assigned name if it was defaulted */
 		if (constr->conname == NULL)
@@ -5538,7 +5748,14 @@ ATAddForeignKeyConstraint(AlteredTableInfo *tab, Relation rel,
 	Oid			indexOid;
 	Oid			constrOid;
 
-	pkrel = heap_openrv(fkconstraint->pktable, lockmode);
+	/*
+	 * Grab an exclusive lock on the pk table, so that someone doesn't delete
+	 * rows out from under us. (Although a lesser lock would do for that
+	 * purpose, we'll need exclusive lock anyway to add triggers to the pk
+	 * table; trying to start with a lesser lock will just create a risk of
+	 * deadlock.)
+	 */
+	pkrel = heap_openrv(fkconstraint->pktable, AccessExclusiveLock);
 
 	/*
 	 * Validity checks (permission checks wait till we have the column
@@ -5785,9 +6002,9 @@ ATAddForeignKeyConstraint(AlteredTableInfo *tab, Relation rel,
 	createForeignKeyTriggers(rel, fkconstraint, constrOid, indexOid);
 
 	/*
-	 * Tell Phase 3 to check that the constraint is satisfied by existing rows
-	 * We can skip this during table creation or if requested explicitly by
-	 * specifying NOT VALID on an alter table statement.
+	 * Tell Phase 3 to check that the constraint is satisfied by existing rows.
+	 * We can skip this during table creation, or if requested explicitly by
+	 * specifying NOT VALID in an ADD FOREIGN KEY command.
 	 */
 	if (!fkconstraint->skip_validation)
 	{
@@ -5812,9 +6029,15 @@ ATAddForeignKeyConstraint(AlteredTableInfo *tab, Relation rel,
 
 /*
  * ALTER TABLE VALIDATE CONSTRAINT
+ *
+ * XXX The reason we handle recursion here rather than at Phase 1 is because
+ * there's no good way to skip recursing when handling foreign keys: there is
+ * no need to lock children in that case, yet we wouldn't be able to avoid
+ * doing so at that level.
  */
 static void
-ATExecValidateConstraint(Relation rel, const char *constrName)
+ATExecValidateConstraint(Relation rel, char *constrName, bool recurse,
+						 bool recursing, LOCKMODE lockmode)
 {
 	Relation	conrel;
 	SysScanDesc scan;
@@ -5822,6 +6045,15 @@ ATExecValidateConstraint(Relation rel, const char *constrName)
 	HeapTuple	tuple;
 	Form_pg_constraint con = NULL;
 	bool		found = false;
+
+#ifdef XCP
+	/*
+	 * Do not validate distributed relations on Coordinator, let Datanode do
+	 * that when executing the ALTER TABLE statement.
+	 */
+	if (IS_PGXC_COORDINATOR && rel->rd_locator_info)
+		return;
+#endif
 
 	conrel = heap_open(ConstraintRelationId, RowExclusiveLock);
 
@@ -5838,8 +6070,7 @@ ATExecValidateConstraint(Relation rel, const char *constrName)
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
 		con = (Form_pg_constraint) GETSTRUCT(tuple);
-		if (con->contype == CONSTRAINT_FOREIGN &&
-			strcmp(NameStr(con->conname), constrName) == 0)
+		if (strcmp(NameStr(con->conname), constrName) == 0)
 		{
 			found = true;
 			break;
@@ -5849,45 +6080,117 @@ ATExecValidateConstraint(Relation rel, const char *constrName)
 	if (!found)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("foreign key constraint \"%s\" of relation \"%s\" does not exist",
+				 errmsg("constraint \"%s\" of relation \"%s\" does not exist",
+						constrName, RelationGetRelationName(rel))));
+
+	if (con->contype != CONSTRAINT_FOREIGN &&
+		con->contype != CONSTRAINT_CHECK)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("constraint \"%s\" of relation \"%s\" is not a foreign key or check constraint",
 						constrName, RelationGetRelationName(rel))));
 
 	if (!con->convalidated)
 	{
-		Oid			conid = HeapTupleGetOid(tuple);
-		HeapTuple	copyTuple = heap_copytuple(tuple);
-		Form_pg_constraint copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
-		Relation	refrel;
+		HeapTuple	copyTuple;
+		Form_pg_constraint copy_con;
 
-		/*
-		 * Triggers are already in place on both tables, so a concurrent write
-		 * that alters the result here is not possible. Normally we can run a
-		 * query here to do the validation, which would only require
-		 * AccessShareLock. In some cases, it is possible that we might need
-		 * to fire triggers to perform the check, so we take a lock at
-		 * RowShareLock level just in case.
-		 */
-		refrel = heap_open(con->confrelid, RowShareLock);
+		if (con->contype == CONSTRAINT_FOREIGN)
+		{
+			Oid			conid = HeapTupleGetOid(tuple);
+			Relation	refrel;
 
-		validateForeignKeyConstraint((char *) constrName, rel, refrel,
-									 con->conindid,
-									 conid);
+			/*
+			 * Triggers are already in place on both tables, so a concurrent write
+			 * that alters the result here is not possible. Normally we can run a
+			 * query here to do the validation, which would only require
+			 * AccessShareLock. In some cases, it is possible that we might need
+			 * to fire triggers to perform the check, so we take a lock at
+			 * RowShareLock level just in case.
+			 */
+			refrel = heap_open(con->confrelid, RowShareLock);
+
+			validateForeignKeyConstraint(constrName, rel, refrel,
+										 con->conindid,
+										 conid);
+			heap_close(refrel, NoLock);
+
+			/*
+			 * Foreign keys do not inherit, so we purposedly ignore the
+			 * recursion bit here
+			 */
+		}
+		else if (con->contype == CONSTRAINT_CHECK)
+		{
+			List	   *children = NIL;
+			ListCell   *child;
+
+			/*
+			 * If we're recursing, the parent has already done this, so skip
+			 * it.
+			 */
+			if (!recursing)
+				children = find_all_inheritors(RelationGetRelid(rel),
+											   lockmode, NULL);
+
+			/*
+			 * For CHECK constraints, we must ensure that we only mark the
+			 * constraint as validated on the parent if it's already validated
+			 * on the children.
+			 *
+			 * We recurse before validating on the parent, to reduce risk of
+			 * deadlocks.
+			 */
+			foreach(child, children)
+			{
+				Oid childoid = lfirst_oid(child);
+				Relation	childrel;
+
+				if (childoid == RelationGetRelid(rel))
+					continue;
+
+				/*
+				 * If we are told not to recurse, there had better not be any
+				 * child tables; else the addition would put them out of step.
+				 */
+				if (!recurse)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+							 errmsg("constraint must be validated on child tables too")));
+
+				/* find_all_inheritors already got lock */
+				childrel = heap_open(childoid, NoLock);
+
+				ATExecValidateConstraint(childrel, constrName, false,
+										 true, lockmode);
+				heap_close(childrel, NoLock);
+			}
+
+			validateCheckConstraint(rel, tuple);
+
+			/*
+			 * Invalidate relcache so that others see the new validated
+			 * constraint.
+			 */
+			CacheInvalidateRelcache(rel);
+		}
 
 		/*
 		 * Now update the catalog, while we have the door open.
 		 */
+		copyTuple = heap_copytuple(tuple);
+		copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
 		copy_con->convalidated = true;
 		simple_heap_update(conrel, &copyTuple->t_self, copyTuple);
 		CatalogUpdateIndexes(conrel, copyTuple);
 		heap_freetuple(copyTuple);
-
-		heap_close(refrel, NoLock);
 	}
 
 	systable_endscan(scan);
 
 	heap_close(conrel, RowExclusiveLock);
 }
+
 
 /*
  * transformColumnNameList - transform list of column names
@@ -6184,6 +6487,79 @@ checkFkeyPermissions(Relation rel, int16 *attnums, int natts)
 			aclcheck_error(aclresult, ACL_KIND_CLASS,
 						   RelationGetRelationName(rel));
 	}
+}
+
+/*
+ * Scan the existing rows in a table to verify they meet a proposed
+ * CHECK constraint.
+ *
+ * The caller must have opened and locked the relation appropriately.
+ */
+static void
+validateCheckConstraint(Relation rel, HeapTuple constrtup)
+{
+	EState		   *estate;
+	Datum			val;
+	char		   *conbin;
+	Expr		   *origexpr;
+	List		   *exprstate;
+	TupleDesc		tupdesc;
+	HeapScanDesc	scan;
+	HeapTuple		tuple;
+	ExprContext	   *econtext;
+	MemoryContext	oldcxt;
+	TupleTableSlot *slot;
+	Form_pg_constraint constrForm;
+	bool			isnull;
+
+	constrForm = (Form_pg_constraint) GETSTRUCT(constrtup);
+
+	estate = CreateExecutorState();
+	/*
+	 * XXX this tuple doesn't really come from a syscache, but this doesn't
+	 * matter to SysCacheGetAttr, because it only wants to be able to fetch the
+	 * tupdesc
+	 */
+	val = SysCacheGetAttr(CONSTROID, constrtup, Anum_pg_constraint_conbin,
+						  &isnull);
+	if (isnull)
+		elog(ERROR, "null conbin for constraint %u",
+			 HeapTupleGetOid(constrtup));
+	conbin = TextDatumGetCString(val);
+	origexpr = (Expr *) stringToNode(conbin);
+	exprstate = (List *)
+		ExecPrepareExpr((Expr *) make_ands_implicit(origexpr), estate);
+
+	econtext = GetPerTupleExprContext(estate);
+	tupdesc = RelationGetDescr(rel);
+	slot = MakeSingleTupleTableSlot(tupdesc);
+	econtext->ecxt_scantuple = slot;
+
+	scan = heap_beginscan(rel, SnapshotNow, 0, NULL);
+
+	/*
+	 * Switch to per-tuple memory context and reset it for each tuple
+	 * produced, so we don't leak memory.
+	 */
+	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+
+	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	{
+		ExecStoreTuple(tuple, slot, InvalidBuffer, false);
+
+		if (!ExecQual(exprstate, econtext, true))
+			ereport(ERROR,
+					(errcode(ERRCODE_CHECK_VIOLATION),
+					 errmsg("check constraint \"%s\" is violated by some row",
+							NameStr(constrForm->conname))));
+
+		ResetExprContext(econtext);
+	}
+
+	MemoryContextSwitchTo(oldcxt);
+	heap_endscan(scan);
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
 }
 
 /*
@@ -6706,7 +7082,7 @@ ATPrepAlterColumnType(List **wqueue,
 		 * expression, else just take the old value and try to coerce it.  We
 		 * do this first so that type incompatibility can be detected before
 		 * we waste effort, and because we need the expression to be parsed
-		 * against the original table rowtype.
+		 * against the original table row type.
 		 */
 		if (transform)
 		{
@@ -6765,6 +7141,9 @@ ATPrepAlterColumnType(List **wqueue,
 		/* Fix collations after all else */
 		assign_expr_collations(pstate, transform);
 
+		/* Plan the expr now so we can accurately assess the need to rewrite. */
+		transform = (Node *) expression_planner((Expr *) transform);
+
 		/*
 		 * Add a work queue item to make ATRewriteTable update the column
 		 * contents.
@@ -6780,7 +7159,8 @@ ATPrepAlterColumnType(List **wqueue,
 	else if (transform)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-			  errmsg("ALTER TYPE USING is only supported on plain tables")));
+				 errmsg("\"%s\" is not a table",
+						RelationGetRelationName(rel))));
 
 	if (tab->relkind == RELKIND_COMPOSITE_TYPE ||
 		tab->relkind == RELKIND_FOREIGN_TABLE)
@@ -7551,7 +7931,7 @@ ATExecChangeOwner(Oid relationOid, Oid newOwnerId, bool recursing, LOCKMODE lock
 									newOwnerId);
 
 		/*
-		 * Also change the ownership of the table's rowtype, if it has one
+		 * Also change the ownership of the table's row type, if it has one
 		 */
 		if (tuple_class->relkind != RELKIND_INDEX)
 			AlterTypeOwnerInternal(tuple_class->reltype, newOwnerId,
@@ -8953,6 +9333,427 @@ ATExecGenericOptions(Relation rel, List *options)
 }
 
 
+#ifdef PGXC
+/*
+ * ALTER TABLE <name> DISTRIBUTE BY ...
+ */
+static void
+AtExecDistributeBy(Relation rel, DistributeBy *options)
+{
+	Oid relid;
+	char locatortype;
+	int hashalgorithm, hashbuckets;
+	AttrNumber attnum;
+
+	/* Nothing to do on Datanodes */
+	if (IS_PGXC_DATANODE || options == NULL)
+		return;
+
+	relid = RelationGetRelid(rel);
+
+	/* Get necessary distribution information */
+	GetRelationDistributionItems(relid,
+								 options,
+								 RelationGetDescr(rel),
+								 &locatortype,
+								 &hashalgorithm,
+								 &hashbuckets,
+								 &attnum);
+
+	/*
+	 * It is not checked if the distribution type list is the same as the old one,
+	 * user might define a different sub-cluster at the same time.
+	 */
+
+	/* Update pgxc_class entry */
+	PgxcClassAlter(relid,
+				   locatortype,
+				   (int) attnum,
+				   hashalgorithm,
+				   hashbuckets,
+				   0,
+				   NULL,
+				   PGXC_CLASS_ALTER_DISTRIBUTION);
+
+	/* Make the additional catalog changes visible */
+	CommandCounterIncrement();
+}
+
+
+/*
+ * ALTER TABLE <name> TO [ NODE nodelist | GROUP groupname ]
+ */
+static void
+AtExecSubCluster(Relation rel, PGXCSubCluster *options)
+{
+	Oid *nodeoids;
+	int numnodes;
+
+	/* Nothing to do on Datanodes */
+	if (IS_PGXC_DATANODE || options == NULL)
+		return;
+
+	/*
+	 * It is not checked if the new subcluster list is the same as the old one,
+	 * user might define a different distribution type.
+	 */
+
+	/* Obtain new node information */
+	nodeoids = GetRelationDistributionNodes(options, &numnodes);
+
+	/* Update pgxc_class entry */
+	PgxcClassAlter(RelationGetRelid(rel),
+				   '\0',
+				   0,
+				   0,
+				   0,
+				   numnodes,
+				   nodeoids,
+				   PGXC_CLASS_ALTER_NODES);
+
+	/* Make the additional catalog changes visible */
+	CommandCounterIncrement();
+}
+
+
+/*
+ * ALTER TABLE <name> ADD NODE nodelist
+ */
+static void
+AtExecAddNode(Relation rel, List *options)
+{
+	Oid *add_oids, *old_oids;
+	int add_num, old_num;
+
+	/* Nothing to do on Datanodes */
+	if (IS_PGXC_DATANODE || options == NIL)
+		return;
+
+	/*
+	 * Build a new array of sorted node Oids given the list of name nodes
+	 * to be added.
+	 */
+	add_oids = BuildRelationDistributionNodes(options, &add_num);
+
+	/*
+	 * Then check if nodes to be added are not in existing node
+	 * list and build updated list of nodes.
+	 */
+	old_num = get_pgxc_classnodes(RelationGetRelid(rel), &old_oids);
+
+	/* Add elements to array */
+	old_oids = add_node_list(old_oids, old_num, add_oids, add_num, &old_num);
+
+	/* Sort once again the newly-created array of node Oids to maintain consistency */
+	old_oids = SortRelationDistributionNodes(old_oids, old_num);
+
+	/* Update pgxc_class entry */
+	PgxcClassAlter(RelationGetRelid(rel),
+				   '\0',
+				   0,
+				   0,
+				   0,
+				   old_num,
+				   old_oids,
+				   PGXC_CLASS_ALTER_NODES);
+
+	/* Make the additional catalog changes visible */
+	CommandCounterIncrement();
+}
+
+
+/*
+ * ALTER TABLE <name> DELETE NODE nodelist
+ */
+static void
+AtExecDeleteNode(Relation rel, List *options)
+{
+	Oid *del_oids, *old_oids;
+	int del_num, old_num;
+
+	/* Nothing to do on Datanodes */
+	if (IS_PGXC_DATANODE || options == NIL)
+		return;
+
+	/*
+	 * Build a new array of sorted node Oids given the list of name nodes
+	 * to be deleted.
+	 */
+	del_oids = BuildRelationDistributionNodes(options, &del_num);
+
+	/*
+	 * Check if nodes to be deleted are really included in existing
+	 * node list and get updated list of nodes.
+	 */
+	old_num = get_pgxc_classnodes(RelationGetRelid(rel), &old_oids);
+
+	/* Delete elements on array */
+	old_oids = delete_node_list(old_oids, old_num, del_oids, del_num, &old_num);
+
+	/* Update pgxc_class entry */
+	PgxcClassAlter(RelationGetRelid(rel),
+				   '\0',
+				   0,
+				   0,
+				   0,
+				   old_num,
+				   old_oids,
+				   PGXC_CLASS_ALTER_NODES);
+
+	/* Make the additional catalog changes visible */
+	CommandCounterIncrement();
+}
+
+
+/*
+ * ATCheckCmd
+ *
+ * Check ALTER TABLE restrictions in Postgres-XC
+ */
+static void
+ATCheckCmd(Relation rel, AlterTableCmd *cmd)
+{
+	/* Do nothing in the case of a remote node */
+	if (IS_PGXC_DATANODE || IsConnFromCoord())
+		return;
+
+	switch (cmd->subtype)
+	{
+		case AT_DropColumn:
+			/* Distribution column cannot be dropped */
+			if (IsDistColumnForRelId(RelationGetRelid(rel), cmd->name))
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("Distribution column cannot be dropped")));
+			break;
+
+		default:
+			break;
+	}
+}
+
+
+/*
+ * BuildRedistribCommands
+ * Evaluate new and old distribution and build the list of operations
+ * necessary to perform table redistribution.
+ */
+static RedistribState *
+BuildRedistribCommands(Oid relid, List *subCmds)
+{
+	RedistribState   *redistribState = makeRedistribState(relid);
+	RelationLocInfo *oldLocInfo, *newLocInfo; /* Former locator info */
+	Relation	rel;
+	Oid		   *new_oid_array;	/* Modified list of Oids */
+	int			new_num, i;	/* Modified number of Oids */
+	ListCell   *item;
+#ifdef XCP
+	char		node_type = PGXC_NODE_DATANODE;
+#endif
+
+	/* Get necessary information about relation */
+	rel = relation_open(redistribState->relid, NoLock);
+	oldLocInfo = RelationGetLocInfo(rel);
+	Assert(oldLocInfo);
+
+	/*
+	 * Get a copy of the locator information that will be modified by
+	 * successive ALTER TABLE commands.
+	 */
+	newLocInfo = CopyRelationLocInfo(oldLocInfo);
+	/* The node list of this locator information will be rebuilt after command scan */
+	list_free(newLocInfo->nodeList);
+	newLocInfo->nodeList = NULL;
+
+	/* Get the list to be modified */
+	new_num = get_pgxc_classnodes(RelationGetRelid(rel), &new_oid_array);
+
+	foreach(item, subCmds)
+	{
+		AlterTableCmd *cmd = (AlterTableCmd *) lfirst(item);
+		switch (cmd->subtype)
+		{
+			case AT_DistributeBy:
+				/*
+				 * Get necessary distribution information and update to new
+				 * distribution type.
+				 */
+				GetRelationDistributionItems(redistribState->relid,
+											 (DistributeBy *) cmd->def,
+											 RelationGetDescr(rel),
+											 &(newLocInfo->locatorType),
+											 NULL,
+											 NULL,
+											 (AttrNumber *)&(newLocInfo->partAttrNum));
+				break;
+			case AT_SubCluster:
+				/* Update new list of nodes */
+				new_oid_array = GetRelationDistributionNodes((PGXCSubCluster *) cmd->def, &new_num);
+				break;
+			case AT_AddNodeList:
+				{
+					Oid *add_oids;
+					int add_num;
+					add_oids = BuildRelationDistributionNodes((List *) cmd->def, &add_num);
+					/* Add elements to array */
+					new_oid_array = add_node_list(new_oid_array, new_num, add_oids, add_num, &new_num);
+				}
+				break;
+			case AT_DeleteNodeList:
+				{
+					Oid *del_oids;
+					int del_num;
+					del_oids = BuildRelationDistributionNodes((List *) cmd->def, &del_num);
+					/* Delete elements from array */
+					new_oid_array = delete_node_list(new_oid_array, new_num, del_oids, del_num, &new_num);
+				}
+				break;
+			default:
+				Assert(0); /* Should not happen */
+		}
+	}
+
+	/* Build relation node list for new locator info */
+	for (i = 0; i < new_num; i++)
+#ifdef XCP
+		newLocInfo->nodeList = lappend_int(newLocInfo->nodeList,
+										   PGXCNodeGetNodeId(new_oid_array[i],
+															 &node_type));
+#else
+		newLocInfo->nodeList = lappend_int(newLocInfo->nodeList,
+										   PGXCNodeGetNodeId(new_oid_array[i],
+															 PGXC_NODE_DATANODE));
+#endif
+	/* Build the command tree for table redistribution */
+	PGXCRedistribCreateCommandList(redistribState, newLocInfo);
+
+	/* Clean up */
+	FreeRelationLocInfo(newLocInfo);
+	pfree(new_oid_array);
+	relation_close(rel, NoLock);
+
+	return redistribState;
+}
+
+
+/*
+ * Delete from given Oid array old_oids the given oid list del_oids
+ * and build a new one.
+ */
+Oid *
+delete_node_list(Oid *old_oids, int old_num, Oid *del_oids, int del_num, int *new_num)
+{
+	/* Allocate former array and data */
+	Oid *new_oids = old_oids;
+	int loc_new_num = old_num;
+	int i;
+
+	/*
+	 * Delete from existing node Oid array the elements to be removed.
+	 * An error is returned if an element to be deleted is not in existing array.
+	 * It is not necessary to sort once again the result array of node Oids
+	 * as here only a deletion of elements is done.
+	 */
+	for (i = 0; i < del_num; i++)
+	{
+		Oid nodeoid = del_oids[i];
+		int j, position;
+		bool is_listed = false;
+		position = 0;
+
+		for (j = 0; j < loc_new_num; j++)
+		{
+			/* Check if element can be removed */
+			if (nodeoid == new_oids[j])
+			{
+				is_listed = true;
+				position = j;
+			}
+		}
+
+		/* Move all the elements from [j+1, n-1] to [j, n-2] */
+		if (is_listed)
+		{
+			for (j = position + 1; j < loc_new_num; j++)
+				new_oids[j - 1] = new_oids[j];
+
+			loc_new_num--;
+
+			/* Not possible to have an empty list */
+			if (loc_new_num == 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_DUPLICATE_OBJECT),
+						 errmsg("Node list is empty: one node at least is mandatory")));
+
+			new_oids = (Oid *) repalloc(new_oids, loc_new_num * sizeof(Oid));
+		}
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_DUPLICATE_OBJECT),
+					 errmsg("PGXC Node %s: object not in relation node list",
+							get_pgxc_nodename(nodeoid))));
+	}
+
+	/* Save new number of nodes */
+	*new_num = loc_new_num;
+	return new_oids;
+}
+
+
+/*
+ * Add to given Oid array old_oids the given oid list add_oids
+ * and build a new one.
+ */
+Oid *
+add_node_list(Oid *old_oids, int old_num, Oid *add_oids, int add_num, int *new_num)
+{
+	/* Allocate former array and data */
+	Oid *new_oids = old_oids;
+	int loc_new_num = old_num;
+	int i;
+
+	/*
+	 * Build new Oid list, both addition and old list are already sorted.
+	 * The idea here is to go through the list of nodes to be added and
+	 * add the elements one-by-one on the existing list.
+	 * An error is returned if an element to be added already exists
+	 * in relation node array.
+	 * Here we do O(n^2) scan to avoid a dependency with the way
+	 * oids are sorted by heap APIs. They are sorted once again once
+	 * the addition operation is completed.
+	 */
+	for (i = 0; i < add_num; i++)
+	{
+		Oid nodeoid = add_oids[i];
+		int j;
+
+		/* Check if element is already a part of array */
+		for (j = 0; j < loc_new_num; j++)
+		{
+			/* Item is already in node list */
+			if (nodeoid == new_oids[j])
+				ereport(ERROR,
+						(errcode(ERRCODE_DUPLICATE_OBJECT),
+						 errmsg("PGXC Node %s: object already in relation node list",
+								get_pgxc_nodename(nodeoid))));
+		}
+
+		/* If we are here, element can be added safely in node array */
+		loc_new_num++;
+		new_oids = (Oid *) repalloc(new_oids, loc_new_num * sizeof(Oid));
+		new_oids[loc_new_num - 1] = nodeoid;
+	}
+
+	/* Sort once again the newly-created array of node Oids to maintain consistency */
+	new_oids = SortRelationDistributionNodes(new_oids, loc_new_num);
+
+	/* Save new number of nodes */
+	*new_num = loc_new_num;
+	return new_oids;
+}
+#endif
+
+
 /*
  * Execute ALTER TABLE SET SCHEMA
  *
@@ -9063,7 +9864,7 @@ AlterTableNamespace(RangeVar *relation, const char *newschema,
 
 	AlterRelationNamespaceInternal(classRel, relid, oldNspOid, nspOid, true);
 
-	/* Fix the table's rowtype too */
+	/* Fix the table's row type too */
 	AlterTypeNamespaceInternal(rel->rd_rel->reltype, nspOid, false, false);
 
 	/* Fix other dependent stuff */
@@ -9091,6 +9892,9 @@ AlterTableNamespace(RangeVar *relation, const char *newschema,
 			ereport(ERROR,
 					(errcode(ERRCODE_CONNECTION_FAILURE),
 					 errmsg("GTM error, could not rename sequence")));
+
+		/* Register a rename callback in case transaction is dropped */
+		register_sequence_rename_cb(seqname, newseqname);
 
 		pfree(seqname);
 		pfree(newseqname);
@@ -9168,7 +9972,7 @@ AlterIndexNamespaces(Relation classRel, Relation rel,
 		/*
 		 * Note: currently, the index will not have its own dependency on the
 		 * namespace, so we don't need to do changeDependencyFor(). There's no
-		 * rowtype in pg_type, either.
+		 * row type in pg_type, either.
 		 */
 		AlterRelationNamespaceInternal(classRel, indexOid,
 									   oldNspOid, newNspOid,
@@ -9247,6 +10051,29 @@ AlterSeqNamespaces(Relation classRel, Relation rel,
 		 */
 		AlterTypeNamespaceInternal(RelationGetForm(seqRel)->reltype,
 								   newNspOid, false, false);
+
+#ifdef PGXC
+		/* Change also this sequence name on GTM */
+		if (IS_PGXC_COORDINATOR &&
+			!IsConnFromCoord() &&
+			!IsTempSequence(RelationGetRelid(seqRel)))
+		{
+			char *seqname = GetGlobalSeqName(seqRel, NULL, NULL);
+			char *newseqname = GetGlobalSeqName(seqRel, NULL, newNspName);
+
+			/* We also need to rename it on the GTM */
+			if (RenameSequenceGTM(seqname, newseqname) < 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("GTM error, could not rename sequence")));
+
+			/* Register a rename callback in case transaction is dropped */
+			register_sequence_rename_cb(seqname, newseqname);
+
+			pfree(seqname);
+			pfree(newseqname);
+		}
+#endif
 
 		/* Now we can close it.  Keep the lock till end of transaction. */
 		relation_close(seqRel, NoLock);

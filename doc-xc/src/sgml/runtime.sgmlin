@@ -78,7 +78,7 @@
 &xconly;
   <para>
    You should initialize  <firstterm>database cluster</firstterm> for
-   each <firstterm>coordinator</> and <firstterm>data node</>.
+   each <firstterm>Coordinator</> and <firstterm>Datanode</>.
   </para>
  <!## end>
 &common;
@@ -94,15 +94,21 @@
    linkend="app-initdb">,<indexterm><primary>initdb</></> which is
 <!## PG>
    installed with <productname>PostgreSQL</productname>. The desired
-<!## end>
-<!## XC>
-   installed with <productname>Postgres-XC</productname>. The desired
-<!## end>
    file system location of your database cluster is indicated by the
    <option>-D</option> option, for example:
 <screen>
 <prompt>$</> <userinput>initdb -D /usr/local/pgsql/data</userinput>
 </screen>
+<!## end>
+<!## XC>
+   installed with <productname>Postgres-XC</productname>. The desired
+   file system location of your database cluster is indicated by the
+   <option>-D</option> option. You also need to define a node name for
+   the cluster element initialized, for example:
+<screen>
+<prompt>$</> <userinput>initdb -D /usr/local/pgsql/data --nodename foo</userinput>
+</screen>
+<!## end>
 <!## PG>
    Note that you must execute this command while logged into the
    <productname>PostgreSQL</productname> user account, which is
@@ -114,7 +120,7 @@
    <productname>Postgres-XC</productname> user account, which is
    described in the previous section.  You should assign
    separate <firstterm>data directory</> to
-   each <firstterm>coordinator</> and <firstterm>datanode</> if you
+   each <firstterm>Coordinator</> and <firstterm>Datanode</> if you
    are configuring them in a same server.  
 <!## end>
   </para>
@@ -125,23 +131,33 @@
     the environment variable <envar>PGDATA</envar>.
     <indexterm><primary><envar>PGDATA</envar></primary></indexterm>
    </para>
-  <!## XC>
+<!## XC>
    <para>
-    If you configure multiple <firstterm>coordinator</>
-    and/or <firstterm>data node</>, you cannot
+    If you configure multiple <firstterm>Coordinator</>
+    and/or <firstterm>Datanode</>, you cannot
     share <envar>PGDATA</envar> among them and you must
-    specify<firstterm>data directory</> explicitly.
+    specify <firstterm>data directory</> explicitly.
    </para>
-  <!## end>
+   <para>
+    <option>--nodename</option> is mandatory for all the nodes at initialization
+   </para>
+<!## end>
   </tip>
 &common;
   <para>
    Alternatively, you can run <command>initdb</command> via
    the <xref linkend="app-pg-ctl">
    program<indexterm><primary>pg_ctl</></> like so:
+<!## PG>
 <screen>
 <prompt>$</> <userinput>pg_ctl -D /usr/local/pgsql/data initdb</userinput>
 </screen>
+<!## end>
+<!## XC>
+<screen>
+<prompt>$</> <userinput>pg_ctl -D /usr/local/pgsql/data -o '--nodename foo' initdb</userinput>
+</screen>
+<!## end>
    This may be more intuitive if you are
    using <command>pg_ctl</command> for starting and stopping the
    server (see <xref linkend="server-start">), so
@@ -166,7 +182,7 @@
 root# <userinput>mkdir /usr/local/pgsql/data</userinput>
 root# <userinput>chown postgres /usr/local/pgsql/data</userinput>
 root# <userinput>su postgres</userinput>
-postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
+postgres$ <userinput>initdb -D /usr/local/pgsql/data --nodename foo</userinput>
 </screen>
   </para>
 
@@ -287,9 +303,7 @@ postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
    Datanode.
    You must configure and start each of them.
    Following sections will give you how to configure and start them.   
-   Other components such
-   as <filename>pgxc_config</>, <filename>XCM</>, <filename>pgxc_clean</>, <filename>xc_watcher</>
-   and <filename>GTM-Standby</> will be described in high-availability
+   <filename>pgxc_clean</> and <filename>GTM-Standby</> are described in high-availability
    sections.
   </para>
 
@@ -303,10 +317,10 @@ postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
     initialize these database.
     Coordinator holds just database catalog and temporary data store.  
     Datanode holds most of your data.  
-    First of all, you should determine how many coordinators/datanodes
+    First of all, you should determine how many Coordinators/Datanodes
     to run and where they should run. 
-    It is a good convention that you run a coordinator where you run a
-    datanode.   
+    It is a good convention that you run a Coordinator where you run a
+    Datanode.   
     In this case, you should run <filename>GTM-Proxy</> on the same
     server too. 
     It simplifies <productname>XC</> configuration and help to make
@@ -314,7 +328,7 @@ postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
    </para>
 
    <para>
-    Both <filename>coordinator</> and <filename>datanode</> have their
+    Both Coordinator and Datanode have their
     own databases, essentially <productname>PostgreSQL</> databases.
     They are separate and you should initialize them separately.
    </para>
@@ -326,8 +340,8 @@ postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
    <para>
     GTM provides global transaction management feature to all the
     other components in <productname>Postgres-XC</> database cluster.
-    Because <filename>GTM</> handles transaction requirements from all
-    the coordinators and datanodes, it is highly advised to run this
+    Because GTM handles transaction requirements from all
+    the Coordinators and Datanodes, it is highly advised to run this
     in a separate server.
    </para>
 
@@ -342,16 +356,16 @@ postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
    <listitem>
 
     <para>
-     Because <filename>GTM</> receives all the request to begin/end
+     Because GTM receives all the request to begin/end
      transactions and to refer to sequence values, you should
-     run <filename>GTM</> in a separate server.  If you
-     run <filename>GTM</> in the same server as datanode or
-     coordinator, it will become harder to make workload reasonably
+     run GTM in a separate server.  If you
+     run GTM in the same server as Datanode or
+     Coordinator, it will become harder to make workload reasonably
      balanced.
     </para>
     <para>
-     Then, you should determine <filename>GTM</>'s working directory.
-     Please create this directory before you run <filename>GTM</>.
+     Then, you should determine GTM's working directory.
+     Please create this directory before you run GTM.
     </para>
    </listitem>
   </varlistentry>
@@ -361,7 +375,7 @@ postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
    <listitem>
     <para>
      Next, you should determine listen address and port
-     of <filename>GTM</>.
+     of GTM.
      Listen address can be either the IP address or host name which
      receives request from other component,
      typically <filename>GTM-Proxy</filename>.
@@ -373,12 +387,12 @@ postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
     <term>GTM id</term>
     <listitem>
      <para>
-      You have a chance to run more than one <filename>GTM</>s in
+      You have a chance to run more than one GTM in
       one <productname>Postgres-XC</> cluster.  
-      For example, if you need a backup of <filename>GTM</> in
+      For example, if you need a backup of GTM in
       high-availability environment, you need to run
-      two <filename>GTM</>s.
-      You should give unique GTM id to each of such <filename>GTM</>s.
+      two GTMs.
+      You should give unique GTM id to each of such GTMs.
       GTM id value begins with one.
      </para>
     </listitem>
@@ -387,19 +401,31 @@ postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
   </variablelist>
 
    <para>
-    When they're determined, you can start GTM as follows:
+    When this is determined, you can initialize GTM with the command <xref
+   linkend="app-initgtm">,
+    for example:
+<screen>
+<prompt>$</> <userinput>initgtm -Z gtm -D /usr/local/pgsql/data_gtm</userinput>
+</screen>
+   </para>
+
+   <para>
+    All the parameters related to GTM can be modified in <filename>gtm.conf</filename>
+    located in data folder initialized by <command>initgtm</command>.
+   </para>
+
+   <para>
+    Then you can start GTM as follows:
 <!-- Check precise parameters -->
 <screen>
-$ <userinput>gtm -D /usr/local/pgsql/gtm -i 1 -h localhost -p 20001</userinput>
+<prompt>$</> <userinput>gtm -D /usr/local/pgsql/data_gtm</userinput>
 </screen>
-    where <option>-D</> option specifies <filename>GTM</>'s working
-    directory,  <option>-i</> option specifies <filename>GTM</>'s id
-    number, <option>-h</> specifies listen address and <option>-p</> specifies port number.
+    where <option>-D</> option specifies working directory of GTM.
    </para>
    <para>
-    Or you can start <filename>GTM</> using <filename>gtm_ctl</> like:
+    Alternatively, GTM can be started using <command>gtm_ctl</>, for example:
 <screen>
-$ <userinput>gtm_ctl -S gtm start -D /usr/local/pgsql/gtm -o "-i 1 -h gtm -p 20001"</userinput>
+<prompt>$</> <userinput>gtm_ctl -Z gtm start -D /usr/local/pgsql/data_gtm</userinput>
 </screen>
    </para>
 
@@ -408,14 +434,9 @@ $ <userinput>gtm_ctl -S gtm start -D /usr/local/pgsql/gtm -o "-i 1 -h gtm -p 200
    <title>Starting GTM-Proxy</title>
 &xconly;
    <para>
-    To be honest, you don't have to run <filename>GTM-Proxy</> if you
-    just want to test <productname>Postgres-XC</>.
-    On the other hand, because <filename>GTM</> has to handle so many
-    requirements and deliver responses to them, <filename>GTM</>'s
-    workload becomes an issue.
-    Because <filename>GTM-Proxy</> groups requirements and response
-    from <filename>coordinators</> and <filename>datanode</>, it is
-    important to keep <filename>GTM</> workload in reasonable level.
+    GTM-Proxy is not a mandatory component of Postgres-XC cluster but
+    it can be used to group messages between GTM and cluster nodes,
+    reducing worload and the number of packages exchanged through network.
    </para>
 
    <para>
@@ -428,33 +449,43 @@ $ <userinput>gtm_ctl -S gtm start -D /usr/local/pgsql/gtm -o "-i 1 -h gtm -p 200
    </para>
 
    <para>
+    Then, you need first to initialize GTM-Proxy with <command>initgtm</command>,
+    for example:
+<screen>
+<prompt>$</> <userinput>initgtm -Z gtm_proxy -D /usr/local/pgsql/data_gtm_proxy</userinput>
+</screen>
+   </para>
+
+   <para>
+    All the parameters related to GTM-Proxy can be modified in <filename>gtm_proxy.conf</filename>
+    located in data folder initialized by <command>initgtm</command>.
+   </para>
+
+   <para>
     Then, you can start <filename>GTM-Proxy</> like:
 <screen>
-$ <userinput>gtm_proxy -D /usr/local/pgsql/gtm_proxy -i 1 -h server1 -p 20002 -n 2 -s gtm -t 20001</userinput>
+<prompt>$</> <userinput>gtm_proxy -D /usr/local/pgsql/data_gtm_proxy</userinput>
 </screen>
     where <option>-D</> specifies <filename>GTM-Proxy</>'s working
-    directory, <option>-i</> is its listen address, <option>-p</> is
-    port number, <option>-n</> is number of worker
-    thread, <option>-s</> is <filename>GTM</>'s listen address, and
-    <option>-t</> is <filename>GTM</>'s listen port.
+    directory.
    </para>
 
   <para>
-   Or you can start <filename>GTM-Proxy</> using <filename>gtm_ctl</>
+   Alternatively, you can start GTM-Proxy using <filename>gtm_ctl</>
    as follows:
 <screen>
-$ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 -o "-1 1 -h server1 -p 20002 -n 2 -s gtm -t 20001"</userinput>
+<prompt>$</> <userinput>gtm_ctl start -Z gtm_proxy -D /usr/local/pgsql/data_gtm_proxy</userinput>
 </screen>
   </para>
 
   </sect2>
 
-  <sect2 id="datanode-configuration">
+  <sect2 id="Datanode-configuration">
    <title>Configuring Datanode</title>
 &xconly;
    <para>
-    Before starting coordinator or datanode, you must configure them.
-    You can configure coordinator or datanode by
+    Before starting Coordinator or Datanode, you must configure them.
+    You can configure Coordinator or Datanode by
     editing <filename>postgresql.conf</> file located at their working
     directory as you specified by <option>-D</> option
     in <filename>initdb</> command.
@@ -464,7 +495,7 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
     Datanode is almost native <productname>PostgreSQL</> with some
     extension.
     Additional options in <filename>postgresql.conf</> for the
-    datanode are as follows:
+    Datanode are as follows:
    </para>
 
   <variablelist>
@@ -475,12 +506,12 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
 
     <para>
      This value is not just a number of connections you expect to each
-     coordinator.
-	 Each coordinator backend has a chance to connect to all the
-     datanode.
-     You should specify number of total connections whole coordinator
+     Coordinator.
+	 Each Coordinator backend has a chance to connect to all the
+     Datanode.
+     You should specify number of total connections whole Coordinator
      may accept.
-     For example, if you have five coordinators and each of them may
+     For example, if you have five Coordinators and each of them may
      accept forty connections, you should specify 200 as this
      parameter value.
     </para>
@@ -492,8 +523,8 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
    <listitem>
     <para>
      Even though your application does not intend to
-     issue <command>PREPARE TRANSACTION</>, coordinator may issue this
-     internally when more than one datanode are involved.
+     issue <command>PREPARE TRANSACTION</>, Coordinator may issue this
+     internally when more than one Datanode are involved.
 	 You should specify this parameter the same value
      as <filename>max_connections</>.
     </para>
@@ -504,7 +535,7 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
    <term>pgxc_node_name</term>
    <listitem>
     <para>
-     <filename>GTM</> needs to identify each datanode, as specified by
+     GTM needs to identify each Datanode, as specified by
      this parameter.
      The value should be unique and start with one.
     </para>
@@ -515,8 +546,8 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
    <term>port</term>
    <listitem>
     <para>
-     Because both coordinator and datanode may run on the same server,
-     you may want to assign separate port number to the datanode.
+     Because both Coordinator and Datanode may run on the same server,
+     you may want to assign separate port number to the Datanode.
     </para>
    </listitem>
   </varlistentry>
@@ -547,11 +578,11 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
 
    </sect2>
 
-  <sect2 id="coordinator-configuration">
+  <sect2 id="Coordinator-configuration">
    <title>Configuring Coordinator</title>
 &xconly;
    <para>
-    Although coordinator and datanode shares the same binary, their
+    Although Coordinator and Datanode shares the same binary, their
     configuration is a little different due to their functionalities.
    </para>
 
@@ -561,9 +592,9 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
    <term>max_connections</term>
    <listitem>
     <para>
-     You don't have to take other coordinator or datanode into
+     You don't have to take other Coordinator or Datanode into
      account.
-	 Just specify the number of connections the coordinator accepts
+	 Just specify the number of connections the Coordinator accepts
      from applications.
     </para>
    </listitem>
@@ -573,7 +604,7 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
    <term>max_prepared_transactions</term>
    <listitem>
     <para>
-     Specify at least total number of coordinators in the cluster.
+     Specify at least total number of Coordinators in the cluster.
     </para>
    </listitem>
   </varlistentry>
@@ -582,7 +613,7 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
    <term>pgxc_node_name</term>
    <listitem>
     <para>
-     <filename>GTM</> needs to identify each datanode, as specified by
+     GTM needs to identify each Datanode, as specified by
      this parameter.
     </para>
    </listitem>
@@ -592,8 +623,8 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
    <term>port</term>
    <listitem>
     <para>
-     Because both coordinator and datanode may run on the same server,
-     you may want to assign separate port number to the coordinator.
+     Because both Coordinator and Datanode may run on the same server,
+     you may want to assign separate port number to the Coordinator.
      It may be convenient to use default value of PostgreSQL listen
      port.
     </para>
@@ -647,7 +678,7 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
   </varlistentry>
 
   <varlistentry>
-   <term>max_coordinators</term>
+   <term>max_Coordinators</term>
    <listitem>
     <para>
      This is the maximum number of Coordinators that can be configured in the cluster.
@@ -659,7 +690,7 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
   </varlistentry>
 
   <varlistentry>
-   <term>max_datanodes</term>
+   <term>max_Datanodes</term>
    <listitem>
     <para>
      This is the maximum number of Datanodes configured in the cluster.
@@ -685,47 +716,41 @@ $ <userinput>gtm_ctl start -S gtm_proxy -i 1 -D /usr/local/pgsql/gtm_proxy -i 1 
 
   </sect2>
 
-  <sect2 id="starting-datanode">
+  <sect2 id="starting-Datanode">
    <title>Starting Datanodes</title>
 
    <para>
     Now you can start central component
-    of <productname>Postgres-XC</>, datanode and coordinator.
+    of <productname>Postgres-XC</>, Datanode and Coordinator.
 	If you're familiar with starting <productname>PostgreSQL</>
     database server, this step is very similar to <productname>PostgreSQL</>.
    </para>
 
    <para>
-    You can start a datanode as follows:
+    You can start a Datanode as follows:
 <screen>
-$ <userinput>postgres -X -D /usr/local/pgsql/datanode -i</userinput>
+<prompt>$</> <userinput>postgres -X -D /usr/local/pgsql/data</userinput>
 </screen>
     <option>-X</> specifies <command>postgres</> should run as a
-    datanode.  <option>-i</> specifies <command>postgres</> to
-    accept connection from TCP/IP connections.
-   </para>
-
-   <para>
-    You should start all the datanodes you configured.
+    Datanode. You may need to specify <option>-i</> <command>postgres</> to
+    accept connection from TCP/IP connections or edit <filename>pg_hba.conf</filename>
+    if cluster uses nodes among several servers.
    </para>
 
   </sect2>
 
-  <sect2 id="starting-coordinator">
+  <sect2 id="starting-Coordinator">
    <title>Starting Coordinators</title>
 &xconly;
    <para>
-    You can start a coordinator as follows:
+    You can start a Coordinator as follows:
 <screen>
-$ <userinput>postgres -C -D /usr/local/pgsql/datanode -i</userinput>
+<prompt>$</> <userinput>postgres -C -D /usr/local/pgsql/Datanode</userinput>
 </screen>
     <option>-C</> specifies <command>postgres</> should run as a
-    coordinator.  <option>-i</> specifies <command>postgres</> to
-    accept connection from TCP/IP connections.
-   </para>
-
-   <para>
-    You should start all the coordinators you configured.
+    Coordinator. You may need to specify <option>-i</> <command>postgres</> to
+    accept connection from TCP/IP connections or edit <filename>pg_hba.conf</filename>
+    if cluster uses nodes among several servers.
    </para>
 
   </sect2>
@@ -2023,13 +2048,13 @@ echo -17 > /proc/self/oom_adj
 &xconly;
 <!## XC>
   <para>
-   This section describes how to shutdown each coordinator and
-   datanode.
-   Please note that you should shutdown coordinator first and then
-   datanodes, GTM-Proxy and GTM.
+   This section describes how to shutdown each Coordinator and
+   Datanode.
+   Please note that you should shutdown Coordinator first and then
+   Datanodes, GTM-Proxy and GTM.
   </para>
 
-  <sect2 id="coordinator-datanode-shutdown">
+  <sect2 id="Coordinator-Datanode-shutdown">
    <title>Shutting Down Coordinators and Datanodes</title>
 
 <!## end>
@@ -2181,7 +2206,7 @@ $ <userinput>kill -INT `head -1 /usr/local/pgsql/data/postmaster.pid`</userinput
 &xconly;
 <!## XC>
   <para>
-   Because <productname>Postgres-XC</>'s coordinators and datanodes
+   Because <productname>Postgres-XC</>'s Coordinators and Datanodes
    are essentially <productname>PostgreSQL</> servers, you can follw
    the steps described below to upgrade each of them.  Please note
    that you should do this manually.
@@ -2500,7 +2525,7 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
    While the server is running, it is not possible for a malicious user
 <!## end>
 <!## XC>
-   While coordinators and datanodes are running, it is not possible for a malicious user
+   While Coordinators and Datanodes are running, it is not possible for a malicious user
 <!## end>
    to take the place of the normal database server.  However, when the
    server is down, it is possible for a local user to spoof the normal

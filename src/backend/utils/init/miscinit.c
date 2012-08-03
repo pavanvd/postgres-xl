@@ -626,24 +626,24 @@ retry:
 
 	if (reset)
 	{
-		RemoteQuery    *step;
-
-		PGXCNodeResetParams(false);
-
-		step = makeNode(RemoteQuery);
-		step->combine_type = COMBINE_TYPE_SAME;
-		step->exec_nodes = NULL;
-		step->sql_statement = "DISCARD ALL";
-		step->force_autocommit = false;
-		step->exec_type = EXEC_ON_CURRENT;
-		ExecRemoteUtility(step);
-		pfree(step);
-
 		/*
 		 * Next time when backend will be assigned to a global session it will
 		 * be referencing different temp namespace
 		 */
 		ForgetTempTableNamespace();
+		/*
+		 * Forget all local and session parameters cached for the Datanodes.
+		 * They do not belong to that session.
+		 */
+		PGXCNodeResetParams(false);
+		/*
+		 * Release node connections, if still held.
+		 */
+		release_handles();
+		/*
+		 * XXX Do other stuff like release secondary Datanode connections,
+		 * clean up shared queues ???
+		 */
 	}
 }
 #endif

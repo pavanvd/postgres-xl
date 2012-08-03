@@ -11,7 +11,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * $PostgreSQL: pgsql/src/interfaces/libpq/libpq-int.h,v 1.139 2009/01/01 17:24:03 momjian Exp $
  *
@@ -89,13 +89,6 @@ struct gtm_conn
 
 	/* Buffer for receiving various parts of messages */
 	PQExpBufferData	workBuffer; /* expansible string */
-
-#ifndef XCP
-	/* Options to handle GTM communication error */
-	int		gtmErrorWaitIdle;		/* If true, wait reconnect signal. */
-	int		gtmErrorWaitInterval;	/* Duration of the wait time in second */
-	int		gtmErrorWaitCount;		/* How many durations to wait */
-#endif
 
 	/* Pointer to the result of last operation */
 	GTM_Result	*result;

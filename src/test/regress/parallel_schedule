@@ -74,10 +74,10 @@ ignore: random
 # ----------
 # Another group of parallel tests
 # ----------
-#aggregates with join, order by are crashing server, hence test join is commented out for
-#now. Bug ID 3284321 tracks this crash.
-#test: select_into select_distinct select_distinct_on select_implicit select_having subselect union case join aggregates transactions random portals arrays btree_index hash_index update namespace prepared_xacts delete
-test: select_into select_distinct select_distinct_on select_implicit select_having subselect union case aggregates transactions random portals arrays btree_index hash_index update namespace prepared_xacts delete
+test: select_into select_distinct select_distinct_on select_implicit select_having subselect union case join aggregates transactions random portals arrays btree_index hash_index update namespace delete
+
+# prepared_xacts cannot run in parallel of other tests involving 2PC
+test: prepared_xacts
 
 # ----------
 # Another group of parallel tests
@@ -103,9 +103,16 @@ test: plancache limit plpgsql copy2 temp domain rangefuncs prepare without_oid c
 # run stats by itself because its delay may be insufficient under heavy load
 test: stats
 
-#Postgres-XC additional tests, they can be run in parallel
-test: xc_groupby xc_distkey xc_having xc_temp xc_remote xc_FQS xc_FQS_join
+# ----------
+# Postgres-XC additional tests
+# ----------
+# This creates functions used by tests xc_misc, xc_FQS and xc_FQS_join
+test: xc_create_function
+# Those ones can be run in parallel
+test: xc_groupby xc_distkey xc_having xc_temp xc_remote xc_FQS xc_FQS_join xc_copy xc_for_update xc_alter_table xc_sequence xc_misc
 
-#Cluster setting related test is independant
+# Cluster setting related test is independant
 test: xc_node
-test: xc_misc
+
+# Additional tests for prepared xacts
+test: xc_prepared_xacts

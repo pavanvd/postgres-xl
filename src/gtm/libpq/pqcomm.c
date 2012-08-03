@@ -29,7 +29,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *	$PostgreSQL: pgsql/src/backend/libpq/pqcomm.c,v 1.198 2008/01/01 19:45:49 momjian Exp $
  *
@@ -912,7 +912,7 @@ pq_putmessage(Port *myport, char msgtype, const char *s, size_t len)
 	n32 = htonl((uint32) (len + 4));
 	if (internal_putbytes(myport, (char *) &n32, 4))
 		goto fail;
-	
+
 	if (internal_putbytes(myport, s, len))
 		goto fail;
 	return 0;

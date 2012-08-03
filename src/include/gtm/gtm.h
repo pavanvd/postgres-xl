@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * $PostgreSQL$
  *
@@ -30,9 +30,7 @@ typedef enum GTM_ThreadStatus
 	GTM_THREAD_STARTING,
 	GTM_THREAD_RUNNING,
 	GTM_THREAD_EXITING,
-#ifdef XCP
 	GTM_THREAD_BACKUP, 		/* Backup to standby is in progress */
-#endif
 	/* Must be the last */
 	GTM_THREAD_INVALID
 } GTM_ThreadStatus;
@@ -69,7 +67,6 @@ typedef struct GTM_ThreadInfo
 
 	GTM_RWLock			thr_lock;
 	gtm_List				*thr_cached_txninfo;
-
 } GTM_ThreadInfo;
 
 typedef struct GTM_Threads
@@ -96,11 +93,6 @@ GTM_ThreadInfo *GTM_ThreadCreate(GTM_ConnectionInfo *conninfo,
 				  void *(* startroutine)(void *));
 GTM_ThreadInfo * GTM_GetThreadInfo(GTM_ThreadID thrid);
 
-#ifdef XCP
-extern void SaveControlInfo(void);
-extern void SaveControlInfoWithTransactionId(GlobalTransactionId saveXid);
-#define CONTROL_INTERVAL		1000
-#endif
 /*
  * pthread keys to get thread specific information
  */

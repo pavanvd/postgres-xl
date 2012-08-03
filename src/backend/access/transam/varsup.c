@@ -4,7 +4,7 @@
  *	  postgres OID & XID variables support routines
  *
  * Copyright (c) 2000-2011, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * IDENTIFICATION
  *	  src/backend/access/transam/varsup.c
@@ -133,7 +133,7 @@ GetNewTransactionId(bool isSubXact)
 	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
 
 #ifdef PGXC
-	/* Only remote Coordinator can go a GXID */
+	/* Only remote Coordinator can get a GXID */
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
 		if (TransactionIdIsValid(xid))
@@ -163,11 +163,15 @@ GetNewTransactionId(bool isSubXact)
 		if (IsAutoVacuumWorkerProcess())
 		{
 			/*
-			 * Get gxid directly from GTM.
-			 * We use a separate function so that GTM knows to exclude it from
-			 * other snapshots.
+			 * For an autovacuum worker process, get transaction ID directly from GTM.
+			 * If this vacuum process is a vacuum analyze, its GXID has to be excluded
+			 * from snapshots so use a special function for this purpose.
+			 * For a simple worker get transaction ID like a normal transaction would do.
 			 */
-			next_xid = (TransactionId) BeginTranAutovacuumGTM();
+			if (MyProc->vacuumFlags & PROC_IN_VACUUM)
+				next_xid = (TransactionId) BeginTranAutovacuumGTM();
+			else
+				next_xid = (TransactionId) BeginTranGTM(timestamp);
 		}
 		else if (GetForceXidFromGTM())
  		{

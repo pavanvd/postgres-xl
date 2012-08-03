@@ -11,7 +11,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * $PostgreSQL: pgsql/src/include/c.h,v 1.234 2009/01/01 17:23:55 momjian Exp $
  *
@@ -65,7 +65,7 @@ typedef enum GTM_PGXCNodeType
  * as a handle because we would never have a transaction state at the
  * GTM without assigned GXID.
  */
-typedef int32	GTM_TransactionHandle; 
+typedef int32	GTM_TransactionHandle;
 
 #define InvalidTransactionHandle	-1
 

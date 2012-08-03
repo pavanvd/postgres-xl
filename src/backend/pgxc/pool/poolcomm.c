@@ -6,7 +6,7 @@
  *
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -787,7 +787,7 @@ failure:
 }
 
 /*
- * Send a message containing pid numbers to the specified connection 
+ * Send a message containing pid numbers to the specified connection
  */
 int
 pool_sendpids(PoolPort *port, int *pids, int count)

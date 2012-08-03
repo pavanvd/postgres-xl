@@ -270,8 +270,9 @@ FastCreateCachedPlan(Node *raw_parse_tree,
 	plansource->plan = NULL;
 	plansource->context = context;
 	plansource->orig_plan = NULL;
+#ifdef PGXC
 	plansource->stmt_name = NULL;
-
+#endif
 	/*
 	 * Store the current output plans into the plancache entry.
 	 */
@@ -359,7 +360,7 @@ StoreCachedPlan(CachedPlanSource *plansource,
 #ifdef PGXC
 	/*
 	 * If this plansource belongs to a named prepared statement, store the stmt
-	 * name for the datanode queries.
+	 * name for the Datanode queries.
 	 */
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord()
 	    && plansource->stmt_name)
@@ -369,15 +370,24 @@ StoreCachedPlan(CachedPlanSource *plansource,
 
 		/*
 		 * Scan the plans and set the statement field for all found RemoteQuery
-		 * nodes so they use data node statements
+		 * nodes so they use Datanode statements
 		 */
 		n = 0;
 		foreach(lc, stmt_list)
 		{
-			PlannedStmt *ps = (PlannedStmt *) lfirst(lc);
-			n = SetRemoteStatementName(ps->planTree, plansource->stmt_name,
-			                           plansource->num_params,
-			                           plansource->param_types, n);
+			Node *st;
+			PlannedStmt *ps;
+
+			st = (Node *) lfirst(lc);
+
+			if (IsA(st, PlannedStmt))
+			{
+				ps = (PlannedStmt *)st;
+
+				n = SetRemoteStatementName(ps->planTree, plansource->stmt_name,
+							plansource->num_params,
+							plansource->param_types, n);
+			}
 		}
 	}
 #endif
@@ -488,7 +498,7 @@ DropCachedPlan(CachedPlanSource *plansource)
 		{
 			ListCell *lc;
 
-			/* Close any active planned datanode statements */
+			/* Close any active planned Datanode statements */
 			foreach (lc, plan->stmt_list)
 			{
 				Node *node = lfirst(lc);
@@ -731,7 +741,7 @@ RevalidateCachedPlan(CachedPlanSource *plansource, bool useResOwner)
 }
 
 /*
- * Find and release all datanode statements referenced by the plan node and subnodes
+ * Find and release all Datanode statements referenced by the plan node and subnodes
  */
 #ifdef PGXC
 static void

@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -124,7 +124,7 @@ GTM_GetTransactionSnapshot(GTM_TransactionHandle handle[], int txn_count, int *s
 	 * Spin over transaction list checking xid, xmin, and subxids.  The goal is to
 	 * gather all active xids and find the lowest xmin
 	 */
-	gtm_foreach(elem, GTMTransactions.gt_open_transactions) 
+	gtm_foreach(elem, GTMTransactions.gt_open_transactions)
 	{
 		volatile GTM_TransactionInfo *gtm_txninfo = (GTM_TransactionInfo *)gtm_lfirst(elem);
 		GlobalTransactionId xid;
@@ -203,7 +203,7 @@ GTM_GetTransactionSnapshot(GTM_TransactionHandle handle[], int txn_count, int *s
 
 		mygtm_txninfo = GTM_HandleToTransactionInfo(handle[ii]);
 		mysnap = &mygtm_txninfo->gti_current_snapshot;
-		
+
 		if (GTM_IsTransSerializable(mygtm_txninfo))
 		{
 			if ((mygtm_txninfo->gti_snapshot_set) && (txn_count > 1))
@@ -282,17 +282,15 @@ ProcessGetSnapshotCommand(Port *myport, StringInfo message, bool get_gxid)
 	int isgxid = 0;
 	GTM_Snapshot snapshot;
 	MemoryContext oldContext;
-	bool canbe_grouped;
 	int status;
 	int txn_count = 1;
 
 	/*
-	 * This is used by the GTM proxy to decide whether to group this snapshot
-	 * request with some other snapshot request from some other backend.
-	 *
-	 * This is mostly useless for the GTM server.
-	 */ 
-	canbe_grouped = pq_getmsgbyte(message);
+	 * Here we consume a byte which is a boolean to determine if snapshot can
+	 * be grouped or not. This is used only by GTM-Proxy and it is useless for GTM
+	 * so consume data.
+	 */
+	pq_getmsgbyte(message);
 
 	isgxid = pq_getmsgbyte(message);
 
@@ -466,7 +464,7 @@ retry:
 		_rc = snapshot_get_multi(GetMyThreadInfo->thr_conn->standby,
 					 txn_count, gxid, &txn_count_out, status_out,
 					 &xmin_out, &xmax_out, &recent_global_xmin_out, &xcnt_out);
-		
+
 		if (gtm_standby_check_communication_error(&count, oldconn))
 			goto retry;
 

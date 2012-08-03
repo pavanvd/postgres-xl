@@ -15,6 +15,7 @@
 #include "pgxc/execRemote.h"
 #include "pgxc/pause.h"
 #include "pgxc/pgxc.h"
+#include "storage/spin.h"
 #include "miscadmin.h"
 
 /* globals */

@@ -11,7 +11,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -92,7 +92,7 @@ static void vacuum_rel_coordinator(Relation onerel);
  * tables separately.
  *
  * for_wraparound is used by autovacuum to let us know when it's forcing
- * a vacuum for wraparound, which should not be auto-cancelled.
+ * a vacuum for wraparound, which should not be auto-canceled.
  *
  * bstrategy is normally given as NULL, but in autovacuum it can be passed
  * in to use the same buffer strategy object across multiple vacuum() calls.
@@ -332,7 +332,16 @@ get_rel_oids(Oid relid, const RangeVar *vacrel)
 		/* Process a specific relation */
 		Oid			relid;
 
-		relid = RangeVarGetRelid(vacrel, false);
+		/*
+		 * Since we don't take a lock here, the relation might be gone,
+		 * or the RangeVar might no longer refer to the OID we look up
+		 * here.  In the former case, VACUUM will do nothing; in the
+		 * latter case, it will process the OID we looked up here, rather
+		 * than the new one.  Neither is ideal, but there's little practical
+		 * alternative, since we're going to commit this transaction and
+		 * begin a new one between now and then.
+		 */
+		relid = RangeVarGetRelid(vacrel, NoLock, false, false);
 
 		/* Make a relation list entry for this guy */
 		oldcontext = MemoryContextSwitchTo(vac_context);
@@ -748,8 +757,8 @@ vac_update_datfrozenxid(void)
 	{
 		/*
 		 * vac_truncate_clog needs a transaction id to detect wrap-arounds. For
-		 * a autovacuum, this would require the data node to contact the GTM or
-		 * the coordinator and acquire GXID for the vacuum operation.
+		 * a autovacuum, this would require the Datanode to contact the GTM or
+		 * the Coordinator and acquire GXID for the vacuum operation.
 		 *
 		 * To avoid this complexity, we disable the CLOG truncation. This is
 		 * perfectly fine for the prototype because we are not handling GXID
@@ -899,7 +908,7 @@ vacuum_rel(Oid relid, VacuumStmt *vacstmt, bool do_toast, bool for_wraparound)
 		 * here by violating transaction semantics.)
 		 *
 		 * We also set the VACUUM_FOR_WRAPAROUND flag, which is passed down by
-		 * autovacuum; it's used to avoid cancelling a vacuum that was invoked
+		 * autovacuum; it's used to avoid canceling a vacuum that was invoked
 		 * in an emergency.
 		 *
 		 * Note: these flags remain set until CommitTransaction or
@@ -1378,7 +1387,7 @@ vacuum_rel_coordinator(Relation onerel)
 
 	elog(LOG, "Getting relation statistics for %s.%s", nspname, relname);
 
-	replicated = IsReplicated(RelationGetLocatorType(onerel));
+	replicated = IsLocatorReplicated(RelationGetLocatorType(onerel));
 	/* Update local statistics */
 	if (get_remote_relstat(nspname, relname, replicated,
 						   &num_pages, &num_tuples))

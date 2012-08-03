@@ -8,7 +8,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -56,6 +56,7 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_trigger.h"
 #include "commands/defrem.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/gramparse.h"
@@ -96,6 +97,13 @@ typedef struct PrivTarget
 	GrantObjectType objtype;
 	List	   *objs;
 } PrivTarget;
+
+/* ConstraintAttributeSpec yields an integer bitmask of these flags: */
+#define CAS_NOT_DEFERRABLE			0x01
+#define CAS_DEFERRABLE				0x02
+#define CAS_INITIALLY_IMMEDIATE		0x04
+#define CAS_INITIALLY_DEFERRED		0x08
+#define CAS_NOT_VALID				0x10
 
 
 #define parser_yyerror(msg)  scanner_yyerror(msg, yyscanner)
@@ -138,6 +146,9 @@ static RangeVar *makeRangeVarFromAnyName(List *names, int position, core_yyscan_
 static void SplitColQualList(List *qualList,
 							 List **constraintList, CollateClause **collClause,
 							 core_yyscan_t yyscanner);
+static void processCASbits(int cas_bits, int location, const char *constrType,
+			   bool *deferrable, bool *initdeferred, bool *not_valid,
+			   core_yyscan_t yyscanner);
 
 %}
 
@@ -241,7 +252,7 @@ static void SplitColQualList(List *qualList,
 %type <list>	createdb_opt_list alterdb_opt_list copy_opt_list
 				transaction_mode_list
 				create_extension_opt_list alter_extension_opt_list
-				pgxcnode_list
+				pgxcnode_list pgxcnodes
 %type <defelt>	createdb_opt_item alterdb_opt_item copy_opt_item
 				transaction_mode_item
 				create_extension_opt_item alter_extension_opt_item
@@ -443,8 +454,7 @@ static void SplitColQualList(List *qualList,
 %type <list>	ColQualList
 %type <node>	ColConstraint ColConstraintElem ConstraintAttr
 %type <ival>	key_actions key_delete key_match key_update key_action
-%type <ival>	ConstraintAttributeSpec ConstraintDeferrabilitySpec
-				ConstraintTimeSpec
+%type <ival>	ConstraintAttributeSpec ConstraintAttributeElem
 %type <str>		ExistingIndex
 
 %type <list>	constraints_set_list
@@ -471,8 +481,8 @@ static void SplitColQualList(List *qualList,
 %type <str>		opt_existing_window_name
 /* PGXC_BEGIN */
 %type <str>		opt_barrier_id
-%type <distby>	OptDistributeBy
-%type <subclus> OptSubCluster
+%type <distby>	OptDistributeBy OptDistributeByInternal
+%type <subclus> OptSubCluster OptSubClusterInternal
 /* PGXC_END */
 
 
@@ -2030,6 +2040,40 @@ alter_table_cmd:
 					n->def = (Node *)$1;
 					$$ = (Node *) n;
 				}
+/* PGXC_BEGIN */
+			/* ALTER TABLE <name> DISTRIBUTE BY ... */
+			| OptDistributeByInternal
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_DistributeBy;
+					n->def = (Node *)$1;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> TO [ NODE (nodelist) | GROUP groupname ] */
+			| OptSubClusterInternal
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_SubCluster;
+					n->def = (Node *)$1;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> ADD NODE (nodelist) */
+			| ADD_P NODE pgxcnodes
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_AddNodeList;
+					n->def = (Node *)$3;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> DELETE NODE (nodelist) */
+			| DELETE_P NODE pgxcnodes
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_DeleteNodeList;
+					n->def = (Node *)$3;
+					$$ = (Node *)n;
+				}
+/* PGXC_END */
 		;
 
 alter_column_default:
@@ -2429,11 +2473,6 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 /* PGXC_BEGIN */
 					n->distributeby = $12;
 					n->subcluster = $13;
-					if (n->inhRelations != NULL && n->distributeby != NULL)
-						ereport(ERROR,
-								(errcode(ERRCODE_SYNTAX_ERROR),
-								 errmsg("CREATE TABLE cannot contains both an INHERITS and a DISTRIBUTE BY clause"),
-								 parser_errposition(exprLocation((Node *) n->distributeby))));
 /* PGXC_END */
 					$$ = (Node *)n;
 				}
@@ -2733,7 +2772,7 @@ ColConstraintElem:
 					n->fk_matchtype		= $4;
 					n->fk_upd_action	= (char) ($5 >> 8);
 					n->fk_del_action	= (char) ($5 & 0xFF);
-					n->skip_validation  = FALSE;
+					n->skip_validation  = false;
 					n->initially_valid  = true;
 					$$ = (Node *)n;
 				}
@@ -2749,7 +2788,10 @@ ColConstraintElem:
  * combinations.
  *
  * See also ConstraintAttributeSpec, which can be used in places where
- * there is no parsing conflict.
+ * there is no parsing conflict.  (Note: currently, NOT VALID is an allowed
+ * clause in ConstraintAttributeSpec, but not here.  Someday we might need
+ * to allow it here too, but for the moment it doesn't seem useful in the
+ * statements that use ConstraintAttr.)
  */
 ConstraintAttr:
 			DEFERRABLE
@@ -2841,11 +2883,10 @@ ConstraintElem:
 					n->location = @1;
 					n->raw_expr = $3;
 					n->cooked_expr = NULL;
-					if ($5 != 0)
-						ereport(ERROR,
-								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("CHECK constraints cannot be deferred"),
-								 parser_errposition(@5)));
+					processCASbits($5, @5, "CHECK",
+								   NULL, NULL, &n->skip_validation,
+								   yyscanner);
+					n->initially_valid = !n->skip_validation;
 					$$ = (Node *)n;
 				}
 			| UNIQUE '(' columnList ')' opt_definition OptConsTableSpace
@@ -2858,8 +2899,9 @@ ConstraintElem:
 					n->options = $5;
 					n->indexname = NULL;
 					n->indexspace = $6;
-					n->deferrable = ($7 & 1) != 0;
-					n->initdeferred = ($7 & 2) != 0;
+					processCASbits($7, @7, "UNIQUE",
+								   &n->deferrable, &n->initdeferred, NULL,
+								   yyscanner);
 					$$ = (Node *)n;
 				}
 			| UNIQUE ExistingIndex ConstraintAttributeSpec
@@ -2871,8 +2913,9 @@ ConstraintElem:
 					n->options = NIL;
 					n->indexname = $2;
 					n->indexspace = NULL;
-					n->deferrable = ($3 & 1) != 0;
-					n->initdeferred = ($3 & 2) != 0;
+					processCASbits($3, @3, "UNIQUE",
+								   &n->deferrable, &n->initdeferred, NULL,
+								   yyscanner);
 					$$ = (Node *)n;
 				}
 			| PRIMARY KEY '(' columnList ')' opt_definition OptConsTableSpace
@@ -2885,8 +2928,9 @@ ConstraintElem:
 					n->options = $6;
 					n->indexname = NULL;
 					n->indexspace = $7;
-					n->deferrable = ($8 & 1) != 0;
-					n->initdeferred = ($8 & 2) != 0;
+					processCASbits($8, @8, "PRIMARY KEY",
+								   &n->deferrable, &n->initdeferred, NULL,
+								   yyscanner);
 					$$ = (Node *)n;
 				}
 			| PRIMARY KEY ExistingIndex ConstraintAttributeSpec
@@ -2898,8 +2942,9 @@ ConstraintElem:
 					n->options = NIL;
 					n->indexname = $3;
 					n->indexspace = NULL;
-					n->deferrable = ($4 & 1) != 0;
-					n->initdeferred = ($4 & 2) != 0;
+					processCASbits($4, @4, "PRIMARY KEY",
+								   &n->deferrable, &n->initdeferred, NULL,
+								   yyscanner);
 					$$ = (Node *)n;
 				}
 			| EXCLUDE access_method_clause '(' ExclusionConstraintList ')'
@@ -2915,8 +2960,9 @@ ConstraintElem:
 					n->indexname		= NULL;
 					n->indexspace		= $7;
 					n->where_clause		= $8;
-					n->deferrable		= ($9 & 1) != 0;
-					n->initdeferred		= ($9 & 2) != 0;
+					processCASbits($9, @9, "EXCLUDE",
+								   &n->deferrable, &n->initdeferred, NULL,
+								   yyscanner);
 					$$ = (Node *)n;
 				}
 			| FOREIGN KEY '(' columnList ')' REFERENCES qualified_name
@@ -2931,27 +2977,11 @@ ConstraintElem:
 					n->fk_matchtype		= $9;
 					n->fk_upd_action	= (char) ($10 >> 8);
 					n->fk_del_action	= (char) ($10 & 0xFF);
-					n->deferrable		= ($11 & 1) != 0;
-					n->initdeferred		= ($11 & 2) != 0;
-					n->skip_validation  = false;
-					n->initially_valid  = true;
-					$$ = (Node *)n;
-				}
-			| FOREIGN KEY '(' columnList ')' REFERENCES qualified_name
-				opt_column_list key_match key_actions
-				NOT VALID
-				{
-					Constraint *n = makeNode(Constraint);
-					n->contype = CONSTR_FOREIGN;
-					n->location = @1;
-					n->pktable			= $7;
-					n->fk_attrs			= $4;
-					n->pk_attrs			= $8;
-					n->fk_matchtype		= $9;
-					n->fk_upd_action	= (char) ($10 >> 8);
-					n->fk_del_action	= (char) ($10 & 0xFF);
-					n->skip_validation  = true;
-					n->initially_valid  = false;
+					processCASbits($11, @11, "FOREIGN KEY",
+								   &n->deferrable, &n->initdeferred,
+								   &n->skip_validation,
+								   yyscanner);
+					n->initially_valid = !n->skip_validation;
 					$$ = (Node *)n;
 				}
 		;
@@ -3076,7 +3106,11 @@ DistributeByHash: DISTRIBUTE BY
 			| DISTRIBUTE BY HASH
 		;
 
-OptDistributeBy: DistributeByHash '(' name ')'
+OptDistributeBy: OptDistributeByInternal			{ $$ = $1; }
+			| /* EMPTY */							{ $$ = NULL; }
+		;
+
+OptDistributeByInternal: DistributeByHash '(' name ')'
 				{
 					DistributeBy *n = makeNode(DistributeBy);
 					n->disttype = DISTTYPE_HASH;
@@ -3104,11 +3138,14 @@ OptDistributeBy: DistributeByHash '(' name ')'
 					n->colname = NULL;
 					$$ = n;
 				}
-			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
-OptSubCluster:
-			TO NODE pgxcnode_list
+OptSubCluster: OptSubClusterInternal				{ $$ = $1; }
+			| /* EMPTY */							{ $$ = NULL; }
+		;
+
+OptSubClusterInternal:
+			TO NODE pgxcnodes
 				{
 					PGXCSubCluster *n = makeNode(PGXCSubCluster);
 					n->clustertype = SUBCLUSTER_NODE;
@@ -3122,7 +3159,6 @@ OptSubCluster:
 					n->members = list_make1(makeString($3));
 					$$ = n;
 				}
-			| /* EMPTY */							{ $$ = NULL; }
 		;
 /* PGXC_END */
 
@@ -4194,8 +4230,9 @@ CreateTrigStmt:
 					n->columns = (List *) lsecond($6);
 					n->whenClause = $14;
 					n->isconstraint  = TRUE;
-					n->deferrable = ($10 & 1) != 0;
-					n->initdeferred = ($10 & 2) != 0;
+					processCASbits($10, @10, "TRIGGER",
+								   &n->deferrable, &n->initdeferred, NULL,
+								   yyscanner);
 					n->constrrel = $9;
 					$$ = (Node *)n;
 				}
@@ -4298,45 +4335,40 @@ OptConstrFromTable:
 		;
 
 ConstraintAttributeSpec:
-			ConstraintDeferrabilitySpec
-				{ $$ = $1; }
-			| ConstraintDeferrabilitySpec ConstraintTimeSpec
-				{
-					if ($1 == 0 && $2 != 0)
-						ereport(ERROR,
-								(errcode(ERRCODE_SYNTAX_ERROR),
-								 errmsg("constraint declared INITIALLY DEFERRED must be DEFERRABLE"),
-								 parser_errposition(@1)));
-					$$ = $1 | $2;
-				}
-			| ConstraintTimeSpec
-				{
-					if ($1 != 0)
-						$$ = 3;
-					else
-						$$ = 0;
-				}
-			| ConstraintTimeSpec ConstraintDeferrabilitySpec
-				{
-					if ($2 == 0 && $1 != 0)
-						ereport(ERROR,
-								(errcode(ERRCODE_SYNTAX_ERROR),
-								 errmsg("constraint declared INITIALLY DEFERRED must be DEFERRABLE"),
-								 parser_errposition(@1)));
-					$$ = $1 | $2;
-				}
-			| /*EMPTY*/
+			/*EMPTY*/
 				{ $$ = 0; }
+			| ConstraintAttributeSpec ConstraintAttributeElem
+				{
+					/*
+					 * We must complain about conflicting options.
+					 * We could, but choose not to, complain about redundant
+					 * options (ie, where $2's bit is already set in $1).
+					 */
+					int		newspec = $1 | $2;
+
+					/* special message for this case */
+					if ((newspec & (CAS_NOT_DEFERRABLE | CAS_INITIALLY_DEFERRED)) == (CAS_NOT_DEFERRABLE | CAS_INITIALLY_DEFERRED))
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("constraint declared INITIALLY DEFERRED must be DEFERRABLE"),
+								 parser_errposition(@2)));
+					/* generic message for other conflicts */
+					if ((newspec & (CAS_NOT_DEFERRABLE | CAS_DEFERRABLE)) == (CAS_NOT_DEFERRABLE | CAS_DEFERRABLE) ||
+						(newspec & (CAS_INITIALLY_IMMEDIATE | CAS_INITIALLY_DEFERRED)) == (CAS_INITIALLY_IMMEDIATE | CAS_INITIALLY_DEFERRED))
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("conflicting constraint properties"),
+								 parser_errposition(@2)));
+					$$ = newspec;
+				}
 		;
 
-ConstraintDeferrabilitySpec:
-			NOT DEFERRABLE							{ $$ = 0; }
-			| DEFERRABLE							{ $$ = 1; }
-		;
-
-ConstraintTimeSpec:
-			INITIALLY IMMEDIATE						{ $$ = 0; }
-			| INITIALLY DEFERRED					{ $$ = 2; }
+ConstraintAttributeElem:
+			NOT DEFERRABLE					{ $$ = CAS_NOT_DEFERRABLE; }
+			| DEFERRABLE					{ $$ = CAS_DEFERRABLE; }
+			| INITIALLY IMMEDIATE			{ $$ = CAS_INITIALLY_IMMEDIATE; }
+			| INITIALLY DEFERRED			{ $$ = CAS_INITIALLY_DEFERRED; }
+			| NOT VALID						{ $$ = CAS_NOT_VALID; }
 		;
 
 
@@ -4380,8 +4412,9 @@ CreateAssertStmt:
 					n->trigname = $3;
 					n->args = list_make1($6);
 					n->isconstraint  = TRUE;
-					n->deferrable = ($8 & 1) != 0;
-					n->initdeferred = ($8 & 2) != 0;
+					processCASbits($8, @8, "ASSERTION",
+								   &n->deferrable, &n->initdeferred, NULL,
+								   yyscanner);
 
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -7726,6 +7759,15 @@ AlterDomainStmt:
 					n->behavior = $7;
 					$$ = (Node *)n;
 				}
+			/* ALTER DOMAIN <domain> VALIDATE CONSTRAINT <name> */
+			| ALTER DOMAIN_P any_name VALIDATE CONSTRAINT name
+				{
+					AlterDomainStmt *n = makeNode(AlterDomainStmt);
+					n->subtype = 'V';
+					n->typeName = $3;
+					n->name = $6;
+					$$ = (Node *)n;
+				}
 			;
 
 opt_as:		AS										{}
@@ -8078,8 +8120,12 @@ pgxcnode_name:
 pgxcgroup_name:
 			ColId							{ $$ = $1; };
 
+pgxcnodes:
+			'(' pgxcnode_list ')'			{ $$ = $2; }
+		;
+
 pgxcnode_list:
-			pgxcnode_list ',' pgxcnode_name				{ $$ = lappend($1, makeString($3)); }
+			pgxcnode_list ',' pgxcnode_name		{ $$ = lappend($1, makeString($3)); }
 			| pgxcnode_name						{ $$ = list_make1(makeString($1)); }
 		;
 
@@ -8128,11 +8174,11 @@ DropNodeStmt: DROP NODE pgxcnode_name
 /*****************************************************************************
  *
  *		QUERY:
- *				CREATE NODE GROUP groupname WITH node1,...,nodeN
+ *				CREATE NODE GROUP groupname WITH (node1,...,nodeN)
  *
  *****************************************************************************/
 
-CreateNodeGroupStmt: CREATE NODE GROUP_P pgxcgroup_name WITH pgxcnode_list
+CreateNodeGroupStmt: CREATE NODE GROUP_P pgxcgroup_name WITH pgxcnodes
 				{
 					CreateGroupStmt *n = makeNode(CreateGroupStmt);
 					n->group_name = $4;
@@ -8247,16 +8293,21 @@ explain_option_arg:
 /*****************************************************************************
  *
  *		QUERY:
- *				EXECUTE DIRECT ON (nodename, ...) query
+ *				EXECUTE DIRECT ON ( nodename [, ... ] ) query
  *
  *****************************************************************************/
 
-ExecDirectStmt: EXECUTE DIRECT ON pgxcnode_list DirectStmt
+ExecDirectStmt: EXECUTE DIRECT ON pgxcnodes DirectStmt
 				{
 					ExecDirectStmt *n = makeNode(ExecDirectStmt);
 					n->node_names = $4;
 					n->query = $5;
 					$$ = (Node *)n;
+
+					if (!superuser())
+						ereport(ERROR,
+						       (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						        errmsg("must be superuser to use EXECUTE DIRECT")));
 				}
 		;
 
@@ -8268,13 +8319,13 @@ DirectStmt:
  *
  *		QUERY:
  *
- *		CLEAN CONNECTION TO (COORDINATOR nodename | NODE nodename | ALL {FORCE})
+ *		CLEAN CONNECTION TO { COORDINATOR ( nodename ) | NODE ( nodename ) | ALL {FORCE} }
  *				[ FOR DATABASE dbname ]
  *				[ TO USER username ]
  *
  *****************************************************************************/
 
-CleanConnStmt: CLEAN CONNECTION TO COORDINATOR pgxcnode_list CleanConnDbName CleanConnUserName
+CleanConnStmt: CLEAN CONNECTION TO COORDINATOR pgxcnodes CleanConnDbName CleanConnUserName
 				{
 					CleanConnStmt *n = makeNode(CleanConnStmt);
 					n->is_coord = true;
@@ -8284,7 +8335,7 @@ CleanConnStmt: CLEAN CONNECTION TO COORDINATOR pgxcnode_list CleanConnDbName Cle
 					n->username = $7;
 					$$ = (Node *)n;
 				}
-				| CLEAN CONNECTION TO NODE pgxcnode_list CleanConnDbName CleanConnUserName
+				| CLEAN CONNECTION TO NODE pgxcnodes CleanConnDbName CleanConnUserName
 				{
 					CleanConnStmt *n = makeNode(CleanConnStmt);
 					n->is_coord = false;
@@ -8368,6 +8419,11 @@ ExecuteStmt: EXECUTE name execute_param_clause
 					n->params = $8;
 					$4->rel->relpersistence = $2;
 					n->into = $4;
+#ifdef PGXC
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("CREATE TABLE AS EXECUTE not yet supported")));
+#endif
 					if ($4->colNames)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -13283,6 +13339,64 @@ SplitColQualList(List *qualList,
 		qualList = list_delete_cell(qualList, cell, prev);
 	}
 	*constraintList = qualList;
+}
+
+/*
+ * Process result of ConstraintAttributeSpec, and set appropriate bool flags
+ * in the output command node.  Pass NULL for any flags the particular
+ * command doesn't support.
+ */
+static void
+processCASbits(int cas_bits, int location, const char *constrType,
+			   bool *deferrable, bool *initdeferred, bool *not_valid,
+			   core_yyscan_t yyscanner)
+{
+	/* defaults */
+	if (deferrable)
+		*deferrable = false;
+	if (initdeferred)
+		*initdeferred = false;
+	if (not_valid)
+		*not_valid = false;
+
+	if (cas_bits & (CAS_DEFERRABLE | CAS_INITIALLY_DEFERRED))
+	{
+		if (deferrable)
+			*deferrable = true;
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 /* translator: %s is CHECK, UNIQUE, or similar */
+					 errmsg("%s constraints cannot be marked DEFERRABLE",
+							constrType),
+					 parser_errposition(location)));
+	}
+
+	if (cas_bits & CAS_INITIALLY_DEFERRED)
+	{
+		if (initdeferred)
+			*initdeferred = true;
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 /* translator: %s is CHECK, UNIQUE, or similar */
+					 errmsg("%s constraints cannot be marked DEFERRABLE",
+							constrType),
+					 parser_errposition(location)));
+	}
+
+	if (cas_bits & CAS_NOT_VALID)
+	{
+		if (not_valid)
+			*not_valid = true;
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 /* translator: %s is CHECK, UNIQUE, or similar */
+					 errmsg("%s constraints cannot be marked NOT VALID",
+							constrType),
+					 parser_errposition(location)));
+	}
 }
 
 /* parser_init()

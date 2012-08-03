@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -40,11 +40,6 @@ static void init_GTM_TransactionInfo(GTM_TransactionInfo *gtm_txninfo,
 									 GTMProxy_ConnID connid,
 									 bool readonly);
 GTM_Transactions GTMTransactions;
-
-#ifdef XCP
-GlobalTransactionId ControlXid;  /* last one written to control file */
-#endif
-
 
 void
 GTM_InitTxnManager(void)
@@ -104,10 +99,6 @@ GTM_InitTxnManager(void)
 	GTMTransactions.gt_lastslot = -1;
 
 	GTMTransactions.gt_gtm_state = GTM_STARTING;
-
-#ifdef XCP
-	ControlXid = FirstNormalGlobalTransactionId;
-#endif
 
 	return;
 }
@@ -514,13 +505,11 @@ GTM_GetGlobalTransactionIdMulti(GTM_TransactionHandle handle[], int txn_count)
 	GTM_TransactionInfo *gtm_txninfo = NULL;
 	int ii;
 
-#ifdef XCP
 	if (Recovery_IsStandby())
 	{
 		ereport(ERROR, (EINVAL, errmsg("GTM is running in STANDBY mode -- can not issue new transaction ids")));
 		return InvalidGlobalTransactionId;
 	}
-#endif
 
 	GTM_RWLockAcquire(&GTMTransactions.gt_XidGenLock, GTM_LOCKMODE_WRITE);
 
@@ -591,16 +580,6 @@ GTM_GetGlobalTransactionIdMulti(GTM_TransactionHandle handle[], int txn_count)
 		gtm_txninfo->gti_gxid = xid;
 	}
 
-#ifdef XCP
-	/* Periodically write the xid and sequence info out to the control file.
-	 * Try and handle wrapping, too. Don't hold above lock.
-	 */
-	if (start_xid - ControlXid > CONTROL_INTERVAL || start_xid < CONTROL_INTERVAL)
-	{
-		SaveControlInfoWithTransactionId(start_xid);
-		ControlXid = start_xid;
-	}
-#endif
 	GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
 
 	return start_xid;
@@ -985,7 +964,7 @@ GTM_StartPreparedTransaction(GTM_TransactionHandle txn,
 															 GTM_MAX_NODESTRING_LEN);
 	memcpy(gtm_txninfo->nodestring, nodestring, strlen(nodestring) + 1);
 
-	/* It is possible that no datanode is involved in a transaction (Sequence DDL) */
+	/* It is possible that no Datanode is involved in a transaction */
 	if (gtm_txninfo->gti_gid == NULL)
 		gtm_txninfo->gti_gid = (char *)MemoryContextAlloc(TopMostMemoryContext, GTM_MAX_GID_LEN);
 	memcpy(gtm_txninfo->gti_gid, gid, strlen(gid) + 1);
@@ -1683,7 +1662,7 @@ ProcessCommitPreparedTransactionCommand(Port *myport, StringInfo message, bool i
 	MemoryContext oldContext;
 	int status[txn_count];
 	int isgxid[txn_count];
-	int ii, count;
+	int ii;
 
 	for (ii = 0; ii < txn_count; ii++)
 	{
@@ -1720,7 +1699,7 @@ ProcessCommitPreparedTransactionCommand(Port *myport, StringInfo message, bool i
 	/*
 	 * Commit the prepared transaction.
 	 */
-	count = GTM_CommitTransactionMulti(txn, txn_count, status);
+	GTM_CommitTransactionMulti(txn, txn_count, status);
 
 	MemoryContextSwitchTo(oldContext);
 
@@ -1782,7 +1761,7 @@ ProcessCommitPreparedTransactionCommand(Port *myport, StringInfo message, bool i
  * For a given GID the following info is returned:
  * - a fresh GXID,
  * - GXID of the transaction that made the prepare
- * - datanode and coordinator node list involved in the prepare
+ * - Datanode and Coordinator node list involved in the prepare
  */
 void
 ProcessGetGIDDataTransactionCommand(Port *myport, StringInfo message)
@@ -2075,7 +2054,7 @@ ProcessCommitTransactionCommandMulti(Port *myport, StringInfo message, bool is_b
 	int isgxid[GTM_MAX_GLOBAL_TRANSACTIONS];
 	MemoryContext oldContext;
 	int status[GTM_MAX_GLOBAL_TRANSACTIONS];
-	int txn_count, count;
+	int txn_count;
 	int ii;
 
 	txn_count = pq_getmsgint(message, sizeof (int));
@@ -2113,7 +2092,7 @@ ProcessCommitTransactionCommandMulti(Port *myport, StringInfo message, bool is_b
 	/*
 	 * Commit the transaction
 	 */
-	count = GTM_CommitTransactionMulti(txn, txn_count, status);
+	GTM_CommitTransactionMulti(txn, txn_count, status);
 
 	MemoryContextSwitchTo(oldContext);
 
@@ -2178,7 +2157,7 @@ ProcessRollbackTransactionCommandMulti(Port *myport, StringInfo message, bool is
 	int isgxid[GTM_MAX_GLOBAL_TRANSACTIONS];
 	MemoryContext oldContext;
 	int status[GTM_MAX_GLOBAL_TRANSACTIONS];
-	int txn_count, count;
+	int txn_count;
 	int ii;
 
 	txn_count = pq_getmsgint(message, sizeof (int));
@@ -2216,7 +2195,7 @@ ProcessRollbackTransactionCommandMulti(Port *myport, StringInfo message, bool is
 	/*
 	 * Commit the transaction
 	 */
-	count = GTM_RollbackTransactionMulti(txn, txn_count, status);
+	GTM_RollbackTransactionMulti(txn, txn_count, status);
 
 	MemoryContextSwitchTo(oldContext);
 
@@ -2396,7 +2375,6 @@ ProcessPrepareTransactionCommand(Port *myport, StringInfo message, bool is_backu
 	GlobalTransactionId gxid;
 	int isgxid = 0;
 	MemoryContext oldContext;
-	int status = STATUS_OK;
 
 	isgxid = pq_getmsgbyte(message);
 
@@ -2427,7 +2405,7 @@ ProcessPrepareTransactionCommand(Port *myport, StringInfo message, bool is_backu
 	/*
 	 * Commit the transaction
 	 */
-	status = GTM_PrepareTransaction(txn);
+	GTM_PrepareTransaction(txn);
 
 	MemoryContextSwitchTo(oldContext);
 
@@ -2599,39 +2577,19 @@ GTM_SetShuttingDown(void)
 	GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
 }
 
-#ifdef XCP
 void
 GTM_RestoreTxnInfo(FILE *ctlf, GlobalTransactionId next_gxid)
-#else
-void
-GTM_RestoreTxnInfo(int ctlfd, GlobalTransactionId next_gxid)
-#endif
 {
 	GlobalTransactionId saved_gxid;
 
-#ifdef XCP
 	if (ctlf)
 	{
 		if ((fscanf(ctlf, "%u", &saved_gxid) != 1) &&
 			(!GlobalTransactionIdIsValid(next_gxid)))
 			next_gxid = InitialGXIDValue_Default;
 		else if (!GlobalTransactionIdIsValid(next_gxid))
-		{
-			/* Add in extra amount in case we had not gracefully stopped */
-			next_gxid = saved_gxid + CONTROL_INTERVAL;
-			ControlXid = next_gxid;
-		}
-	}
-#else
-	if (ctlfd != -1)
-	{
-		if ((read(ctlfd, &saved_gxid, sizeof (saved_gxid)) != sizeof (saved_gxid)) &&
-			(!GlobalTransactionIdIsValid(next_gxid)))
-			next_gxid = InitialGXIDValue_Default;
-		else if (!GlobalTransactionIdIsValid(next_gxid))
 			next_gxid = saved_gxid;
 	}
-#endif
 	else if (!GlobalTransactionIdIsValid(next_gxid))
 		next_gxid = InitialGXIDValue_Default;
 
@@ -2644,31 +2602,8 @@ GTM_RestoreTxnInfo(int ctlfd, GlobalTransactionId next_gxid)
 	return;
 }
 
-#ifdef XCP
-/*
- *
- */
 void
-GTM_SaveTxnInfo(FILE *ctlf, GlobalTransactionId saveXid)
-{
-	GlobalTransactionId next_gxid;
-
-	/*
-	 * If this is 0, go look it up, otherwise use passed in value
-	 * Note that ReadNewGlobalTransactionId will take a lock
-         */
-	if (saveXid == 0)
-		next_gxid = ReadNewGlobalTransactionId();
-	else
-		next_gxid = saveXid;
-
-	elog(LOG, "Saving transaction info - next_gxid: %u", saveXid);
-
-	fprintf(ctlf, "%u\n", next_gxid);
-}
-#else
-void
-GTM_SaveTxnInfo(int ctlfd)
+GTM_SaveTxnInfo(FILE *ctlf)
 {
 	GlobalTransactionId next_gxid;
 
@@ -2676,9 +2611,8 @@ GTM_SaveTxnInfo(int ctlfd)
 
 	elog(LOG, "Saving transaction info - next_gxid: %u", next_gxid);
 
-	write(ctlfd, &next_gxid, sizeof (next_gxid));
+	fprintf(ctlf, "%u\n", next_gxid);
 }
-#endif
 /*
  * TODO
  */
@@ -2688,4 +2622,3 @@ int GTM_GetAllTransactions(GTM_TransactionInfo txninfo[], uint32 txncnt);
  * TODO
  */
 uint32 GTM_GetAllPrepared(GlobalTransactionId gxids[], uint32 gxidcnt);
-

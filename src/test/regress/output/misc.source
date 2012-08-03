@@ -63,7 +63,7 @@ SELECT unique1 FROM onek2 WHERE unique1 < 2 ORDER BY unique1;
 COPY BINARY stud_emp TO '@abs_builddir@/results/stud_emp.data';
 DELETE FROM stud_emp;
 COPY BINARY stud_emp FROM '@abs_builddir@/results/stud_emp.data';
-SELECT * FROM stud_emp ORDER BY 1, 2;
+SELECT * FROM stud_emp ORDER BY 1,2;
  name  | age |  location  | salary | manager | gpa | percent 
 -------+-----+------------+--------+---------+-----+---------
  cim   |  30 | (10.5,4.7) |    400 |         | 3.4 |        
@@ -145,7 +145,7 @@ SELECT *
 (1 row)
 
 SELECT class, a
-   FROM c_star* x 
+   FROM c_star* x
    WHERE x.c ~ text 'hi' ORDER BY 1,2;
  class | a  
 -------+----

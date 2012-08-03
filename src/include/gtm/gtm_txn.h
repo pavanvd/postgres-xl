@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * $PostgreSQL$
  *
@@ -247,13 +247,8 @@ void ProcessBeginTransactionGetGXIDCommandMulti(Port *myport, StringInfo message
 void ProcessCommitTransactionCommandMulti(Port *myport, StringInfo message, bool is_backup);
 void ProcessRollbackTransactionCommandMulti(Port *myport, StringInfo message, bool is_backup) ;
 
-#ifdef XCP
-void GTM_SaveTxnInfo(FILE *ctlf, GlobalTransactionId next_gxid);
+void GTM_SaveTxnInfo(FILE *ctlf);
 void GTM_RestoreTxnInfo(FILE *ctlf, GlobalTransactionId next_gxid);
-#else
-void GTM_SaveTxnInfo(int ctlfd);
-void GTM_RestoreTxnInfo(int ctlfd, GlobalTransactionId next_gxid);
-#endif
 void GTM_BkupBeginTransaction(char *coord_name,
 							  GTM_TransactionHandle txn,
 							  GTM_IsolationLevel isolevel,

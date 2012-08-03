@@ -1,16 +1,16 @@
+#----------------------------------------------------------------------------
 #
-# Makefile for the access methods module
+# Postgres-XC backend method makefile
 #
+# Copyright(c) 2010-2012 Postgres-XC Development Group
 #
-# Portions Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
+# src/backend/pgxc/Makefile
 #
-# $PostgreSQL$
-#
-
+#-----------------------------------------------------------------------------
 subdir = src/backend/pgxc
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-SUBDIRS	    = locator plan pool barrier nodemgr squeue cluster xc_maintenance_mode
+SUBDIRS	    = locator plan pool barrier nodemgr squeue cluster copy xc_maintenance_mode
 
 include $(top_srcdir)/src/backend/common.mk

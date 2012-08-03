@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * $PostgreSQL$
  *
@@ -87,13 +87,8 @@ void ProcessSequenceAlterCommand(Port *myport, StringInfo message, bool is_backu
 
 void ProcessSequenceListCommand(Port *myport, StringInfo message);
 
-#ifdef XCP
 void GTM_SaveSeqInfo(FILE *ctlf);
 void GTM_RestoreSeqInfo(FILE *ctlf);
-#else
-void GTM_SaveSeqInfo(int ctlfd);
-void GTM_RestoreSeqInfo(int ctlfd);
-#endif
 int GTM_SeqRestore(GTM_SequenceKey seqkey,
 			   GTM_Sequence increment_by,
 			   GTM_Sequence minval,

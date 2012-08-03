@@ -48,6 +48,7 @@
 #include "pgxc/planner.h"
 #endif
 #include "utils/lsyscache.h"
+#include "utils/rel.h"
 #include "utils/syscache.h"
 
 
@@ -115,6 +116,11 @@ static Plan *grouping_distribution(PlannerInfo *root, Plan *plan,
 					  int numGroupCols, AttrNumber *groupColIdx,
 					  List *current_pathkeys, Distribution **distribution);
 #endif
+#ifdef PGXC
+#ifndef XCP
+static void separate_rowmarks(PlannerInfo *root);
+#endif
+#endif
 
 /*****************************************************************************
  *
@@ -140,7 +146,7 @@ planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 #ifdef PGXC
 #ifndef XCP
 		/*
-		 * A coordinator receiving a query from another Coordinator
+		 * A Coordinator receiving a query from another Coordinator
 		 * is not allowed to go into PGXC planner.
 		 */
 		if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
@@ -291,11 +297,15 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 #ifdef PGXC
 #ifndef XCP
 	/*
-	 * PGXC should apply INSERT/UPDATE/DELETE to a datanode. We are overriding
+	 * PGXC should apply INSERT/UPDATE/DELETE to a Datanode. We are overriding
 	 * normal Postgres behavior by modifying final plan or by adding a node on
 	 * top of it.
+	 * If the optimizer finds out that there is nothing to UPDATE/INSERT/DELETE
+	 * in the table/s (say using constraint exclusion), it does not add modify
+	 * table plan on the top. We should send queries to the remote nodes only
+	 * when there is something to modify.
 	 */
-	if (IS_PGXC_COORDINATOR)
+	if (IS_PGXC_COORDINATOR && IsA(top_plan, ModifyTable))
 		switch (parse->commandType)
 		{
 			case CMD_INSERT:
@@ -480,6 +490,27 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	 */
 	preprocess_rowmarks(root);
 
+#ifdef PGXC
+#ifndef XCP
+	/*
+	 * In Coordinators we separate row marks in two groups
+	 * one comprises of row marks of types ROW_MARK_EXCLUSIVE & ROW_MARK_SHARE
+	 * and the other contains the rest of the types of row marks
+	 * The former is handeled on Coordinator in such a way that
+	 * FOR UPDATE/SHARE gets added in the remote query, whereas
+	 * the later needs to be handeled the way pg does
+	 *
+	 * PGXCTODO : This is not a very efficient way of handling row marks
+	 * Consider this join query
+	 * select * from t1, t2 where t1.val = t2.val for update
+	 * It results in this query to be fired at the Datanodes
+	 * SELECT val, val2, ctid FROM ONLY t2 WHERE true FOR UPDATE OF t2
+	 * We are locking the complete table where as we should have locked
+	 * only the rows where t1.val = t2.val is met
+	 */
+	separate_rowmarks(root);
+#endif
+#endif
 	/*
 	 * Expand any rangetable entries that are inheritance sets into "append
 	 * relations".  This can add entries to the rangetable, but they must be
@@ -1612,9 +1643,9 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 #ifndef XCP
 			/*
 			 * Grouping will certainly not increase the number of rows
-			 * coordinator fetches from datanode, in fact it's expected to
+			 * Coordinator fetches from Datanode, in fact it's expected to
 			 * reduce the number drastically. Hence, try pushing GROUP BY
-			 * clauses and aggregates to the datanode, thus saving bandwidth.
+			 * clauses and aggregates to the Datanode, thus saving bandwidth.
 			 */
 			if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 				result_plan = create_remotegrouping_plan(root, result_plan);
@@ -1665,11 +1696,16 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			 * step.  That's handled internally by make_sort_from_pathkeys,
 			 * but we need the copyObject steps here to ensure that each plan
 			 * node has a separately modifiable tlist.
+			 *
+			 * Note: it's essential here to use PVC_INCLUDE_AGGREGATES so that
+			 * Vars mentioned only in aggregate expressions aren't pulled out
+			 * as separate targetlist entries.  Otherwise we could be putting
+			 * ungrouped Vars directly into an Agg node's tlist, resulting in
+			 * undefined behavior.
 			 */
-			window_tlist = flatten_tlist(tlist);
-			if (parse->hasAggs)
-				window_tlist = add_to_flat_tlist(window_tlist,
-											pull_agg_clause((Node *) tlist));
+			window_tlist = flatten_tlist(tlist,
+										 PVC_INCLUDE_AGGREGATES,
+										 PVC_INCLUDE_PLACEHOLDERS);
 			window_tlist = add_volatile_sort_exprs(window_tlist, tlist,
 												   activeWindows);
 			result_plan->targetlist = (List *) copyObject(window_tlist);
@@ -2272,6 +2308,45 @@ preprocess_rowmarks(PlannerInfo *root)
 
 	root->rowMarks = prowmarks;
 }
+
+#ifdef PGXC
+#ifndef XCP
+/*
+ * separate_rowmarks - In XC Coordinators are supposed to skip handling
+ *                of type ROW_MARK_EXCLUSIVE & ROW_MARK_SHARE.
+ *                In order to do that we simply remove such type
+ *                of row marks from the list. Instead they are saved
+ *                in another list that is then handeled to add
+ *                FOR UPDATE/SHARE in the remote query
+ *                in the function create_remotequery_plan
+ */
+static void
+separate_rowmarks(PlannerInfo *root)
+{
+	List		*rml_1, *rml_2;
+	ListCell	*rm;
+
+	if (IS_PGXC_DATANODE || IsConnFromCoord() || root->rowMarks == NULL)
+		return;
+
+	rml_1 = NULL;
+	rml_2 = NULL;
+
+	foreach(rm, root->rowMarks)
+	{
+		PlanRowMark *prm = (PlanRowMark *) lfirst(rm);
+
+		if (prm->markType == ROW_MARK_EXCLUSIVE || prm->markType == ROW_MARK_SHARE)
+			rml_1 = lappend(rml_1, prm);
+		else
+			rml_2 = lappend(rml_2, prm);
+	}
+	list_free(root->rowMarks);
+	root->rowMarks = rml_2;
+	root->xc_rowMarks = rml_1;
+}
+#endif /*XCP*/
+#endif /*PGXC*/
 
 /*
  * preprocess_limit - do pre-estimation for LIMIT and/or OFFSET clauses
@@ -2921,14 +2996,18 @@ make_subplanTargetList(PlannerInfo *root,
 	}
 
 	/*
-	 * Otherwise, start with a "flattened" tlist (having just the vars
-	 * mentioned in the targetlist and HAVING qual --- but not upper-level
-	 * Vars; they will be replaced by Params later on).  Note this includes
-	 * vars used in resjunk items, so we are covering the needs of ORDER BY
-	 * and window specifications.
+	 * Otherwise, start with a "flattened" tlist (having just the Vars
+	 * mentioned in the targetlist and HAVING qual).  Note this includes Vars
+	 * used in resjunk items, so we are covering the needs of ORDER BY and
+	 * window specifications.  Vars used within Aggrefs will be pulled out
+	 * here, too.
 	 */
-	sub_tlist = flatten_tlist(tlist);
-	extravars = pull_var_clause(parse->havingQual, PVC_INCLUDE_PLACEHOLDERS);
+	sub_tlist = flatten_tlist(tlist,
+							  PVC_RECURSE_AGGREGATES,
+							  PVC_INCLUDE_PLACEHOLDERS);
+	extravars = pull_var_clause(parse->havingQual,
+								PVC_RECURSE_AGGREGATES,
+								PVC_INCLUDE_PLACEHOLDERS);
 	sub_tlist = add_to_flat_tlist(sub_tlist, extravars);
 	list_free(extravars);
 	*need_tlist_eval = false;	/* only eval if not flat tlist */
@@ -3507,7 +3586,7 @@ grouping_distribution(PlannerInfo *root, Plan *plan,
 					  List *current_pathkeys, Distribution **distribution)
 {
 	if (*distribution &&
-			!IsReplicated((*distribution)->distributionType) &&
+			!IsLocatorReplicated((*distribution)->distributionType) &&
 			(numGroupCols == 0 ||
 					(*distribution)->distributionExpr == NULL ||
 					!equal(((TargetEntry *)list_nth(plan->targetlist, groupColIdx[0]-1))->expr,

@@ -81,8 +81,16 @@ typedef enum
 typedef enum
 {
 	TSF_MINIMAL,				/* Minimal tuples */
-	TSF_DATAROW					/* Datarow tuples */
+	TSF_DATAROW,				/* Datarow tuples */
+	TSF_MESSAGE					/* A Postgres protocol message data */
 } TupStoreFormat;
+
+
+typedef struct
+{
+	int32 	msglen;
+	char   *msg;
+} msg_data;
 #endif
 
 
@@ -265,6 +273,9 @@ static void *readtup_heap(Tuplestorestate *state, unsigned int len);
 static void *copytup_datarow(Tuplestorestate *state, void *tup);
 static void writetup_datarow(Tuplestorestate *state, void *tup);
 static void *readtup_datarow(Tuplestorestate *state, unsigned int len);
+static void *copytup_message(Tuplestorestate *state, void *tup);
+static void writetup_message(Tuplestorestate *state, void *tup);
+static void *readtup_message(Tuplestorestate *state, unsigned int len);
 #endif
 
 /*
@@ -643,7 +654,8 @@ tuplestore_puttuple(Tuplestorestate *state, HeapTuple tuple)
 #endif
 
 	/*
-	 * Copy the tuple.	(Must do this even in WRITEFILE case.)
+	 * Copy the tuple.  (Must do this even in WRITEFILE case.  Note that
+	 * COPYTUP includes USEMEM, so we needn't do that here.)
 	 */
 	tuple = COPYTUP(state, tuple);
 
@@ -653,9 +665,8 @@ tuplestore_puttuple(Tuplestorestate *state, HeapTuple tuple)
 }
 
 /*
- * Similar to tuplestore_puttuple(), but start from the values + nulls
- * array. This avoids requiring that the caller construct a HeapTuple,
- * saving a copy.
+ * Similar to tuplestore_puttuple(), but work from values + nulls arrays.
+ * This avoids an extra tuple-construction operation.
  */
 void
 tuplestore_putvalues(Tuplestorestate *state, TupleDesc tdesc,
@@ -669,6 +680,7 @@ tuplestore_putvalues(Tuplestorestate *state, TupleDesc tdesc,
 #endif
 
 	tuple = heap_form_minimal_tuple(tdesc, values, isnull);
+	USEMEM(state, GetMemoryChunkSpace(tuple));
 
 	tuplestore_puttuple_common(state, (void *) tuple);
 
@@ -1519,6 +1531,120 @@ readtup_datarow(Tuplestorestate *state, unsigned int len)
 						sizeof(len)) != sizeof(len))
 			elog(ERROR, "unexpected end of data");
 	return (void *) tuple;
+}
+
+
+/*
+ * Routines to support storage of protocol message data
+ */
+Tuplestorestate *
+tuplestore_begin_message(bool interXact, int maxKBytes)
+{
+	Tuplestorestate *state;
+
+	state = tuplestore_begin_common(0, interXact, maxKBytes);
+
+	state->format = TSF_MESSAGE;
+	state->copytup = copytup_message;
+	state->writetup = writetup_message;
+	state->readtup = readtup_message;
+	state->tmpcxt = NULL;
+
+	return state;
+}
+
+
+void
+tuplestore_putmessage(Tuplestorestate *state, int len, char* msg)
+{
+	msg_data m;
+	void *tuple;
+	MemoryContext oldcxt = MemoryContextSwitchTo(state->context);
+
+	Assert(state->format == TSF_MESSAGE);
+
+	m.msglen = len;
+	m.msg = msg;
+
+	tuple = COPYTUP(state, &m);
+	tuplestore_puttuple_common(state, tuple);
+
+	MemoryContextSwitchTo(oldcxt);
+}
+
+
+char *
+tuplestore_getmessage(Tuplestorestate *state, int *len)
+{
+	bool should_free;
+	void *result;
+	void *tuple = tuplestore_gettuple(state, true, &should_free);
+
+	Assert(state->format == TSF_MESSAGE);
+
+	/* done? */
+	if (!tuple)
+		return NULL;
+
+	*len = *((int *) tuple);
+
+	result = palloc(*len);
+	memcpy(result, ((char *) tuple) + sizeof(int), *len);
+	if (should_free)
+		pfree(tuple);
+
+	return (char *) result;
+}
+
+
+static void *
+copytup_message(Tuplestorestate *state, void *tup)
+{
+	msg_data *m = (msg_data *) tup;
+	void *tuple;
+
+	tuple = palloc(m->msglen + sizeof(int));
+	*((int *) tuple) = m->msglen;
+	memcpy(((char *) tuple) + sizeof(int), m->msg, m->msglen);
+	USEMEM(state, GetMemoryChunkSpace(tuple));
+	return tuple;
+}
+
+
+static void
+writetup_message(Tuplestorestate *state, void *tup)
+{
+	int *msglen = (int *) tup;
+	/* total on-disk footprint: */
+	unsigned int tuplen = *msglen;
+
+	if (BufFileWrite(state->myfile, tup, tuplen) != tuplen)
+		elog(ERROR, "write failed");
+	if (state->backward)		/* need trailing length word? */
+		if (BufFileWrite(state->myfile, (void *) &tuplen,
+						 sizeof(tuplen)) != sizeof(tuplen))
+			elog(ERROR, "write failed");
+
+	FREEMEM(state, GetMemoryChunkSpace(tup));
+	pfree(tup);
+}
+
+static void *
+readtup_message(Tuplestorestate *state, unsigned int len)
+{
+	void *tuple = palloc(len + sizeof(int));
+	*((int *) tuple) = len;
+
+	USEMEM(state, GetMemoryChunkSpace(tuple));
+	/* read in the tuple proper */
+	if (BufFileRead(state->myfile, ((char *) tuple) + sizeof(int),
+					len) != (size_t) len)
+		elog(ERROR, "unexpected end of data");
+	if (state->backward)		/* need trailing length word? */
+		if (BufFileRead(state->myfile, (void *) &len,
+						sizeof(len)) != sizeof(len))
+			elog(ERROR, "unexpected end of data");
+	return tuple;
 }
 #endif
 

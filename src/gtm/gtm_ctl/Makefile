@@ -1,7 +1,15 @@
-# Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
-
+#----------------------------------------------------------------------------
+#
+# Postgres-XC GTM gtm_ctl makefile
+#
+# Copyright(c) 2010-2012 Postgres-XC Development Group
+#
+# src/gtm/gtm_ctl/Makefile
+#
+#-----------------------------------------------------------------------------
 top_builddir=../../..
 include $(top_builddir)/src/Makefile.global
+subdir=src/gtm/gtm_ctl
 
 OBJS=gtm_ctl.o 
 

@@ -2,12 +2,12 @@
  *
  * poolmgr.c
  *
- *	  Connection pool manager handles connections to DataNodes
+ *	  Connection pool manager handles connections to Datanodes
  *
  * The pooler runs as a separate process and is forked off from a
- * coordinator postmaster. If the coordinator needs a connection from a
- * data node, it asks for one from the pooler, which maintains separate
- * pools for each data node. A group of connections can be requested in
+ * Coordinator postmaster. If the Coordinator needs a connection from a
+ * Datanode, it asks for one from the pooler, which maintains separate
+ * pools for each Datanode. A group of connections can be requested in
  * a single request, and the pooler returns a list of file descriptors
  * to use for the connections.
  *
@@ -15,17 +15,17 @@
  * as connections are idle.  Also, it does not queue requests; if a
  * connection is unavailable, it will simply fail. This should be implemented
  * one day, although there is a chance for deadlocks. For now, limiting
- * connections should be done between the application and coordinator.
+ * connections should be done between the application and Coordinator.
  * Still, this is useful to avoid having to re-establish connections to the
- * data nodes all the time for multiple coordinator backend sessions.
+ * Datanodes all the time for multiple Coordinator backend sessions.
  *
  * The term "agent" here refers to a session manager, one for each backend
- * coordinator connection to the pooler. It will contain a list of connections
- * allocated to a session, at most one per data node.
+ * Coordinator connection to the pooler. It will contain a list of connections
+ * allocated to a session, at most one per Datanode.
  *
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * IDENTIFICATION
  *	  $$
@@ -100,7 +100,7 @@ typedef struct
 /* The root memory context */
 static MemoryContext PoolerMemoryContext = NULL;
 /*
- * Allocations of core objects: data node connections, upper level structures,
+ * Allocations of core objects: Datanode connections, upper level structures,
  * connection strings, etc.
  */
 static MemoryContext PoolerCoreContext = NULL;
@@ -532,35 +532,44 @@ agent_create(void)
 /*
  * session_options
  * Returns the pgoptions string generated using a particular
- * list of parameters that are required to be propagated to datanodes.
+ * list of parameters that are required to be propagated to Datanodes.
  * These parameters then become default values for the pooler sessions.
  * For e.g., a psql user sets PGDATESTYLE. This value should be set
  * as the default connection parameter in the pooler session that is
- * connected to the datanodes. There are various parameters which need to
+ * connected to the Datanodes. There are various parameters which need to
  * be analysed individually to determine whether these should be set on
- * datanodes.
+ * Datanodes.
  *
  * Note: These parameters values are the default values of the particular
- * coordinator backend session, and not the new values set by SET command.
+ * Coordinator backend session, and not the new values set by SET command.
  *
  */
 
 char *session_options(void)
 {
 	int				 i;
-	char			*pgoptions[] = {"DateStyle", "timezone", "geqo"};
+	char			*pgoptions[] = {"DateStyle", "timezone", "geqo", "intervalstyle", "lc_monetary"};
 	StringInfoData	 options;
 	List			*value_list;
-	const char		*value;
 	ListCell		*l;
 
 	initStringInfo(&options);
 
 	for (i = 0; i < sizeof(pgoptions)/sizeof(char*); i++)
 	{
+		const char		*value;
+
 		appendStringInfo(&options, " -c %s=", pgoptions[i]);
 
 		value = GetConfigOptionResetString(pgoptions[i]);
+
+		/* lc_monetary does not accept lower case values */
+		if (strcmp(pgoptions[i], "lc_monetary") == 0)
+		{
+			appendStringInfoString(&options, value);
+			continue;
+		}
+
 		SplitIdentifierString(strdup(value), ',', &value_list);
 		foreach(l, value_list)
 		{
@@ -603,7 +612,7 @@ PoolManagerConnect(const char *database, const char *user_name)
 	 * arrive with @dbname and global users just as username. Handle both of
 	 * them appropriately
 	 */
-	if (strcmp(GetConfigOption("db_user_namespace", false), "on") == 0)
+	if (strcmp(GetConfigOption("db_user_namespace", false, false), "on") == 0)
 	{
 		if (strchr(user_name, '@') != NULL)
 		{
@@ -1684,8 +1693,8 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist)
 	 * Allocate memory
 	 * File descriptors of Datanodes and Coordinators are saved in the same array,
 	 * This array will be sent back to the postmaster.
-	 * It has a length equal to the length of the datanode list
-	 * plus the length of the coordinator list.
+	 * It has a length equal to the length of the Datanode list
+	 * plus the length of the Coordinator list.
 	 * Datanode fds are saved first, then Coordinator fds are saved.
 	 */
 	result = (int *) palloc((list_length(datanodelist) + list_length(coordlist)) * sizeof(int));
@@ -1871,7 +1880,7 @@ cancel_query_on_connections(PoolAgent *agent, List *datanodelist, List *coordlis
 	if (agent == NULL)
 		return nCount;
 
-	/* Send cancel on Data nodes first */
+	/* Send cancel on Datanodes first */
 	foreach(nodelist_item, datanodelist)
 	{
 		int	node = lfirst_int(nodelist_item);
@@ -2572,7 +2581,7 @@ grow_pool(DatabasePool *dbPool, Oid node)
 			destroy_slot(slot);
 			ereport(LOG,
 					(errcode(ERRCODE_CONNECTION_FAILURE),
-					 errmsg("failed to connect to data node")));
+					 errmsg("failed to connect to Datanode")));
 #ifdef XCP
 			/*
 			 * If we failed to connect probably number of connections on the
@@ -2642,10 +2651,8 @@ destroy_node_pool(PGXCNodePool *node_pool)
 
 	/*
 	 * At this point all agents using connections from this pool should be already closed
-	 * If this not the connections to the data nodes assigned to them remain open, this will
-	 * consume data node resources.
-	 * I believe this is not the case because pool is only destroyed on coordinator shutdown.
-	 * However we should be careful when changing things
+	 * If this not the connections to the Datanodes assigned to them remain open, this will
+	 * consume Datanode resources.
 	 */
 	elog(DEBUG1, "About to destroy node pool %s, current size is %d, %d connections are in use",
 		 node_pool->connstr, node_pool->freeSize, node_pool->size - node_pool->freeSize);
@@ -2691,7 +2698,7 @@ PoolerLoop(void)
 		 * Emergency bailout if postmaster has died.  This is to avoid the
 		 * necessity for manual cleanup of all postmaster children.
 		 */
-		if (!PostmasterIsAlive(true))
+		if (!PostmasterIsAlive())
 			exit(1);
 
 		/* watch for incoming connections */
@@ -2723,7 +2730,7 @@ PoolerLoop(void)
 		 * Emergency bailout if postmaster has died.  This is to avoid the
 		 * necessity for manual cleanup of all postmaster children.
 		 */
-		if (!PostmasterIsAlive(true))
+		if (!PostmasterIsAlive())
 			exit(1);
 
 		/*

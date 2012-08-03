@@ -7,7 +7,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -32,6 +32,8 @@
 #endif
 /* PGXC_DATANODE */
 #include "postmaster/autovacuum.h"
+#include "libpq/pqformat.h"
+#include "libpq/libpq.h"
 #endif
 #include "access/multixact.h"
 #include "access/subtrans.h"
@@ -229,6 +231,21 @@ static TransactionState CurrentTransactionState = &TopTransactionStateData;
 static SubTransactionId currentSubTransactionId;
 static CommandId currentCommandId;
 static bool currentCommandIdUsed;
+
+#ifdef PGXC
+/*
+ * Parameters for communication control of Command ID between Postgres-XC nodes.
+ * isCommandIdReceived is used to determine of a command ID has been received by a remote
+ * node from a Coordinator.
+ * sendCommandId is used to determine if a Postgres-XC node needs to communicate its command ID.
+ * This is possible for both remote nodes and Coordinators connected to applications.
+ * receivedCommandId is the command ID received on Coordinator from remote node or on remote node
+ * from Coordinator.
+ */
+static bool isCommandIdReceived;
+static bool sendCommandId;
+static CommandId receivedCommandId;
+#endif
 
 /*
  * xactStartTimestamp is the value of transaction_timestamp().
@@ -698,6 +715,45 @@ GetCurrentSubTransactionId(void)
 CommandId
 GetCurrentCommandId(bool used)
 {
+#ifdef PGXC
+	/* If coordinator has sent a command id, remote node should use it */
+#ifdef XCP
+	if (isCommandIdReceived)
+#else
+	if (IsConnFromCoord() && isCommandIdReceived)
+#endif
+	{
+		/*
+		 * Indicate to successive calls of this function that the sent command id has
+		 * already been used.
+		 */
+		isCommandIdReceived = false;
+		currentCommandId = GetReceivedCommandId();
+#ifdef XCP
+		/*
+		 * Make sure the xid is assigned. If this session has performed a write
+		 * it already is, otherwise force the assignment. Another backend of
+		 * the same distributed session has written something with that xid and
+		 * this backend needs xid for MVCC checks.
+		 */
+		GetCurrentTransactionId();
+#endif
+	}
+	else if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	{
+		/*
+		 * If command id reported by remote node is greater that the current
+		 * command id, the coordinator needs to use it. This is required because
+		 * a remote node can increase the command id sent by the coordinator
+		 * e.g. in case a trigger fires at the remote node and inserts some rows
+		 * The coordinator should now send the next command id knowing
+		 * the largest command id either current or received from remote node.
+		 */
+		if (GetReceivedCommandId() > currentCommandId)
+			currentCommandId = GetReceivedCommandId();
+	}
+#endif
+
 	/* this is global to a transaction, not subtransaction-local */
 	if (used)
 		currentCommandIdUsed = true;
@@ -929,6 +985,17 @@ CommandCounterIncrement(void)
 		/* Propagate new command ID into static snapshots */
 		SnapshotSetCommandId(currentCommandId);
 
+#ifdef PGXC
+		/*
+		 * Remote node should report local command id changes only if
+		 * required by the Coordinator. The requirement of the
+		 * Coordinator is inferred from the fact that Coordinator
+		 * has itself sent the command id to the remote nodes.
+		 */
+		if (IsConnFromCoord() && IsSendCommandId())
+			ReportCommandIdChange(currentCommandId);
+#endif
+
 		/*
 		 * Make any catalog changes done by the just-completed command visible
 		 * in the local syscache.  We obviously don't need to do this after a
@@ -1158,24 +1225,8 @@ RecordTransactionCommit(void)
 		/*
 		 * Begin commit critical section and insert the commit XLOG record.
 		 */
-		XLogRecData rdata[4];
-		int			lastrdata = 0;
-		xl_xact_commit xlrec;
-
 		/* Tell bufmgr and smgr to prepare for commit */
 		BufmgrCommit();
-
-		/*
-		 * Set flags required for recovery processing of commits.
-		 */
-		xlrec.xinfo = 0;
-		if (RelcacheInitFileInval)
-			xlrec.xinfo |= XACT_COMPLETION_UPDATE_RELCACHE_FILE;
-		if (forceSyncCommit)
-			xlrec.xinfo |= XACT_COMPLETION_FORCE_SYNC_COMMIT;
-
-		xlrec.dbId = MyDatabaseId;
-		xlrec.tsId = MyDatabaseTableSpace;
 
 		/*
 		 * Mark ourselves as within our "commit critical section".	This
@@ -1198,48 +1249,93 @@ RecordTransactionCommit(void)
 		MyProc->inCommit = true;
 
 		SetCurrentTransactionStopTimestamp();
-#ifdef PGXC
-		/* In Postgres-XC, stop timestamp has to follow the timeline of GTM */
-		xlrec.xact_time = xactStopTimestamp + GTMdeltaTimestamp;
-#else
-		xlrec.xact_time = xactStopTimestamp;
-#endif
-		xlrec.nrels = nrels;
-		xlrec.nsubxacts = nchildren;
-		xlrec.nmsgs = nmsgs;
-		rdata[0].data = (char *) (&xlrec);
-		rdata[0].len = MinSizeOfXactCommit;
-		rdata[0].buffer = InvalidBuffer;
-		/* dump rels to delete */
-		if (nrels > 0)
-		{
-			rdata[0].next = &(rdata[1]);
-			rdata[1].data = (char *) rels;
-			rdata[1].len = nrels * sizeof(RelFileNode);
-			rdata[1].buffer = InvalidBuffer;
-			lastrdata = 1;
-		}
-		/* dump committed child Xids */
-		if (nchildren > 0)
-		{
-			rdata[lastrdata].next = &(rdata[2]);
-			rdata[2].data = (char *) children;
-			rdata[2].len = nchildren * sizeof(TransactionId);
-			rdata[2].buffer = InvalidBuffer;
-			lastrdata = 2;
-		}
-		/* dump shared cache invalidation messages */
-		if (nmsgs > 0)
-		{
-			rdata[lastrdata].next = &(rdata[3]);
-			rdata[3].data = (char *) invalMessages;
-			rdata[3].len = nmsgs * sizeof(SharedInvalidationMessage);
-			rdata[3].buffer = InvalidBuffer;
-			lastrdata = 3;
-		}
-		rdata[lastrdata].next = NULL;
 
-		(void) XLogInsert(RM_XACT_ID, XLOG_XACT_COMMIT, rdata);
+		/*
+		 * Do we need the long commit record? If not, use the compact format.
+		 */
+		if (nrels > 0 || nmsgs > 0 || RelcacheInitFileInval || forceSyncCommit)
+		{
+			XLogRecData rdata[4];
+			int			lastrdata = 0;
+			xl_xact_commit xlrec;
+			/*
+			 * Set flags required for recovery processing of commits.
+			 */
+			xlrec.xinfo = 0;
+			if (RelcacheInitFileInval)
+				xlrec.xinfo |= XACT_COMPLETION_UPDATE_RELCACHE_FILE;
+			if (forceSyncCommit)
+				xlrec.xinfo |= XACT_COMPLETION_FORCE_SYNC_COMMIT;
+
+			xlrec.dbId = MyDatabaseId;
+			xlrec.tsId = MyDatabaseTableSpace;
+
+#ifdef PGXC
+			/* In Postgres-XC, stop timestamp has to follow the timeline of GTM */
+			xlrec.xact_time = xactStopTimestamp + GTMdeltaTimestamp;
+#else
+			xlrec.xact_time = xactStopTimestamp;
+#endif
+			xlrec.nrels = nrels;
+			xlrec.nsubxacts = nchildren;
+			xlrec.nmsgs = nmsgs;
+			rdata[0].data = (char *) (&xlrec);
+			rdata[0].len = MinSizeOfXactCommit;
+			rdata[0].buffer = InvalidBuffer;
+			/* dump rels to delete */
+			if (nrels > 0)
+			{
+				rdata[0].next = &(rdata[1]);
+				rdata[1].data = (char *) rels;
+				rdata[1].len = nrels * sizeof(RelFileNode);
+				rdata[1].buffer = InvalidBuffer;
+				lastrdata = 1;
+			}
+			/* dump committed child Xids */
+			if (nchildren > 0)
+			{
+				rdata[lastrdata].next = &(rdata[2]);
+				rdata[2].data = (char *) children;
+				rdata[2].len = nchildren * sizeof(TransactionId);
+				rdata[2].buffer = InvalidBuffer;
+				lastrdata = 2;
+			}
+			/* dump shared cache invalidation messages */
+			if (nmsgs > 0)
+			{
+				rdata[lastrdata].next = &(rdata[3]);
+				rdata[3].data = (char *) invalMessages;
+				rdata[3].len = nmsgs * sizeof(SharedInvalidationMessage);
+				rdata[3].buffer = InvalidBuffer;
+				lastrdata = 3;
+			}
+			rdata[lastrdata].next = NULL;
+
+			(void) XLogInsert(RM_XACT_ID, XLOG_XACT_COMMIT, rdata);
+		}
+		else
+		{
+			XLogRecData rdata[2];
+			int			lastrdata = 0;
+			xl_xact_commit_compact	xlrec;
+			xlrec.xact_time = xactStopTimestamp;
+			xlrec.nsubxacts = nchildren;
+			rdata[0].data = (char *) (&xlrec);
+			rdata[0].len = MinSizeOfXactCommitCompact;
+			rdata[0].buffer = InvalidBuffer;
+			/* dump committed child Xids */
+			if (nchildren > 0)
+			{
+				rdata[0].next = &(rdata[1]);
+				rdata[1].data = (char *) children;
+				rdata[1].len = nchildren * sizeof(TransactionId);
+				rdata[1].buffer = InvalidBuffer;
+				lastrdata = 1;
+			}
+			rdata[lastrdata].next = NULL;
+
+			(void) XLogInsert(RM_XACT_ID, XLOG_XACT_COMMIT_COMPACT, rdata);
+		}
 	}
 
 	/*
@@ -1908,7 +2004,18 @@ StartTransaction(void)
 	currentSubTransactionId = TopSubTransactionId;
 	currentCommandId = FirstCommandId;
 	currentCommandIdUsed = false;
-
+#ifdef PGXC
+	/*
+	 * Parameters related to global command ID control for transaction.
+	 * Send the 1st command ID.
+	 */
+	isCommandIdReceived = false;
+	if (IsConnFromCoord())
+	{
+		SetReceivedCommandId(FirstCommandId);
+		SetSendCommandId(false);
+	}
+#endif
 	/*
 	 * initialize reported xid accounting
 	 */
@@ -2011,12 +2118,12 @@ CommitTransaction(void)
 
 #ifdef PGXC
 	/*
-	 * If we are a coordinator and currently serving the client,
+	 * If we are a Coordinator and currently serving the client,
 	 * we must run a 2PC if more than one nodes are involved in this
 	 * transaction. We first prepare on the remote nodes and if everything goes
 	 * right, we commit locally and then commit on the remote nodes. We must
-	 * also be careful to prepare locally on this coordinator only if the
-	 * local coordinator has done some write activity.
+	 * also be careful to prepare locally on this Coordinator only if the
+	 * local Coordinator has done some write activity.
 	 *
 	 * If there are any errors, they will be reported via ereport and the
 	 * transaction will be aborted.
@@ -2336,6 +2443,17 @@ CommitTransaction(void)
 	s->isLocalParameterUsed = false;
 #endif
 	ForgetTransactionLocalNode();
+
+	/*
+	 * Set the command ID of Coordinator to be sent to the remote nodes
+	 * as the 1st one.
+	 * For remote nodes, enforce the command ID sending flag to false to avoid
+	 * sending any command ID by default as now transaction is done.
+	 */
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+		SetReceivedCommandId(FirstCommandId);
+	else
+		SetSendCommandId(false);
 #endif
 
 	/*
@@ -2719,6 +2837,17 @@ PrepareTransaction(void)
 		ForgetTransactionLocalNode();
 	}
 	SetNextTransactionId(InvalidTransactionId);
+
+	/*
+	 * Set the command ID of Coordinator to be sent to the remote nodes
+	 * as the 1st one.
+	 * For remote nodes, enforce the command ID sending flag to false to avoid
+	 * sending any command ID by default as now transaction is done.
+	 */
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+		SetReceivedCommandId(FirstCommandId);
+	else
+		SetSendCommandId(false);
 #endif
 }
 
@@ -2937,6 +3066,18 @@ CleanupTransaction(void)
 	 * default
 	 */
 	s->state = TRANS_DEFAULT;
+#ifdef PGXC
+	/*
+	 * Set the command ID of Coordinator to be sent to the remote nodes
+	 * as the 1st one.
+	 * For remote nodes, enforce the command ID sending flag to false to avoid
+	 * sending any command ID by default as now transaction is done.
+	 */
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+		SetReceivedCommandId(FirstCommandId);
+	else
+		SetSendCommandId(false);
+#endif
 }
 
 /*
@@ -3732,6 +3873,17 @@ BeginTransactionBlock(void)
 				 BlockStateAsString(s->blockState));
 			break;
 	}
+
+#ifdef PGXC
+	/*
+	 * Set command Id sending flag only for a local Coordinator when transaction begins,
+	 * For a remote node this flag is set to true only if a command ID has been received
+	 * from a Coordinator. This may not be always the case depending on the queries being
+	 * run and how command Ids are generated on remote nodes.
+	 */
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+		SetSendCommandId(true);
+#endif
 }
 
 /*
@@ -3781,6 +3933,11 @@ PrepareTransactionBlock(char *gid)
 			result = false;
 		}
 	}
+
+#ifdef PGXC
+	/* Reset command ID sending flag */
+	SetSendCommandId(false);
+#endif
 
 	return result;
 }
@@ -3901,6 +4058,11 @@ EndTransactionBlock(void)
 			break;
 	}
 
+#ifdef PGXC
+	/* Reset command Id sending flag */
+	SetSendCommandId(false);
+#endif
+
 	return result;
 }
 
@@ -3992,6 +4154,11 @@ UserAbortTransactionBlock(void)
 				 BlockStateAsString(s->blockState));
 			break;
 	}
+
+#ifdef PGXC
+	/* Reset Command Id sending flag */
+	SetSendCommandId(false);
+#endif
 }
 
 /*
@@ -5068,19 +5235,17 @@ xactGetCommittedChildren(TransactionId **ptr)
  * actions for which the order of execution is critical.
  */
 static void
-xact_redo_commit(xl_xact_commit *xlrec, TransactionId xid, XLogRecPtr lsn)
+xact_redo_commit_internal(TransactionId xid, XLogRecPtr lsn,
+					TransactionId *sub_xids, int nsubxacts,
+					SharedInvalidationMessage *inval_msgs, int nmsgs,
+					RelFileNode *xnodes, int nrels,
+					Oid dbId, Oid tsId,
+					uint32 xinfo)
 {
-	TransactionId *sub_xids;
-	SharedInvalidationMessage *inval_msgs;
 	TransactionId max_xid;
 	int			i;
 
-	/* subxid array follows relfilenodes */
-	sub_xids = (TransactionId *) &(xlrec->xnodes[xlrec->nrels]);
-	/* invalidation messages array follows subxids */
-	inval_msgs = (SharedInvalidationMessage *) &(sub_xids[xlrec->nsubxacts]);
-
-	max_xid = TransactionIdLatest(xid, xlrec->nsubxacts, sub_xids);
+	max_xid = TransactionIdLatest(xid, nsubxacts, sub_xids);
 
 	/*
 	 * Make sure nextXid is beyond any XID mentioned in the record.
@@ -5103,7 +5268,7 @@ xact_redo_commit(xl_xact_commit *xlrec, TransactionId xid, XLogRecPtr lsn)
 		/*
 		 * Mark the transaction committed in pg_clog.
 		 */
-		TransactionIdCommitTree(xid, xlrec->nsubxacts, sub_xids);
+		TransactionIdCommitTree(xid, nsubxacts, sub_xids);
 	}
 	else
 	{
@@ -5127,41 +5292,41 @@ xact_redo_commit(xl_xact_commit *xlrec, TransactionId xid, XLogRecPtr lsn)
 		 * bits set on changes made by transactions that haven't yet
 		 * recovered. It's unlikely but it's good to be safe.
 		 */
-		TransactionIdAsyncCommitTree(xid, xlrec->nsubxacts, sub_xids, lsn);
+		TransactionIdAsyncCommitTree(xid, nsubxacts, sub_xids, lsn);
 
 		/*
 		 * We must mark clog before we update the ProcArray.
 		 */
-		ExpireTreeKnownAssignedTransactionIds(xid, xlrec->nsubxacts, sub_xids, max_xid);
+		ExpireTreeKnownAssignedTransactionIds(xid, nsubxacts, sub_xids, max_xid);
 
 		/*
 		 * Send any cache invalidations attached to the commit. We must
 		 * maintain the same order of invalidation then release locks as
 		 * occurs in CommitTransaction().
 		 */
-		ProcessCommittedInvalidationMessages(inval_msgs, xlrec->nmsgs,
-								  XactCompletionRelcacheInitFileInval(xlrec),
-											 xlrec->dbId, xlrec->tsId);
+		ProcessCommittedInvalidationMessages(inval_msgs, nmsgs,
+								  XactCompletionRelcacheInitFileInval(xinfo),
+											 dbId, tsId);
 
 		/*
 		 * Release locks, if any. We do this for both two phase and normal one
 		 * phase transactions. In effect we are ignoring the prepare phase and
 		 * just going straight to lock release.
 		 */
-		StandbyReleaseLockTree(xid, xlrec->nsubxacts, sub_xids);
+		StandbyReleaseLockTree(xid, nsubxacts, sub_xids);
 	}
 
 	/* Make sure files supposed to be dropped are dropped */
-	for (i = 0; i < xlrec->nrels; i++)
+	for (i = 0; i < nrels; i++)
 	{
-		SMgrRelation srel = smgropen(xlrec->xnodes[i], InvalidBackendId);
+		SMgrRelation srel = smgropen(xnodes[i], InvalidBackendId);
 		ForkNumber	fork;
 
 		for (fork = 0; fork <= MAX_FORKNUM; fork++)
 		{
 			if (smgrexists(srel, fork))
 			{
-				XLogDropRelation(xlrec->xnodes[i], fork);
+				XLogDropRelation(xnodes[i], fork);
 				smgrdounlink(srel, fork, true);
 			}
 		}
@@ -5180,8 +5345,46 @@ xact_redo_commit(xl_xact_commit *xlrec, TransactionId xid, XLogRecPtr lsn)
 	 * to reduce that problem window, for any user that requested
 	 * ForceSyncCommit().
 	 */
-	if (XactCompletionForceSyncCommit(xlrec))
+	if (XactCompletionForceSyncCommit(xinfo))
 		XLogFlush(lsn);
+
+}
+/*
+ * Utility function to call xact_redo_commit_internal after breaking down xlrec
+ */
+static void
+xact_redo_commit(xl_xact_commit *xlrec,
+							TransactionId xid, XLogRecPtr lsn)
+{
+	TransactionId *subxacts;
+	SharedInvalidationMessage *inval_msgs;
+
+	/* subxid array follows relfilenodes */
+	subxacts = (TransactionId *) &(xlrec->xnodes[xlrec->nrels]);
+	/* invalidation messages array follows subxids */
+	inval_msgs = (SharedInvalidationMessage *) &(subxacts[xlrec->nsubxacts]);
+
+	xact_redo_commit_internal(xid, lsn, subxacts, xlrec->nsubxacts,
+								inval_msgs, xlrec->nmsgs,
+								xlrec->xnodes, xlrec->nrels,
+								xlrec->dbId,
+								xlrec->tsId,
+								xlrec->xinfo);
+}
+
+/*
+ * Utility function to call xact_redo_commit_internal  for compact form of message.
+ */
+static void
+xact_redo_commit_compact(xl_xact_commit_compact *xlrec,
+							TransactionId xid, XLogRecPtr lsn)
+{
+	xact_redo_commit_internal(xid, lsn, xlrec->subxacts, xlrec->nsubxacts,
+								NULL, 0,		/* inval msgs */
+								NULL, 0,		/* relfilenodes */
+								InvalidOid,		/* dbId */
+								InvalidOid,		/* tsId */
+								0);				/* xinfo */
 }
 
 /*
@@ -5282,7 +5485,13 @@ xact_redo(XLogRecPtr lsn, XLogRecord *record)
 	/* Backup blocks are not used in xact records */
 	Assert(!(record->xl_info & XLR_BKP_BLOCK_MASK));
 
-	if (info == XLOG_XACT_COMMIT)
+	if (info == XLOG_XACT_COMMIT_COMPACT)
+	{
+		xl_xact_commit_compact *xlrec = (xl_xact_commit_compact *) XLogRecGetData(record);
+
+		xact_redo_commit_compact(xlrec, record->xl_xid, lsn);
+	}
+	else if (info == XLOG_XACT_COMMIT)
 	{
 		xl_xact_commit *xlrec = (xl_xact_commit *) XLogRecGetData(record);
 
@@ -5330,9 +5539,9 @@ static void
 xact_desc_commit(StringInfo buf, xl_xact_commit *xlrec)
 {
 	int			i;
-	TransactionId *xacts;
+	TransactionId *subxacts;
 
-	xacts = (TransactionId *) &xlrec->xnodes[xlrec->nrels];
+	subxacts = (TransactionId *) &xlrec->xnodes[xlrec->nrels];
 
 	appendStringInfoString(buf, timestamptz_to_str(xlrec->xact_time));
 
@@ -5351,15 +5560,15 @@ xact_desc_commit(StringInfo buf, xl_xact_commit *xlrec)
 	{
 		appendStringInfo(buf, "; subxacts:");
 		for (i = 0; i < xlrec->nsubxacts; i++)
-			appendStringInfo(buf, " %u", xacts[i]);
+			appendStringInfo(buf, " %u", subxacts[i]);
 	}
 	if (xlrec->nmsgs > 0)
 	{
 		SharedInvalidationMessage *msgs;
 
-		msgs = (SharedInvalidationMessage *) &xacts[xlrec->nsubxacts];
+		msgs = (SharedInvalidationMessage *) &subxacts[xlrec->nsubxacts];
 
-		if (XactCompletionRelcacheInitFileInval(xlrec))
+		if (XactCompletionRelcacheInitFileInval(xlrec->xinfo))
 			appendStringInfo(buf, "; relcache init file inval dbid %u tsid %u",
 							 xlrec->dbId, xlrec->tsId);
 
@@ -5382,6 +5591,21 @@ xact_desc_commit(StringInfo buf, xl_xact_commit *xlrec)
 			else
 				appendStringInfo(buf, " unknown id %d", msg->id);
 		}
+	}
+}
+
+static void
+xact_desc_commit_compact(StringInfo buf, xl_xact_commit_compact *xlrec)
+{
+	int			i;
+
+	appendStringInfoString(buf, timestamptz_to_str(xlrec->xact_time));
+
+	if (xlrec->nsubxacts > 0)
+	{
+		appendStringInfo(buf, "; subxacts:");
+		for (i = 0; i < xlrec->nsubxacts; i++)
+			appendStringInfo(buf, " %u", xlrec->subxacts[i]);
 	}
 }
 
@@ -5429,7 +5653,14 @@ xact_desc(StringInfo buf, uint8 xl_info, char *rec)
 {
 	uint8		info = xl_info & ~XLR_INFO_MASK;
 
-	if (info == XLOG_XACT_COMMIT)
+	if (info == XLOG_XACT_COMMIT_COMPACT)
+	{
+		xl_xact_commit_compact *xlrec = (xl_xact_commit_compact *) rec;
+
+		appendStringInfo(buf, "commit: ");
+		xact_desc_commit_compact(buf, xlrec);
+	}
+	else if (info == XLOG_XACT_COMMIT)
 	{
 		xl_xact_commit *xlrec = (xl_xact_commit *) rec;
 
@@ -5528,5 +5759,88 @@ IsXidImplicit(const char *xid)
 	if (strncmp(xid, implicit2PC_head, implicit2PC_head_len))
 		return false;
 	return true;
+}
+
+/*
+ * SaveReceivedCommandId
+ * Save a received command ID from another node for future use.
+ */
+void
+SaveReceivedCommandId(CommandId cid)
+{
+	/* Set the new command ID */
+	SetReceivedCommandId(cid);
+
+	/*
+	 * Change command ID information status to report any changes in remote ID
+	 * for a remote node. A new command ID has also been received.
+	 */
+#ifndef XCP
+	if (IsConnFromCoord())
+#endif
+	{
+		SetSendCommandId(true);
+		isCommandIdReceived = true;
+	}
+}
+
+/*
+ * SetReceivedCommandId
+ * Set the command Id received from other nodes
+ */
+void
+SetReceivedCommandId(CommandId cid)
+{
+	receivedCommandId = cid;
+}
+
+/*
+ * GetReceivedCommandId
+ * Get the command id received from other nodes
+ */
+CommandId
+GetReceivedCommandId(void)
+{
+	return receivedCommandId;
+}
+
+
+/*
+ * ReportCommandIdChange
+ * ReportCommandIdChange reports a change in current command id at remote node
+ * to the Coordinator. This is required because a remote node can increment command
+ * Id in case of triggers or constraints.
+ */
+void
+ReportCommandIdChange(CommandId cid)
+{
+	StringInfoData buf;
+
+	/* Send command Id change to Coordinator */
+	pq_beginmessage(&buf, 'M');
+	pq_sendint(&buf, cid, 4);
+	pq_endmessage(&buf);
+	pq_flush();
+}
+
+/*
+ * IsSendCommandId
+ * Get status of command ID sending. If set at true, command ID needs to be communicated
+ * to other nodes.
+ */
+bool
+IsSendCommandId(void)
+{
+	return sendCommandId;
+}
+
+/*
+ * SetSendCommandId
+ * Change status of command ID sending.
+ */
+void
+SetSendCommandId(bool status)
+{
+	sendCommandId = status;
 }
 #endif

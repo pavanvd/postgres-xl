@@ -19,6 +19,9 @@
 #include <fcntl.h>
 
 #include "access/genam.h"
+#ifdef PGXC
+#include "access/reloptions.h"
+#endif /* PGXC */
 #include "access/sysattr.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
@@ -52,6 +55,10 @@
 #include "parser/parse_type.h"
 #include "parser/parser.h"
 #include "parser/parsetree.h"
+#ifdef PGXC
+#include "pgxc/pgxc.h"
+#include "pgxc/planner.h"
+#endif
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
 #include "rewrite/rewriteSupport.h"
@@ -59,13 +66,11 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
-#include "utils/tqual.h"
+#include "utils/rel.h"
 #include "utils/syscache.h"
+#include "utils/tqual.h"
 #include "utils/typcache.h"
 #include "utils/xml.h"
-#ifdef PGXC
-#include "pgxc/pgxc.h"
-#endif
 
 /* ----------
  * Pretty formatting constants
@@ -104,7 +109,7 @@ typedef struct
 	bool		varprefix;		/* TRUE to print prefixes on Vars */
 #ifdef PGXC
 #ifndef XCP
-	bool		finalise_aggs;	/* should datanode finalise the aggregates? */
+	bool		finalise_aggs;	/* should Datanode finalise the aggregates? */
 #endif /* XCP */
 #endif /* PGXC */
 } deparse_context;
@@ -404,8 +409,9 @@ pg_get_viewdef_name(PG_FUNCTION_ARGS)
 	RangeVar   *viewrel;
 	Oid			viewoid;
 
+	/* Look up view name.  Can't lock it - we might not have privileges. */
 	viewrel = makeRangeVarFromNameList(textToQualifiedNameList(viewname));
-	viewoid = RangeVarGetRelid(viewrel, false);
+	viewoid = RangeVarGetRelid(viewrel, NoLock, false, false);
 
 	PG_RETURN_TEXT_P(string_to_text(pg_get_viewdef_worker(viewoid, 0)));
 }
@@ -422,8 +428,10 @@ pg_get_viewdef_name_ext(PG_FUNCTION_ARGS)
 	Oid			viewoid;
 
 	prettyFlags = pretty ? PRETTYFLAG_PAREN | PRETTYFLAG_INDENT : 0;
+
+	/* Look up view name.  Can't lock it - we might not have privileges. */
 	viewrel = makeRangeVarFromNameList(textToQualifiedNameList(viewname));
-	viewoid = RangeVarGetRelid(viewrel, false);
+	viewoid = RangeVarGetRelid(viewrel, NoLock, false, false);
 
 	PG_RETURN_TEXT_P(string_to_text(pg_get_viewdef_worker(viewoid, prettyFlags)));
 }
@@ -1397,7 +1405,6 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 		appendStringInfo(&buf, " DEFERRABLE");
 	if (conForm->condeferred)
 		appendStringInfo(&buf, " INITIALLY DEFERRED");
-
 	if (!conForm->convalidated)
 		appendStringInfoString(&buf, " NOT VALID");
 
@@ -1592,9 +1599,9 @@ pg_get_serial_sequence(PG_FUNCTION_ARGS)
 	SysScanDesc scan;
 	HeapTuple	tup;
 
-	/* Get the OID of the table */
+	/* Look up table name.  Can't lock it - we might not have privileges. */
 	tablerv = makeRangeVarFromNameList(textToQualifiedNameList(tablename));
-	tableOid = RangeVarGetRelid(tablerv, false);
+	tableOid = RangeVarGetRelid(tablerv, NoLock, false, false);
 
 	/* Get the number of the column */
 	column = text_to_cstring(columnname);
@@ -3413,7 +3420,7 @@ get_target_list(List *targetList, deparse_context *context,
 	/*
 	 * Because the empty target list can generate invalid SQL
 	 * clause. Here, just fill a '*' to process a table without
-	 * any columns, this statement will be sent to data nodes
+	 * any columns, this statement will be sent to Datanodes
 	 * and treated correctly on remote nodes.
 	 */
 	if (no_targetlist)
@@ -4132,6 +4139,25 @@ get_utility_query_def(Query *query, deparse_context *context)
 		}
 		appendStringInfo(buf, ")");
 
+		/* Append storage parameters, like for instance WITH (OIDS) */
+		if (list_length(stmt->options) > 0)
+		{
+			Datum        reloptions;
+			static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
+
+			reloptions = transformRelOptions((Datum) 0, stmt->options, NULL, validnsps,
+										 false, false);
+
+			if (reloptions)
+			{
+				Datum   sep, txt;
+				/* Below is inspired from flatten_reloptions() */
+				sep = CStringGetTextDatum(", ");
+				txt = OidFunctionCall2(F_ARRAY_TO_TEXT, reloptions, sep);
+				appendStringInfo(buf, " WITH (%s)", TextDatumGetCString(txt));
+			}
+		}
+
 		/* add the on commit clauses for temporary tables */
 		switch (stmt->oncommit)
 		{
@@ -4187,7 +4213,7 @@ get_utility_query_def(Query *query, deparse_context *context)
 			switch (stmt->subcluster->clustertype)
 			{
 				case SUBCLUSTER_NODE:
-					appendStringInfo(buf, " TO NODE");
+					appendStringInfo(buf, " TO NODE (");
 
 					/* Add node members */
 					Assert(stmt->subcluster->members);
@@ -4197,6 +4223,7 @@ get_utility_query_def(Query *query, deparse_context *context)
 						if (cell->next)
 							appendStringInfo(buf, ",");
 					}
+					appendStringInfo(buf, ")");
 					break;
 
 				case SUBCLUSTER_GROUP:
@@ -4372,6 +4399,39 @@ get_variable(Var *var, int levelsup, bool showstar, deparse_context *context)
 		pop_child_plan(dpns, &save_dpns);
 		return NULL;
 	}
+
+#ifdef PGXC
+	if (rte->rtekind == RTE_REMOTE_DUMMY &&
+		attnum > list_length(rte->eref->colnames) &&
+		dpns->planstate)
+	{
+		TargetEntry *tle;
+		RemoteQuery *rqplan;
+		Assert(IsA(dpns->planstate, RemoteQueryState));
+		Assert(netlevelsup == 0);
+
+		/*
+		 * Get the expression representing the given Var from base_tlist of the
+		 * RemoteQuery
+		 */
+		rqplan = (RemoteQuery *)dpns->planstate->plan;
+		Assert(IsA(rqplan, RemoteQuery));
+		tle = get_tle_by_resno(rqplan->base_tlist, var->varattno);
+		if (!tle)
+			elog(ERROR, "bogus varattno for remotequery var: %d", var->varattno);
+		/*
+		 * Force parentheses because our caller probably assumed a Var is a
+		 * simple expression.
+		 */
+		if (!IsA(tle->expr, Var))
+			appendStringInfoChar(buf, '(');
+		get_rule_expr((Node *) tle->expr, context, true);
+		if (!IsA(tle->expr, Var))
+			appendStringInfoChar(buf, ')');
+
+		return NULL;
+	}
+#endif /* PGXC */
 
 	/* Identify names to use */
 	schemaname = NULL;			/* default assumptions */
@@ -6436,7 +6496,7 @@ get_agg_expr(Aggref *aggref, deparse_context *context)
 	 * Datanode should send finalised aggregate results. Datanodes evaluate only
 	 * transition results. In order to get the finalised aggregate, we enclose
 	 * the aggregate call inside final function call, so as to get finalised
-	 * results at the coordinator
+	 * results at the Coordinator
 	 */
 	if (context->finalise_aggs)
 	{

@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 1996-2010, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -71,11 +71,7 @@ gtm_standby_restore_next_gxid(void)
 	GlobalTransactionId next_gxid = InvalidGlobalTransactionId;
 
 	next_gxid = get_next_gxid(GTM_ActiveConn);
-#ifdef XCP
 	GTM_RestoreTxnInfo(NULL, next_gxid);
-#else
-	GTM_RestoreTxnInfo(-1, next_gxid);
-#endif
 
 	elog(LOG, "Restoring the next GXID done.");
 	return 1;
@@ -358,16 +354,6 @@ gtm_standby_connect_to_standby(void)
 
 	conn = gtm_standby_connect_to_standby_int(&report);
 
-#if 0
-	/*
-	 * PGXCTODO: This portion of code needs XCM support
-	 * to be able to report GTM failures to XC watcher and
-	 * enable a GTM reconnection kick.
-	 */
-	if (!conn && report)
-		gtm_report_failure(NULL);
-#endif
-
 	return conn;
 }
 
@@ -445,16 +431,6 @@ gtm_standby_reconnect_to_standby(GTM_Conn *old_conn, int retry_max)
 		elog(LOG, "gtm_standby_reconnect_to_standby(): re-connect failed. retry=%d", i);
 	}
 
-#if 0
-	/*
-	 * PGXCTODO: This portion of code needs XCM support
-	 * to be able to report GTM failures to XC watcher and
-	 * enable a GTM reconnection kick.
-	 */
-	if (newconn)
-		gtm_report_failure(NULL);
-#endif
-
 	return newconn;
 }
 
@@ -485,14 +461,6 @@ gtm_standby_check_communication_error(int *retry_count, GTM_Conn *oldconn)
 		}
 
 		elog(LOG, "communication error with standby.");
-#if 0
-		/*
-		 * PGXCTODO: This portion of code needs XCM support
-		 * to be able to report GTM failures to XC watcher and
-		 * enable a GTM reconnection kick.
-		 */
-		gtm_report_failure(oldconn);
-#endif
 	}
 	return false;
 }

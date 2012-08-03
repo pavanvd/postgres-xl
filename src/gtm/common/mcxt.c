@@ -11,7 +11,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -126,7 +126,7 @@ MemoryContextReset(MemoryContext context)
 
 	if (MemoryContextIsShared(context))
 		MemoryContextLock(context);
-	
+
 	/* save a function call in common case where there are no children */
 	if (context->firstchild != NULL)
 		MemoryContextResetChildren(context);
@@ -782,4 +782,3 @@ Gen_Alloc genAlloc_class = {(void *)MemoryContextAlloc,
                             (void *)pfree,
                             (void *)current_memcontext,
 							(void *)allocTopMemCxt};
-

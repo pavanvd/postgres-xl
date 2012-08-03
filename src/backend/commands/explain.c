@@ -33,8 +33,9 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
-#include "utils/tuplesort.h"
+#include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/tuplesort.h"
 #include "utils/xml.h"
 
 
@@ -1808,6 +1809,12 @@ ExplainTargetRel(Plan *plan, Index rti, ExplainState *es)
 			Assert(rte->self_reference);
 			objectname = rte->ctename;
 			objecttag = "CTE Name";
+			break;
+		case T_RemoteQuery:
+			/* get the object name from RTE itself */
+			Assert(rte->rtekind == RTE_REMOTE_DUMMY);
+			objectname = get_rel_name(rte->relid);
+			objecttag = "RemoteQuery name";
 			break;
 		default:
 			break;

@@ -1,7 +1,15 @@
-# Copyright (c) 2010-2011 Nippon Telegraph and Telephone Corporation
-
+#----------------------------------------------------------------------------
+#
+# Postgres-XC GTM proxy Makefile
+#
+# Copyright(c) 2010-2012 Postgres-XC Development Group
+#
+# src/gtm/proxy/Makefile
+#
+#-----------------------------------------------------------------------------
 top_builddir=../../..
 include $(top_builddir)/src/Makefile.global
+subdir=src/gtm/proxy
 
 ifneq ($(PORTNAME), win32)
 override CFLAGS += $(PTHREAD_CFLAGS)

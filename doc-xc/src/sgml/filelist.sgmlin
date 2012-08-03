@@ -137,6 +137,11 @@
 <!ENTITY pgtestfsync     SYSTEM "pgtestfsync.sgml">
 <!ENTITY pgtrgm          SYSTEM "pgtrgm.sgml">
 <!ENTITY pgupgrade       SYSTEM "pgupgrade.sgml">
+<!## XC>
+<!ENTITY pgxcclean       SYSTEM "pgxcclean.sgml">
+<!ENTITY pgxcddl         SYSTEM "pgxcddl.sgml">
+<!ENTITY pgxcmonitor	 SYSTEM "pgxcmonitor.sgml">
+<!## end>
 <!ENTITY seg             SYSTEM "seg.sgml">
 <!ENTITY contrib-spi     SYSTEM "contrib-spi.sgml">
 <!ENTITY sepgsql         SYSTEM "sepgsql.sgml">
@@ -159,6 +164,10 @@
 <!ENTITY sourcerepo SYSTEM "sourcerepo.sgml">
 
 <!ENTITY release    SYSTEM "release.sgml">
+<!## XC>
+<!ENTITY release-xc-1.0 SYSTEM "release-xc-1.0.sgml">
+<!## end>
+<!## PG>
 <!ENTITY release-9.1    SYSTEM "release-9.1.sgml">
 <!ENTITY release-9.0    SYSTEM "release-9.0.sgml">
 <!ENTITY release-8.4    SYSTEM "release-8.4.sgml">
@@ -168,6 +177,7 @@
 <!ENTITY release-8.0    SYSTEM "release-8.0.sgml">
 <!ENTITY release-7.4    SYSTEM "release-7.4.sgml">
 <!ENTITY release-old    SYSTEM "release-old.sgml">
+<!## end>
 
 <!ENTITY acronyms   SYSTEM "acronyms.sgml">
 

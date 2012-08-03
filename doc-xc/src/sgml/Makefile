@@ -17,9 +17,12 @@
 # to want to use.
 html:
 
-subdir = doc/src/sgml
+subdir = doc-xc/src/sgml
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
+
+MAKESGMLDIR = $(top_builddir)/src/pgxc/tools/makesgml
+MAKESGML = $(MAKESGMLDIR)/makesgml
 
 
 all: html man
@@ -48,7 +51,7 @@ ifndef XSLTPROC
 XSLTPROC = xsltproc
 endif
 
-VERSION = 1.0beta1
+VERSION = 1.1devel
 
 override XSLTPROCFLAGS += --stringparam pg.version '$(VERSION)'
 
@@ -78,6 +81,12 @@ endif
 # in particular < and & that haven't been made into entities.  It's far too
 # noisy to turn on by default, unfortunately.
 override SPFLAGS += -wall -wno-unused-param -wno-empty -wfully-tagged
+
+##
+## SGML files
+##
+
+sgml-files: $(ALLSGMLIN:%sgmlin=%sgml)
 
 ##
 ## Man pages
@@ -206,7 +215,8 @@ INC_LIST = -I PG -I EN
 #INC_LIST = -I PGXC -I EN
 
 .sgmlin.sgml:
-	makesgml -i $< -o $@ $(INC_LIST) $(EXC_LIST)
+	$(MAKE) -C $(MAKESGMLDIR)
+	$(MAKESGML) -i $< -o $@ $(INC_LIST) $(EXC_LIST)
 
 
 # This generates an XML version of the flow-object tree.  It's useful
@@ -391,8 +401,6 @@ clean:
 	rm -f postgres.xml postgres.xmltmp htmlhelp.hhp toc.hhc index.hhk *.fo
 # Texinfo
 	rm -f *.texixml *.texi *.info db2texi.refs
-# sgml
-	rm -f $(ALLSGMLTOREMOVE)
 
 distclean: clean
 
@@ -401,6 +409,8 @@ maintainer-clean: distclean
 	rm -fr html/ html-stamp
 # man
 	rm -rf man1/ man3/ man7/ man-stamp
+# sgml
+	rm -f $(ALLSGMLTOREMOVE)
 
 .PHONY: sgmlfiles
 

@@ -4,8 +4,7 @@
  *	  Routines to support manipulation of the pgxc_node catalog
  *	  Support concerns CREATE/ALTER/DROP on NODE object.
  *
- * Copyright (c) 1996-2010, PostgreSQL Global Development Group
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -85,7 +84,7 @@ NodeTablesShmemInit(void)
 	if (!found)
 		*shmemNumCoords = 0;
 
-	/* Same for datanodes */
+	/* Same for Datanodes */
 	shmemNumDataNodes = ShmemInitStruct("Datanode Table",
 								   sizeof(int) +
 									   sizeof(NodeDefinition) * MaxDataNodes,
@@ -454,7 +453,7 @@ PgxcNodeGetDefinition(Oid node)
 
 	LWLockAcquire(NodeTableLock, LW_SHARED);
 
-	/* search through the data nodes first */
+	/* search through the Datanodes first */
 	for (i = 0; i < *shmemNumDataNodes; i++)
 	{
 		if (dnDefs[i].nodeoid == node)

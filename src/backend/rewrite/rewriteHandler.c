@@ -16,6 +16,7 @@
 #include "access/heapam.h"
 #include "access/sysattr.h"
 #include "catalog/pg_type.h"
+#include "commands/trigger.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/analyze.h"
@@ -26,7 +27,7 @@
 #include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
-#include "commands/trigger.h"
+#include "utils/rel.h"
 
 #ifdef PGXC
 #include "pgxc/locator.h"
@@ -72,6 +73,17 @@ static List *matchLocks(CmdType event, RuleLock *rulelocks,
 		   int varno, Query *parsetree);
 static Query *fireRIRrules(Query *parsetree, List *activeRIRs,
 			 bool forUpdatePushedDown);
+
+#ifdef PGXC
+typedef struct pull_qual_vars_context
+{
+	List *varlist;
+	int sublevels_up;
+	int resultRelation;
+} pull_qual_vars_context;
+static List * pull_qual_vars(Node *node, int varno);
+static bool pull_qual_vars_walker(Node *node, pull_qual_vars_context *context);
+#endif
 
 /*
  * AcquireRewriteLocks -
@@ -1157,6 +1169,68 @@ rewriteValuesRTE(RangeTblEntry *rte, Relation target_relation, List *attrnos)
 }
 
 
+#ifdef PGXC
+/*
+ * pull_qual_vars(Node *node, int varno)
+ * Extract vars from quals belonging to resultRelation. This function is mainly
+ * taken from pull_qual_vars_clause(), but since the later does not peek into
+ * subquery, we need to write this walker.
+ */
+static List *
+pull_qual_vars(Node *node, int varno)
+{
+	pull_qual_vars_context context;
+	context.varlist = NIL;
+	context.sublevels_up = 0;
+	context.resultRelation = varno;
+
+	query_or_expression_tree_walker(node,
+									pull_qual_vars_walker,
+									(void *) &context,
+									0);
+	return context.varlist;
+}
+
+static bool
+pull_qual_vars_walker(Node *node, pull_qual_vars_context *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Var))
+	{
+		Var *var = (Var *) node;
+
+		/*
+		 * Add only if this var belongs to the resultRelation and refers to the table
+		 * from the same query.
+		 */
+		if (var->varno == context->resultRelation &&
+		    var->varlevelsup == context->sublevels_up)
+		{
+			Var *newvar = palloc(sizeof(Var));
+			*newvar = *var;
+			newvar->varlevelsup = 0;
+			context->varlist = lappend(context->varlist, newvar);
+		}
+		return false;
+	}
+	if (IsA(node, Query))
+	{
+		/* Recurse into RTE subquery or not-yet-planned sublink subquery */
+		bool		result;
+
+		context->sublevels_up++;
+		result = query_tree_walker((Query *) node, pull_qual_vars_walker,
+								   (void *) context, 0);
+		context->sublevels_up--;
+		return result;
+	}
+	return expression_tree_walker(node, pull_qual_vars_walker,
+								  (void *) context);
+}
+
+#endif /* PGXC */
+
 /*
  * rewriteTargetListUD - rewrite UPDATE/DELETE targetlist as needed
  *
@@ -1193,7 +1267,7 @@ rewriteTargetListUD(Query *parsetree, RangeTblEntry *target_rte,
 	 * vars using Coordinator Quals.
 	 */
 	if (IS_PGXC_COORDINATOR && parsetree->jointree)
-		var_list = pull_var_clause((Node *) parsetree->jointree, PVC_REJECT_PLACEHOLDERS);
+		var_list = pull_qual_vars((Node *) parsetree->jointree, parsetree->resultRelation);
 
 	foreach(elt, var_list)
 	{
@@ -1205,9 +1279,6 @@ rewriteTargetListUD(Query *parsetree, RangeTblEntry *target_rte,
 		if (var->varattno < 1 || var->varattno > numattrs)
 			continue;
 
-		/* Bypass if this var does not use this relation */
-		if (var->varno != parsetree->resultRelation)
-			continue;
 
 		att_tup = target_relation->rd_att->attrs[var->varattno - 1];
 		tle = makeTargetEntry((Expr *) var,
@@ -1260,11 +1331,7 @@ rewriteTargetListUD(Query *parsetree, RangeTblEntry *target_rte,
 	 */
 	if (IS_PGXC_COORDINATOR &&
 		!IsConnFromCoord() &&
-#ifdef XCP
-		!IsReplicated(GetRelationLocType(RelationGetRelid(target_relation))))
-#else
 		!IsLocatorReplicated(GetRelationLocType(RelationGetRelid(target_relation))))
-#endif
 	{
 		var = makeVar(parsetree->resultRelation,
 					  XC_NodeIdAttributeNumber,
@@ -2504,7 +2571,7 @@ QueryRewrite(Query *parsetree)
  * Rewrite the CREATE TABLE AS and SELECT INTO queries as a
  * INSERT INTO .. SELECT query. The target table must be created first using
  * utility command processing. This takes care of creating the target table on
- * all the coordinators and the data nodes.
+ * all the Coordinators and the Datanodes.
  */
 List *
 QueryRewriteCTAS(Query *parsetree)
@@ -2548,7 +2615,7 @@ QueryRewriteCTAS(Query *parsetree)
 
 		coldef->inhcount = 0;
 		coldef->is_local = true;
-		coldef->is_not_null = true;
+		coldef->is_not_null = false;
 		coldef->raw_default = NULL;
 		coldef->cooked_default = NULL;
 		coldef->constraints = NIL;
@@ -2607,9 +2674,7 @@ QueryRewriteCTAS(Query *parsetree)
 
 	/* Finally, fire off the query to run the DDL */
 	ProcessUtility(cparsetree->utilityStmt, cquery.data, NULL, true, NULL,
-#ifdef PGXC
 					false,
-#endif /* PGXC */
 					NULL);
 
 	/*
@@ -2635,9 +2700,8 @@ QueryRewriteCTAS(Query *parsetree)
 	appendStringInfo(&cquery, " %s", selectstr);
 
 	raw_parsetree_list = pg_parse_query(cquery.data);
-	parsetree = parse_analyze(linitial(raw_parsetree_list), cquery.data,
+	return pg_analyze_and_rewrite(linitial(raw_parsetree_list), cquery.data,
 			NULL, 0);
-	return(list_make1(parsetree));
 }
 #endif
 

@@ -6,7 +6,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * src/include/utils/rel.h
  *
@@ -31,6 +31,7 @@
 #endif
 #include "storage/relfilenode.h"
 #include "utils/relcache.h"
+#include "utils/reltrigger.h"
 
 
 /*
@@ -50,60 +51,6 @@ typedef struct LockInfoData
 } LockInfoData;
 
 typedef LockInfoData *LockInfo;
-
-/*
- * Likewise, this struct really belongs to trigger.h, but for convenience
- * we put it here.
- */
-typedef struct Trigger
-{
-	Oid			tgoid;			/* OID of trigger (pg_trigger row) */
-	/* Remaining fields are copied from pg_trigger, see pg_trigger.h */
-	char	   *tgname;
-	Oid			tgfoid;
-	int16		tgtype;
-	char		tgenabled;
-	bool		tgisinternal;
-	Oid			tgconstrrelid;
-	Oid			tgconstrindid;
-	Oid			tgconstraint;
-	bool		tgdeferrable;
-	bool		tginitdeferred;
-	int16		tgnargs;
-	int16		tgnattr;
-	int16	   *tgattr;
-	char	  **tgargs;
-	char	   *tgqual;
-} Trigger;
-
-typedef struct TriggerDesc
-{
-	Trigger    *triggers;		/* array of Trigger structs */
-	int			numtriggers;	/* number of array entries */
-
-	/*
-	 * These flags indicate whether the array contains at least one of each
-	 * type of trigger.  We use these to skip searching the array if not.
-	 */
-	bool		trig_insert_before_row;
-	bool		trig_insert_after_row;
-	bool		trig_insert_instead_row;
-	bool		trig_insert_before_statement;
-	bool		trig_insert_after_statement;
-	bool		trig_update_before_row;
-	bool		trig_update_after_row;
-	bool		trig_update_instead_row;
-	bool		trig_update_before_statement;
-	bool		trig_update_after_statement;
-	bool		trig_delete_before_row;
-	bool		trig_delete_after_row;
-	bool		trig_delete_instead_row;
-	bool		trig_delete_before_statement;
-	bool		trig_delete_after_statement;
-	/* there are no row-level truncate triggers */
-	bool		trig_truncate_before_statement;
-	bool		trig_truncate_after_statement;
-} TriggerDesc;
 
 
 /*
@@ -426,6 +373,14 @@ typedef struct StdRdOptions
  */
 #define RelationUsesTempNamespace(relation) \
 	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+
+#ifdef PGXC
+/*
+ * RelationGetLocInfo
+ *		Return the location info of relation
+ */
+#define RelationGetLocInfo(relation) ((relation)->rd_locator_info)
+#endif
 
 /*
  * RELATION_IS_LOCAL

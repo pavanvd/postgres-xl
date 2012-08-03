@@ -18,7 +18,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *	src/backend/parser/parse_utilcmd.c
  *
@@ -66,7 +66,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
-#include "utils/relcache.h"
+#include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
@@ -93,7 +93,8 @@ typedef struct
 	IndexStmt  *pkey;			/* PRIMARY KEY index, if any */
 #ifdef PGXC
 	char	  *fallback_dist_col;	/* suggested column to distribute on */
-	DistributeBy *distributeby; /* original distribute by column in create table */
+	DistributeBy	*distributeby;		/* original distribute by column of CREATE TABLE */
+	PGXCSubCluster	*subcluster;		/* original subcluster option of CREATE TABLE */
 #endif
 } CreateStmtContext;
 
@@ -181,6 +182,7 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	 * possible.
 	 */
 	namespaceid = RangeVarGetAndCheckCreationNamespace(stmt->relation);
+	RangeVarAdjustRelationPersistence(stmt->relation, namespaceid);
 
 	/*
 	 * If the relation already exists and the user specified "IF NOT EXISTS",
@@ -359,7 +361,14 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 	{
 		char	   *typname = strVal(linitial(column->typeName->names));
 
-		if (strcmp(typname, "serial") == 0 ||
+		if (strcmp(typname, "smallserial") == 0 ||
+			strcmp(typname, "serial2") == 0)
+		{
+			is_serial = true;
+			column->typeName->names = NIL;
+			column->typeName->typeOid = INT2OID;
+		}
+		else if (strcmp(typname, "serial") == 0 ||
 			strcmp(typname, "serial4") == 0)
 		{
 			is_serial = true;
@@ -419,7 +428,10 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 		if (cxt->rel)
 			snamespaceid = RelationGetNamespace(cxt->rel);
 		else
+		{
 			snamespaceid = RangeVarGetCreationNamespace(cxt->relation);
+			RangeVarAdjustRelationPersistence(cxt->relation, snamespaceid);
+		}
 		snamespace = get_namespace_name(snamespaceid);
 		sname = ChooseRelationName(cxt->relation->relname,
 								   column->colname,
@@ -682,7 +694,7 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 	 * This will override transaction direct commit as no 2PC
 	 * can be used for transactions involving temporary objects.
 	 */
-	if (IsTempTable(RangeVarGetRelid(inhRelation->relation, false)))
+	if (IsTempTable(RangeVarGetRelid(inhRelation->relation, NoLock, false, false)))
 		ExecSetTempObjectIncluded();
 #endif
 #endif
@@ -915,7 +927,6 @@ static void
 transformOfType(CreateStmtContext *cxt, TypeName *ofTypename)
 {
 	HeapTuple	tuple;
-	Form_pg_type typ;
 	TupleDesc	tupdesc;
 	int			i;
 	Oid			ofTypeId;
@@ -924,7 +935,6 @@ transformOfType(CreateStmtContext *cxt, TypeName *ofTypename)
 
 	tuple = typenameType(NULL, ofTypename, NULL);
 	check_of_type(tuple);
-	typ = (Form_pg_type) GETSTRUCT(tuple);
 	ofTypeId = HeapTupleGetOid(tuple);
 	ofTypename->typeOid = ofTypeId;		/* cached for later */
 
@@ -1557,21 +1567,21 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 					 errmsg("\"%s\" is not a unique index", index_name),
-					 errdetail("Cannot create a PRIMARY KEY or UNIQUE constraint using such an index."),
+					 errdetail("Cannot create a primary key or unique constraint using such an index."),
 					 parser_errposition(cxt->pstate, constraint->location)));
 
 		if (RelationGetIndexExpressions(index_rel) != NIL)
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 					 errmsg("index \"%s\" contains expressions", index_name),
-					 errdetail("Cannot create a PRIMARY KEY or UNIQUE constraint using such an index."),
+					 errdetail("Cannot create a primary key or unique constraint using such an index."),
 					 parser_errposition(cxt->pstate, constraint->location)));
 
 		if (RelationGetIndexPredicate(index_rel) != NIL)
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 					 errmsg("\"%s\" is a partial index", index_name),
-					 errdetail("Cannot create a PRIMARY KEY or UNIQUE constraint using such an index."),
+					 errdetail("Cannot create a primary key or unique constraint using such an index."),
 					 parser_errposition(cxt->pstate, constraint->location)));
 
 		/*
@@ -1596,7 +1606,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 		if (index_rel->rd_rel->relam != get_am_oid(DEFAULT_INDEX_TYPE, false))
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-					 errmsg("index \"%s\" is not a b-tree", index_name),
+					 errmsg("index \"%s\" is not a btree", index_name),
 					 parser_errposition(cxt->pstate, constraint->location)));
 
 		/* Must get indclass the hard way */
@@ -1641,7 +1651,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 				ereport(ERROR,
 						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 						 errmsg("index \"%s\" does not have default sorting behavior", index_name),
-						 errdetail("Cannot create a PRIMARY KEY or UNIQUE constraint using such an index."),
+						 errdetail("Cannot create a primary key or unique constraint using such an index."),
 					 parser_errposition(cxt->pstate, constraint->location)));
 
 			constraint->keys = lappend(constraint->keys, makeString(attname));
@@ -1873,7 +1883,8 @@ transformFKConstraints(CreateStmtContext *cxt,
 
 	/*
 	 * If CREATE TABLE or adding a column with NULL default, we can safely
-	 * skip validation of the constraint.
+	 * skip validation of FK constraints, and nonetheless mark them valid.
+	 * (This will override any user-supplied NOT VALID flag.)
 	 */
 	if (skipValidation)
 	{
@@ -1891,7 +1902,7 @@ transformFKConstraints(CreateStmtContext *cxt,
 			 */
 			if (IS_PGXC_COORDINATOR && !cxt->fallback_dist_col)
 			{
-				Oid pk_rel_id = RangeVarGetRelid(constraint->pktable, false);
+				Oid pk_rel_id = RangeVarGetRelid(constraint->pktable, NoLock, false, false);
 
 				/* make sure it is a partitioned column */
 				if (list_length(constraint->pk_attrs) != 0
@@ -2429,6 +2440,7 @@ transformAlterTableStmt(AlterTableStmt *stmt, const char *queryString)
 #ifdef PGXC
 	cxt.fallback_dist_col = NULL;
 	cxt.distributeby = NULL;
+	cxt.subcluster = NULL;
 #endif
 
 	/*
@@ -2570,8 +2582,8 @@ transformAlterTableStmt(AlterTableStmt *stmt, const char *queryString)
  * and detect inconsistent/misplaced constraint attributes.
  *
  * NOTE: currently, attributes are only supported for FOREIGN KEY, UNIQUE,
- * and PRIMARY KEY constraints, but someday they ought to be supported
- * for other constraint types.
+ * EXCLUSION, and PRIMARY KEY constraints, but someday they ought to be
+ * supported for other constraint types.
  */
 static void
 transformConstraintAttrs(CreateStmtContext *cxt, List *constraintList)
@@ -2716,7 +2728,7 @@ transformColumnType(CreateStmtContext *cxt, ColumnDef *column)
 #ifdef XCP
 	if (cxt->fallback_dist_col == NULL)
 	{
-		if (IsHashDistributable(HeapTupleGetOid(ctype)))
+		if (IsTypeHashDistributable(HeapTupleGetOid(ctype)))
 		{
 			cxt->fallback_dist_col = pstrdup(column->colname);
 		}
@@ -2878,7 +2890,7 @@ bool
 CheckLocalIndexColumn (char loctype, char *partcolname, char *indexcolname)
 {
 #ifdef XCP
-	if (IsReplicated(loctype))
+	if (IsLocatorReplicated(loctype))
 #else
 	if (loctype == LOCATOR_TYPE_REPLICATED)
 #endif
@@ -2949,13 +2961,13 @@ checkLocalFKConstraints(CreateStmtContext *cxt)
 				continue;
 		}
 
-		pk_rel_id = RangeVarGetRelid(constraint->pktable, false);
+		pk_rel_id = RangeVarGetRelid(constraint->pktable, NoLock, false, false);
 
 		refloctype = GetLocatorType(pk_rel_id);
 
 		/* If referenced table is replicated, the constraint is safe */
 #ifdef XCP
-		if (IsReplicated(refloctype))
+		if (IsLocatorReplicated(refloctype))
 #else
 		if (refloctype == LOCATOR_TYPE_REPLICATED)
 #endif
@@ -3017,17 +3029,27 @@ checkLocalFKConstraints(CreateStmtContext *cxt)
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("Hash/Modulo distributed table must include distribution column in index")));
 
-			/* Manage the error when the list of new constraints is empty */
-			if (!constraint->pk_attrs)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("Hash/Modulo distribution column list of attributes is empty")));
-
-			/* Verify that the referenced table is partitioned at the same position in the index */
-			if (!IsDistColumnForRelId(pk_rel_id, strVal(list_nth(constraint->pk_attrs,pos))))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("Hash/Modulo distribution column does not refer to hash/modulo distribution column in referenced table.")));
+			/*
+			 * The check to make sure that the referenced column in pk table is the same
+			 * as the one used to distribute it makes sense only when the user
+			 * supplies the name of the referenced colum while adding the constraint
+			 * because if the user did not specify it the system will choose the pk column
+			 * which will obviously be the one used to distribute it knowing the
+			 * existing constraints in XC
+			 * This is required to make sure that both
+			 * alter table dtab add foreign key (b) references rtab(a);
+			 * and
+			 * alter table dtab add foreign key (b) references rtab;
+			 * behave similarly
+			 */
+			if (constraint->pk_attrs != NULL)
+			{
+				/* Verify that the referenced table is partitioned at the same position in the index */
+				if (!IsDistColumnForRelId(pk_rel_id, strVal(list_nth(constraint->pk_attrs,pos))))
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							errmsg("Hash/Modulo distribution column does not refer to hash/modulo distribution column in referenced table.")));
+			}
 		}
 	}
 }

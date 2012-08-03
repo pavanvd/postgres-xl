@@ -13,7 +13,7 @@
 #ifndef PAUSE_H
 #define PAUSE_H
 
-#ifdef XCP
+#include "storage/s_lock.h"
 
 /* Shared memory area for management of cluster pause/unpause */
 typedef struct {
@@ -35,5 +35,4 @@ extern void ReleaseClusterLock(bool exclusive);
 
 extern void RequestClusterPause(bool pause, char *completionTag);
 extern void PGXCCleanClusterLock(int code, Datum arg);
-#endif
 #endif

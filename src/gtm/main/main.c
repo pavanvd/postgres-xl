@@ -4,7 +4,7 @@
  *
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  *
  * IDENTIFICATION
@@ -72,11 +72,6 @@ int			tcp_keepalives_count;
 char		*error_reporter;
 char		*status_reader;
 bool		isStartUp;
-#ifdef XCP
-GTM_MutexLock   control_lock;
-char		GTMControlFileTmp[GTM_MAX_PATH];
-#define GTM_CONTROL_FILE_TMP		"gtm.control.tmp"
-#endif
 
 /* If this is GTM or not */
 /*
@@ -187,9 +182,6 @@ BaseInit()
 	CreateDataDirLockFile();
 
 	sprintf(GTMControlFile, "%s/%s", GTMDataDir, GTM_CONTROL_FILE);
-#ifdef XCP
-	sprintf(GTMControlFileTmp, "%s/%s", GTMDataDir, GTM_CONTROL_FILE_TMP);
-#endif
 	if (GTMLogFile == NULL)
 	{
 		GTMLogFile = (char *) malloc(GTM_MAX_PATH);
@@ -214,9 +206,6 @@ BaseInit()
 		fflush(stdout);
 		fflush(stderr);
 	}
-#ifdef XCP
-	GTM_MutexLockInit(&control_lock);
-#endif
 }
 
 static void
@@ -290,49 +279,6 @@ gtm_status()
 	exit(0);
 }
 
-#ifdef XCP
-/*
- * Save control file info.
- * if next_gxid = 0, determine what the id is, otherwise use passed in value
- */
-void
-SaveControlInfoWithTransactionId(GlobalTransactionId next_gxid)
-{
-	FILE	   *ctlf;
-
-	GTM_MutexLockAcquire(&control_lock);
-
-	ctlf = fopen(GTMControlFileTmp, "w");
-
-	if (ctlf == NULL)
-	{
-		fprintf(stderr, "Failed to create/open the control file\n");
-		fclose(ctlf);
-		GTM_MutexLockRelease(&control_lock);
-		return;
-		//exit(2); exit?
-	}
-	GTM_SaveTxnInfo(ctlf, next_gxid);
-	GTM_SaveSeqInfo(ctlf);
-	if (ctlf)
-		fclose(ctlf);
-
-	remove(GTMControlFile);
-	rename(GTMControlFileTmp, GTMControlFile);
-
-	GTM_MutexLockRelease(&control_lock);
-}
-/*
- * Save control file info
- */
-void
-SaveControlInfo(void)
-{
-	/* Just pass in 0: determine from info */
-	SaveControlInfoWithTransactionId(0);
-}
-#endif
-
 int
 main(int argc, char *argv[])
 {
@@ -340,11 +286,7 @@ main(int argc, char *argv[])
 	int			status;
 	int			i;
 	GlobalTransactionId next_gxid = InvalidGlobalTransactionId;
-#ifdef XCP
-	FILE			*ctlf;
-#else
-	int			ctlfd;
-#endif
+	FILE	   *ctlf;
 
 	/*
 	 * Local variable to hold command line options.
@@ -642,22 +584,11 @@ main(int argc, char *argv[])
 	}
 	else
 	{
-#ifdef XCP
-		GTM_MutexLockAcquire(&control_lock);
-
 		ctlf = fopen(GTMControlFile, "r");
 		GTM_RestoreTxnInfo(ctlf, next_gxid);
 		GTM_RestoreSeqInfo(ctlf);
 		if (ctlf)
 			fclose(ctlf);
-
-		GTM_MutexLockRelease(&control_lock);
-#else
-		ctlfd = open(GTMControlFile, O_RDONLY);
-		GTM_RestoreTxnInfo(ctlfd, next_gxid);
-		GTM_RestoreSeqInfo(ctlfd);
-		close(ctlfd);
-#endif
 	}
 
 	if (Recovery_IsStandby())
@@ -838,10 +769,7 @@ ServerLoop(void)
 
 		if (GTMAbortPending)
 		{
-#ifdef XCP
-#else
-			int ctlfd;
-#endif
+			FILE *ctlf;
 
 			/*
 			 * XXX We should do a clean shutdown here. For the time being, just
@@ -856,20 +784,15 @@ ServerLoop(void)
 			 */
 			GTM_SetShuttingDown();
 
-#ifdef XCP
-			SaveControlInfo();
-#else
-			ctlfd = open(GTMControlFile, O_WRONLY | O_TRUNC | O_CREAT,
-						 S_IRUSR | S_IWUSR);
-			if (ctlfd == -1)
+			ctlf = fopen(GTMControlFile, "w");
+			if (ctlf == NULL)
 			{
 				fprintf(stderr, "Failed to create/open the control file\n");
 				exit(2);
 			}
 
-			GTM_SaveTxnInfo(ctlfd);
-			GTM_SaveSeqInfo(ctlfd);
-#endif
+			GTM_SaveTxnInfo(ctlf);
+			GTM_SaveSeqInfo(ctlf);
 
 #if 0
 			/*
@@ -885,10 +808,7 @@ ServerLoop(void)
 			}
 #endif
 
-#ifdef XCP
-#else
-			close(ctlfd);
-#endif
+			fclose(ctlf);
 
 			exit(1);
 		}
@@ -1037,7 +957,7 @@ GTM_ThreadMain(void *argp)
 	{
 		/*
 		 * We expect a startup message at the very start. The message type is
-		 * REGISTER_COORD, followed by the 4 byte coordinator ID
+		 * REGISTER_COORD, followed by the 4 byte Coordinator ID
 		 */
 		char startup_type;
 		GTM_StartupPacket sp;
@@ -1202,9 +1122,7 @@ GTM_ThreadMain(void *argp)
 
 				/* Disconnect node if necessary */
 				Recovery_PGXCNodeDisconnect(thrinfo->thr_conn->con_port);
-#ifdef XCP
 				GTM_RWLockRelease(&thrinfo->thr_lock);
-#endif
 				pthread_exit(thrinfo);
 				break;
 
@@ -2104,25 +2022,6 @@ static void
 PromoteToActive(void)
 {
 	elog(LOG, "Promote signal received. Becoming an active...");
-
-#ifdef XCP
-	/*
-	 * Just in case if there was locally generated xids on datanodes skip some.
-	 * If we do not do that we may return duplicate xids which is causing
-	 * problems on data node that can not be automatically recovered.
-	 */
-	GTM_RWLockAcquire(&GTMTransactions.gt_XidGenLock, GTM_LOCKMODE_WRITE);
-	if (GlobalTransactionIdIsValid(GTMTransactions.gt_nextXid))
-	{
-		GTMTransactions.gt_nextXid += CONTROL_INTERVAL;
-		/* Handle wraparound */
-		if (!GlobalTransactionIdIsNormal(GTMTransactions.gt_nextXid))
-			GTMTransactions.gt_nextXid = FirstNormalGlobalTransactionId;
-	}
-	else
-		GTMTransactions.gt_nextXid = InitialGXIDValue_Default;
-	GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
-#endif
 
 	/*
 	 * Do promoting things here.

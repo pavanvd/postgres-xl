@@ -13,7 +13,7 @@
  *
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Portions Copyright (c) 2010-2012 Nippon Telegraph and Telephone Corporation
+ * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * IDENTIFICATION
  *	  src/backend/nodes/copyfuncs.c
@@ -1055,6 +1055,8 @@ _copyRemoteQuery(RemoteQuery *from)
 	COPY_STRING_FIELD(inner_statement);
 	COPY_STRING_FIELD(outer_statement);
 	COPY_STRING_FIELD(join_condition);
+	COPY_SCALAR_FIELD(has_row_marks);
+	COPY_SCALAR_FIELD(has_ins_child_sel_parent);
 
 	return newnode;
 }
@@ -2615,6 +2617,7 @@ _copyQuery(Query *from)
 #ifdef PGXC
 #ifndef XCP
 	COPY_STRING_FIELD(sql_statement);
+	COPY_SCALAR_FIELD(is_ins_child_sel_parent);
 #endif
 #endif
 
