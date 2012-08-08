@@ -45,6 +45,7 @@ typedef enum
 	HANDLE_DEFAULT
 }	PGXCNode_HandleRequested;
 
+#ifndef XCP
 /*
  * Enumeration for two purposes
  * 1. To indicate to the HandleCommandComplete function whether response checking is required or not
@@ -63,7 +64,7 @@ typedef enum
 	RESP_ROLLBACK_RECEIVED,			/* Response is ROLLBACK */
 	RESP_ROLLBACK_NOT_RECEIVED		/* Response is NOT ROLLBACK */
 }RESP_ROLLBACK;
-
+#endif
 
 #define DN_CONNECTION_STATE_ERROR(dnconn) \
 		((dnconn)->state == DN_CONNECTION_STATE_ERROR_FATAL \
@@ -83,6 +84,7 @@ struct pgxc_node_handle
 	char		transaction_status;
 	DNConnectionState state;
 #ifdef XCP
+	bool		read_only;
 	struct ResponseCombiner *combiner;
 #else
 	struct RemoteQueryState *combiner;
@@ -101,14 +103,17 @@ struct pgxc_node_handle
 	size_t		inStart;
 	size_t		inEnd;
 	size_t		inCursor;
-
 	/*
 	 * Have a variable to enable/disable response checking and
 	 * if enable then read the result of response checking
 	 *
 	 * For details see comments of RESP_ROLLBACK
 	 */
+#ifdef XCP
+	bool		ck_resp_rollback;
+#else
 	RESP_ROLLBACK	ck_resp_rollback;
+#endif
 };
 typedef struct pgxc_node_handle PGXCNodeHandle;
 

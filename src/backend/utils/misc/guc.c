@@ -68,6 +68,7 @@
 #ifdef XCP
 #include "pgxc/nodemgr.h"
 #include "pgxc/squeue.h"
+#include "utils/snapmgr.h"
 #endif
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgwriter.h"
@@ -204,7 +205,9 @@ static bool check_ssl(bool *newval, void **extra, GucSource source);
 static bool check_stage_log_stats(bool *newval, void **extra, GucSource source);
 static bool check_log_stats(bool *newval, void **extra, GucSource source);
 #ifdef PGXC
+#ifndef XCP
 static bool check_pgxc_maintenance_mode(bool *newval, void **extra, GucSource source);
+#endif
 #endif
 static bool check_canonical_path(char **newval, void **extra, GucSource source);
 static bool check_timezone_abbreviations(char **newval, void **extra, GucSource source);
@@ -6191,15 +6194,22 @@ set_config_option(const char *name, const char *value,
 			appendStringInfo(&poolcmd, "SET %s TO %s", name,
 					(value ? value : "DEFAULT"));
 		}
-		step = makeNode(RemoteQuery);
-		step->combine_type = COMBINE_TYPE_SAME;
-		step->exec_nodes = NULL;
-		step->sql_statement = poolcmd.data;
-		step->force_autocommit = false;
-		step->exec_type = EXEC_ON_CURRENT;
-		ExecRemoteUtility(step);
-		pfree(step);
-		pfree(poolcmd.data);
+		/*
+		 * If transaction is not active we assume the node connections are not
+		 * held, would not even try to send parameter down.
+		 */
+		if (IsTransactionBlock())
+		{
+			step = makeNode(RemoteQuery);
+			step->combine_type = COMBINE_TYPE_SAME;
+			step->exec_nodes = NULL;
+			step->sql_statement = poolcmd.data;
+			step->force_autocommit = false;
+			step->exec_type = EXEC_ON_CURRENT;
+			ExecRemoteUtility(step);
+			pfree(step);
+			pfree(poolcmd.data);
+		}
 	}
 #endif
 
@@ -8832,6 +8842,7 @@ check_log_stats(bool *newval, void **extra, GucSource source)
 }
 
 #ifdef PGXC
+#ifndef XCP
 /*
  * Only a warning is printed to log.
  * Returning false will cause FATAL error and it will not be good.
@@ -8876,6 +8887,7 @@ check_pgxc_maintenance_mode(bool *newval, void **extra, GucSource source)
 			return false;
 	}
 }
+#endif
 #endif
 
 static bool

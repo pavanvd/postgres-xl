@@ -345,9 +345,14 @@ extern void ExecRemoteQueryReScan(RemoteQueryState *node, ExprContext *exprCtxt)
 extern int ParamListToDataRow(ParamListInfo params, char** result);
 
 extern void ExecCloseRemoteStatement(const char *stmt_name, List *nodelist);
-extern void PreCommit_Remote(char *prepareGID, bool preparedLocalNode);
 extern char *PrePrepare_Remote(char *prepareGID, bool localNode, bool implicit);
+#ifdef XCP
+extern void PostPrepare_Remote(char *prepareGID, bool implicit);
+extern void PreCommit_Remote(char *prepareGID, char *nodestring, bool preparedLocalNode);
+#else
 extern void PostPrepare_Remote(char *prepareGID, char *nodestring, bool implicit);
+extern void PreCommit_Remote(char *prepareGID, bool preparedLocalNode);
+#endif
 extern bool	PreAbort_Remote(void);
 extern void AtEOXact_Remote(void);
 extern bool IsTwoPhaseCommitRequired(bool localWrite);

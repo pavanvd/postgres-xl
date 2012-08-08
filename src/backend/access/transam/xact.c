@@ -71,6 +71,11 @@
 #include "pg_trace.h"
 
 
+#ifdef XCP
+#define implicit2PC_head "_$XC$"
+#endif
+
+
 /*
  *	User-tweakable parameters
  */
@@ -277,6 +282,9 @@ static TimestampTz GTMdeltaTimestamp = 0;
  */
 static char *prepareGID;
 static char *savePrepareGID;
+#ifdef XCP
+static char *saveNodeString = NULL;
+#endif
 static bool XactLocalNodePrepared;
 static bool  XactReadLocalNode;
 static bool  XactWriteLocalNode;
@@ -461,6 +469,15 @@ TransactionId
 GetCurrentTransactionId(void)
 {
 	TransactionState s = CurrentTransactionState;
+
+#ifdef XCP
+	/*
+	 * Never assign xid to the secondary session, that causes conflicts when
+	 * writing to the clog at the transaction end.
+	 */
+	if (IsConnFromDatanode())
+		return GetNextTransactionId();
+#endif
 
 	if (!TransactionIdIsValid(s->transactionId))
 		AssignTransactionId(s);
@@ -729,15 +746,6 @@ GetCurrentCommandId(bool used)
 		 */
 		isCommandIdReceived = false;
 		currentCommandId = GetReceivedCommandId();
-#ifdef XCP
-		/*
-		 * Make sure the xid is assigned. If this session has performed a write
-		 * it already is, otherwise force the assignment. Another backend of
-		 * the same distributed session has written something with that xid and
-		 * this backend needs xid for MVCC checks.
-		 */
-		GetCurrentTransactionId();
-#endif
 	}
 	else if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
@@ -904,6 +912,16 @@ TransactionIdIsCurrentTransactionId(TransactionId xid)
 	 */
 	if (!TransactionIdIsNormal(xid))
 		return false;
+
+#ifdef XCP
+	/*
+	 * The current TransactionId of secondary datanode session is never
+	 * associated with the current transaction, so if it is a secondary
+	 * Datanode session look into xid sent from the parent.
+	 */
+	if (IsConnFromDatanode() && TransactionIdIsCurrentGlobalTransactionId(xid))
+		return true;
+#endif
 
 	/*
 	 * We will return true for the Xid of the current subtransaction, any of
@@ -2133,16 +2151,22 @@ CommitTransaction(void)
 	 * until we are done with finishing the transaction
 	 */
 	s->topGlobalTransansactionId = s->transactionId;
-#ifndef XCP
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
-#endif
 		XactLocalNodePrepared = false;
 		if (savePrepareGID)
 		{
 			pfree(savePrepareGID);
 			savePrepareGID = NULL;
 		}
+
+#ifdef XCP
+		if (saveNodeString)
+		{
+			pfree(saveNodeString);
+			saveNodeString = NULL;
+		}
+#endif
 
 #ifndef XCP
 		/*
@@ -2167,10 +2191,21 @@ CommitTransaction(void)
 		 * first. If that fails, the transaction is aborted on all the remote
 		 * nodes
 		 */
+#ifdef XCP
+		/*
+		 * Fired OnCommit actions would fail 2PC process
+		 */
+		if (!IsOnCommitActions() && IsTwoPhaseCommitRequired(XactWriteLocalNode))
+#else
 		if (IsTwoPhaseCommitRequired(XactWriteLocalNode))
+#endif
 		{
 			prepareGID = MemoryContextAlloc(TopTransactionContext, 256);
+#ifdef XCP
+			sprintf(prepareGID, implicit2PC_head"%u", GetTopTransactionId());
+#else
 			sprintf(prepareGID, "T%u", GetTopTransactionId());
+#endif
 
 			savePrepareGID = MemoryContextStrdup(TopMemoryContext, prepareGID);
 
@@ -2198,11 +2233,16 @@ CommitTransaction(void)
 				s->auxilliaryTransactionId = GetTopTransactionId();
 			}
 			else
+#ifdef XCP
+			{
 				s->auxilliaryTransactionId = InvalidGlobalTransactionId;
-		}
-#ifndef XCP
-	}
+				PrePrepare_Remote(prepareGID, false, true);
+			}
+#else
+				s->auxilliaryTransactionId = InvalidGlobalTransactionId;
 #endif
+		}
+	}
 #endif
 
 	/*
@@ -2271,8 +2311,11 @@ CommitTransaction(void)
 		 * Now run 2PC on the remote nodes. Any errors will be reported via
 		 * ereport and we will run error recovery as part of AbortTransaction
 		 */
+#ifdef XCP
+		PreCommit_Remote(savePrepareGID, saveNodeString, XactLocalNodePrepared);
+#else
 		PreCommit_Remote(savePrepareGID, XactLocalNodePrepared);
-
+#endif
 		/*
 		 * Now that all the remote nodes have successfully prepared and
 		 * commited, commit the local transaction as well. Remember, any errors
@@ -2550,7 +2593,9 @@ PrepareTransaction(void)
 	TimestampTz prepared_at;
 #ifdef PGXC
 	bool		isImplicit = !(s->blockState == TBLOCK_PREPARE);
+#ifndef XCP
 	char		*nodestring;
+#endif
 #endif
 
 	ShowTransactionState("PrepareTransaction");
@@ -2563,22 +2608,32 @@ PrepareTransaction(void)
 			 TransStateAsString(s->state));
 	Assert(s->parent == NULL);
 
-#ifdef XCP
-	if (savePrepareGID)
-		pfree(savePrepareGID);
-	savePrepareGID = MemoryContextStrdup(TopMemoryContext, prepareGID);
-	nodestring = PrePrepare_Remote(savePrepareGID, XactWriteLocalNode, isImplicit);
-#endif
 #ifdef PGXC
+#ifdef XCP
+	if (IS_PGXC_DATANODE || !IsConnFromCoord())
+#else
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+#endif
 	{
-#ifndef XCP
+#ifdef XCP
+		char		*nodestring;
+		if (saveNodeString)
+			pfree(saveNodeString);
+
+		/* Needed in PrePrepare_Remote to submit nodes to GTM */
+		s->topGlobalTransansactionId = s->transactionId;
+#endif
 		if (savePrepareGID)
 			pfree(savePrepareGID);
 		savePrepareGID = MemoryContextStrdup(TopMemoryContext, prepareGID);
 		nodestring = PrePrepare_Remote(savePrepareGID, XactWriteLocalNode, isImplicit);
+#ifdef XCP
+		if (nodestring)
+			saveNodeString = MemoryContextStrdup(TopMemoryContext, nodestring);
 #endif
+#ifndef XCP
 		s->topGlobalTransansactionId = s->transactionId;
+#endif
 
 		/*
 		 * Callback on GTM if necessary, this needs to be done before HOLD_INTERRUPTS
@@ -2813,9 +2868,6 @@ PrepareTransaction(void)
 
 	RESUME_INTERRUPTS();
 
-#ifdef XCP
-	PostPrepare_Remote(savePrepareGID, nodestring, isImplicit);
-#endif
 #ifdef PGXC /* PGXC_DATANODE */
 	/*
 	 * Now also prepare the remote nodes involved in this transaction. We do
@@ -2829,7 +2881,9 @@ PrepareTransaction(void)
 	 */
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
-#ifndef XCP
+#ifdef XCP
+		PostPrepare_Remote(savePrepareGID, isImplicit);
+#else
 		PostPrepare_Remote(savePrepareGID, nodestring, isImplicit);
 #endif
 		if (!isImplicit)
@@ -5753,7 +5807,9 @@ IsTransactionLocalNode(bool write)
 bool
 IsXidImplicit(const char *xid)
 {
+#ifndef XCP
 #define implicit2PC_head "_$XC$"
+#endif
 	const size_t implicit2PC_head_len = strlen(implicit2PC_head);
 
 	if (strncmp(xid, implicit2PC_head, implicit2PC_head_len))

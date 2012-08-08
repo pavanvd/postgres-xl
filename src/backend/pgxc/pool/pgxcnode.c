@@ -427,6 +427,10 @@ pgxc_node_init(PGXCNodeHandle *handle, int sock)
 	handle->sock = sock;
 	handle->transaction_status = 'I';
 	handle->state = DN_CONNECTION_STATE_IDLE;
+#ifdef XCP
+	handle->read_only = true;
+	handle->ck_resp_rollback = false;
+#endif
 	handle->combiner = NULL;
 #ifdef DN_CONNECTION_DEBUG
 	handle->have_row_desc = false;

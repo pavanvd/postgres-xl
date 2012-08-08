@@ -169,6 +169,10 @@ extern TransactionId GetNewTransactionId(bool isSubXact, bool *timestamp_receive
 #else
 extern TransactionId GetNewTransactionId(bool isSubXact);
 #endif /* PGXC */
+#ifdef XCP
+extern bool TransactionIdIsCurrentGlobalTransactionId(TransactionId xid);
+extern TransactionId GetNextTransactionId(void);
+#endif
 extern TransactionId ReadNewTransactionId(void);
 extern void SetTransactionIdLimit(TransactionId oldest_datfrozenxid,
 					  Oid oldest_datoid);

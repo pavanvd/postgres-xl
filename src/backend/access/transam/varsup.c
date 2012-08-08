@@ -74,6 +74,32 @@ GetForceXidFromGTM(void)
 #endif /* PGXC */
 
 
+#ifdef XCP
+/*
+ * Check if GlobalTransactionId associated with the current distributed session
+ * equals to specified xid.
+ * It is for tuple visibility checks in secondary datanode sessions, which are
+ * not associating next_xid with the current transaction.
+ */
+bool
+TransactionIdIsCurrentGlobalTransactionId(TransactionId xid)
+{
+	return TransactionIdIsValid(next_xid) && TransactionIdEquals(xid, next_xid);
+}
+
+
+/*
+ * Returns GlobalTransactionId associated with the current distributed session
+ * without assigning it to the transaction.
+ */
+TransactionId
+GetNextTransactionId(void)
+{
+	return next_xid;
+}
+#endif
+
+
 /*
  * Allocate the next XID for a new transaction or subtransaction.
  *

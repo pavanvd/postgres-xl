@@ -270,6 +270,19 @@ GetComboCommandId(CommandId cmin, CommandId cmax)
 static CommandId
 GetRealCmin(CommandId combocid)
 {
+#ifdef XCP
+	/*
+	 * Ugly workaround against assertion failure (or segmentation fault if
+	 * assertions is disabled) in a secondary datanode session when trying
+	 * to check visibility of a tuple with ComboCID.
+	 * ComboCID is only valid in a session that did the update, that is the
+	 * primary session. Until we come up with a solution, how to share ComboCIDs
+	 * between session just make tuples with ComboCIDs invisible to secondary
+	 * processes.
+	 */
+	if (combocid >= usedComboCids)
+		return FirstCommandId - 1;
+#endif
 	Assert(combocid < usedComboCids);
 	return comboCids[combocid].cmin;
 }
@@ -277,6 +290,19 @@ GetRealCmin(CommandId combocid)
 static CommandId
 GetRealCmax(CommandId combocid)
 {
+#ifdef XCP
+	/*
+	 * Ugly workaround against assertion failure (or segmentation fault if
+	 * assertions is disabled) in a secondary datanode session when trying
+	 * to check visibility of a tuple with ComboCID.
+	 * ComboCID is only valid in a session that did the update, that is the
+	 * primary session. Until we come up with a solution, how to share ComboCIDs
+	 * between session just make tuples with ComboCIDs invisible to secondary
+	 * processes.
+	 */
+	if (combocid >= usedComboCids)
+		return FirstCommandId;
+#endif
 	Assert(combocid < usedComboCids);
 	return comboCids[combocid].cmax;
 }
