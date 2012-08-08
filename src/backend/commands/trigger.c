@@ -4267,7 +4267,15 @@ AfterTriggerSetState(ConstraintsSetStmt *stmt)
 			/*
 			 * Not found ?
 			 */
+#ifdef XCP
+			/*
+			 * Constraint exists where table exists, it's OK if constraint is
+			 * not found on a data node. Silently ignore that.
+			 */
+			if (!found && !IS_PGXC_DATANODE)
+#else
 			if (!found)
+#endif
 				ereport(ERROR,
 						(errcode(ERRCODE_UNDEFINED_OBJECT),
 						 errmsg("constraint \"%s\" does not exist",

@@ -1939,7 +1939,18 @@ standard_ProcessUtility(Node *parsetree,
 		case T_ConstraintsSetStmt:
 			AfterTriggerSetState((ConstraintsSetStmt *) parsetree);
 #ifdef PGXC
-#ifndef XCP
+#ifdef XCP
+			/*
+			 * Just send statement to all the datanodes. It is effectively noop
+			 * if no transaction, because transaction will be committed and
+			 * changes will be cleared after completion.
+			 * Side effect of that command is that session takes a connection
+			 * to each Datanode and holds it while transaction lasts, even if
+			 * subsequent statements won't use some of them.
+			 */
+			ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false,
+								   EXEC_ON_DATANODES, false);
+#else
 			/*
 			 * Let the pooler manage the statement, SET CONSTRAINT can just be used
 			 * inside a transaction block, hence it has no effect outside that, so use
