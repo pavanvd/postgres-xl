@@ -506,7 +506,22 @@ HandleCommandComplete(RemoteQueryState *combiner, char *msg_body, size_t len, PG
 			{
 				if (combiner->command_complete_count)
 				{
+#ifdef XCP
+					/*
+					 * Replicated command may succeed on on node and fail on
+					 * another. The example is if distributed table referenced
+					 * by a foreign key constraint defined on a partitioned
+					 * table. If command deletes rows from the replicated table
+					 * they may be referenced on one Datanode but not on other.
+					 * So, replicated command on each Datanode either affects
+					 * proper number of rows, or returns error. Here if
+					 * combiner got an error already, we allow to report it,
+					 * not the scaring data corruption message.
+					 */
+					if (combiner->errorMessage == NULL && rowcount != estate->es_processed)
+#else
 					if (rowcount != estate->es_processed)
+#endif
 						/* There is a consistency issue in the database with the replicated table */
 						ereport(ERROR,
 								(errcode(ERRCODE_DATA_CORRUPTED),
@@ -530,19 +545,34 @@ HandleCommandComplete(RemoteQueryState *combiner, char *msg_body, size_t len, PG
 		if (strcmp(msg_body, "ROLLBACK") == 0)
 		{
 			/*
-			 * Subsequent clean up routine will be sending ROLLBACK PREPARED
-			 * to remote nodes. On that node PREPARE has failed and the expected
-			 * two-phase record does not exist, so trick the routine and pretend
-			 * that PREPARE has not been ever sent to this remote.
+			 * Subsequent clean up routine will be checking this flag
+			 * to determine nodes where to send ROLLBACK PREPARED.
+			 * On current node PREPARE has failed and the two-phase record
+			 * does not exist, so clean this flag as if PREPARE was not sent
+			 * to that node and avoid erroneous command.
 			 */
 			conn->ck_resp_rollback = false;
-			combiner->errorMessage = pstrdup("unexpected ROLLBACK from remote node");
-			/* ERRMSG_INTERNAL_ERROR */
-			combiner->errorCode[0] = 'X';
-			combiner->errorCode[1] = 'X';
-			combiner->errorCode[2] = '0';
-			combiner->errorCode[3] = '0';
-			combiner->errorCode[4] = '0';
+			/*
+			 * Set the error, if none, to force throwing.
+			 * If there is error already, it will be thrown anyway, do not add
+			 * this potentially confusing message
+			 */
+			if (combiner->errorMessage == NULL)
+			{
+				combiner->errorMessage =
+								pstrdup("unexpected ROLLBACK from remote node");
+				/*
+				 * ERRMSG_PRODUCER_ERROR
+				 * Messages with this code are replaced by others, if they are
+				 * received, so if node will send relevant error message that
+				 * one will be replaced.
+				 */
+				combiner->errorCode[0] = 'X';
+				combiner->errorCode[1] = 'X';
+				combiner->errorCode[2] = '0';
+				combiner->errorCode[3] = '1';
+				combiner->errorCode[4] = '0';
+			}
 		}
 	}
 #else
@@ -2938,6 +2968,10 @@ pgxc_node_remote_prepare(char *prepareGID, bool localNode)
 		else
 			CloseCombiner(&combiner);
 
+		/* Before exit clean the flag, to avoid unnecessary checks */
+		for (i = 0; i < conn_count; i++)
+			connections[i]->ck_resp_rollback = false;
+
 		pfree_pgxc_all_handles(handles);
 		if (!temp_object_included && !PersistentConnections)
 		{
@@ -2956,6 +2990,9 @@ prepare_err:
 	{
 		PGXCNodeHandle *conn = handles->datanode_handles[i];
 
+		/*
+		 * PREPARE succeeded on that node, roll it back there
+		 */
 		if (conn->ck_resp_rollback)
 		{
 			conn->ck_resp_rollback = false;
@@ -2973,7 +3010,7 @@ prepare_err:
 				ereport(WARNING,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("failed to send PREPARE TRANSACTION command to "
-							"the node %u", conn->nodeoid)));
+								"the node %u", conn->nodeoid)));
 			}
 			else
 			{
