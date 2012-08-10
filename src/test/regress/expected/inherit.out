@@ -1,10 +1,10 @@
 --
 -- Test inheritance features
 --
-CREATE TABLE a (aa TEXT) distribute by round robin;
-CREATE TABLE b (bb TEXT) INHERITS (a) distribute by round robin;
-CREATE TABLE c (cc TEXT) INHERITS (a) distribute by round robin;
-CREATE TABLE d (dd TEXT) INHERITS (b,c,a) distribute by round robin;
+CREATE TABLE a (aa TEXT);
+CREATE TABLE b (bb TEXT) INHERITS (a);
+CREATE TABLE c (cc TEXT) INHERITS (a);
+CREATE TABLE d (dd TEXT) INHERITS (b,c,a);
 NOTICE:  merging multiple inherited definitions of column "aa"
 NOTICE:  merging multiple inherited definitions of column "aa"
 INSERT INTO a(aa) VALUES('aaa');
@@ -32,822 +32,391 @@ INSERT INTO d(aa) VALUES('dddddd');
 INSERT INTO d(aa) VALUES('ddddddd');
 INSERT INTO d(aa) VALUES('dddddddd');
 SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
- relname |    aa    
----------+----------
- a       | aaa
- a       | aaaa
- a       | aaaaa
- a       | aaaaaa
- a       | aaaaaaa
- a       | aaaaaaaa
- b       | bbb
- b       | bbbb
- b       | bbbbb
- b       | bbbbbb
- b       | bbbbbbb
- b       | bbbbbbbb
- c       | ccc
- c       | cccc
- c       | ccccc
- c       | cccccc
- c       | ccccccc
- c       | cccccccc
- d       | ddd
- d       | dddd
- d       | ddddd
- d       | dddddd
- d       | ddddddd
- d       | dddddddd
-(24 rows)
+ relname | aa 
+---------+----
+(0 rows)
 
 SELECT relname, b.* FROM b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
- relname |    aa    | bb 
----------+----------+----
- b       | bbb      | 
- b       | bbbb     | 
- b       | bbbbb    | 
- b       | bbbbbb   | 
- b       | bbbbbbb  | 
- b       | bbbbbbbb | 
- d       | ddd      | 
- d       | dddd     | 
- d       | ddddd    | 
- d       | dddddd   | 
- d       | ddddddd  | 
- d       | dddddddd | 
-(12 rows)
+ relname | aa | bb 
+---------+----+----
+(0 rows)
 
 SELECT relname, c.* FROM c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
- relname |    aa    | cc 
----------+----------+----
- c       | ccc      | 
- c       | cccc     | 
- c       | ccccc    | 
- c       | cccccc   | 
- c       | ccccccc  | 
- c       | cccccccc | 
- d       | ddd      | 
- d       | dddd     | 
- d       | ddddd    | 
- d       | dddddd   | 
- d       | ddddddd  | 
- d       | dddddddd | 
-(12 rows)
-
-SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
- relname |    aa    | bb | cc | dd 
----------+----------+----+----+----
- d       | ddd      |    |    | 
- d       | dddd     |    |    | 
- d       | ddddd    |    |    | 
- d       | dddddd   |    |    | 
- d       | ddddddd  |    |    | 
- d       | dddddddd |    |    | 
-(6 rows)
-
-SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
- relname |    aa    
----------+----------
- a       | aaa
- a       | aaaa
- a       | aaaaa
- a       | aaaaaa
- a       | aaaaaaa
- a       | aaaaaaaa
-(6 rows)
-
-SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
- relname |    aa    | bb 
----------+----------+----
- b       | bbb      | 
- b       | bbbb     | 
- b       | bbbbb    | 
- b       | bbbbbb   | 
- b       | bbbbbbb  | 
- b       | bbbbbbbb | 
-(6 rows)
-
-SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
- relname |    aa    | cc 
----------+----------+----
- c       | ccc      | 
- c       | cccc     | 
- c       | ccccc    | 
- c       | cccccc   | 
- c       | ccccccc  | 
- c       | cccccccc | 
-(6 rows)
-
-SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
- relname |    aa    | bb | cc | dd 
----------+----------+----+----+----
- d       | ddd      |    |    | 
- d       | dddd     |    |    | 
- d       | ddddd    |    |    | 
- d       | dddddd   |    |    | 
- d       | ddddddd  |    |    | 
- d       | dddddddd |    |    | 
-(6 rows)
-
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
--- queries do not show any result. Hence in order to ensure data consistency, we
--- add following SQLs. In case above set of queries start producing valid
--- results in XC, we should remove the following set
-SELECT * FROM a ORDER BY a.aa;
-    aa    
-----------
- aaa
- aaaa
- aaaaa
- aaaaaa
- aaaaaaa
- aaaaaaaa
- bbb
- bbbb
- bbbbb
- bbbbbb
- bbbbbbb
- bbbbbbbb
- ccc
- cccc
- ccccc
- cccccc
- ccccccc
- cccccccc
- ddd
- dddd
- ddddd
- dddddd
- ddddddd
- dddddddd
-(24 rows)
-
-SELECT * from b ORDER BY b.aa;
-    aa    | bb 
-----------+----
- bbb      | 
- bbbb     | 
- bbbbb    | 
- bbbbbb   | 
- bbbbbbb  | 
- bbbbbbbb | 
- ddd      | 
- dddd     | 
- ddddd    | 
- dddddd   | 
- ddddddd  | 
- dddddddd | 
-(12 rows)
-
-SELECT * FROM c ORDER BY c.aa;
-    aa    | cc 
-----------+----
- ccc      | 
- cccc     | 
- ccccc    | 
- cccccc   | 
- ccccccc  | 
- cccccccc | 
- ddd      | 
- dddd     | 
- ddddd    | 
- dddddd   | 
- ddddddd  | 
- dddddddd | 
-(12 rows)
-
-SELECT * from d ORDER BY d.aa;
-    aa    | bb | cc | dd 
-----------+----+----+----
- ddd      |    |    | 
- dddd     |    |    | 
- ddddd    |    |    | 
- dddddd   |    |    | 
- ddddddd  |    |    | 
- dddddddd |    |    | 
-(6 rows)
-
-SELECT * FROM ONLY a ORDER BY a.aa;
-    aa    
-----------
- aaa
- aaaa
- aaaaa
- aaaaaa
- aaaaaaa
- aaaaaaaa
-(6 rows)
-
-SELECT * from ONLY b ORDER BY b.aa;
-    aa    | bb 
-----------+----
- bbb      | 
- bbbb     | 
- bbbbb    | 
- bbbbbb   | 
- bbbbbbb  | 
- bbbbbbbb | 
-(6 rows)
-
-SELECT * FROM ONLY c ORDER BY c.aa;
-    aa    | cc 
-----------+----
- ccc      | 
- cccc     | 
- ccccc    | 
- cccccc   | 
- ccccccc  | 
- cccccccc | 
-(6 rows)
-
-SELECT * from ONLY d ORDER BY d.aa;
-    aa    | bb | cc | dd 
-----------+----+----+----
- ddd      |    |    | 
- dddd     |    |    | 
- ddddd    |    |    | 
- dddddd   |    |    | 
- ddddddd  |    |    | 
- dddddddd |    |    | 
-(6 rows)
-
-UPDATE a SET aa='zzzz' WHERE aa='aaaa';
-UPDATE ONLY a SET aa='zzzzz' WHERE aa='aaaaa';
-UPDATE b SET aa='zzz' WHERE aa='aaa';
-UPDATE ONLY b SET aa='zzz' WHERE aa='aaa';
-UPDATE a SET aa='zzzzzz' WHERE aa LIKE 'aaa%';
-SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
- relname |    aa    
----------+----------
- a       | zzzz
- a       | zzzzz
- a       | zzzzzz
- a       | zzzzzz
- a       | zzzzzz
- a       | zzzzzz
- b       | bbb
- b       | bbbb
- b       | bbbbb
- b       | bbbbbb
- b       | bbbbbbb
- b       | bbbbbbbb
- c       | ccc
- c       | cccc
- c       | ccccc
- c       | cccccc
- c       | ccccccc
- c       | cccccccc
- d       | ddd
- d       | dddd
- d       | ddddd
- d       | dddddd
- d       | ddddddd
- d       | dddddddd
-(24 rows)
-
-SELECT relname, b.* FROM b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
- relname |    aa    | bb 
----------+----------+----
- b       | bbb      | 
- b       | bbbb     | 
- b       | bbbbb    | 
- b       | bbbbbb   | 
- b       | bbbbbbb  | 
- b       | bbbbbbbb | 
- d       | ddd      | 
- d       | dddd     | 
- d       | ddddd    | 
- d       | dddddd   | 
- d       | ddddddd  | 
- d       | dddddddd | 
-(12 rows)
-
-SELECT relname, c.* FROM c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
- relname |    aa    | cc 
----------+----------+----
- c       | ccc      | 
- c       | cccc     | 
- c       | ccccc    | 
- c       | cccccc   | 
- c       | ccccccc  | 
- c       | cccccccc | 
- d       | ddd      | 
- d       | dddd     | 
- d       | ddddd    | 
- d       | dddddd   | 
- d       | ddddddd  | 
- d       | dddddddd | 
-(12 rows)
-
-SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
- relname |    aa    | bb | cc | dd 
----------+----------+----+----+----
- d       | ddd      |    |    | 
- d       | dddd     |    |    | 
- d       | ddddd    |    |    | 
- d       | dddddd   |    |    | 
- d       | ddddddd  |    |    | 
- d       | dddddddd |    |    | 
-(6 rows)
-
-SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
- relname |   aa   
----------+--------
- a       | zzzz
- a       | zzzzz
- a       | zzzzzz
- a       | zzzzzz
- a       | zzzzzz
- a       | zzzzzz
-(6 rows)
-
-SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
- relname |    aa    | bb 
----------+----------+----
- b       | bbb      | 
- b       | bbbb     | 
- b       | bbbbb    | 
- b       | bbbbbb   | 
- b       | bbbbbbb  | 
- b       | bbbbbbbb | 
-(6 rows)
-
-SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
- relname |    aa    | cc 
----------+----------+----
- c       | ccc      | 
- c       | cccc     | 
- c       | ccccc    | 
- c       | cccccc   | 
- c       | ccccccc  | 
- c       | cccccccc | 
-(6 rows)
-
-SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
- relname |    aa    | bb | cc | dd 
----------+----------+----+----+----
- d       | ddd      |    |    | 
- d       | dddd     |    |    | 
- d       | ddddd    |    |    | 
- d       | dddddd   |    |    | 
- d       | ddddddd  |    |    | 
- d       | dddddddd |    |    | 
-(6 rows)
-
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
--- queries do not show any result. Hence in order to ensure data consistency, we
--- add following SQLs. In case above set of queries start producing valid
--- results in XC, we should remove the following set
-SELECT * FROM a ORDER BY a.aa;
-    aa    
-----------
- bbb
- bbbb
- bbbbb
- bbbbbb
- bbbbbbb
- bbbbbbbb
- ccc
- cccc
- ccccc
- cccccc
- ccccccc
- cccccccc
- ddd
- dddd
- ddddd
- dddddd
- ddddddd
- dddddddd
- zzzz
- zzzzz
- zzzzzz
- zzzzzz
- zzzzzz
- zzzzzz
-(24 rows)
-
-SELECT * from b ORDER BY b.aa;
-    aa    | bb 
-----------+----
- bbb      | 
- bbbb     | 
- bbbbb    | 
- bbbbbb   | 
- bbbbbbb  | 
- bbbbbbbb | 
- ddd      | 
- dddd     | 
- ddddd    | 
- dddddd   | 
- ddddddd  | 
- dddddddd | 
-(12 rows)
-
-SELECT * FROM c ORDER BY c.aa;
-    aa    | cc 
-----------+----
- ccc      | 
- cccc     | 
- ccccc    | 
- cccccc   | 
- ccccccc  | 
- cccccccc | 
- ddd      | 
- dddd     | 
- ddddd    | 
- dddddd   | 
- ddddddd  | 
- dddddddd | 
-(12 rows)
-
-SELECT * from d ORDER BY d.aa;
-    aa    | bb | cc | dd 
-----------+----+----+----
- ddd      |    |    | 
- dddd     |    |    | 
- ddddd    |    |    | 
- dddddd   |    |    | 
- ddddddd  |    |    | 
- dddddddd |    |    | 
-(6 rows)
-
-SELECT * FROM ONLY a ORDER BY a.aa;
-   aa   
---------
- zzzz
- zzzzz
- zzzzzz
- zzzzzz
- zzzzzz
- zzzzzz
-(6 rows)
-
-SELECT * from ONLY b ORDER BY b.aa;
-    aa    | bb 
-----------+----
- bbb      | 
- bbbb     | 
- bbbbb    | 
- bbbbbb   | 
- bbbbbbb  | 
- bbbbbbbb | 
-(6 rows)
-
-SELECT * FROM ONLY c ORDER BY c.aa;
-    aa    | cc 
-----------+----
- ccc      | 
- cccc     | 
- ccccc    | 
- cccccc   | 
- ccccccc  | 
- cccccccc | 
-(6 rows)
-
-SELECT * from ONLY d ORDER BY d.aa;
-    aa    | bb | cc | dd 
-----------+----+----+----
- ddd      |    |    | 
- dddd     |    |    | 
- ddddd    |    |    | 
- dddddd   |    |    | 
- ddddddd  |    |    | 
- dddddddd |    |    | 
-(6 rows)
-
-UPDATE b SET aa='new';
-SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
- relname |    aa    
----------+----------
- a       | zzzz
- a       | zzzzz
- a       | zzzzzz
- a       | zzzzzz
- a       | zzzzzz
- a       | zzzzzz
- b       | new
- b       | new
- b       | new
- b       | new
- b       | new
- b       | new
- c       | ccc
- c       | cccc
- c       | ccccc
- c       | cccccc
- c       | ccccccc
- c       | cccccccc
- d       | new
- d       | new
- d       | new
- d       | new
- d       | new
- d       | new
-(24 rows)
-
-SELECT relname, b.* FROM b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
- relname | aa  | bb 
----------+-----+----
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
-(12 rows)
-
-SELECT relname, c.* FROM c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
- relname |    aa    | cc 
----------+----------+----
- c       | ccc      | 
- c       | cccc     | 
- c       | ccccc    | 
- c       | cccccc   | 
- c       | ccccccc  | 
- c       | cccccccc | 
- d       | new      | 
- d       | new      | 
- d       | new      | 
- d       | new      | 
- d       | new      | 
- d       | new      | 
-(12 rows)
-
-SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
- relname | aa  | bb | cc | dd 
----------+-----+----+----+----
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
-(6 rows)
-
-SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
- relname |   aa   
----------+--------
- a       | zzzz
- a       | zzzzz
- a       | zzzzzz
- a       | zzzzzz
- a       | zzzzzz
- a       | zzzzzz
-(6 rows)
-
-SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
- relname | aa  | bb 
----------+-----+----
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
-(6 rows)
-
-SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
- relname |    aa    | cc 
----------+----------+----
- c       | ccc      | 
- c       | cccc     | 
- c       | ccccc    | 
- c       | cccccc   | 
- c       | ccccccc  | 
- c       | cccccccc | 
-(6 rows)
-
-SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
- relname | aa  | bb | cc | dd 
----------+-----+----+----+----
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
-(6 rows)
-
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
--- queries do not show any result. Hence in order to ensure data consistency, we
--- add following SQLs. In case above set of queries start producing valid
--- results in XC, we should remove the following set
-SELECT * FROM a ORDER BY a.aa;
-    aa    
-----------
- ccc
- cccc
- ccccc
- cccccc
- ccccccc
- cccccccc
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- zzzz
- zzzzz
- zzzzzz
- zzzzzz
- zzzzzz
- zzzzzz
-(24 rows)
-
-SELECT * from b ORDER BY b.aa;
- aa  | bb 
------+----
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
-(12 rows)
-
-SELECT * FROM c ORDER BY c.aa;
-    aa    | cc 
-----------+----
- ccc      | 
- cccc     | 
- ccccc    | 
- cccccc   | 
- ccccccc  | 
- cccccccc | 
- new      | 
- new      | 
- new      | 
- new      | 
- new      | 
- new      | 
-(12 rows)
-
-SELECT * from d ORDER BY d.aa;
- aa  | bb | cc | dd 
------+----+----+----
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
-(6 rows)
-
-SELECT * FROM ONLY a ORDER BY a.aa;
-   aa   
---------
- zzzz
- zzzzz
- zzzzzz
- zzzzzz
- zzzzzz
- zzzzzz
-(6 rows)
-
-SELECT * from ONLY b ORDER BY b.aa;
- aa  | bb 
------+----
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
-(6 rows)
-
-SELECT * FROM ONLY c ORDER BY c.aa;
-    aa    | cc 
-----------+----
- ccc      | 
- cccc     | 
- ccccc    | 
- cccccc   | 
- ccccccc  | 
- cccccccc | 
-(6 rows)
-
-SELECT * from ONLY d ORDER BY d.aa;
- aa  | bb | cc | dd 
------+----+----+----
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
-(6 rows)
-
-UPDATE a SET aa='new';
-DELETE FROM ONLY c WHERE aa='new';
-SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
- relname | aa  
----------+-----
- a       | new
- a       | new
- a       | new
- a       | new
- a       | new
- a       | new
- b       | new
- b       | new
- b       | new
- b       | new
- b       | new
- b       | new
- d       | new
- d       | new
- d       | new
- d       | new
- d       | new
- d       | new
-(18 rows)
-
-SELECT relname, b.* FROM b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
- relname | aa  | bb 
----------+-----+----
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
-(12 rows)
-
-SELECT relname, c.* FROM c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
- relname | aa  | cc 
----------+-----+----
- d       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
- d       | new | 
-(6 rows)
-
-SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
- relname | aa  | bb | cc | dd 
----------+-----+----+----+----
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
- d       | new |    |    | 
-(6 rows)
-
-SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
- relname | aa  
----------+-----
- a       | new
- a       | new
- a       | new
- a       | new
- a       | new
- a       | new
-(6 rows)
-
-SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
- relname | aa  | bb 
----------+-----+----
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
- b       | new | 
-(6 rows)
-
-SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
  relname | aa | cc 
 ---------+----+----
 (0 rows)
 
+SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
+ relname |    aa    | bb | cc | dd 
+---------+----------+----+----+----
+ d       | ddd      |    |    | 
+ d       | dddd     |    |    | 
+ d       | ddddd    |    |    | 
+ d       | dddddd   |    |    | 
+ d       | ddddddd  |    |    | 
+ d       | dddddddd |    |    | 
+(6 rows)
+
+SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
+ relname |    aa    
+---------+----------
+ a       | aaa
+ a       | aaaa
+ a       | aaaaa
+ a       | aaaaaa
+ a       | aaaaaaa
+ a       | aaaaaaaa
+(6 rows)
+
+SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
+ relname |    aa    | bb 
+---------+----------+----
+ b       | bbb      | 
+ b       | bbbb     | 
+ b       | bbbbb    | 
+ b       | bbbbbb   | 
+ b       | bbbbbbb  | 
+ b       | bbbbbbbb | 
+(6 rows)
+
+SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
+ relname |    aa    | cc 
+---------+----------+----
+ c       | ccc      | 
+ c       | cccc     | 
+ c       | ccccc    | 
+ c       | cccccc   | 
+ c       | ccccccc  | 
+ c       | cccccccc | 
+(6 rows)
+
+SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
+ relname |    aa    | bb | cc | dd 
+---------+----------+----+----+----
+ d       | ddd      |    |    | 
+ d       | dddd     |    |    | 
+ d       | ddddd    |    |    | 
+ d       | dddddd   |    |    | 
+ d       | ddddddd  |    |    | 
+ d       | dddddddd |    |    | 
+(6 rows)
+
+-- In Postgres-XC, Oids are not consistent among nodes, but a cast on relation can be used for global operations on Oid
+SELECT relname, a.* FROM a, pg_class WHERE 'a'::regclass = pg_class.oid ORDER BY relname, a.aa;
+ relname |    aa    
+---------+----------
+ a       | aaa
+ a       | aaaa
+ a       | aaaaa
+ a       | aaaaaa
+ a       | aaaaaaa
+ a       | aaaaaaaa
+ a       | bbb
+ a       | bbbb
+ a       | bbbbb
+ a       | bbbbbb
+ a       | bbbbbbb
+ a       | bbbbbbbb
+ a       | ccc
+ a       | cccc
+ a       | ccccc
+ a       | cccccc
+ a       | ccccccc
+ a       | cccccccc
+ a       | ddd
+ a       | dddd
+ a       | ddddd
+ a       | dddddd
+ a       | ddddddd
+ a       | dddddddd
+(24 rows)
+
+SELECT relname, b.* FROM b, pg_class WHERE 'b'::regclass = pg_class.oid ORDER BY relname, b.aa;
+ relname |    aa    | bb 
+---------+----------+----
+ b       | bbb      | 
+ b       | bbbb     | 
+ b       | bbbbb    | 
+ b       | bbbbbb   | 
+ b       | bbbbbbb  | 
+ b       | bbbbbbbb | 
+ b       | ddd      | 
+ b       | dddd     | 
+ b       | ddddd    | 
+ b       | dddddd   | 
+ b       | ddddddd  | 
+ b       | dddddddd | 
+(12 rows)
+
+SELECT relname, c.* FROM c, pg_class WHERE 'c'::regclass = pg_class.oid ORDER BY relname, c.aa;
+ relname |    aa    | cc 
+---------+----------+----
+ c       | ccc      | 
+ c       | cccc     | 
+ c       | ccccc    | 
+ c       | cccccc   | 
+ c       | ccccccc  | 
+ c       | cccccccc | 
+ c       | ddd      | 
+ c       | dddd     | 
+ c       | ddddd    | 
+ c       | dddddd   | 
+ c       | ddddddd  | 
+ c       | dddddddd | 
+(12 rows)
+
+SELECT relname, d.* FROM d, pg_class WHERE 'd'::regclass = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa | bb | cc | dd 
+---------+----+----+----+----
+(0 rows)
+
+SELECT relname, a.* FROM ONLY a, pg_class where 'a'::regclass = pg_class.oid ORDER BY relname, a.aa;
+ relname | aa 
+---------+----
+(0 rows)
+
+SELECT relname, b.* FROM ONLY b, pg_class where 'b'::regclass = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa | bb 
+---------+----+----
+(0 rows)
+
+SELECT relname, c.* FROM ONLY c, pg_class where 'c'::regclass = pg_class.oid ORDER BY relname, c.aa;
+ relname | aa | cc 
+---------+----+----
+(0 rows)
+
+SELECT relname, d.* FROM ONLY d, pg_class where 'd'::regclass = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa | bb | cc | dd 
+---------+----+----+----+----
+(0 rows)
+
+UPDATE a SET aa='zzzz' WHERE aa='aaaa';
+ERROR:  Partition column can't be updated in current version
+UPDATE ONLY a SET aa='zzzzz' WHERE aa='aaaaa';
+ERROR:  Partition column can't be updated in current version
+UPDATE b SET aa='zzz' WHERE aa='aaa';
+UPDATE ONLY b SET aa='zzz' WHERE aa='aaa';
+UPDATE a SET aa='zzzzzz' WHERE aa LIKE 'aaa%';
+ERROR:  Partition column can't be updated in current version
+SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
+ relname | aa 
+---------+----
+(0 rows)
+
+SELECT relname, b.* FROM b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa | bb 
+---------+----+----
+(0 rows)
+
+SELECT relname, c.* FROM c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
+ relname | aa | cc 
+---------+----+----
+(0 rows)
+
+SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
+ relname |    aa    | bb | cc | dd 
+---------+----------+----+----+----
+ d       | ddd      |    |    | 
+ d       | dddd     |    |    | 
+ d       | ddddd    |    |    | 
+ d       | dddddd   |    |    | 
+ d       | ddddddd  |    |    | 
+ d       | dddddddd |    |    | 
+(6 rows)
+
+SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
+ relname |    aa    
+---------+----------
+ a       | aaa
+ a       | aaaa
+ a       | aaaaa
+ a       | aaaaaa
+ a       | aaaaaaa
+ a       | aaaaaaaa
+(6 rows)
+
+SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
+ relname |    aa    | bb 
+---------+----------+----
+ b       | bbb      | 
+ b       | bbbb     | 
+ b       | bbbbb    | 
+ b       | bbbbbb   | 
+ b       | bbbbbbb  | 
+ b       | bbbbbbbb | 
+(6 rows)
+
+SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
+ relname |    aa    | cc 
+---------+----------+----
+ c       | ccc      | 
+ c       | cccc     | 
+ c       | ccccc    | 
+ c       | cccccc   | 
+ c       | ccccccc  | 
+ c       | cccccccc | 
+(6 rows)
+
+SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
+ relname |    aa    | bb | cc | dd 
+---------+----------+----+----+----
+ d       | ddd      |    |    | 
+ d       | dddd     |    |    | 
+ d       | ddddd    |    |    | 
+ d       | dddddd   |    |    | 
+ d       | ddddddd  |    |    | 
+ d       | dddddddd |    |    | 
+(6 rows)
+
+-- In Postgres-XC, Oids are not consistent among nodes, but a cast on relation can be used for global operations on Oid
+SELECT relname, a.* FROM a, pg_class WHERE 'a'::regclass = pg_class.oid ORDER BY relname, a.aa;
+ relname |    aa    
+---------+----------
+ a       | aaa
+ a       | aaaa
+ a       | aaaaa
+ a       | aaaaaa
+ a       | aaaaaaa
+ a       | aaaaaaaa
+ a       | bbb
+ a       | bbbb
+ a       | bbbbb
+ a       | bbbbbb
+ a       | bbbbbbb
+ a       | bbbbbbbb
+ a       | ccc
+ a       | cccc
+ a       | ccccc
+ a       | cccccc
+ a       | ccccccc
+ a       | cccccccc
+ a       | ddd
+ a       | dddd
+ a       | ddddd
+ a       | dddddd
+ a       | ddddddd
+ a       | dddddddd
+(24 rows)
+
+SELECT relname, b.* FROM b, pg_class WHERE 'b'::regclass = pg_class.oid ORDER BY relname, b.aa;
+ relname |    aa    | bb 
+---------+----------+----
+ b       | bbb      | 
+ b       | bbbb     | 
+ b       | bbbbb    | 
+ b       | bbbbbb   | 
+ b       | bbbbbbb  | 
+ b       | bbbbbbbb | 
+ b       | ddd      | 
+ b       | dddd     | 
+ b       | ddddd    | 
+ b       | dddddd   | 
+ b       | ddddddd  | 
+ b       | dddddddd | 
+(12 rows)
+
+SELECT relname, c.* FROM c, pg_class WHERE 'c'::regclass = pg_class.oid ORDER BY relname, c.aa;
+ relname |    aa    | cc 
+---------+----------+----
+ c       | ccc      | 
+ c       | cccc     | 
+ c       | ccccc    | 
+ c       | cccccc   | 
+ c       | ccccccc  | 
+ c       | cccccccc | 
+ c       | ddd      | 
+ c       | dddd     | 
+ c       | ddddd    | 
+ c       | dddddd   | 
+ c       | ddddddd  | 
+ c       | dddddddd | 
+(12 rows)
+
+SELECT relname, d.* FROM d, pg_class WHERE 'd'::regclass = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa | bb | cc | dd 
+---------+----+----+----+----
+(0 rows)
+
+SELECT relname, a.* FROM ONLY a, pg_class where 'a'::regclass = pg_class.oid ORDER BY relname, a.aa;
+ relname | aa 
+---------+----
+(0 rows)
+
+SELECT relname, b.* FROM ONLY b, pg_class where 'b'::regclass = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa | bb 
+---------+----+----
+(0 rows)
+
+SELECT relname, c.* FROM ONLY c, pg_class where 'c'::regclass = pg_class.oid ORDER BY relname, c.aa;
+ relname | aa | cc 
+---------+----+----
+(0 rows)
+
+SELECT relname, d.* FROM ONLY d, pg_class where 'd'::regclass = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa | bb | cc | dd 
+---------+----+----+----+----
+(0 rows)
+
+UPDATE b SET aa='new';
+SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
+ relname | aa 
+---------+----
+(0 rows)
+
+SELECT relname, b.* FROM b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa | bb 
+---------+----+----
+(0 rows)
+
+SELECT relname, c.* FROM c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
+ relname | aa | cc 
+---------+----+----
+(0 rows)
+
+SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa  | bb | cc | dd 
+---------+-----+----+----+----
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+(6 rows)
+
+SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
+ relname |    aa    
+---------+----------
+ a       | aaa
+ a       | aaaa
+ a       | aaaaa
+ a       | aaaaaa
+ a       | aaaaaaa
+ a       | aaaaaaaa
+(6 rows)
+
+SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa  | bb 
+---------+-----+----
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+(6 rows)
+
+SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
+ relname |    aa    | cc 
+---------+----------+----
+ c       | ccc      | 
+ c       | cccc     | 
+ c       | ccccc    | 
+ c       | cccccc   | 
+ c       | ccccccc  | 
+ c       | cccccccc | 
+(6 rows)
+
 SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
  relname | aa  | bb | cc | dd 
 ---------+-----+----+----+----
@@ -859,109 +428,256 @@ SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER 
  d       | new |    |    | 
 (6 rows)
 
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
--- queries do not show any result. Hence in order to ensure data consistency, we
--- add following SQLs. In case above set of queries start producing valid
--- results in XC, we should remove the following set
-SELECT * FROM a ORDER BY a.aa;
- aa  
------
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
- new
-(18 rows)
+-- In Postgres-XC, Oids are not consistent among nodes, but a cast on relation can be used for global operations on Oid
+SELECT relname, a.* FROM a, pg_class WHERE 'a'::regclass = pg_class.oid ORDER BY relname, a.aa;
+ relname |    aa    
+---------+----------
+ a       | aaa
+ a       | aaaa
+ a       | aaaaa
+ a       | aaaaaa
+ a       | aaaaaaa
+ a       | aaaaaaaa
+ a       | ccc
+ a       | cccc
+ a       | ccccc
+ a       | cccccc
+ a       | ccccccc
+ a       | cccccccc
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+(24 rows)
 
-SELECT * from b ORDER BY b.aa;
- aa  | bb 
------+----
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
+SELECT relname, b.* FROM b, pg_class WHERE 'b'::regclass = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa  | bb 
+---------+-----+----
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
 (12 rows)
 
-SELECT * FROM c ORDER BY c.aa;
- aa  | cc 
------+----
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
-(6 rows)
+SELECT relname, c.* FROM c, pg_class WHERE 'c'::regclass = pg_class.oid ORDER BY relname, c.aa;
+ relname |    aa    | cc 
+---------+----------+----
+ c       | ccc      | 
+ c       | cccc     | 
+ c       | ccccc    | 
+ c       | cccccc   | 
+ c       | ccccccc  | 
+ c       | cccccccc | 
+ c       | new      | 
+ c       | new      | 
+ c       | new      | 
+ c       | new      | 
+ c       | new      | 
+ c       | new      | 
+(12 rows)
 
-SELECT * from d ORDER BY d.aa;
- aa  | bb | cc | dd 
------+----+----+----
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
-(6 rows)
-
-SELECT * FROM ONLY a ORDER BY a.aa;
- aa  
------
- new
- new
- new
- new
- new
- new
-(6 rows)
-
-SELECT * from ONLY b ORDER BY b.aa;
- aa  | bb 
------+----
- new | 
- new | 
- new | 
- new | 
- new | 
- new | 
-(6 rows)
-
-SELECT * FROM ONLY c ORDER BY c.aa;
- aa | cc 
-----+----
+SELECT relname, d.* FROM d, pg_class WHERE 'd'::regclass = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa | bb | cc | dd 
+---------+----+----+----+----
 (0 rows)
 
-SELECT * from ONLY d ORDER BY d.aa;
- aa  | bb | cc | dd 
------+----+----+----
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
- new |    |    | 
+SELECT relname, a.* FROM ONLY a, pg_class where 'a'::regclass = pg_class.oid ORDER BY relname, a.aa;
+ relname | aa 
+---------+----
+(0 rows)
+
+SELECT relname, b.* FROM ONLY b, pg_class where 'b'::regclass = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa | bb 
+---------+----+----
+(0 rows)
+
+SELECT relname, c.* FROM ONLY c, pg_class where 'c'::regclass = pg_class.oid ORDER BY relname, c.aa;
+ relname | aa | cc 
+---------+----+----
+(0 rows)
+
+SELECT relname, d.* FROM ONLY d, pg_class where 'd'::regclass = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa | bb | cc | dd 
+---------+----+----+----+----
+(0 rows)
+
+UPDATE a SET aa='new';
+ERROR:  Partition column can't be updated in current version
+DELETE FROM ONLY c WHERE aa='new';
+SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
+ relname | aa 
+---------+----
+(0 rows)
+
+SELECT relname, b.* FROM b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa | bb 
+---------+----+----
+(0 rows)
+
+SELECT relname, c.* FROM c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
+ relname | aa | cc 
+---------+----+----
+(0 rows)
+
+SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa  | bb | cc | dd 
+---------+-----+----+----+----
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
 (6 rows)
+
+SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
+ relname |    aa    
+---------+----------
+ a       | aaa
+ a       | aaaa
+ a       | aaaaa
+ a       | aaaaaa
+ a       | aaaaaaa
+ a       | aaaaaaaa
+(6 rows)
+
+SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa  | bb 
+---------+-----+----
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+(6 rows)
+
+SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
+ relname |    aa    | cc 
+---------+----------+----
+ c       | ccc      | 
+ c       | cccc     | 
+ c       | ccccc    | 
+ c       | cccccc   | 
+ c       | ccccccc  | 
+ c       | cccccccc | 
+(6 rows)
+
+SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa  | bb | cc | dd 
+---------+-----+----+----+----
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+ d       | new |    |    | 
+(6 rows)
+
+-- In Postgres-XC, Oids are not consistent among nodes, but a cast on relation can be used for global operations on Oid
+SELECT relname, a.* FROM a, pg_class WHERE 'a'::regclass = pg_class.oid ORDER BY relname, a.aa;
+ relname |    aa    
+---------+----------
+ a       | aaa
+ a       | aaaa
+ a       | aaaaa
+ a       | aaaaaa
+ a       | aaaaaaa
+ a       | aaaaaaaa
+ a       | ccc
+ a       | cccc
+ a       | ccccc
+ a       | cccccc
+ a       | ccccccc
+ a       | cccccccc
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+ a       | new
+(24 rows)
+
+SELECT relname, b.* FROM b, pg_class WHERE 'b'::regclass = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa  | bb 
+---------+-----+----
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+ b       | new | 
+(12 rows)
+
+SELECT relname, c.* FROM c, pg_class WHERE 'c'::regclass = pg_class.oid ORDER BY relname, c.aa;
+ relname |    aa    | cc 
+---------+----------+----
+ c       | ccc      | 
+ c       | cccc     | 
+ c       | ccccc    | 
+ c       | cccccc   | 
+ c       | ccccccc  | 
+ c       | cccccccc | 
+ c       | new      | 
+ c       | new      | 
+ c       | new      | 
+ c       | new      | 
+ c       | new      | 
+ c       | new      | 
+(12 rows)
+
+SELECT relname, d.* FROM d, pg_class WHERE 'd'::regclass = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa | bb | cc | dd 
+---------+----+----+----+----
+(0 rows)
+
+SELECT relname, a.* FROM ONLY a, pg_class where 'a'::regclass = pg_class.oid ORDER BY relname, a.aa;
+ relname | aa 
+---------+----
+(0 rows)
+
+SELECT relname, b.* FROM ONLY b, pg_class where 'b'::regclass = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa | bb 
+---------+----+----
+(0 rows)
+
+SELECT relname, c.* FROM ONLY c, pg_class where 'c'::regclass = pg_class.oid ORDER BY relname, c.aa;
+ relname | aa | cc 
+---------+----+----
+(0 rows)
+
+SELECT relname, d.* FROM ONLY d, pg_class where 'd'::regclass = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa | bb | cc | dd 
+---------+----+----+----+----
+(0 rows)
 
 DELETE FROM a;
 SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid ORDER BY relname, a.aa;
@@ -1004,48 +720,45 @@ SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER 
 ---------+----+----+----+----
 (0 rows)
 
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
--- queries do not show any result. Hence in order to ensure data consistency, we
--- add following SQLs. In case above set of queries start producing valid
--- results in XC, we should remove the following set
-SELECT * FROM a ORDER BY a.aa;
- aa 
-----
+-- In Postgres-XC, Oids are not consistent among nodes, but a cast on relation can be used for global operations on Oid
+SELECT relname, a.* FROM a, pg_class WHERE 'a'::regclass = pg_class.oid ORDER BY relname, a.aa;
+ relname | aa 
+---------+----
 (0 rows)
 
-SELECT * from b ORDER BY b.aa;
- aa | bb 
-----+----
+SELECT relname, b.* FROM b, pg_class WHERE 'b'::regclass = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa | bb 
+---------+----+----
 (0 rows)
 
-SELECT * FROM c ORDER BY c.aa;
- aa | cc 
-----+----
+SELECT relname, c.* FROM c, pg_class WHERE 'c'::regclass = pg_class.oid ORDER BY relname, c.aa;
+ relname | aa | cc 
+---------+----+----
 (0 rows)
 
-SELECT * from d ORDER BY d.aa;
- aa | bb | cc | dd 
-----+----+----+----
+SELECT relname, d.* FROM d, pg_class WHERE 'd'::regclass = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa | bb | cc | dd 
+---------+----+----+----+----
 (0 rows)
 
-SELECT * FROM ONLY a ORDER BY a.aa;
- aa 
-----
+SELECT relname, a.* FROM ONLY a, pg_class where 'a'::regclass = pg_class.oid ORDER BY relname, a.aa;
+ relname | aa 
+---------+----
 (0 rows)
 
-SELECT * from ONLY b ORDER BY b.aa;
- aa | bb 
-----+----
+SELECT relname, b.* FROM ONLY b, pg_class where 'b'::regclass = pg_class.oid ORDER BY relname, b.aa;
+ relname | aa | bb 
+---------+----+----
 (0 rows)
 
-SELECT * FROM ONLY c ORDER BY c.aa;
- aa | cc 
-----+----
+SELECT relname, c.* FROM ONLY c, pg_class where 'c'::regclass = pg_class.oid ORDER BY relname, c.aa;
+ relname | aa | cc 
+---------+----+----
 (0 rows)
 
-SELECT * from ONLY d ORDER BY d.aa;
- aa | bb | cc | dd 
-----+----+----+----
+SELECT relname, d.* FROM ONLY d, pg_class where 'd'::regclass = pg_class.oid ORDER BY relname, d.aa;
+ relname | aa | bb | cc | dd 
+---------+----+----+----+----
 (0 rows)
 
 -- Confirm PRIMARY KEY adds NOT NULL constraint to child table
@@ -1071,54 +784,12 @@ insert into bar2 values(2,2,2);
 insert into bar2 values(3,3,3);
 insert into bar2 values(4,4,4);
 update bar set f2 = f2 + 100 where f1 in (select f1 from foo);
+ERROR:  failed to find ExecRowMark for rangetable index 6
 SELECT relname, bar.* FROM bar, pg_class where bar.tableoid = pg_class.oid
 order by 1,2;
- relname | f1 | f2  
----------+----+-----
- bar     |  1 | 101
- bar     |  2 | 102
- bar     |  3 | 103
- bar     |  4 |   4
- bar2    |  1 | 101
- bar2    |  2 | 102
- bar2    |  3 | 103
- bar2    |  4 |   4
-(8 rows)
-
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
--- queries do not show any result. Hence in order to ensure data consistency, we
--- add following SQLs. In case above set of queries start producing valid
--- results in XC, we should remove the following set
-SELECT * FROM bar ORDER BY f1, f2;
- f1 | f2  
-----+-----
-  1 | 101
-  1 | 101
-  2 | 102
-  2 | 102
-  3 | 103
-  3 | 103
-  4 |   4
-  4 |   4
-(8 rows)
-
-SELECT * FROM ONLY bar ORDER BY f1, f2;
- f1 | f2  
-----+-----
-  1 | 101
-  2 | 102
-  3 | 103
-  4 |   4
-(4 rows)
-
-SELECT * FROM bar2 ORDER BY f1, f2;
- f1 | f2  | f3 
-----+-----+----
-  1 | 101 |  1
-  2 | 102 |  2
-  3 | 103 |  3
-  4 |   4 |  4
-(4 rows)
+ relname | f1 | f2 
+---------+----+----
+(0 rows)
 
 /* Test multiple inheritance of column defaults */
 CREATE TABLE firstparent (tomorrow date default now()::date + 1);
@@ -1184,7 +855,7 @@ NOTICE:  ALTER TABLE / ADD PRIMARY KEY will create implicit index "inhx_pkey" fo
 CREATE TABLE inhg (LIKE inhx); /* Doesn't copy constraint */
 INSERT INTO inhg VALUES ('foo');
 DROP TABLE inhg;
-CREATE TABLE inhg (x text, LIKE inhx INCLUDING CONSTRAINTS, y text) distribute by replication; /* Copies constraints */
+CREATE TABLE inhg (x text, LIKE inhx INCLUDING CONSTRAINTS, y text); /* Copies constraints */
 INSERT INTO inhg VALUES ('x', 'text', 'y'); /* Succeeds */
 INSERT INTO inhg VALUES ('x', 'text', 'y'); /* Succeeds -- Unique constraints not copied */
 INSERT INTO inhg VALUES ('x', 'foo',  'y');  /* fails due to constraint */
@@ -1197,30 +868,46 @@ SELECT * FROM inhg ORDER BY 1,2,3; /* Two records with three columns in order x=
 (2 rows)
 
 DROP TABLE inhg;
-CREATE TABLE inhg (x text, LIKE inhx INCLUDING INDEXES, y text) distribute by replication; /* copies indexes */
-NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "inhg_pkey" for table "inhg"
+CREATE TABLE inhg (x text, LIKE inhx INCLUDING INDEXES, y text); /* copies indexes */
+ERROR:  Unique index of partitioned table must contain the hash/modulo distribution column.
 INSERT INTO inhg VALUES (5, 10);
+ERROR:  relation "inhg" does not exist
+LINE 2: INSERT INTO inhg VALUES (5, 10);
+                    ^
 INSERT INTO inhg VALUES (20, 10); -- should fail
-ERROR:  duplicate key value violates unique constraint "inhg_pkey"
-DETAIL:  Key (xx)=(10) already exists.
+ERROR:  relation "inhg" does not exist
+LINE 1: INSERT INTO inhg VALUES (20, 10);
+                    ^
 DROP TABLE inhg;
+ERROR:  table "inhg" does not exist
 /* Multiple primary keys creation should fail */
 CREATE TABLE inhg (x text, LIKE inhx INCLUDING INDEXES, PRIMARY KEY(x)); /* fails */
 ERROR:  multiple primary keys for table "inhg" are not allowed
-CREATE TABLE inhz (xx text DEFAULT 'text', yy int UNIQUE) distribute by replication;
-NOTICE:  CREATE TABLE / UNIQUE will create implicit index "inhz_yy_key" for table "inhz"
+CREATE TABLE inhz (xx text DEFAULT 'text', yy int UNIQUE);
+ERROR:  Unique index of partitioned table must contain the hash/modulo distribution column.
 CREATE UNIQUE INDEX inhz_xx_idx on inhz (xx) WHERE xx <> 'test';
+ERROR:  relation "inhz" does not exist
 /* Ok to create multiple unique indexes */
-CREATE TABLE inhg (x text UNIQUE, LIKE inhz INCLUDING INDEXES) distribute by replication;
-NOTICE:  CREATE TABLE / UNIQUE will create implicit index "inhg_x_key" for table "inhg"
-NOTICE:  CREATE TABLE / UNIQUE will create implicit index "inhg_yy_key" for table "inhg"
+CREATE TABLE inhg (x text UNIQUE, LIKE inhz INCLUDING INDEXES);
+ERROR:  relation "inhz" does not exist
+LINE 2: CREATE TABLE inhg (x text UNIQUE, LIKE inhz INCLUDING INDEXE...
+                                               ^
 INSERT INTO inhg (xx, yy, x) VALUES ('test', 5, 10);
+ERROR:  relation "inhg" does not exist
+LINE 1: INSERT INTO inhg (xx, yy, x) VALUES ('test', 5, 10);
+                    ^
 INSERT INTO inhg (xx, yy, x) VALUES ('test', 10, 15);
+ERROR:  relation "inhg" does not exist
+LINE 1: INSERT INTO inhg (xx, yy, x) VALUES ('test', 10, 15);
+                    ^
 INSERT INTO inhg (xx, yy, x) VALUES ('foo', 10, 15); -- should fail
-ERROR:  duplicate key value violates unique constraint "inhg_x_key"
-DETAIL:  Key (x)=(15) already exists.
+ERROR:  relation "inhg" does not exist
+LINE 1: INSERT INTO inhg (xx, yy, x) VALUES ('foo', 10, 15);
+                    ^
 DROP TABLE inhg;
+ERROR:  table "inhg" does not exist
 DROP TABLE inhz;
+ERROR:  table "inhz" does not exist
 -- Test changing the type of inherited columns
 insert into d values('test','one','two','three');
 alter table a alter column aa type integer using bit_length(aa);
@@ -1571,28 +1258,12 @@ SELECT description FROM pg_description, pg_constraint c WHERE classoid = 'pg_con
 (1 row)
 
 CREATE TABLE t_all (LIKE t1 INCLUDING ALL);
-NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "t_all_pkey" for table "t_all"
+ERROR:  Cannot locally enforce a unique index on round robin distributed table.
 \d+ t_all
-                Table "public.t_all"
- Column | Type | Modifiers | Storage  | Description 
---------+------+-----------+----------+-------------
- a      | text | not null  | main     | A
- b      | text |           | extended | B
-Indexes:
-    "t_all_pkey" PRIMARY KEY, btree (a)
-    "t_all_b_idx" btree (b)
-    "t_all_expr_idx" btree ((a || b))
-Check constraints:
-    "t1_a_check" CHECK (length(a) > 2)
-Has OIDs: no
-
 SELECT c.relname, objsubid, description FROM pg_description, pg_index i, pg_class c WHERE classoid = 'pg_class'::regclass AND objoid = i.indexrelid AND c.oid = i.indexrelid AND i.indrelid = 't_all'::regclass ORDER BY c.relname, objsubid;
-   relname   | objsubid | description 
--------------+----------+-------------
- t_all_b_idx |        0 | index b_key
- t_all_pkey  |        0 | index pkey
-(2 rows)
-
+ERROR:  relation "t_all" does not exist
+LINE 1: ...exrelid AND c.oid = i.indexrelid AND i.indrelid = 't_all'::r...
+                                                             ^
 CREATE TABLE inh_error1 () INHERITS (t1, t4);
 NOTICE:  merging multiple inherited definitions of column "a"
 ERROR:  inherited column "a" has a storage parameter conflict
@@ -1601,65 +1272,81 @@ CREATE TABLE inh_error2 (LIKE t4 INCLUDING STORAGE) INHERITS (t1);
 NOTICE:  merging column "a" with inherited definition
 ERROR:  column "a" has a storage parameter conflict
 DETAIL:  MAIN versus EXTENDED
-DROP TABLE t1, t2, t3, t4, t12_storage, t12_comments, t1_inh, t13_inh, t13_like, t_all;
+DROP TABLE t1;
+ERROR:  cannot drop table t1 because other objects depend on it
+DETAIL:  table t1_inh depends on table t1
+table t13_inh depends on table t1
+table t13_like depends on table t1
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+DROP TABLE t2;
+DROP TABLE t3;
+ERROR:  cannot drop table t3 because other objects depend on it
+DETAIL:  table t13_inh depends on table t3
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+DROP TABLE t4;
+DROP TABLE t12_storage;
+DROP TABLE t12_comments;
+DROP TABLE t1_inh;
+DROP TABLE t13_inh;
+DROP TABLE t13_like;
+DROP TABLE t_all;
+ERROR:  table "t_all" does not exist
 -- Test for renaming in simple multiple inheritance
 CREATE TABLE t1 (a int, b int);
+ERROR:  relation "t1" already exists
 CREATE TABLE s1 (b int, c int);
 CREATE TABLE ts (d int) INHERITS (t1, s1);
 NOTICE:  merging multiple inherited definitions of column "b"
+ERROR:  inherited column "b" has a type conflict
+DETAIL:  text versus integer
 ALTER TABLE t1 RENAME a TO aa;
 ALTER TABLE t1 RENAME b TO bb;                -- to be failed
-ERROR:  cannot rename inherited column "b"
 ALTER TABLE ts RENAME aa TO aaa;      -- to be failed
-ERROR:  cannot rename inherited column "aa"
+ERROR:  relation "ts" does not exist
 ALTER TABLE ts RENAME d TO dd;
+ERROR:  relation "ts" does not exist
 \d+ ts
-                  Table "public.ts"
- Column |  Type   | Modifiers | Storage | Description 
---------+---------+-----------+---------+-------------
- aa     | integer |           | plain   | 
- b      | integer |           | plain   | 
- c      | integer |           | plain   | 
- dd     | integer |           | plain   | 
-Inherits: t1,
-          s1
-Has OIDs: no
-
 DROP TABLE ts;
+ERROR:  table "ts" does not exist
 -- Test for renaming in diamond inheritance
 CREATE TABLE t2 (x int) INHERITS (t1);
 CREATE TABLE t3 (y int) INHERITS (t1);
+ERROR:  relation "t3" already exists
 CREATE TABLE t4 (z int) INHERITS (t2, t3);
-NOTICE:  merging multiple inherited definitions of column "aa"
-NOTICE:  merging multiple inherited definitions of column "b"
 ALTER TABLE t1 RENAME aa TO aaa;
 \d+ t4
-                  Table "public.t4"
- Column |  Type   | Modifiers | Storage | Description 
---------+---------+-----------+---------+-------------
- aaa    | integer |           | plain   | 
- b      | integer |           | plain   | 
- x      | integer |           | plain   | 
- y      | integer |           | plain   | 
- z      | integer |           | plain   | 
+                   Table "public.t4"
+ Column |  Type   | Modifiers | Storage  | Description 
+--------+---------+-----------+----------+-------------
+ aaa    | text    | not null  | main     | 
+ bb     | text    |           | extended | 
+ x      | integer |           | plain    | 
+ a      | text    |           | main     | 
+ c      | text    |           | external | 
+ z      | integer |           | plain    | 
+Check constraints:
+    "t1_a_check" CHECK (length(aaa) > 2)
+    "t3_a_check" CHECK (length(a) < 5)
 Inherits: t2,
           t3
 Has OIDs: no
 
 CREATE TABLE ts (d int) INHERITS (t2, s1);
-NOTICE:  merging multiple inherited definitions of column "b"
 ALTER TABLE t1 RENAME aaa TO aaaa;
 ALTER TABLE t1 RENAME b TO bb;                -- to be failed
-ERROR:  cannot rename inherited column "b"
+ERROR:  column "b" does not exist
 \d+ ts
-                  Table "public.ts"
- Column |  Type   | Modifiers | Storage | Description 
---------+---------+-----------+---------+-------------
- aaaa   | integer |           | plain   | 
- b      | integer |           | plain   | 
- x      | integer |           | plain   | 
- c      | integer |           | plain   | 
- d      | integer |           | plain   | 
+                   Table "public.ts"
+ Column |  Type   | Modifiers | Storage  | Description 
+--------+---------+-----------+----------+-------------
+ aaaa   | text    | not null  | main     | 
+ bb     | text    |           | extended | 
+ x      | integer |           | plain    | 
+ b      | integer |           | plain    | 
+ c      | integer |           | plain    | 
+ d      | integer |           | plain    | 
+Check constraints:
+    "t1_a_check" CHECK (length(aaaa) > 2)
 Inherits: t2,
           s1
 Has OIDs: no
@@ -1677,25 +1364,24 @@ SELECT a.attrelid::regclass, a.attname, a.attinhcount, e.expected
  attrelid | attname | attinhcount | expected 
 ----------+---------+-------------+----------
  t2       | aaaa    |           1 |        1
- t2       | b       |           1 |        1
- t3       | aaaa    |           1 |        1
- t3       | b       |           1 |        1
- t4       | aaaa    |           2 |        2
- t4       | b       |           2 |        2
- t4       | x       |           1 |        2
- t4       | y       |           1 |        2
+ t2       | bb      |           1 |        1
+ t4       | aaaa    |           1 |        1
+ t4       | bb      |           1 |        1
+ t4       | x       |           1 |        1
+ t4       | a       |           1 |        1
+ t4       | c       |           1 |        1
  ts       | aaaa    |           1 |        1
- ts       | b       |           2 |        1
+ ts       | bb      |           1 |        1
  ts       | x       |           1 |        1
+ ts       | b       |           1 |        1
  ts       | c       |           1 |        1
 (12 rows)
 
 DROP TABLE t1, s1 CASCADE;
-NOTICE:  drop cascades to 4 other objects
+NOTICE:  drop cascades to 3 other objects
 DETAIL:  drop cascades to table t2
-drop cascades to table ts
-drop cascades to table t3
 drop cascades to table t4
+drop cascades to table ts
 --
 -- Test merge-append plans for inheritance trees
 --
@@ -1722,28 +1408,32 @@ insert into matest2 (name) values ('Test 4');
 insert into matest3 (name) values ('Test 5');
 insert into matest3 (name) values ('Test 6');
 set enable_indexscan = off;  -- force use of seqscan/sort, so no merge
-explain (verbose, costs off, nodes off) select * from matest0 order by 1-id;
-                                       QUERY PLAN                                       
-----------------------------------------------------------------------------------------
+explain (verbose, costs off) select * from matest0 order by 1-id;
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
  Sort
    Output: public.matest0.id, public.matest0.name, ((1 - public.matest0.id))
    Sort Key: ((1 - public.matest0.id))
    ->  Result
          Output: public.matest0.id, public.matest0.name, (1 - public.matest0.id)
          ->  Append
-               ->  Data Node Scan on matest0 "_REMOTE_TABLE_QUERY_"
+               ->  Remote Subquery Scan on all (d01)
                      Output: public.matest0.id, public.matest0.name
-                     Remote query: SELECT id, name FROM ONLY matest0 WHERE true
-               ->  Data Node Scan on matest1 "_REMOTE_TABLE_QUERY_"
+                     ->  Seq Scan on public.matest0
+                           Output: public.matest0.id, public.matest0.name
+               ->  Remote Subquery Scan on all (d01)
                      Output: public.matest0.id, public.matest0.name
-                     Remote query: SELECT id, name FROM ONLY matest1 matest0 WHERE true
-               ->  Data Node Scan on matest2 "_REMOTE_TABLE_QUERY_"
+                     ->  Seq Scan on public.matest1 matest0
+                           Output: public.matest0.id, public.matest0.name
+               ->  Remote Subquery Scan on all (d01)
                      Output: public.matest0.id, public.matest0.name
-                     Remote query: SELECT id, name FROM ONLY matest2 matest0 WHERE true
-               ->  Data Node Scan on matest3 "_REMOTE_TABLE_QUERY_"
+                     ->  Seq Scan on public.matest2 matest0
+                           Output: public.matest0.id, public.matest0.name
+               ->  Remote Subquery Scan on all (d01)
                      Output: public.matest0.id, public.matest0.name
-                     Remote query: SELECT id, name FROM ONLY matest3 matest0 WHERE true
-(18 rows)
+                     ->  Seq Scan on public.matest3 matest0
+                           Output: public.matest0.id, public.matest0.name
+(22 rows)
 
 select * from matest0 order by 1-id;
  id |  name  
@@ -1758,28 +1448,33 @@ select * from matest0 order by 1-id;
 
 reset enable_indexscan;
 set enable_seqscan = off;  -- plan with fewest seqscans should be merge
-explain (verbose, costs off, nodes off) select * from matest0 order by 1-id;
-                                       QUERY PLAN                                       
-----------------------------------------------------------------------------------------
- Sort
+explain (verbose, costs off) select * from matest0 order by 1-id;
+                                            QUERY PLAN                                             
+---------------------------------------------------------------------------------------------------
+ Result
    Output: public.matest0.id, public.matest0.name, ((1 - public.matest0.id))
-   Sort Key: ((1 - public.matest0.id))
-   ->  Result
-         Output: public.matest0.id, public.matest0.name, (1 - public.matest0.id)
-         ->  Append
-               ->  Data Node Scan on matest0 "_REMOTE_TABLE_QUERY_"
-                     Output: public.matest0.id, public.matest0.name
-                     Remote query: SELECT id, name FROM ONLY matest0 WHERE true
-               ->  Data Node Scan on matest1 "_REMOTE_TABLE_QUERY_"
-                     Output: public.matest0.id, public.matest0.name
-                     Remote query: SELECT id, name FROM ONLY matest1 matest0 WHERE true
-               ->  Data Node Scan on matest2 "_REMOTE_TABLE_QUERY_"
-                     Output: public.matest0.id, public.matest0.name
-                     Remote query: SELECT id, name FROM ONLY matest2 matest0 WHERE true
-               ->  Data Node Scan on matest3 "_REMOTE_TABLE_QUERY_"
-                     Output: public.matest0.id, public.matest0.name
-                     Remote query: SELECT id, name FROM ONLY matest3 matest0 WHERE true
-(18 rows)
+   ->  Merge Append
+         Sort Key: ((1 - public.matest0.id))
+         ->  Remote Subquery Scan on all (d01)
+               Output: public.matest0.id, public.matest0.name, (1 - public.matest0.id)
+               ->  Index Scan using matest0i on public.matest0
+                     Output: public.matest0.id, public.matest0.name, (1 - public.matest0.id)
+         ->  Remote Subquery Scan on all (d01)
+               Output: public.matest0.id, public.matest0.name, (1 - public.matest0.id)
+               ->  Index Scan using matest1i on public.matest1 matest0
+                     Output: public.matest0.id, public.matest0.name, (1 - public.matest0.id)
+         ->  Sort
+               Output: public.matest0.id, public.matest0.name, ((1 - public.matest0.id))
+               Sort Key: ((1 - public.matest0.id))
+               ->  Remote Subquery Scan on all (d01)
+                     Output: public.matest0.id, public.matest0.name, (1 - public.matest0.id)
+                     ->  Seq Scan on public.matest2 matest0
+                           Output: public.matest0.id, public.matest0.name, (1 - public.matest0.id)
+         ->  Remote Subquery Scan on all (d01)
+               Output: public.matest0.id, public.matest0.name, (1 - public.matest0.id)
+               ->  Index Scan using matest3i on public.matest3 matest0
+                     Output: public.matest0.id, public.matest0.name, (1 - public.matest0.id)
+(23 rows)
 
 select * from matest0 order by 1-id;
  id |  name  

@@ -80,8 +80,6 @@ INSERT INTO POINT_TBL(f1) VALUES (NULL);
 
 CREATE INDEX gpointind ON point_tbl USING gist (f1);
 
-SET enforce_two_phase_commit TO off;
-
 CREATE TEMP TABLE gpolygon_tbl AS
     SELECT polygon(home_base) AS f1 FROM slow_emp4000;
 INSERT INTO gpolygon_tbl VALUES ( '(1000,0,0,1000)' );
@@ -107,7 +105,6 @@ SELECT * FROM fast_emp4000
 SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
 
 SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
-
 SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
     ORDER BY (poly_center(f1))[0];
 
@@ -148,91 +145,91 @@ SET enable_seqscan = OFF;
 SET enable_indexscan = ON;
 SET enable_bitmapscan = ON;
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+--EXPLAIN (COSTS OFF)
+--SELECT * FROM fast_emp4000
+--    WHERE home_base @ '(200,200),(2000,1000)'::box
+--    ORDER BY (home_base[0])[0];
 SELECT * FROM fast_emp4000
     WHERE home_base @ '(200,200),(2000,1000)'::box
     ORDER BY (home_base[0])[0];
-SELECT * FROM fast_emp4000
-    WHERE home_base @ '(200,200),(2000,1000)'::box
-    ORDER BY (home_base[0])[0];
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
-SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
+--EXPLAIN (COSTS OFF)
+--SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
 SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
-SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
+--EXPLAIN (COSTS OFF)
+--SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
 SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
-SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
-    ORDER BY (poly_center(f1))[0];
+--EXPLAIN (COSTS OFF)
+--SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
+--    ORDER BY (poly_center(f1))[0];
 SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
     ORDER BY (poly_center(f1))[0];
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
-SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
-    ORDER BY area(f1);
+--EXPLAIN (COSTS OFF)
+--SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
+--    ORDER BY area(f1);
 SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
     ORDER BY area(f1);
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,0)'::polygon;
 SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,0)'::polygon;
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500>'::circle;
 SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500>'::circle;
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100)';
 SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100)';
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> f1;
 SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> f1;
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0,100),(100,100),(50,50),(100,0),(0,0)';
 SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0,100),(100,100),(50,50),(100,0),(0,0)';
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),50>';
 SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),50>';
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
 SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
 SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
 SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
 SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
 SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT * FROM point_tbl ORDER BY f1 <-> '0,1';
 SELECT * FROM point_tbl ORDER BY f1 <-> '0,1';
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT * FROM point_tbl WHERE f1 IS NULL;
 SELECT * FROM point_tbl WHERE f1 IS NULL;
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT * FROM point_tbl WHERE f1 IS NOT NULL ORDER BY f1 <-> '0,1';
 SELECT * FROM point_tbl WHERE f1 IS NOT NULL ORDER BY f1 <-> '0,1';
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
 
@@ -240,7 +237,7 @@ SET enable_seqscan = OFF;
 SET enable_indexscan = OFF;
 SET enable_bitmapscan = ON;
 
-EXPLAIN (num_nodes off, nodes off, verbose on, COSTS OFF)
+EXPLAIN (COSTS OFF, NODES OFF)
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
 
@@ -260,7 +257,7 @@ SET enable_bitmapscan = ON;
 
 CREATE INDEX intarrayidx ON array_index_op_test USING gin (i);
 
-explain (num_nodes off, nodes off, verbose on, COSTS OFF)
+explain (nodes off, costs off)
 SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
 
 SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
@@ -282,7 +279,7 @@ SELECT * FROM array_op_test WHERE i <@ '{NULL}' ORDER BY seqno;
 
 CREATE INDEX textarrayidx ON array_index_op_test USING gin (t);
 
-explain (num_nodes off, nodes off, verbose on, COSTS OFF)
+explain (nodes off, costs off)
 SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908}' ORDER BY seqno;
 
 SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908}' ORDER BY seqno;
@@ -453,8 +450,6 @@ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
-SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
-SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
 
 DROP INDEX onek_nulltest;
 
@@ -464,8 +459,6 @@ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
-SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
-SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
 
 DROP INDEX onek_nulltest;
 
@@ -475,8 +468,6 @@ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
-SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
-SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
 
 DROP INDEX onek_nulltest;
 
@@ -486,8 +477,6 @@ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
-SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
-SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
 
 RESET enable_seqscan;
 RESET enable_indexscan;
