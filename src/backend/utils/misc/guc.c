@@ -6181,6 +6181,12 @@ set_config_option(const char *name, const char *value,
 
 		initStringInfo(&poolcmd);
 
+		/*
+		 * Save new parameter value with the node manager.
+		 * XXX here we may check: if value equals to configuration default
+		 * just reset parameter instead. Minus one table entry, shorter SET
+		 * command sent downn... Sounds like optimization.
+		 */
 		if (action == GUC_ACTION_LOCAL)
 		{
 			if (IsTransactionBlock())
@@ -6194,22 +6200,30 @@ set_config_option(const char *name, const char *value,
 			appendStringInfo(&poolcmd, "SET %s TO %s", name,
 					(value ? value : "DEFAULT"));
 		}
+
 		/*
-		 * If transaction is not active we assume the node connections are not
-		 * held, would not even try to send parameter down.
+		 * Send new value down to remote nodes if any is connected
+		 * XXX here we are creatig a node and invoke a function that is trying
+		 * to send some. That introduces some overhead, which may seem to be
+		 * significant if application sets a bunch of parameters before doing
+		 * anything useful - waste work for for each set statement.
+		 * We may want to avoid that, by resetting the remote parameters and
+		 * flagging that parameters needs to be updated before sending down next
+		 * statement.
+		 * On the other hand if session runs with a number of customized
+		 * parameters and switching one, that would cause all values are resent.
+		 * So let's go with "send immediately" approach: parameters are not set
+		 * too often to care about overhead here.
 		 */
-		if (IsTransactionBlock())
-		{
-			step = makeNode(RemoteQuery);
-			step->combine_type = COMBINE_TYPE_SAME;
-			step->exec_nodes = NULL;
-			step->sql_statement = poolcmd.data;
-			step->force_autocommit = false;
-			step->exec_type = EXEC_ON_CURRENT;
-			ExecRemoteUtility(step);
-			pfree(step);
-			pfree(poolcmd.data);
-		}
+		step = makeNode(RemoteQuery);
+		step->combine_type = COMBINE_TYPE_SAME;
+		step->exec_nodes = NULL;
+		step->sql_statement = poolcmd.data;
+		step->force_autocommit = false;
+		step->exec_type = EXEC_ON_CURRENT;
+		ExecRemoteUtility(step);
+		pfree(step);
+		pfree(poolcmd.data);
 	}
 #endif
 
@@ -6531,6 +6545,11 @@ ExecSetVariableStmt(VariableSetStmt *stmt)
 			{
 				ListCell   *head;
 
+#ifdef XCP
+				/* SET TRANSACTION assumes "local" */
+				stmt->is_local = true;
+#endif
+
 				foreach(head, stmt->args)
 				{
 					DefElem    *item = (DefElem *) lfirst(head);
@@ -6552,6 +6571,11 @@ ExecSetVariableStmt(VariableSetStmt *stmt)
 			else if (strcmp(stmt->name, "SESSION CHARACTERISTICS") == 0)
 			{
 				ListCell   *head;
+
+#ifdef XCP
+				/* SET SESSION CHARACTERISTICS assumes "session" */
+				stmt->is_local = false;
+#endif
 
 				foreach(head, stmt->args)
 				{

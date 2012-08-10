@@ -2587,18 +2587,6 @@ PGXCNodeSetParam(bool local, const char *name, const char *value)
 {
 	HTAB 		   *table;
 
-	/*
-	 * Special cases:
-	 */
-
-	/* Transaction isolation is set by default CREATE TRANSACTION statement */
-	if (local && strcmp(name, "transaction_isolation") == 0)
-		return;
-
-	/* Same for transaction_read_only */
-	if (local && strcmp(name, "transaction_read_only") == 0)
-		return;
-
 	/* Get the target hash table and invalidate command string */
 	if (local)
 	{
