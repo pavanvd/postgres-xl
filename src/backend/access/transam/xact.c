@@ -2609,31 +2609,14 @@ PrepareTransaction(void)
 	Assert(s->parent == NULL);
 
 #ifdef PGXC
-#ifdef XCP
-	if (IS_PGXC_DATANODE || !IsConnFromCoord())
-#else
+#ifndef XCP
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-#endif
 	{
-#ifdef XCP
-		char		*nodestring;
-		if (saveNodeString)
-			pfree(saveNodeString);
-
-		/* Needed in PrePrepare_Remote to submit nodes to GTM */
-		s->topGlobalTransansactionId = s->transactionId;
-#endif
 		if (savePrepareGID)
 			pfree(savePrepareGID);
 		savePrepareGID = MemoryContextStrdup(TopMemoryContext, prepareGID);
 		nodestring = PrePrepare_Remote(savePrepareGID, XactWriteLocalNode, isImplicit);
-#ifdef XCP
-		if (nodestring)
-			saveNodeString = MemoryContextStrdup(TopMemoryContext, nodestring);
-#endif
-#ifndef XCP
 		s->topGlobalTransansactionId = s->transactionId;
-#endif
 
 		/*
 		 * Callback on GTM if necessary, this needs to be done before HOLD_INTERRUPTS
@@ -2641,6 +2624,7 @@ PrepareTransaction(void)
 		 */
 		CallGTMCallbacks(GTM_EVENT_PREPARE);
 	}
+#endif
 #endif
 
 	/*
@@ -2664,6 +2648,35 @@ PrepareTransaction(void)
 		if (!PreCommit_Portals(true))
 			break;
 	}
+
+#ifdef XCP
+	/*
+	 * Remote nodes must be done AFTER portals. If portal is still active it may
+	 * need to send down a message to close remote objects on Datanode, but
+	 * PrePrepare_Remote releases connections to remote nodes.
+	 */
+	if (IS_PGXC_DATANODE || !IsConnFromCoord())
+	{
+		char		*nodestring;
+		if (saveNodeString)
+			pfree(saveNodeString);
+
+		/* Needed in PrePrepare_Remote to submit nodes to GTM */
+		s->topGlobalTransansactionId = s->transactionId;
+		if (savePrepareGID)
+			pfree(savePrepareGID);
+		savePrepareGID = MemoryContextStrdup(TopMemoryContext, prepareGID);
+		nodestring = PrePrepare_Remote(savePrepareGID, XactWriteLocalNode, isImplicit);
+		if (nodestring)
+			saveNodeString = MemoryContextStrdup(TopMemoryContext, nodestring);
+
+		/*
+		 * Callback on GTM if necessary, this needs to be done before HOLD_INTERRUPTS
+		 * as this is not a part of the end of transaction processing involving clean up.
+		 */
+		CallGTMCallbacks(GTM_EVENT_PREPARE);
+	}
+#endif
 
 	/*
 	 * The remaining actions cannot call any user-defined code, so it's safe
