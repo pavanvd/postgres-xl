@@ -3808,7 +3808,18 @@ GetCommandLogLevel(Node *parsetree)
 			lev = LOGSTMT_DDL;
 			break;
 #endif
-
+#ifdef XCP
+		case T_AlterNodeStmt:
+		case T_CreateNodeStmt:
+		case T_DropNodeStmt:
+		case T_CreateGroupStmt:
+		case T_DropGroupStmt:
+			lev = LOGSTMT_DDL;
+			break;
+		case T_ExecDirectStmt:
+			lev = LOGSTMT_ALL;
+			break;
+#endif
 		default:
 			elog(WARNING, "unrecognized node type: %d",
 				 (int) nodeTag(parsetree));
