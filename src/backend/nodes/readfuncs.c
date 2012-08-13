@@ -3092,6 +3092,7 @@ _readRemoteStmt(void)
 	else
 		local_node->remoteparams = NULL;
 
+	READ_NODE_FIELD(rowMarks);
 	READ_CHAR_FIELD(distributionType);
 	READ_INT_FIELD(distributionKey);
 	READ_NODE_FIELD(distributionNodes);

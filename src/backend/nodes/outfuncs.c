@@ -1380,6 +1380,7 @@ _outRemoteStmt(StringInfo str, RemoteStmt *node)
 		else
 			appendStringInfo(str, " %u", rparam->paramtype);
 	}
+	WRITE_NODE_FIELD(rowMarks);
 	WRITE_CHAR_FIELD(distributionType);
 	WRITE_INT_FIELD(distributionKey);
 	WRITE_NODE_FIELD(distributionNodes);

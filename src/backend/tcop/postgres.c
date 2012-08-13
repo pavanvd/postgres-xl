@@ -1724,7 +1724,7 @@ exec_plan_message(const char *query_string,	/* source of the query */
 	stmt->intoClause = NULL;
 	stmt->subplans = rstmt->subplans;
 	stmt->rewindPlanIDs = NULL;
-	stmt->rowMarks = NIL;
+	stmt->rowMarks = rstmt->rowMarks;
 	stmt->relationOids = NIL;
 	stmt->invalItems = NIL;
 	stmt->nParamExec = rstmt->nParamExec;

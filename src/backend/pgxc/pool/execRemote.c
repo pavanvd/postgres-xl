@@ -8077,6 +8077,7 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 		}
 		else
 			rstmt.remoteparams = NULL;
+		rstmt.rowMarks = estate->es_plannedstmt->rowMarks;
 		rstmt.distributionKey = node->distributionKey;
 		rstmt.distributionType = node->distributionType;
 		rstmt.distributionNodes = node->distributionNodes;

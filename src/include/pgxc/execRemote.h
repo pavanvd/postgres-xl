@@ -251,6 +251,8 @@ typedef struct RemoteStmt
 
 	RemoteParam *remoteparams;  /* parameter descriptors */
 
+	List	   *rowMarks;
+
 	char		distributionType;
 
 	AttrNumber	distributionKey;
