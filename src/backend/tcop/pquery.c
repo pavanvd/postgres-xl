@@ -606,7 +606,16 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 							consMap[i] = SQ_CONS_NONE;
 						i++;
 					}
-
+					/*
+					 * Multiple executions of the RemoteSubplan may lead to name
+					 * conflict of SharedQueue, if the subplan has more
+					 * RemoteSubplan nodes in the execution plan tree.
+					 * We need to make them unique.
+					 */
+					queryDesc->plannedstmt->planTree = (Plan *)
+							RemoteSubplanMakeUnique(
+									(Node *) queryDesc->plannedstmt->planTree,
+									selfid);
 					/*
 					 * Call ExecutorStart to prepare the plan for execution
 					 */

@@ -7561,6 +7561,80 @@ ExecEndRemoteQuery(RemoteQueryState *node)
  * Routines to support RemoteSubplan plan node
  *
  **********************************************/
+Node *
+RemoteSubplanMakeUnique(Node *plan, int unique)
+{
+	if (plan == NULL)
+		return NULL;
+
+	if (IsA(plan, List))
+	{
+		List *newlist = NIL;
+		ListCell *lc;
+		foreach(lc, (List *) plan)
+		{
+			newlist = lappend(newlist, RemoteSubplanMakeUnique(lfirst(lc),
+															   unique));
+		}
+		return (Node *) newlist;
+	}
+
+	/*
+	 * Transform SharedQueue name
+	 */
+	if (IsA(plan, RemoteSubplan))
+	{
+		RemoteSubplan *subplan = (RemoteSubplan *) plan;
+		StringInfoData strinfo;
+
+		initStringInfo(&strinfo);
+		appendStringInfo(&strinfo, "%s_%d", subplan->cursor, unique);
+		subplan->cursor = strinfo.data;
+	}
+	/* Otherwise it is a Plan descendant */
+	((Plan *) plan)->initPlan = (List *)
+			RemoteSubplanMakeUnique((Node *) ((Plan *) plan)->initPlan,
+									unique);
+	((Plan *) plan)->lefttree = (Plan *)
+			RemoteSubplanMakeUnique((Node *) ((Plan *) plan)->lefttree,
+									unique);
+	((Plan *) plan)->righttree = (Plan *)
+			RemoteSubplanMakeUnique((Node *) ((Plan *) plan)->righttree,
+									unique);
+	/* Tranform special cases */
+	switch (nodeTag(plan))
+	{
+		case T_Append:
+			((Append *) plan)->appendplans = (List *)
+					RemoteSubplanMakeUnique(
+							(Node *) ((Append *) plan)->appendplans, unique);
+			break;
+		case T_MergeAppend:
+			((MergeAppend *) plan)->mergeplans = (List *)
+					RemoteSubplanMakeUnique(
+							(Node *) ((MergeAppend *) plan)->mergeplans, unique);
+			break;
+		case T_BitmapAnd:
+			((BitmapAnd *) plan)->bitmapplans = (List *)
+					RemoteSubplanMakeUnique(
+							(Node *) ((BitmapAnd *) plan)->bitmapplans, unique);
+			break;
+		case T_BitmapOr:
+			((BitmapOr *) plan)->bitmapplans = (List *)
+					RemoteSubplanMakeUnique(
+							(Node *) ((BitmapOr *) plan)->bitmapplans, unique);
+			break;
+		case T_SubqueryScan:
+			((SubqueryScan *) plan)->subplan = (Plan *)
+					RemoteSubplanMakeUnique(
+							(Node *) ((SubqueryScan *) plan)->subplan, unique);
+			break;
+		default:
+			break;
+	}
+	return plan;
+}
+
 struct find_params_context
 {
 	RemoteParam *rparams;
@@ -7915,7 +7989,7 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 	}
 
 	/*
-	 * If we are going to execute subplan locally or doing explain in itialize
+	 * If we are going to execute subplan locally or doing explain initialize
 	 * the subplan. Otherwise have remote node doing that.
 	 */
 	if (remotestate->local_exec || (eflags & EXEC_FLAG_EXPLAIN_ONLY))
@@ -7956,6 +8030,24 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 		ParamListInfo ext_params;
 		/* Encode plan if we are going to execute it on other nodes */
 		rstmt.type = T_RemoteStmt;
+		if (node->distributionType == LOCATOR_TYPE_NONE && IS_PGXC_DATANODE)
+		{
+			/*
+			 * There are cases when planner can not determine distribution of a
+			 * subplan, in particular it does not determine distribution of
+			 * subquery nodes. Such subplans executed from current location
+			 * (node) and combine all results, like from coordinator nodes.
+			 * However, if there are multiple locations where distributed
+			 * executor is running this node, and there are more of
+			 * RemoteSubplan plan nodes in the subtree there will be a problem -
+			 * Instances of the inner RemoteSubplan nodes will be using the same
+			 * SharedQueue, causing error. To avoid this problem we should
+			 * traverse the subtree and change SharedQueue name to make it
+			 * unique.
+			 */
+			outerPlan(node) = (Plan *)
+					RemoteSubplanMakeUnique((Node *) outerPlan(node), PGXCNodeId);
+		}
 		rstmt.planTree = outerPlan(node);
 		/*
 		 * If datanode launch further execution of a command it should tell

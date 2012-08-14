@@ -305,6 +305,7 @@ extern RemoteQueryState *ExecInitRemoteQuery(RemoteQuery *node, EState *estate, 
 extern TupleTableSlot* ExecRemoteQuery(RemoteQueryState *step);
 extern void ExecEndRemoteQuery(RemoteQueryState *step);
 #ifdef XCP
+extern Node *RemoteSubplanMakeUnique(Node *plan, int unique);
 extern RemoteSubplanState *ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags);
 extern void ExecFinishInitRemoteSubplan(RemoteSubplanState *node);
 extern TupleTableSlot* ExecRemoteSubplan(RemoteSubplanState *node);
