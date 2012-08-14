@@ -6186,7 +6186,7 @@ set_config_option(const char *name, const char *value,
 		 * SET transaction_isolation TO read committed;
 		 * XXX generic solution?
 		 */
-		if (strcmp("transaction_isolation", name) == 0)
+		if (value && strcmp("transaction_isolation", name) == 0)
 			value = quote_identifier(value);
 
 		/*
