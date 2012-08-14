@@ -2657,6 +2657,8 @@ pgxc_node_remote_cleanup_all(void)
 	PGXCNodeHandle *new_connections[handles->co_conn_count + handles->dn_conn_count];
 	int				new_conn_count = 0;
 	int				i;
+	char		   *resetcmd = "RESET ALL;RESET SESSION AUTHORIZATION;"
+							   "RESET transaction_isolation;";
 
 	/*
 	 * We must handle reader and writer connections both since even a read-only
@@ -2683,7 +2685,7 @@ pgxc_node_remote_cleanup_all(void)
 		 * We must go ahead and release connections anyway, so do not throw
 		 * an error if we have a problem here.
 		 */
-		if (pgxc_node_send_query(handle, "RESET ALL;RESET SESSION AUTHORIZATION;"))
+		if (pgxc_node_send_query(handle, resetcmd))
 		{
 			ereport(WARNING,
 					(errcode(ERRCODE_INTERNAL_ERROR),
@@ -2708,7 +2710,7 @@ pgxc_node_remote_cleanup_all(void)
 		 * We must go ahead and release connections anyway, so do not throw
 		 * an error if we have a problem here.
 		 */
-		if (pgxc_node_send_query(handle, "RESET ALL;RESET SESSION AUTHORIZATION;"))
+		if (pgxc_node_send_query(handle, resetcmd))
 		{
 			ereport(WARNING,
 					(errcode(ERRCODE_INTERNAL_ERROR),

@@ -6182,6 +6182,14 @@ set_config_option(const char *name, const char *value,
 		initStringInfo(&poolcmd);
 
 		/*
+		 * We are getting parse error when sending down
+		 * SET transaction_isolation TO read committed;
+		 * XXX generic solution?
+		 */
+		if (strcmp("transaction_isolation", name) == 0)
+			value = quote_identifier(value);
+
+		/*
 		 * Save new parameter value with the node manager.
 		 * XXX here we may check: if value equals to configuration default
 		 * just reset parameter instead. Minus one table entry, shorter SET
