@@ -168,6 +168,10 @@ CommitTranGTM(GlobalTransactionId gxid)
 	if (!GlobalTransactionIdIsValid(gxid))
 		return 0;
 	CheckConnection();
+#ifdef XCP
+	ret = -1;
+	if (conn)
+#endif
 	ret = commit_transaction(conn, gxid);
 
 	/*
@@ -180,7 +184,8 @@ CommitTranGTM(GlobalTransactionId gxid)
 		CloseGTM();
 		InitGTM();
 #ifdef XCP
-		ret = commit_transaction(conn, gxid);
+		if (conn)
+			ret = commit_transaction(conn, gxid);
 #endif
 	}
 
@@ -203,6 +208,10 @@ CommitPreparedTranGTM(GlobalTransactionId gxid, GlobalTransactionId prepared_gxi
 	if (!GlobalTransactionIdIsValid(gxid) || !GlobalTransactionIdIsValid(prepared_gxid))
 		return ret;
 	CheckConnection();
+#ifdef XCP
+	ret = -1;
+	if (conn)
+#endif
 	ret = commit_prepared_transaction(conn, gxid, prepared_gxid);
 
 	/*
@@ -216,7 +225,8 @@ CommitPreparedTranGTM(GlobalTransactionId gxid, GlobalTransactionId prepared_gxi
 		CloseGTM();
 		InitGTM();
 #ifdef XCP
-		ret = commit_prepared_transaction(conn, gxid, prepared_gxid);
+		if (conn)
+			ret = commit_prepared_transaction(conn, gxid, prepared_gxid);
 #endif
 	}
 	return ret;
@@ -262,6 +272,10 @@ StartPreparedTranGTM(GlobalTransactionId gxid,
 		return 0;
 	CheckConnection();
 
+#ifdef XCP
+	ret = -1;
+	if (conn)
+#endif
 	ret = start_prepared_transaction(conn, gxid, gid, nodestring);
 
 	/*
@@ -274,7 +288,8 @@ StartPreparedTranGTM(GlobalTransactionId gxid,
 		CloseGTM();
 		InitGTM();
 #ifdef XCP
-		ret = start_prepared_transaction(conn, gxid, gid, nodestring);
+		if (conn)
+			ret = start_prepared_transaction(conn, gxid, gid, nodestring);
 #endif
 	}
 
@@ -289,6 +304,10 @@ PrepareTranGTM(GlobalTransactionId gxid)
 	if (!GlobalTransactionIdIsValid(gxid))
 		return 0;
 	CheckConnection();
+#ifdef XCP
+	ret = -1;
+	if (conn)
+#endif
 	ret = prepare_transaction(conn, gxid);
 
 	/*
@@ -301,7 +320,8 @@ PrepareTranGTM(GlobalTransactionId gxid)
 		CloseGTM();
 		InitGTM();
 #ifdef XCP
-		ret = prepare_transaction(conn, gxid);
+		if (conn)
+			ret = prepare_transaction(conn, gxid);
 #endif
 	}
 	return ret;
@@ -317,6 +337,10 @@ GetGIDDataGTM(char *gid,
 	int ret = 0;
 
 	CheckConnection();
+#ifdef XCP
+	ret = -1;
+	if (conn)
+#endif
 	ret = get_gid_data(conn, GTM_ISOLATION_RC, gid, gxid,
 					   prepared_gxid, nodestring);
 
@@ -330,8 +354,9 @@ GetGIDDataGTM(char *gid,
 		CloseGTM();
 		InitGTM();
 #ifdef XCP
-		ret = get_gid_data(conn, GTM_ISOLATION_RC, gid, gxid,
-						   prepared_gxid, nodestring);
+		if (conn)
+			ret = get_gid_data(conn, GTM_ISOLATION_RC, gid, gxid,
+							   prepared_gxid, nodestring);
 #endif
 	}
 
