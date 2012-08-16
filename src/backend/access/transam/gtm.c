@@ -1,8 +1,8 @@
 /*-------------------------------------------------------------------------
  *
  * gtm.c
- * 
- *	  Module interfacing with GTM 
+ *
+ *	  Module interfacing with GTM
  *
  *
  *-------------------------------------------------------------------------
@@ -123,7 +123,7 @@ BeginTranGTM(GTM_Timestamp *timestamp)
 	if (conn)
 		xid =  begin_transaction(conn, GTM_ISOLATION_RC, timestamp);
 
-	/* If something went wrong (timeout), try and reset GTM connection 
+	/* If something went wrong (timeout), try and reset GTM connection
 	 * and retry. This is safe at the beginning of a transaction.
 	 */
 	if (!TransactionIdIsValid(xid))
@@ -171,7 +171,7 @@ CommitTranGTM(GlobalTransactionId gxid)
 	ret = commit_transaction(conn, gxid);
 
 	/*
-	 * If something went wrong (timeout), try and reset GTM connection. 
+	 * If something went wrong (timeout), try and reset GTM connection.
 	 * We will close the transaction locally anyway, and closing GTM will force
 	 * it to be closed on GTM.
 	 */
@@ -179,6 +179,9 @@ CommitTranGTM(GlobalTransactionId gxid)
 	{
 		CloseGTM();
 		InitGTM();
+#ifdef XCP
+		ret = commit_transaction(conn, gxid);
+#endif
 	}
 
 	/* Close connection in case commit is done by autovacuum worker or launcher */
@@ -212,6 +215,9 @@ CommitPreparedTranGTM(GlobalTransactionId gxid, GlobalTransactionId prepared_gxi
 	{
 		CloseGTM();
 		InitGTM();
+#ifdef XCP
+		ret = commit_prepared_transaction(conn, gxid, prepared_gxid);
+#endif
 	}
 	return ret;
 }
@@ -229,7 +235,7 @@ RollbackTranGTM(GlobalTransactionId gxid)
 		ret = abort_transaction(conn, gxid);
 
 	/*
-	 * If something went wrong (timeout), try and reset GTM connection. 
+	 * If something went wrong (timeout), try and reset GTM connection.
 	 * We will abort the transaction locally anyway, and closing GTM will force
 	 * it to end on GTM.
 	 */
@@ -237,6 +243,10 @@ RollbackTranGTM(GlobalTransactionId gxid)
 	{
 		CloseGTM();
 		InitGTM();
+#ifdef XCP
+		if (conn)
+			ret = abort_transaction(conn, gxid);
+#endif
 	}
 	return ret;
 }
@@ -263,6 +273,9 @@ StartPreparedTranGTM(GlobalTransactionId gxid,
 	{
 		CloseGTM();
 		InitGTM();
+#ifdef XCP
+		ret = start_prepared_transaction(conn, gxid, gid, nodestring);
+#endif
 	}
 
 	return ret;
@@ -279,7 +292,7 @@ PrepareTranGTM(GlobalTransactionId gxid)
 	ret = prepare_transaction(conn, gxid);
 
 	/*
-	 * If something went wrong (timeout), try and reset GTM connection. 
+	 * If something went wrong (timeout), try and reset GTM connection.
 	 * We will close the transaction locally anyway, and closing GTM will force
 	 * it to be closed on GTM.
 	 */
@@ -287,6 +300,9 @@ PrepareTranGTM(GlobalTransactionId gxid)
 	{
 		CloseGTM();
 		InitGTM();
+#ifdef XCP
+		ret = prepare_transaction(conn, gxid);
+#endif
 	}
 	return ret;
 }
@@ -313,6 +329,10 @@ GetGIDDataGTM(char *gid,
 	{
 		CloseGTM();
 		InitGTM();
+#ifdef XCP
+		ret = get_gid_data(conn, GTM_ISOLATION_RC, gid, gxid,
+						   prepared_gxid, nodestring);
+#endif
 	}
 
 	return ret;
@@ -329,6 +349,10 @@ GetSnapshotGTM(GlobalTransactionId gxid, bool canbe_grouped)
 	{
 		CloseGTM();
 		InitGTM();
+#ifdef XCP
+		if (conn)
+			ret_snapshot = get_snapshot(conn, gxid, canbe_grouped);
+#endif
 	}
 	return ret_snapshot;
 }
@@ -383,6 +407,10 @@ GetCurrentValGTM(char *seqname)
 	{
 		CloseGTM();
 		InitGTM();
+#ifdef XCP
+		if (conn)
+			ret = get_current(conn, &seqkey);
+#endif
 	}
 	return ret;
 }
@@ -405,6 +433,10 @@ GetNextValGTM(char *seqname)
 	{
 		CloseGTM();
 		InitGTM();
+#ifdef XCP
+		if (conn)
+			ret = get_next(conn, &seqkey);
+#endif
 	}
 	return ret;
 }
