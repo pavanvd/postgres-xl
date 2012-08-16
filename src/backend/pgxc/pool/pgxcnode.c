@@ -2606,7 +2606,6 @@ PGXCNodeSetParam(bool local, const char *name, const char *value)
 	{
 		HASHCTL hinfo;
 		int		hflags;
-		MemoryContext tablecxt, oldcontext;
 
 		/* do not bother creating hash table if we about to reset non-existing
 		 * parameter */
@@ -2621,48 +2620,23 @@ PGXCNodeSetParam(bool local, const char *name, const char *value)
 		hinfo.entrysize = sizeof(ParamEntry);
 		hflags |= HASH_ELEM;
 
-		/*
-		 * Create own context for the table. Session table should be available
-		 * all the session lifetime, local table is only valid within current
-		 * transaction
-		 */
-		tablecxt = AllocSetContextCreate(
-				local ? TopTransactionContext : TopMemoryContext,
-				"Parameter Data Context",
-				ALLOCSET_DEFAULT_MINSIZE,
-				ALLOCSET_DEFAULT_INITSIZE,
-				ALLOCSET_DEFAULT_MAXSIZE);
-		oldcontext = MemoryContextSwitchTo(tablecxt);
-
-		hinfo.hcxt = tablecxt;
-		hflags |= HASH_CONTEXT;
-
 		if (local)
 		{
+			/* Local parameters are not valid beyond transaction boundaries */
+			hinfo.hcxt = TopTransactionContext;
+			hflags |= HASH_CONTEXT;
 			table = hash_create("Remote local params", 16, &hinfo, hflags);
 			local_param_htab = table;
-			local_params = makeStringInfo();
 		}
 		else
 		{
+			/*
+			 * Session parameters needs to be in TopMemoryContext, hash table
+			 * is created in TopMemoryContext by default.
+			 */
 			table = hash_create("Remote session params", 16, &hinfo, hflags);
 			session_param_htab = table;
-			/*
-			 * If buffer exists while hash table does not that mean the buffer
-			 * contains only the SET command for global_session parameter.
-			 * That buffer is in TopMemoryContext, and we should now free it and
-			 * recreate in the same context as the hash table to avoid memory
-			 * leakage.
-			 */
-			if (session_params)
-			{
-				pfree(session_params->data);
-				pfree(session_params);
-			}
-			session_params = makeStringInfo();
 		}
-
-		MemoryContextSwitchTo(oldcontext);
 	}
 
 	if (value)
@@ -2698,23 +2672,22 @@ PGXCNodeResetParams(bool only_local)
 {
 	if (!only_local && session_param_htab)
 	{
+		/* need to explicitly pfree session stuff, it is in TopMemoryContext */
 		hash_destroy(session_param_htab);
 		session_param_htab = NULL;
-		/*
-		 * the buffer is in the same memory context as the buffer and was
-		 * already deleted.
-		 */
-		session_params = NULL;
+		if (session_params)
+		{
+			pfree(session_params->data);
+			pfree(session_params);
+			session_params = NULL;
+		}
 	}
-	if (local_param_htab)
-	{
-		/*
-		 * no need to explicitly destroy the local_param_htab and local_params,
-		 * it will gone with the transaction memory context.
-		 */
-		local_param_htab = NULL;
-		local_params = NULL;
-	}
+	/*
+	 * no need to explicitly destroy the local_param_htab and local_params,
+	 * it will gone with the transaction memory context.
+	 */
+	local_param_htab = NULL;
+	local_params = NULL;
 }
 
 
@@ -2786,9 +2759,17 @@ PGXCNodeGetTransactionParamStr(void)
 		return NULL;
 
 	/*
-	 * If the paramstr invalid build it up. Once there is something in the
-	 * hash table the buffer is not NULL, it is initialized if something is
-	 * inserted to the hash table.
+	 * If the paramstr invalid build it up.
+	 */
+	if (local_params == NULL)
+	{
+		MemoryContext oldcontext = MemoryContextSwitchTo(TopTransactionContext);
+		local_params = makeStringInfo();
+		MemoryContextSwitchTo(oldcontext);
+	}
+	/*
+	 * If parameter string exists it is valid, it is truncated when parameters
+	 * are modified.
 	 */
 	if (local_params->len == 0)
 	{
