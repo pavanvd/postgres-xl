@@ -2178,6 +2178,7 @@ CopyFrom(CopyState cstate)
 					ereport(ERROR,
 							(errcode(ERRCODE_CONNECTION_EXCEPTION),
 							 errmsg("Copy failed on a data node")));
+			processed++;
 #else
 			Form_pg_attribute  *attr = tupDesc->attrs;
 			Datum	dist_col_value;
@@ -2278,7 +2279,7 @@ CopyFrom(CopyState cstate)
 
 #ifdef XCP
 	/*
-	 * Now if line buffer contains some date that is an EOF marker. We should
+	 * Now if line buffer contains some data that is an EOF marker. We should
 	 * send it to all the participating datanodes
 	 */
 	if (cstate->line_buf.len > 0)
