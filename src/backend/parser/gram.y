@@ -528,7 +528,7 @@ static void processCASbits(int cas_bits, int location, const char *constrType,
 	DATA_P DATABASE DAY_P DEALLOCATE DEC DECIMAL_P DECLARE DEFAULT DEFAULTS
 	DEFERRABLE DEFERRED DEFINER DELETE_P DELIMITER DELIMITERS DESC
 /* PGXC_BEGIN */
-	DICTIONARY DIRECT DISABLE_P DISCARD DISTINCT DISTRIBUTE DO DOCUMENT_P DOMAIN_P DOUBLE_P 
+	DICTIONARY DIRECT DISABLE_P DISCARD DISTINCT DISTRIBUTE DO DOCUMENT_P DOMAIN_P DOUBLE_P
 /* PGXC_END */
 	DROP
 
@@ -904,6 +904,11 @@ AlterOptRoleElem:
 			| USER name_list
 				{
 					$$ = makeDefElem("rolemembers", (Node *)$2);
+				}
+		/*	PostgresXC defines REPLICATION keyword */
+			| REPLICATION
+				{
+					$$ = makeDefElem("isreplication", (Node *)makeInteger(TRUE));
 				}
 			| IDENT
 				{
@@ -2455,7 +2460,7 @@ copy_generic_opt_arg_list_item:
  *****************************************************************************/
 
 CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
-			OptInherit OptWith OnCommitOption OptTableSpace 
+			OptInherit OptWith OnCommitOption OptTableSpace
 /* PGXC_BEGIN */
 			OptDistributeBy OptSubCluster
 /* PGXC_END */
@@ -3201,7 +3206,7 @@ CreateAsStmt:
 		;
 
 create_as_target:
-			qualified_name OptCreateAs OptWith OnCommitOption OptTableSpace 
+			qualified_name OptCreateAs OptWith OnCommitOption OptTableSpace
 /* PGXC_BEGIN */
 			OptDistributeBy OptSubCluster
 /* PGXC_END */
