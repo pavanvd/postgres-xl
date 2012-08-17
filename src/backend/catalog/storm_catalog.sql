@@ -30,7 +30,8 @@ CREATE VIEW storm_catalog.pg_database AS
            datistemplate, datallowconn, datconnlimit, datlastsysoid,
            datfrozenxid, dattablespace, datacl
       FROM pg_catalog.pg_database
-     WHERE datname = current_database();
+	 WHERE datdba = (SELECT usesysid from pg_catalog.pg_user where usename = current_user)
+	   OR 1 = (SELECT 1 from pg_catalog.pg_user where usename = current_user AND usesuper);
 
 GRANT SELECT on storm_catalog.pg_database TO PUBLIC;
 
