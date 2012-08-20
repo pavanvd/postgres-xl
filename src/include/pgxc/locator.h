@@ -105,29 +105,9 @@ typedef enum
 						 * is ignored */
 } LocatorListType;
 
-typedef struct _Locator Locator;
-struct _Locator
-{
-	/*
-	 * Determine target nodes for value.
-	 * Resulting nodes are stored to the results array.
-	 * Function returns number of node references written to the array.
-	 */
-	int			(*locatefunc) (Locator *self, Datum value, bool isnull,
-								bool *hasprimary);
-	Oid			dataType; 		/* values of that type are passed to locateNodes function */
-	LocatorListType listType;
-	bool		primary;
-	/* locator-specific data */
-	/* XXX: move them into union ? */
-	int			roundRobinNode; /* for LOCATOR_TYPE_RROBIN */
-	Datum		(*hashfunc) (PG_FUNCTION_ARGS); /* for LOCATOR_TYPE_HASH */
-	int 		valuelen; /* 1, 2 or 4 for LOCATOR_TYPE_MODULO */
+typedef Datum (*LocatorHashFunc) (PG_FUNCTION_ARGS);
 
-	int			nodeCount; /* How many nodes are in the map */
-	void	   *nodeMap; /* map index to node reference according to listType */
-	void	   *results; /* array to output results */
-};
+typedef struct _Locator Locator;
 
 
 /*
@@ -157,11 +137,10 @@ extern Locator *createLocator(char locatorType, RelationAccessType accessType,
 			  void *nodeList, void **result, bool primary);
 extern void freeLocator(Locator *locator);
 
-#define GET_NODES(locator, value, isnull, hasprimary) \
-	(*(locator)->locatefunc) (locator, value, isnull, hasprimary)
-#define getLocatorResults(locator) (locator)->results
-#define getLocatorNodeMap(locator) (locator)->nodeMap
-#define getLocatorNodeCount(locator) (locator)->nodeCount
+extern int GET_NODES(Locator *self, Datum value, bool isnull, bool *hasprimary);
+extern void *getLocatorResults(Locator *self);
+extern void *getLocatorNodeMap(Locator *self);
+extern int getLocatorNodeCount(Locator *self);
 #endif
 
 /* Extern variables related to locations */

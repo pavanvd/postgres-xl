@@ -44,6 +44,7 @@
 #include "utils/elog.h"
 #include "utils/memutils.h"
 #include "utils/fmgroids.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/lsyscache.h"
 #include "utils/formatting.h"
@@ -1906,14 +1907,7 @@ pgxc_node_send_snapshot(PGXCNodeHandle *handle, Snapshot snapshot)
 	memcpy(handle->outBuffer + handle->outEnd, &nval, 4);
 	handle->outEnd += 4;
 
-#ifdef XCP
-	if (GlobalTransactionIdIsValid(snapshot->recent_global_xmin))
-		nval = htonl(snapshot->recent_global_xmin);
-	else
-		nval = htonl(RecentGlobalXmin);
-#else
-	nval = htonl(snapshot->recent_global_xmin);
-#endif
+	nval = htonl(RecentGlobalXmin);
 	memcpy(handle->outBuffer + handle->outEnd, &nval, 4);
 	handle->outEnd += 4;
 

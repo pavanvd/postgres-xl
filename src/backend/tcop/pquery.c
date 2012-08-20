@@ -3,7 +3,7 @@
  * pquery.c
  *	  POSTGRES process query command code
  *
- * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,7 +17,6 @@
 
 #include "access/xact.h"
 #include "commands/prepare.h"
-#include "commands/trigger.h"
 #include "executor/tstoreReceiver.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
@@ -33,7 +32,6 @@
 #include "access/relscan.h"
 #endif
 #include "tcop/pquery.h"
-#include "tcop/tcopprot.h"
 #include "tcop/utility.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
@@ -277,8 +275,7 @@ ChoosePortalStrategy(List *stmts)
 			if (query->canSetTag)
 			{
 				if (query->commandType == CMD_SELECT &&
-					query->utilityStmt == NULL &&
-					query->intoClause == NULL)
+					query->utilityStmt == NULL)
 				{
 					if (query->hasModifyingCTE)
 						return PORTAL_ONE_MOD_WITH;
@@ -293,6 +290,41 @@ ChoosePortalStrategy(List *stmts)
 					/* it can't be ONE_RETURNING, so give up */
 					return PORTAL_MULTI_QUERY;
 				}
+#ifdef PGXC
+				/*
+				 * This is possible with an EXECUTE DIRECT in a SPI.
+				 * PGXCTODO: there might be a better way to manage the
+				 * cases with EXECUTE DIRECT here like using a special
+				 * utility command and redirect it to a correct portal
+				 * strategy.
+				 * Something like PORTAL_UTIL_SELECT might be far better.
+				 */
+				if (query->commandType == CMD_SELECT &&
+					query->utilityStmt != NULL &&
+					IsA(query->utilityStmt, RemoteQuery))
+				{
+					RemoteQuery *step = (RemoteQuery *) stmt;
+					/*
+					 * Let's choose PORTAL_ONE_SELECT for now
+					 * After adding more PGXC functionality we may have more
+					 * sophisticated algorithm of determining portal strategy
+					 *
+					 * EXECUTE DIRECT is a utility but depending on its inner query
+					 * it can return tuples or not depending on the query used.
+					 */
+					if (step->exec_direct_type == EXEC_DIRECT_SELECT
+						|| step->exec_direct_type == EXEC_DIRECT_UPDATE
+						|| step->exec_direct_type == EXEC_DIRECT_DELETE
+						|| step->exec_direct_type == EXEC_DIRECT_INSERT
+						|| step->exec_direct_type == EXEC_DIRECT_LOCAL)
+						return PORTAL_ONE_SELECT;
+					else if (step->exec_direct_type == EXEC_DIRECT_UTILITY
+							 || step->exec_direct_type == EXEC_DIRECT_LOCAL_UTILITY)
+						return PORTAL_MULTI_QUERY;
+					else
+						return PORTAL_ONE_SELECT;
+				}
+#endif
 			}
 		}
 #ifdef PGXC
@@ -302,7 +334,7 @@ ChoosePortalStrategy(List *stmts)
 			/*
 			 * Let's choose PORTAL_ONE_SELECT for now
 			 * After adding more PGXC functionality we may have more
-			 * sophisticated algorithm of determining portal strategy
+			 * sophisticated algorithm of determining portal strategy.
 			 *
 			 * EXECUTE DIRECT is a utility but depending on its inner query
 			 * it can return tuples or not depending on the query used.
@@ -332,8 +364,7 @@ ChoosePortalStrategy(List *stmts)
 			if (pstmt->canSetTag)
 			{
 				if (pstmt->commandType == CMD_SELECT &&
-					pstmt->utilityStmt == NULL &&
-					pstmt->intoClause == NULL)
+					pstmt->utilityStmt == NULL)
 				{
 					if (pstmt->hasModifyingCTE)
 						return PORTAL_ONE_MOD_WITH;
@@ -442,8 +473,7 @@ FetchStatementTargetList(Node *stmt)
 		else
 		{
 			if (query->commandType == CMD_SELECT &&
-				query->utilityStmt == NULL &&
-				query->intoClause == NULL)
+				query->utilityStmt == NULL)
 				return query->targetList;
 			if (query->returningList)
 				return query->returningList;
@@ -455,8 +485,7 @@ FetchStatementTargetList(Node *stmt)
 		PlannedStmt *pstmt = (PlannedStmt *) stmt;
 
 		if (pstmt->commandType == CMD_SELECT &&
-			pstmt->utilityStmt == NULL &&
-			pstmt->intoClause == NULL)
+			pstmt->utilityStmt == NULL)
 			return pstmt->planTree->targetlist;
 		if (pstmt->hasReturning)
 			return pstmt->planTree->targetlist;
@@ -477,7 +506,6 @@ FetchStatementTargetList(Node *stmt)
 		ExecuteStmt *estmt = (ExecuteStmt *) stmt;
 		PreparedStatement *entry;
 
-		Assert(!estmt->into);
 		entry = FetchPreparedStatement(estmt->name, true);
 		return FetchPreparedStatementTargetList(entry);
 	}
@@ -489,27 +517,39 @@ FetchStatementTargetList(Node *stmt)
  *		Prepare a portal for execution.
  *
  * Caller must already have created the portal, done PortalDefineQuery(),
- * and adjusted portal options if needed.  If parameters are needed by
- * the query, they must be passed in here (caller is responsible for
- * giving them appropriate lifetime).
+ * and adjusted portal options if needed.
  *
- * The caller can optionally pass a snapshot to be used; pass InvalidSnapshot
- * for the normal behavior of setting a new snapshot.  This parameter is
- * presently ignored for non-PORTAL_ONE_SELECT portals (it's only intended
- * to be used for cursors).
+ * If parameters are needed by the query, they must be passed in "params"
+ * (caller is responsible for giving them appropriate lifetime).
+ *
+ * The caller can also provide an initial set of "eflags" to be passed to
+ * ExecutorStart (but note these can be modified internally, and they are
+ * currently only honored for PORTAL_ONE_SELECT portals).  Most callers
+ * should simply pass zero.
+ *
+ * The use_active_snapshot parameter is currently used only for
+ * PORTAL_ONE_SELECT portals.  If it is true, the active snapshot will
+ * be used when starting up the executor; if false, a new snapshot will
+ * be taken.  This is used both for cursors and to avoid taking an entirely
+ * new snapshot when it isn't necessary.
  *
  * On return, portal is ready to accept PortalRun() calls, and the result
  * tupdesc (if any) is known.
  */
 void
-PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
+PortalStart(Portal portal, ParamListInfo params,
+			int eflags, bool use_active_snapshot)
 {
 	Portal		saveActivePortal;
 	ResourceOwner saveResourceOwner;
 	MemoryContext savePortalContext;
 	MemoryContext oldContext;
+#ifdef XCP
+	QueryDesc  *queryDesc = NULL;
+#else
 	QueryDesc  *queryDesc;
-	int			eflags;
+#endif
+	int			myeflags;
 
 	AssertArg(PortalIsValid(portal));
 	AssertState(portal->status == PORTAL_DEFINED);
@@ -546,8 +586,8 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 				/* No special ability is needed */
 				eflags = 0;
 				/* Must set snapshot before starting executor. */
-				if (snapshot)
-					PushActiveSnapshot(snapshot);
+				if (use_active_snapshot)
+					PushActiveSnapshot(GetActiveSnapshot());
 				else
 					PushActiveSnapshot(GetTransactionSnapshot());
 
@@ -726,8 +766,8 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 			case PORTAL_ONE_SELECT:
 
 				/* Must set snapshot before starting executor. */
-				if (snapshot)
-					PushActiveSnapshot(snapshot);
+				if (use_active_snapshot)
+					PushActiveSnapshot(GetActiveSnapshot());
 				else
 					PushActiveSnapshot(GetTransactionSnapshot());
 
@@ -745,17 +785,18 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 
 				/*
 				 * If it's a scrollable cursor, executor needs to support
-				 * REWIND and backwards scan.
+				 * REWIND and backwards scan, as well as whatever the caller
+				 * might've asked for.
 				 */
 				if (portal->cursorOptions & CURSOR_OPT_SCROLL)
-					eflags = EXEC_FLAG_REWIND | EXEC_FLAG_BACKWARD;
+					myeflags = eflags | EXEC_FLAG_REWIND | EXEC_FLAG_BACKWARD;
 				else
-					eflags = 0; /* default run-to-completion flags */
+					myeflags = eflags;
 
 				/*
 				 * Call ExecutorStart to prepare the plan for execution
 				 */
-				ExecutorStart(queryDesc, eflags);
+				ExecutorStart(queryDesc, myeflags);
 
 				/*
 				 * This tells PortalCleanup to shut down the executor
@@ -835,7 +876,7 @@ PortalStart(Portal portal, ParamListInfo params, Snapshot snapshot)
 	PG_CATCH();
 	{
 		/* Uncaught error while executing portal: mark it dead */
-		portal->status = PORTAL_FAILED;
+		MarkPortalFailed(portal);
 
 #ifdef XCP
 		if (queryDesc && queryDesc->squeue)
@@ -1208,7 +1249,7 @@ PortalRun(Portal portal, long count, bool isTopLevel,
 	PG_CATCH();
 	{
 		/* Uncaught error while executing portal: mark it dead */
-		portal->status = PORTAL_FAILED;
+		MarkPortalFailed(portal);
 
 		/* Restore global vars and propagate error */
 		if (saveMemoryContext == saveTopTransactionContext)
@@ -1881,7 +1922,7 @@ PortalRunFetch(Portal portal,
 	PG_CATCH();
 	{
 		/* Uncaught error while executing portal: mark it dead */
-		portal->status = PORTAL_FAILED;
+		MarkPortalFailed(portal);
 
 		/* Restore global vars and propagate error */
 		ActivePortal = saveActivePortal;

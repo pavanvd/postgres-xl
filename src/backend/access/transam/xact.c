@@ -5,7 +5,7 @@
  *
  * See src/backend/access/transam/README for more information.
  *
- * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
@@ -53,21 +53,18 @@
 #include "pgstat.h"
 #include "replication/walsender.h"
 #include "replication/syncrep.h"
-#include "storage/bufmgr.h"
-#include "storage/fd.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "storage/smgr.h"
-#include "storage/standby.h"
 #include "utils/combocid.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
-#include "utils/relcache.h"
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 #include "pg_trace.h"
 
 
@@ -138,7 +135,8 @@ typedef enum TBlockState
 	/* subtransaction states */
 	TBLOCK_SUBBEGIN,			/* starting a subtransaction */
 	TBLOCK_SUBINPROGRESS,		/* live subtransaction */
-	TBLOCK_SUBEND,				/* RELEASE received */
+	TBLOCK_SUBRELEASE,			/* RELEASE received */
+	TBLOCK_SUBCOMMIT,			/* COMMIT received while TBLOCK_SUBINPROGRESS */
 	TBLOCK_SUBABORT,			/* failed subxact, awaiting ROLLBACK */
 	TBLOCK_SUBABORT_END,		/* failed subxact, ROLLBACK received */
 	TBLOCK_SUBABORT_PENDING,	/* live subxact, ROLLBACK received */
@@ -495,6 +493,33 @@ TransactionId
 GetCurrentTransactionIdIfAny(void)
 {
 	return CurrentTransactionState->transactionId;
+}
+
+/*
+ *	GetStableLatestTransactionId
+ *
+ * Get the transaction's XID if it has one, else read the next-to-be-assigned
+ * XID.  Once we have a value, return that same value for the remainder of the
+ * current transaction.  This is meant to provide the reference point for the
+ * age(xid) function, but might be useful for other maintenance tasks as well.
+ */
+TransactionId
+GetStableLatestTransactionId(void)
+{
+	static LocalTransactionId lxid = InvalidLocalTransactionId;
+	static TransactionId stablexid = InvalidTransactionId;
+
+	if (lxid != MyProc->lxid)
+	{
+		lxid = MyProc->lxid;
+		stablexid = GetTopTransactionIdIfAny();
+		if (!TransactionIdIsValid(stablexid))
+			stablexid = ReadNewTransactionId();
+	}
+
+	Assert(TransactionIdIsValid(stablexid));
+
+	return stablexid;
 }
 
 #ifdef PGXC
@@ -1264,7 +1289,7 @@ RecordTransactionCommit(void)
 		 * bit fuzzy, but it doesn't matter.
 		 */
 		START_CRIT_SECTION();
-		MyProc->inCommit = true;
+		MyPgXact->inCommit = true;
 
 		SetCurrentTransactionStopTimestamp();
 
@@ -1276,6 +1301,7 @@ RecordTransactionCommit(void)
 			XLogRecData rdata[4];
 			int			lastrdata = 0;
 			xl_xact_commit xlrec;
+
 			/*
 			 * Set flags required for recovery processing of commits.
 			 */
@@ -1335,7 +1361,8 @@ RecordTransactionCommit(void)
 		{
 			XLogRecData rdata[2];
 			int			lastrdata = 0;
-			xl_xact_commit_compact	xlrec;
+			xl_xact_commit_compact xlrec;
+
 			xlrec.xact_time = xactStopTimestamp;
 			xlrec.nsubxacts = nchildren;
 			rdata[0].data = (char *) (&xlrec);
@@ -1443,7 +1470,7 @@ RecordTransactionCommit(void)
 	 */
 	if (markXidCommitted)
 	{
-		MyProc->inCommit = false;
+		MyPgXact->inCommit = false;
 		END_CRIT_SECTION();
 	}
 
@@ -1456,7 +1483,8 @@ RecordTransactionCommit(void)
 	 * Note that at this stage we have marked clog, but still show as running
 	 * in the procarray and continue to hold locks.
 	 */
-	SyncRepWaitForLSN(XactLastRecEnd);
+	if (wrote_xlog)
+		SyncRepWaitForLSN(XactLastRecEnd);
 
 	/* Reset XactLastRecEnd until the next transaction writes something */
 	XactLastRecEnd.xrecoff = 0;
@@ -2000,6 +2028,10 @@ StartTransaction(void)
 	{
 		s->startedInRecovery = false;
 		XactReadOnly = DefaultXactReadOnly;
+#ifdef PGXC
+		/* Save Postgres-XC session as read-only if necessary */
+		XactReadOnly |= IsPGXCNodeXactReadOnly();
+#endif
 	}
 	XactDeferrable = DefaultXactDeferrable;
 #ifdef PGXC
@@ -2406,9 +2438,6 @@ CommitTransaction(void)
 	/* Clean up the relation cache */
 	AtEOXact_RelationCache(true);
 
-	/* Clean up the snapshot manager */
-	AtEarlyCommit_Snapshot();
-
 	/*
 	 * Make catalog changes visible to all backends.  This has to happen after
 	 * relcache references are dropped (see comments for
@@ -2594,7 +2623,7 @@ PrepareTransaction(void)
 #ifdef PGXC
 	bool		isImplicit = !(s->blockState == TBLOCK_PREPARE);
 #ifndef XCP
-	char		*nodestring;
+	char		*nodestring = NULL;
 #endif
 #endif
 
@@ -2726,6 +2755,16 @@ PrepareTransaction(void)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot PREPARE a transaction that has operated on temporary tables")));
 
+	/*
+	 * Likewise, don't allow PREPARE after pg_export_snapshot.  This could be
+	 * supported if we added cleanup logic to twophase.c, but for now it
+	 * doesn't seem worth the trouble.
+	 */
+	if (XactHasExportedSnapshots())
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+		errmsg("cannot PREPARE a transaction that has exported snapshots")));
+
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
 
@@ -2814,9 +2853,6 @@ PrepareTransaction(void)
 
 	/* Clean up the relation cache */
 	AtEOXact_RelationCache(true);
-
-	/* Clean up the snapshot manager */
-	AtEarlyCommit_Snapshot();
 
 	/* notify doesn't need a postprepare call */
 
@@ -2987,7 +3023,7 @@ AbortTransaction(void)
 	 * Also clean up any open wait for lock, since the lock manager will choke
 	 * if we try to wait for another lock before doing this.
 	 */
-	LockWaitCancel();
+	LockErrorCleanup();
 
 	/*
 	 * check the current transaction state
@@ -3072,7 +3108,6 @@ AbortTransaction(void)
 		AtEOXact_ComboCid();
 		AtEOXact_HashTables(false);
 		AtEOXact_PgStat(false);
-		AtEOXact_Snapshot(false);
 		pgstat_report_xact_timestamp(0);
 	}
 
@@ -3110,6 +3145,7 @@ CleanupTransaction(void)
 	 * do abort cleanup processing
 	 */
 	AtCleanup_Portals();		/* now safe to release portal memory */
+	AtEOXact_Snapshot(false);	/* and release the transaction's snapshots */
 
 	CurrentResourceOwner = NULL;	/* and resource owner */
 	if (TopTransactionResourceOwner)
@@ -3194,7 +3230,8 @@ StartTransactionCommand(void)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
 		case TBLOCK_ABORT_PENDING:
@@ -3324,17 +3361,37 @@ CommitTransactionCommand(void)
 			break;
 
 			/*
-			 * We were issued a COMMIT or RELEASE command, so we end the
-			 * current subtransaction and return to the parent transaction.
-			 * The parent might be ended too, so repeat till we are all the
-			 * way out or find an INPROGRESS transaction.
+			 * We were issued a RELEASE command, so we end the current
+			 * subtransaction and return to the parent transaction. The parent
+			 * might be ended too, so repeat till we find an INPROGRESS
+			 * transaction or subtransaction.
 			 */
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
 			do
 			{
 				CommitSubTransaction();
 				s = CurrentTransactionState;	/* changed by pop */
-			} while (s->blockState == TBLOCK_SUBEND);
+			} while (s->blockState == TBLOCK_SUBRELEASE);
+
+			Assert(s->blockState == TBLOCK_INPROGRESS ||
+				   s->blockState == TBLOCK_SUBINPROGRESS);
+			break;
+
+			/*
+			 * We were issued a COMMIT, so we end the current subtransaction
+			 * hierarchy and perform final commit. We do this by rolling up
+			 * any subtransactions into their parent, which leads to O(N^2)
+			 * operations with respect to resource owners - this isn't that
+			 * bad until we approach a thousands of savepoints but is
+			 * necessary for correctness should after triggers create new
+			 * resource owners.
+			 */
+		case TBLOCK_SUBCOMMIT:
+			do
+			{
+				CommitSubTransaction();
+				s = CurrentTransactionState;	/* changed by pop */
+			} while (s->blockState == TBLOCK_SUBCOMMIT);
 			/* If we had a COMMIT command, finish off the main xact too */
 			if (s->blockState == TBLOCK_END)
 			{
@@ -3349,10 +3406,8 @@ CommitTransactionCommand(void)
 				s->blockState = TBLOCK_DEFAULT;
 			}
 			else
-			{
-				Assert(s->blockState == TBLOCK_INPROGRESS ||
-					   s->blockState == TBLOCK_SUBINPROGRESS);
-			}
+				elog(ERROR, "CommitTransactionCommand: unexpected state %s",
+					 BlockStateAsString(s->blockState));
 			break;
 
 			/*
@@ -3566,7 +3621,8 @@ AbortCurrentTransaction(void)
 			 * applies if we get a failure while ending a subtransaction.
 			 */
 		case TBLOCK_SUBBEGIN:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_SUBABORT_PENDING:
 		case TBLOCK_SUBRESTART:
 			AbortSubTransaction();
@@ -3928,7 +3984,8 @@ BeginTransactionBlock(void)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
 		case TBLOCK_ABORT_PENDING:
@@ -4054,7 +4111,7 @@ EndTransactionBlock(void)
 			while (s->parent != NULL)
 			{
 				if (s->blockState == TBLOCK_SUBINPROGRESS)
-					s->blockState = TBLOCK_SUBEND;
+					s->blockState = TBLOCK_SUBCOMMIT;
 				else
 					elog(FATAL, "EndTransactionBlock: unexpected state %s",
 						 BlockStateAsString(s->blockState));
@@ -4112,7 +4169,8 @@ EndTransactionBlock(void)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
 		case TBLOCK_ABORT_PENDING:
@@ -4209,7 +4267,8 @@ UserAbortTransactionBlock(void)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
 		case TBLOCK_ABORT_PENDING:
@@ -4259,7 +4318,8 @@ DefineSavepoint(char *name)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_ABORT:
 		case TBLOCK_SUBABORT:
 		case TBLOCK_ABORT_END:
@@ -4315,7 +4375,8 @@ ReleaseSavepoint(List *options)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_ABORT:
 		case TBLOCK_SUBABORT:
 		case TBLOCK_ABORT_END:
@@ -4366,7 +4427,7 @@ ReleaseSavepoint(List *options)
 	for (;;)
 	{
 		Assert(xact->blockState == TBLOCK_SUBINPROGRESS);
-		xact->blockState = TBLOCK_SUBEND;
+		xact->blockState = TBLOCK_SUBRELEASE;
 		if (xact == target)
 			break;
 		xact = xact->parent;
@@ -4415,7 +4476,8 @@ RollbackToSavepoint(List *options)
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_END:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
 		case TBLOCK_ABORT_PENDING:
@@ -4523,7 +4585,8 @@ BeginInternalSubTransaction(char *name)
 		case TBLOCK_DEFAULT:
 		case TBLOCK_BEGIN:
 		case TBLOCK_SUBBEGIN:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_ABORT:
 		case TBLOCK_SUBABORT:
 		case TBLOCK_ABORT_END:
@@ -4589,7 +4652,8 @@ RollbackAndReleaseCurrentSubTransaction(void)
 		case TBLOCK_SUBBEGIN:
 		case TBLOCK_INPROGRESS:
 		case TBLOCK_END:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_ABORT:
 		case TBLOCK_ABORT_END:
 		case TBLOCK_SUBABORT_END:
@@ -4638,7 +4702,24 @@ AbortOutOfAnyTransaction(void)
 		switch (s->blockState)
 		{
 			case TBLOCK_DEFAULT:
-				/* Not in a transaction, do nothing */
+				if (s->state == TRANS_DEFAULT)
+				{
+					/* Not in a transaction, do nothing */
+				}
+				else
+				{
+					/*
+					 * We can get here after an error during transaction start
+					 * (state will be TRANS_START).  Need to clean up the
+					 * incompletely started transaction.  First, adjust the
+					 * low-level state to suppress warning message from
+					 * AbortTransaction.
+					 */
+					if (s->state == TRANS_START)
+						s->state = TRANS_INPROGRESS;
+					AbortTransaction();
+					CleanupTransaction();
+				}
 				break;
 			case TBLOCK_STARTED:
 			case TBLOCK_BEGIN:
@@ -4663,7 +4744,8 @@ AbortOutOfAnyTransaction(void)
 				 */
 			case TBLOCK_SUBBEGIN:
 			case TBLOCK_SUBINPROGRESS:
-			case TBLOCK_SUBEND:
+			case TBLOCK_SUBRELEASE:
+			case TBLOCK_SUBCOMMIT:
 			case TBLOCK_SUBABORT_PENDING:
 			case TBLOCK_SUBRESTART:
 				AbortSubTransaction();
@@ -4735,7 +4817,8 @@ TransactionBlockStatusCode(void)
 		case TBLOCK_INPROGRESS:
 		case TBLOCK_SUBINPROGRESS:
 		case TBLOCK_END:
-		case TBLOCK_SUBEND:
+		case TBLOCK_SUBRELEASE:
+		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_PREPARE:
 			return 'T';			/* in transaction */
 		case TBLOCK_ABORT:
@@ -4868,12 +4951,14 @@ CommitSubTransaction(void)
 
 	/*
 	 * The only lock we actually release here is the subtransaction XID lock.
-	 * The rest just get transferred to the parent resource owner.
 	 */
 	CurrentResourceOwner = s->curTransactionOwner;
 	if (TransactionIdIsValid(s->transactionId))
 		XactLockTableDelete(s->transactionId);
 
+	/*
+	 * Other locks should get transferred to their parent resource owner.
+	 */
 	ResourceOwnerRelease(s->curTransactionOwner,
 						 RESOURCE_RELEASE_LOCKS,
 						 true, false);
@@ -4941,7 +5026,7 @@ AbortSubTransaction(void)
 	AbortBufferIO();
 	UnlockBuffers();
 
-	LockWaitCancel();
+	LockErrorCleanup();
 
 	/*
 	 * check the current transaction state
@@ -5230,8 +5315,10 @@ BlockStateAsString(TBlockState blockState)
 			return "SUB BEGIN";
 		case TBLOCK_SUBINPROGRESS:
 			return "SUB INPROGRS";
-		case TBLOCK_SUBEND:
-			return "SUB END";
+		case TBLOCK_SUBRELEASE:
+			return "SUB RELEASE";
+		case TBLOCK_SUBCOMMIT:
+			return "SUB COMMIT";
 		case TBLOCK_SUBABORT:
 			return "SUB ABORT";
 		case TBLOCK_SUBABORT_END:
@@ -5303,11 +5390,11 @@ xactGetCommittedChildren(TransactionId **ptr)
  */
 static void
 xact_redo_commit_internal(TransactionId xid, XLogRecPtr lsn,
-					TransactionId *sub_xids, int nsubxacts,
-					SharedInvalidationMessage *inval_msgs, int nmsgs,
-					RelFileNode *xnodes, int nrels,
-					Oid dbId, Oid tsId,
-					uint32 xinfo)
+						  TransactionId *sub_xids, int nsubxacts,
+						  SharedInvalidationMessage *inval_msgs, int nmsgs,
+						  RelFileNode *xnodes, int nrels,
+						  Oid dbId, Oid tsId,
+						  uint32 xinfo)
 {
 	TransactionId max_xid;
 	int			i;
@@ -5390,13 +5477,8 @@ xact_redo_commit_internal(TransactionId xid, XLogRecPtr lsn,
 		ForkNumber	fork;
 
 		for (fork = 0; fork <= MAX_FORKNUM; fork++)
-		{
-			if (smgrexists(srel, fork))
-			{
-				XLogDropRelation(xnodes[i], fork);
-				smgrdounlink(srel, fork, true);
-			}
-		}
+			XLogDropRelation(xnodes[i], fork);
+		smgrdounlink(srel, true);
 		smgrclose(srel);
 	}
 
@@ -5416,12 +5498,13 @@ xact_redo_commit_internal(TransactionId xid, XLogRecPtr lsn,
 		XLogFlush(lsn);
 
 }
+
 /*
  * Utility function to call xact_redo_commit_internal after breaking down xlrec
  */
 static void
 xact_redo_commit(xl_xact_commit *xlrec,
-							TransactionId xid, XLogRecPtr lsn)
+				 TransactionId xid, XLogRecPtr lsn)
 {
 	TransactionId *subxacts;
 	SharedInvalidationMessage *inval_msgs;
@@ -5432,11 +5515,11 @@ xact_redo_commit(xl_xact_commit *xlrec,
 	inval_msgs = (SharedInvalidationMessage *) &(subxacts[xlrec->nsubxacts]);
 
 	xact_redo_commit_internal(xid, lsn, subxacts, xlrec->nsubxacts,
-								inval_msgs, xlrec->nmsgs,
-								xlrec->xnodes, xlrec->nrels,
-								xlrec->dbId,
-								xlrec->tsId,
-								xlrec->xinfo);
+							  inval_msgs, xlrec->nmsgs,
+							  xlrec->xnodes, xlrec->nrels,
+							  xlrec->dbId,
+							  xlrec->tsId,
+							  xlrec->xinfo);
 }
 
 /*
@@ -5444,14 +5527,14 @@ xact_redo_commit(xl_xact_commit *xlrec,
  */
 static void
 xact_redo_commit_compact(xl_xact_commit_compact *xlrec,
-							TransactionId xid, XLogRecPtr lsn)
+						 TransactionId xid, XLogRecPtr lsn)
 {
 	xact_redo_commit_internal(xid, lsn, xlrec->subxacts, xlrec->nsubxacts,
-								NULL, 0,		/* inval msgs */
-								NULL, 0,		/* relfilenodes */
-								InvalidOid,		/* dbId */
-								InvalidOid,		/* tsId */
-								0);				/* xinfo */
+							  NULL, 0,	/* inval msgs */
+							  NULL, 0,	/* relfilenodes */
+							  InvalidOid,		/* dbId */
+							  InvalidOid,		/* tsId */
+							  0);		/* xinfo */
 }
 
 /*
@@ -5533,13 +5616,8 @@ xact_redo_abort(xl_xact_abort *xlrec, TransactionId xid)
 		ForkNumber	fork;
 
 		for (fork = 0; fork <= MAX_FORKNUM; fork++)
-		{
-			if (smgrexists(srel, fork))
-			{
-				XLogDropRelation(xlrec->xnodes[i], fork);
-				smgrdounlink(srel, fork, true);
-			}
-		}
+			XLogDropRelation(xlrec->xnodes[i], fork);
+		smgrdounlink(srel, true);
 		smgrclose(srel);
 	}
 }
@@ -5911,5 +5989,48 @@ void
 SetSendCommandId(bool status)
 {
 	sendCommandId = status;
+}
+
+/*
+ * IsPGXCNodeXactReadOnly
+ * Determine if a Postgres-XC node session
+ * is read-only or not.
+ */
+bool
+IsPGXCNodeXactReadOnly(void)
+{
+	/*
+	 * For the time being a Postgres-XC session is read-only
+	 * under very specific conditions.
+	 * This is the case of an application accessing directly
+	 * a Datanode.
+	 */
+	return IsPGXCNodeXactDatanodeDirect();
+}
+
+/*
+ * IsPGXCNodeXactDatanodeDirect
+ * Determine if a Postgres-XC node session
+ * is being accessed directly by an application.
+ */
+bool
+IsPGXCNodeXactDatanodeDirect(void)
+{
+	/*
+	 * For the time being a Postgres-XC session is considered
+	 * as being connected directly under very specific conditions.
+	 *
+	 * IsPostmasterEnvironment - checks for initdb and standalone
+	 * IsNormalProcessingMode() - checks for new connections
+	 * IsAutoVacuumLauncherProcess - checks for autovacuum launcher process
+	 */
+	return IS_PGXC_DATANODE &&
+		   IsPostmasterEnvironment &&
+		   IsNormalProcessingMode() &&
+		   !IsAutoVacuumLauncherProcess() &&
+#ifdef XCP
+		   !IsConnFromDatanode() &&
+#endif
+		   !IsConnFromCoord();
 }
 #endif

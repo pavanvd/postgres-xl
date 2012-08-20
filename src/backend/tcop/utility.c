@@ -5,7 +5,7 @@
  *	  commands.  At one time acted as an interface between the Lisp and C
  *	  systems.
  *
- * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
@@ -30,6 +30,7 @@
 #include "commands/collationcmds.h"
 #include "commands/conversioncmds.h"
 #include "commands/copy.h"
+#include "commands/createas.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/discard.h"
@@ -88,7 +89,8 @@ static RemoteQueryExecType ExecUtilityFindNodes(ObjectType objectType,
 static RemoteQueryExecType ExecUtilityFindNodesRelkind(Oid relid, bool *is_temp);
 static RemoteQueryExecType GetNodesForCommentUtility(CommentStmt *stmt, bool *is_temp);
 static RemoteQueryExecType GetNodesForRulesUtility(RangeVar *relation, bool *is_temp);
-
+static void DropStmtPreTreatment(DropStmt *stmt, const char *queryString, bool sentToRemote,
+								 bool *is_temp, RemoteQueryExecType *exec_type);
 #endif
 
 
@@ -112,10 +114,10 @@ CheckRelationOwnership(RangeVar *rel, bool noCatalogs)
 	 * XXX: This is unsafe in the presence of concurrent DDL, since it is
 	 * called before acquiring any lock on the target relation.  However,
 	 * locking the target relation (especially using something like
-	 * AccessExclusiveLock) before verifying that the user has permissions
-	 * is not appealing either.
+	 * AccessExclusiveLock) before verifying that the user has permissions is
+	 * not appealing either.
 	 */
-	relOid = RangeVarGetRelid(rel, NoLock, false, false);
+	relOid = RangeVarGetRelid(rel, NoLock, false);
 
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relOid));
 	if (!HeapTupleIsValid(tuple))		/* should not happen */
@@ -158,9 +160,7 @@ CommandIsReadOnly(Node *parsetree)
 		switch (stmt->commandType)
 		{
 			case CMD_SELECT:
-				if (stmt->intoClause != NULL)
-					return false;		/* SELECT INTO */
-				else if (stmt->rowMarks != NIL)
+				if (stmt->rowMarks != NIL)
 					return false;		/* SELECT FOR UPDATE/SHARE */
 				else if (stmt->hasModifyingCTE)
 					return false;		/* data-modifying CTE */
@@ -229,22 +229,18 @@ check_xact_readonly(Node *parsetree)
 		case T_CreateSchemaStmt:
 		case T_CreateSeqStmt:
 		case T_CreateStmt:
+		case T_CreateTableAsStmt:
 		case T_CreateTableSpaceStmt:
 		case T_CreateTrigStmt:
 		case T_CompositeTypeStmt:
 		case T_CreateEnumStmt:
+		case T_CreateRangeStmt:
 		case T_AlterEnumStmt:
 		case T_ViewStmt:
-		case T_DropCastStmt:
 		case T_DropStmt:
 		case T_DropdbStmt:
 		case T_DropTableSpaceStmt:
-		case T_RemoveFuncStmt:
 		case T_DropRoleStmt:
-		case T_DropPLangStmt:
-		case T_RemoveOpClassStmt:
-		case T_RemoveOpFamilyStmt:
-		case T_DropPropertyStmt:
 		case T_GrantStmt:
 		case T_GrantRoleStmt:
 		case T_AlterDefaultPrivilegesStmt:
@@ -258,10 +254,8 @@ check_xact_readonly(Node *parsetree)
 		case T_AlterExtensionContentsStmt:
 		case T_CreateFdwStmt:
 		case T_AlterFdwStmt:
-		case T_DropFdwStmt:
 		case T_CreateForeignServerStmt:
 		case T_AlterForeignServerStmt:
-		case T_DropForeignServerStmt:
 		case T_CreateUserMappingStmt:
 		case T_AlterUserMappingStmt:
 		case T_DropUserMappingStmt:
@@ -827,10 +821,6 @@ standard_ProcessUtility(Node *parsetree,
 			AlterForeignDataWrapper((AlterFdwStmt *) parsetree);
 			break;
 
-		case T_DropFdwStmt:
-			RemoveForeignDataWrapper((DropFdwStmt *) parsetree);
-			break;
-
 		case T_CreateForeignServerStmt:
 #ifdef PGXC
 			ereport(ERROR,
@@ -843,10 +833,6 @@ standard_ProcessUtility(Node *parsetree,
 
 		case T_AlterForeignServerStmt:
 			AlterForeignServer((AlterForeignServerStmt *) parsetree);
-			break;
-
-		case T_DropForeignServerStmt:
-			RemoveForeignServer((DropForeignServerStmt *) parsetree);
 			break;
 
 		case T_CreateUserMappingStmt:
@@ -868,149 +854,54 @@ standard_ProcessUtility(Node *parsetree,
 			break;
 
 		case T_DropStmt:
+			switch (((DropStmt *) parsetree)->removeType)
 			{
-				DropStmt   *stmt = (DropStmt *) parsetree;
-#ifdef PGXC
-				bool		is_temp = false;
-				RemoteQueryExecType exec_type = EXEC_ON_ALL_NODES;
+				case OBJECT_INDEX:
+					if (((DropStmt *) parsetree)->concurrent)
+						PreventTransactionChain(isTopLevel,
+												"DROP INDEX CONCURRENTLY");
+					/* fall through */
 
-				/*
-				 * We need to check details of the objects being dropped and
-				 * run command on correct nodes.
-				 * This process has to be done before removing anything on local node
-				 */
-				if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-				{
-					switch (stmt->removeType)
+				case OBJECT_TABLE:
+				case OBJECT_SEQUENCE:
+				case OBJECT_VIEW:
+				case OBJECT_FOREIGN_TABLE:
+#ifdef PGXC
 					{
-						case OBJECT_TABLE:
-						case OBJECT_SEQUENCE:
-						case OBJECT_VIEW:
-						case OBJECT_INDEX:
-							{
-								/*
-								 * Check the list of objects going to be dropped.
-								 * XC does not allow yet to mix drop of temporary and
-								 * non-temporary objects because this involves to rewrite
-								 * query to process for tables.
-								 */
-								ListCell   *cell;
-								bool		is_first = true;
+						bool		is_temp = false;
+						RemoteQueryExecType exec_type = EXEC_ON_ALL_NODES;
 
-								foreach(cell, stmt->objects)
-								{
-									RangeVar   *rel = makeRangeVarFromNameList((List *) lfirst(cell));
-									Oid         relid;
-
-									/*
-									 * Do not print result at all, error is thrown
-									 * after if necessary
-									 */
-									relid = RangeVarGetRelid(rel, NoLock, true, false);
-
-									/*
-									 * In case this relation ID is incorrect throw
-									 * a correct DROP error.
-									 */
-									if (!OidIsValid(relid) && !stmt->missing_ok)
-										DropTableThrowErrorExternal(rel,
-																	stmt->removeType,
-																	stmt->missing_ok);
-
-									/* In case of DROP ... IF EXISTS bypass */
-									if (!OidIsValid(relid) && stmt->missing_ok)
-										continue;
-
-									if (is_first)
-									{
-										exec_type = ExecUtilityFindNodes(stmt->removeType,
-																		 relid,
-																		 &is_temp);
-										is_first = false;
-									}
-									else
-									{
-										RemoteQueryExecType exec_type_loc;
-										bool is_temp_loc;
-										exec_type_loc = ExecUtilityFindNodes(stmt->removeType,
-																			 relid,
-																			 &is_temp_loc);
-										if (exec_type_loc != exec_type ||
-											is_temp_loc != is_temp)
-											ereport(ERROR,
-													(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-													 errmsg("DROP not supported for TEMP and non-TEMP objects"),
-													 errdetail("You should separate TEMP and non-TEMP objects")));
-									}
-								}
-							}
-							break;
-
-						default:
-							is_temp = false;
-							exec_type = EXEC_ON_ALL_NODES;
-							break;
-					}
-				}
+						/* Check restrictions on objects dropped */
+						DropStmtPreTreatment((DropStmt *) parsetree, queryString, sentToRemote,
+											 &is_temp, &exec_type);
 #endif
-				switch (stmt->removeType)
-				{
-					case OBJECT_TABLE:
-					case OBJECT_SEQUENCE:
-					case OBJECT_VIEW:
-					case OBJECT_INDEX:
-					case OBJECT_FOREIGN_TABLE:
-						RemoveRelations(stmt);
-						break;
-
-					case OBJECT_TYPE:
-					case OBJECT_DOMAIN:
-						RemoveTypes(stmt);
-						break;
-
-					case OBJECT_COLLATION:
-						DropCollationsCommand(stmt);
-						break;
-
-					case OBJECT_CONVERSION:
-						DropConversionsCommand(stmt);
-						break;
-
-					case OBJECT_SCHEMA:
-						RemoveSchemas(stmt);
-						break;
-
-					case OBJECT_TSPARSER:
-						RemoveTSParsers(stmt);
-						break;
-
-					case OBJECT_TSDICTIONARY:
-						RemoveTSDictionaries(stmt);
-						break;
-
-					case OBJECT_TSTEMPLATE:
-						RemoveTSTemplates(stmt);
-						break;
-
-					case OBJECT_TSCONFIGURATION:
-						RemoveTSConfigurations(stmt);
-						break;
-
-					case OBJECT_EXTENSION:
-						RemoveExtensions(stmt);
-						break;
-
-					default:
-						elog(ERROR, "unrecognized drop object type: %d",
-							 (int) stmt->removeType);
-						break;
-				}
-
+						RemoveRelations((DropStmt *) parsetree);
 #ifdef PGXC
-				/* DROP is done depending on the object type and its temporary type */
-				if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, exec_type, is_temp);
+						/* DROP is done depending on the object type and its temporary type */
+						if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+							ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false,
+												   exec_type, is_temp);
+					}
 #endif
+					break;
+				default:
+#ifdef PGXC
+					{
+						bool		is_temp = false;
+						RemoteQueryExecType exec_type = EXEC_ON_ALL_NODES;
+
+						/* Check restrictions on objects dropped */
+						DropStmtPreTreatment((DropStmt *) parsetree, queryString, sentToRemote,
+											 &is_temp, &exec_type);
+#endif
+						RemoveObjects((DropStmt *) parsetree);
+#ifdef PGXC
+						if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+							ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false,
+												   exec_type, is_temp);
+					}
+#endif
+					break;
 			}
 			break;
 
@@ -1033,7 +924,7 @@ standard_ProcessUtility(Node *parsetree,
 					Oid relid;
 					RangeVar *rel = (RangeVar *) lfirst(cell);
 
-					relid = RangeVarGetRelid(rel, NoLock, true, false);
+					relid = RangeVarGetRelid(rel, NoLock, false);
 					if (IsTempTable(relid))
 					{
 						is_temp = true;
@@ -1081,7 +972,8 @@ standard_ProcessUtility(Node *parsetree,
 			break;
 
 		case T_ExecuteStmt:
-			ExecuteQuery((ExecuteStmt *) parsetree, queryString, params,
+			ExecuteQuery((ExecuteStmt *) parsetree, NULL,
+						 queryString, params,
 						 dest, completionTag);
 			break;
 
@@ -1101,13 +993,30 @@ standard_ProcessUtility(Node *parsetree,
 				RemoteQueryExecType exec_type;
 				bool is_temp = false;
 
-				/* Relation is not set for a schema */
+				/* Try to use the object relation if possible */
 				if (stmt->relation)
-					exec_type = ExecUtilityFindNodes(stmt->renameType,
-													 RangeVarGetRelid(stmt->relation, NoLock, false, false),
-													 &is_temp);
+				{
+					/*
+					 * When a relation is defined, it is possible that this object does
+					 * not exist but an IF EXISTS clause might be used. So we do not do
+					 * any error check here but block the access to remote nodes to
+					 * this object as it does not exisy
+					 */
+					Oid relid = RangeVarGetRelid(stmt->relation, NoLock, true);
+
+					if (OidIsValid(relid))
+						exec_type = ExecUtilityFindNodes(stmt->renameType,
+														 relid,
+														 &is_temp);
+					else
+						exec_type = EXEC_ON_NONE;
+				}
 				else
-					exec_type = EXEC_ON_ALL_NODES;
+				{
+					exec_type = ExecUtilityFindNodes(stmt->renameType,
+													 InvalidOid,
+													 &is_temp);
+				}
 
 				ExecUtilityStmtOnNodes(queryString,
 									   NULL,
@@ -1128,12 +1037,30 @@ standard_ProcessUtility(Node *parsetree,
 				RemoteQueryExecType exec_type;
 				bool is_temp = false;
 
+				/* Try to use the object relation if possible */
 				if (stmt->relation)
-					exec_type = ExecUtilityFindNodes(stmt->objectType,
-													 RangeVarGetRelid(stmt->relation, NoLock, false, false),
-													 &is_temp);
+				{
+					/*
+					 * When a relation is defined, it is possible that this object does
+					 * not exist but an IF EXISTS clause might be used. So we do not do
+					 * any error check here but block the access to remote nodes to
+					 * this object as it does not exisy
+					 */
+					Oid relid = RangeVarGetRelid(stmt->relation, NoLock, true);
+
+					if (OidIsValid(relid))
+						exec_type = ExecUtilityFindNodes(stmt->objectType,
+														 relid,
+														 &is_temp);
+					else
+						exec_type = EXEC_ON_NONE;
+				}
 				else
-					exec_type = EXEC_ON_ALL_NODES;
+				{
+					exec_type = ExecUtilityFindNodes(stmt->objectType,
+													 InvalidOid,
+													 &is_temp);
+				}
 
 				ExecUtilityStmtOnNodes(queryString,
 									   NULL,
@@ -1157,62 +1084,86 @@ standard_ProcessUtility(Node *parsetree,
 
 		case T_AlterTableStmt:
 			{
-				List	   *stmts;
+				AlterTableStmt *atstmt = (AlterTableStmt *) parsetree;
+				Oid			relid;
+				List	   *stmts = NIL;
 				ListCell   *l;
+				LOCKMODE	lockmode;
 
-				/* Run parse analysis ... */
-				stmts = transformAlterTableStmt((AlterTableStmt *) parsetree,
-												queryString);
-#ifdef PGXC
 				/*
-				 * Add a RemoteQuery node for a query at top level on a remote
-				 * Coordinator, if not already done so
+				 * Figure out lock mode, and acquire lock.	This also does
+				 * basic permissions checks, so that we won't wait for a lock
+				 * on (for example) a relation on which we have no
+				 * permissions.
 				 */
-				if (!sentToRemote)
+				lockmode = AlterTableGetLockLevel(atstmt->cmds);
+				relid = AlterTableLookupRelation(atstmt, lockmode);
+
+				if (OidIsValid(relid))
 				{
-					bool is_temp = false;
-					AlterTableStmt *stmt = (AlterTableStmt *) parsetree;
-					RemoteQueryExecType exec_type;
-					exec_type = ExecUtilityFindNodes(stmt->relkind,
-													 RangeVarGetRelid(stmt->relation, NoLock, false, false),
-													 &is_temp);
+					/* Run parse analysis ... */
+					stmts = transformAlterTableStmt(atstmt, queryString);
+
+#ifdef PGXC
+					/*
+					 * Add a RemoteQuery node for a query at top level on a remote
+					 * Coordinator, if not already done so
+					 */
+					if (!sentToRemote)
+					{
+						bool is_temp = false;
+						RemoteQueryExecType exec_type;
+						Oid relid = RangeVarGetRelid(atstmt->relation,
+													 NoLock, true);
+
+						if (OidIsValid(relid))
+						{
+							exec_type = ExecUtilityFindNodes(atstmt->relkind,
+															 relid,
+															 &is_temp);
 
 #ifdef XCP
-					stmts = AddRemoteQueryNode(stmts, queryString, exec_type);
+							stmts = AddRemoteQueryNode(stmts, queryString, exec_type);
 #else
-					stmts = AddRemoteQueryNode(stmts, queryString, exec_type, is_temp);
+							stmts = AddRemoteQueryNode(stmts, queryString, exec_type, is_temp);
 #endif
-				}
-#endif
-
-				/* ... and do it */
-				foreach(l, stmts)
-				{
-					Node	   *stmt = (Node *) lfirst(l);
-
-					if (IsA(stmt, AlterTableStmt))
-					{
-						/* Do the table alteration proper */
-						AlterTable((AlterTableStmt *) stmt);
+						}
 					}
-					else
+#endif
+
+					/* ... and do it */
+					foreach(l, stmts)
 					{
-						/* Recurse for anything else */
-						ProcessUtility(stmt,
-									   queryString,
-									   params,
-									   false,
-									   None_Receiver,
+						Node	   *stmt = (Node *) lfirst(l);
+
+						if (IsA(stmt, AlterTableStmt))
+						{
+							/* Do the table alteration proper */
+							AlterTable(relid, lockmode, (AlterTableStmt *) stmt);
+						}
+						else
+						{
+							/* Recurse for anything else */
+							ProcessUtility(stmt,
+										   queryString,
+										   params,
+										   false,
+										   None_Receiver,
 #ifdef PGXC
-									   true,
+										   true,
 #endif /* PGXC */
-									   NULL);
-					}
+										   NULL);
+						}
 
-					/* Need CCI between commands */
-					if (lnext(l) != NULL)
-						CommandCounterIncrement();
+						/* Need CCI between commands */
+						if (lnext(l) != NULL)
+							CommandCounterIncrement();
+					}
 				}
+				else
+					ereport(NOTICE,
+						  (errmsg("relation \"%s\" does not exist, skipping",
+								  atstmt->relation->relname)));
 			}
 			break;
 
@@ -1250,7 +1201,8 @@ standard_ProcessUtility(Node *parsetree,
 					case 'X':	/* DROP CONSTRAINT */
 						AlterDomainDropConstraint(stmt->typeName,
 												  stmt->name,
-												  stmt->behavior);
+												  stmt->behavior,
+												  stmt->missing_ok);
 						break;
 					case 'V':	/* VALIDATE CONSTRAINT */
 						AlterDomainValidateConstraint(stmt->typeName,
@@ -1292,7 +1244,11 @@ standard_ProcessUtility(Node *parsetree,
 					foreach (cell, stmt->objects)
 					{
 						RangeVar   *relvar = (RangeVar *) lfirst(cell);
-						Oid			relid = RangeVarGetRelid(relvar, NoLock, false, false);
+						Oid			relid = RangeVarGetRelid(relvar, NoLock, true);
+
+						/* Skip if object does not exist */
+						if (!OidIsValid(relid))
+							continue;
 
 						remoteExecType = ExecUtilityFindNodesRelkind(relid, &is_temp);
 
@@ -1401,8 +1357,16 @@ standard_ProcessUtility(Node *parsetree,
 #endif
 			break;
 
-		case T_CreateEnumStmt:	/* CREATE TYPE (enum) */
+		case T_CreateEnumStmt:	/* CREATE TYPE AS ENUM */
 			DefineEnum((CreateEnumStmt *) parsetree);
+#ifdef PGXC
+			if (IS_PGXC_COORDINATOR)
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
+#endif
+			break;
+
+		case T_CreateRangeStmt:	/* CREATE TYPE AS RANGE */
+			DefineRange((CreateRangeStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
 				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
@@ -1418,6 +1382,14 @@ standard_ProcessUtility(Node *parsetree,
 			 */
 			PreventTransactionChain(isTopLevel, "ALTER TYPE ... ADD");
 			AlterEnum((AlterEnumStmt *) parsetree);
+#ifdef PGXC
+			/*
+			 * In this case force autocommit, this transaction cannot be launched
+			 * inside a transaction block.
+			 */
+			if (IS_PGXC_COORDINATOR)
+				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_ALL_NODES, false);
+#endif
 			break;
 
 		case T_ViewStmt:		/* CREATE VIEW */
@@ -1471,10 +1443,12 @@ standard_ProcessUtility(Node *parsetree,
 				}
 
 				/* INDEX on a temporary table cannot use 2PC at commit */
-				relid = RangeVarGetRelid(stmt->relation, NoLock, true, true);
+				relid = RangeVarGetRelid(stmt->relation, NoLock, true);
 
 				if (OidIsValid(relid))
 					exec_type = ExecUtilityFindNodes(OBJECT_INDEX, relid, &is_temp);
+				else
+					exec_type = EXEC_ON_NONE;
 #endif
 
 				if (stmt->concurrent)
@@ -1490,6 +1464,7 @@ standard_ProcessUtility(Node *parsetree,
 				DefineIndex(stmt->relation,		/* relation */
 							stmt->idxname,		/* index name */
 							InvalidOid, /* no predefined OID */
+							InvalidOid, /* no previous storage */
 							stmt->accessMethod, /* am name */
 							stmt->tableSpace,
 							stmt->indexParams,	/* parameters */
@@ -1564,41 +1539,18 @@ standard_ProcessUtility(Node *parsetree,
 				{
 					bool		  is_temp;
 					RemoteQueryExecType exec_type;
+					Oid					relid = RangeVarGetRelid(stmt->sequence, NoLock, true);
+
+					if (!OidIsValid(relid))
+						break;
 
 					exec_type = ExecUtilityFindNodes(OBJECT_SEQUENCE,
-													 RangeVarGetRelid(stmt->sequence, NoLock, false, false),
+													 relid,
 													 &is_temp);
 
 					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, exec_type, is_temp);
 				}
 			}
-#endif
-			break;
-
-		case T_RemoveFuncStmt:
-			{
-				RemoveFuncStmt *stmt = (RemoveFuncStmt *) parsetree;
-
-				switch (stmt->kind)
-				{
-					case OBJECT_FUNCTION:
-						RemoveFunction(stmt);
-						break;
-					case OBJECT_AGGREGATE:
-						RemoveAggregate(stmt);
-						break;
-					case OBJECT_OPERATOR:
-						RemoveOperator(stmt);
-						break;
-					default:
-						elog(ERROR, "unrecognized object type: %d",
-							 (int) stmt->kind);
-						break;
-				}
-			}
-#ifdef PGXC
-			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
 #endif
 			break;
 
@@ -1738,6 +1690,11 @@ standard_ProcessUtility(Node *parsetree,
 			ExplainQuery((ExplainStmt *) parsetree, queryString, params, dest);
 			break;
 
+		case T_CreateTableAsStmt:
+			ExecCreateTableAs((CreateTableAsStmt *) parsetree,
+							  queryString, params, completionTag);
+			break;
+
 		case T_VariableSetStmt:
 			ExecSetVariableStmt((VariableSetStmt *) parsetree);
 #ifdef PGXC
@@ -1806,54 +1763,8 @@ standard_ProcessUtility(Node *parsetree,
 #endif
 			break;
 
-		case T_DropPropertyStmt:
-			{
-				DropPropertyStmt *stmt = (DropPropertyStmt *) parsetree;
-
-				switch (stmt->removeType)
-				{
-					case OBJECT_RULE:
-						/* RemoveRewriteRule checks permissions */
-						RemoveRewriteRule(stmt->relation, stmt->property,
-										  stmt->behavior, stmt->missing_ok);
-#ifdef PGXC
-						if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
-						{
-							RemoteQueryExecType exec_type;
-							bool	is_temp;
-							exec_type = GetNodesForRulesUtility(((RuleStmt *) parsetree)->relation,
-																&is_temp);
-							ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, exec_type, is_temp);
-						}
-#endif
-						break;
-					case OBJECT_TRIGGER:
-						/* DropTrigger checks permissions */
-						DropTrigger(stmt->relation, stmt->property,
-									stmt->behavior, stmt->missing_ok);
-#ifdef PGXC
-						if (IS_PGXC_COORDINATOR)
-							ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
-#endif
-						break;
-					default:
-						elog(ERROR, "unrecognized object type: %d",
-							 (int) stmt->removeType);
-						break;
-				}
-			}
-			break;
-
 		case T_CreatePLangStmt:
 			CreateProceduralLanguage((CreatePLangStmt *) parsetree);
-#ifdef PGXC
-			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
-#endif
-			break;
-
-		case T_DropPLangStmt:
-			DropProceduralLanguage((DropPLangStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
 				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
@@ -2089,14 +2000,6 @@ standard_ProcessUtility(Node *parsetree,
 #endif
 			break;
 
-		case T_DropCastStmt:
-			DropCast((DropCastStmt *) parsetree);
-#ifdef PGXC
-			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
-#endif
-			break;
-
 		case T_CreateOpClassStmt:
 			DefineOpClass((CreateOpClassStmt *) parsetree);
 #ifdef PGXC
@@ -2115,22 +2018,6 @@ standard_ProcessUtility(Node *parsetree,
 
 		case T_AlterOpFamilyStmt:
 			AlterOpFamily((AlterOpFamilyStmt *) parsetree);
-#ifdef PGXC
-			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
-#endif
-			break;
-
-		case T_RemoveOpClassStmt:
-			RemoveOpClass((RemoveOpClassStmt *) parsetree);
-#ifdef PGXC
-			if (IS_PGXC_COORDINATOR)
-				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
-#endif
-			break;
-
-		case T_RemoveOpFamilyStmt:
-			RemoveOpFamily((RemoveOpFamilyStmt *) parsetree);
 #ifdef PGXC
 			if (IS_PGXC_COORDINATOR)
 				ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, false, EXEC_ON_ALL_NODES, false);
@@ -2261,11 +2148,11 @@ ExecUtilityFindNodes(ObjectType object_type,
 			exec_type = ExecUtilityFindNodesRelkind(object_id, is_temp);
 			break;
 
+		/*
+		 * Views and rules, both permanent or temporary are created
+		 * on Coordinators only.
+		 */
 		case OBJECT_RULE:
-			/*
-			 * For RULEs, we get the object id of the relation to which the rule
-			 * is applicable.
-			 */
 		case OBJECT_VIEW:
 			/* Check if object is a temporary view */
 			if ((*is_temp = IsTempTable(object_id)))
@@ -2371,8 +2258,6 @@ UtilityReturnsTuples(Node *parsetree)
 				ExecuteStmt *stmt = (ExecuteStmt *) parsetree;
 				PreparedStatement *entry;
 
-				if (stmt->into)
-					return false;
 				entry = FetchPreparedStatement(stmt->name, false);
 				if (!entry)
 					return false;		/* not our business to raise error */
@@ -2423,8 +2308,6 @@ UtilityTupleDescriptor(Node *parsetree)
 				ExecuteStmt *stmt = (ExecuteStmt *) parsetree;
 				PreparedStatement *entry;
 
-				if (stmt->into)
-					return NULL;
 				entry = FetchPreparedStatement(stmt->name, false);
 				if (!entry)
 					return NULL;	/* not our business to raise error */
@@ -2458,9 +2341,8 @@ QueryReturnsTuples(Query *parsetree)
 	switch (parsetree->commandType)
 	{
 		case CMD_SELECT:
-			/* returns tuples ... unless it's DECLARE CURSOR or SELECT INTO */
-			if (parsetree->utilityStmt == NULL &&
-				parsetree->intoClause == NULL)
+			/* returns tuples ... unless it's DECLARE CURSOR */
+			if (parsetree->utilityStmt == NULL)
 				return true;
 			break;
 		case CMD_INSERT:
@@ -2480,6 +2362,37 @@ QueryReturnsTuples(Query *parsetree)
 	return false;				/* default */
 }
 #endif
+
+
+/*
+ * UtilityContainsQuery
+ *		Return the contained Query, or NULL if there is none
+ *
+ * Certain utility statements, such as EXPLAIN, contain a Query.
+ * This function encapsulates knowledge of exactly which ones do.
+ * We assume it is invoked only on already-parse-analyzed statements
+ * (else the contained parsetree isn't a Query yet).
+ */
+Query *
+UtilityContainsQuery(Node *parsetree)
+{
+	switch (nodeTag(parsetree))
+	{
+		case T_ExplainStmt:
+			Assert(IsA(((ExplainStmt *) parsetree)->query, Query));
+			return (Query *) ((ExplainStmt *) parsetree)->query;
+
+		case T_CreateTableAsStmt:
+			/* might or might not contain a Query ... */
+			if (IsA(((CreateTableAsStmt *) parsetree)->query, Query))
+				return (Query *) ((CreateTableAsStmt *) parsetree)->query;
+			Assert(IsA(((CreateTableAsStmt *) parsetree)->query, ExecuteStmt));
+			return NULL;
+
+		default:
+			return NULL;
+	}
+}
 
 
 /*
@@ -2755,20 +2668,12 @@ CreateCommandTag(Node *parsetree)
 			tag = "ALTER FOREIGN DATA WRAPPER";
 			break;
 
-		case T_DropFdwStmt:
-			tag = "DROP FOREIGN DATA WRAPPER";
-			break;
-
 		case T_CreateForeignServerStmt:
 			tag = "CREATE SERVER";
 			break;
 
 		case T_AlterForeignServerStmt:
 			tag = "ALTER SERVER";
-			break;
-
-		case T_DropForeignServerStmt:
-			tag = "DROP SERVER";
 			break;
 
 		case T_CreateUserMappingStmt:
@@ -2834,6 +2739,39 @@ CreateCommandTag(Node *parsetree)
 					break;
 				case OBJECT_EXTENSION:
 					tag = "DROP EXTENSION";
+					break;
+				case OBJECT_FUNCTION:
+					tag = "DROP FUNCTION";
+					break;
+				case OBJECT_AGGREGATE:
+					tag = "DROP AGGREGATE";
+					break;
+				case OBJECT_OPERATOR:
+					tag = "DROP OPERATOR";
+					break;
+				case OBJECT_LANGUAGE:
+					tag = "DROP LANGUAGE";
+					break;
+				case OBJECT_CAST:
+					tag = "DROP CAST";
+					break;
+				case OBJECT_TRIGGER:
+					tag = "DROP TRIGGER";
+					break;
+				case OBJECT_RULE:
+					tag = "DROP RULE";
+					break;
+				case OBJECT_FDW:
+					tag = "DROP FOREIGN DATA WRAPPER";
+					break;
+				case OBJECT_FOREIGN_SERVER:
+					tag = "DROP SERVER";
+					break;
+				case OBJECT_OPCLASS:
+					tag = "DROP OPERATOR CLASS";
+					break;
+				case OBJECT_OPFAMILY:
+					tag = "DROP OPERATOR FAMILY";
 					break;
 				default:
 					tag = "???";
@@ -2940,6 +2878,10 @@ CreateCommandTag(Node *parsetree)
 			tag = "CREATE TYPE";
 			break;
 
+		case T_CreateRangeStmt:
+			tag = "CREATE TYPE";
+			break;
+
 		case T_AlterEnumStmt:
 			tag = "ALTER TYPE";
 			break;
@@ -2966,23 +2908,6 @@ CreateCommandTag(Node *parsetree)
 
 		case T_AlterSeqStmt:
 			tag = "ALTER SEQUENCE";
-			break;
-
-		case T_RemoveFuncStmt:
-			switch (((RemoveFuncStmt *) parsetree)->kind)
-			{
-				case OBJECT_FUNCTION:
-					tag = "DROP FUNCTION";
-					break;
-				case OBJECT_AGGREGATE:
-					tag = "DROP AGGREGATE";
-					break;
-				case OBJECT_OPERATOR:
-					tag = "DROP OPERATOR";
-					break;
-				default:
-					tag = "???";
-			}
 			break;
 
 		case T_DoStmt:
@@ -3036,6 +2961,13 @@ CreateCommandTag(Node *parsetree)
 			tag = "EXPLAIN";
 			break;
 
+		case T_CreateTableAsStmt:
+			if (((CreateTableAsStmt *) parsetree)->is_select_into)
+				tag = "SELECT INTO";
+			else
+				tag = "CREATE TABLE AS";
+			break;
+
 		case T_VariableSetStmt:
 			switch (((VariableSetStmt *) parsetree)->kind)
 			{
@@ -3079,26 +3011,8 @@ CreateCommandTag(Node *parsetree)
 			tag = "CREATE TRIGGER";
 			break;
 
-		case T_DropPropertyStmt:
-			switch (((DropPropertyStmt *) parsetree)->removeType)
-			{
-				case OBJECT_TRIGGER:
-					tag = "DROP TRIGGER";
-					break;
-				case OBJECT_RULE:
-					tag = "DROP RULE";
-					break;
-				default:
-					tag = "???";
-			}
-			break;
-
 		case T_CreatePLangStmt:
 			tag = "CREATE LANGUAGE";
-			break;
-
-		case T_DropPLangStmt:
-			tag = "DROP LANGUAGE";
 			break;
 
 		case T_CreateRoleStmt:
@@ -3181,10 +3095,6 @@ CreateCommandTag(Node *parsetree)
 			tag = "CREATE CAST";
 			break;
 
-		case T_DropCastStmt:
-			tag = "DROP CAST";
-			break;
-
 		case T_CreateOpClassStmt:
 			tag = "CREATE OPERATOR CLASS";
 			break;
@@ -3195,14 +3105,6 @@ CreateCommandTag(Node *parsetree)
 
 		case T_AlterOpFamilyStmt:
 			tag = "ALTER OPERATOR FAMILY";
-			break;
-
-		case T_RemoveOpClassStmt:
-			tag = "DROP OPERATOR CLASS";
-			break;
-
-		case T_RemoveOpFamilyStmt:
-			tag = "DROP OPERATOR FAMILY";
 			break;
 
 		case T_AlterTSDictionaryStmt:
@@ -3251,8 +3153,6 @@ CreateCommandTag(Node *parsetree)
 							Assert(IsA(stmt->utilityStmt, DeclareCursorStmt));
 							tag = "DECLARE CURSOR";
 						}
-						else if (stmt->intoClause != NULL)
-							tag = "SELECT INTO";
 						else if (stmt->rowMarks != NIL)
 						{
 							/* not 100% but probably close enough */
@@ -3301,8 +3201,6 @@ CreateCommandTag(Node *parsetree)
 							Assert(IsA(stmt->utilityStmt, DeclareCursorStmt));
 							tag = "DECLARE CURSOR";
 						}
-						else if (stmt->intoClause != NULL)
-							tag = "SELECT INTO";
 						else if (stmt->rowMarks != NIL)
 						{
 							/* not 100% but probably close enough */
@@ -3377,7 +3275,7 @@ GetCommandLogLevel(Node *parsetree)
 
 		case T_SelectStmt:
 			if (((SelectStmt *) parsetree)->intoClause)
-				lev = LOGSTMT_DDL;		/* CREATE AS, SELECT INTO */
+				lev = LOGSTMT_DDL;		/* SELECT INTO */
 			else
 				lev = LOGSTMT_ALL;
 			break;
@@ -3422,10 +3320,8 @@ GetCommandLogLevel(Node *parsetree)
 
 		case T_CreateFdwStmt:
 		case T_AlterFdwStmt:
-		case T_DropFdwStmt:
 		case T_CreateForeignServerStmt:
 		case T_AlterForeignServerStmt:
-		case T_DropForeignServerStmt:
 		case T_CreateUserMappingStmt:
 		case T_AlterUserMappingStmt:
 		case T_DropUserMappingStmt:
@@ -3526,6 +3422,10 @@ GetCommandLogLevel(Node *parsetree)
 			lev = LOGSTMT_DDL;
 			break;
 
+		case T_CreateRangeStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
 		case T_AlterEnumStmt:
 			lev = LOGSTMT_DDL;
 			break;
@@ -3555,10 +3455,6 @@ GetCommandLogLevel(Node *parsetree)
 			break;
 
 		case T_AlterSeqStmt:
-			lev = LOGSTMT_DDL;
-			break;
-
-		case T_RemoveFuncStmt:
 			lev = LOGSTMT_DDL;
 			break;
 
@@ -3629,6 +3525,10 @@ GetCommandLogLevel(Node *parsetree)
 			}
 			break;
 
+		case T_CreateTableAsStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
 		case T_VariableSetStmt:
 			lev = LOGSTMT_ALL;
 			break;
@@ -3645,15 +3545,7 @@ GetCommandLogLevel(Node *parsetree)
 			lev = LOGSTMT_DDL;
 			break;
 
-		case T_DropPropertyStmt:
-			lev = LOGSTMT_DDL;
-			break;
-
 		case T_CreatePLangStmt:
-			lev = LOGSTMT_DDL;
-			break;
-
-		case T_DropPLangStmt:
 			lev = LOGSTMT_DDL;
 			break;
 
@@ -3709,10 +3601,6 @@ GetCommandLogLevel(Node *parsetree)
 			lev = LOGSTMT_DDL;
 			break;
 
-		case T_DropCastStmt:
-			lev = LOGSTMT_DDL;
-			break;
-
 		case T_CreateOpClassStmt:
 			lev = LOGSTMT_DDL;
 			break;
@@ -3722,14 +3610,6 @@ GetCommandLogLevel(Node *parsetree)
 			break;
 
 		case T_AlterOpFamilyStmt:
-			lev = LOGSTMT_DDL;
-			break;
-
-		case T_RemoveOpClassStmt:
-			lev = LOGSTMT_DDL;
-			break;
-
-		case T_RemoveOpFamilyStmt:
 			lev = LOGSTMT_DDL;
 			break;
 
@@ -3749,10 +3629,7 @@ GetCommandLogLevel(Node *parsetree)
 				switch (stmt->commandType)
 				{
 					case CMD_SELECT:
-						if (stmt->intoClause != NULL)
-							lev = LOGSTMT_DDL;	/* CREATE AS, SELECT INTO */
-						else
-							lev = LOGSTMT_ALL;	/* SELECT or DECLARE CURSOR */
+						lev = LOGSTMT_ALL;
 						break;
 
 					case CMD_UPDATE:
@@ -3778,10 +3655,7 @@ GetCommandLogLevel(Node *parsetree)
 				switch (stmt->commandType)
 				{
 					case CMD_SELECT:
-						if (stmt->intoClause != NULL)
-							lev = LOGSTMT_DDL;	/* CREATE AS, SELECT INTO */
-						else
-							lev = LOGSTMT_ALL;	/* SELECT or DECLARE CURSOR */
+						lev = LOGSTMT_ALL;
 						break;
 
 					case CMD_UPDATE:
@@ -3903,14 +3777,140 @@ GetNodesForCommentUtility(CommentStmt *stmt, bool *is_temp)
 static RemoteQueryExecType
 GetNodesForRulesUtility(RangeVar *relation, bool *is_temp)
 {
-	Oid relid = RangeVarGetRelid(relation, NoLock, false, false);
+	Oid relid = RangeVarGetRelid(relation, NoLock, true);
 	RemoteQueryExecType exec_type;
+
+	/* Skip if this Oid does not exist */
+	if (!OidIsValid(relid))
+		return EXEC_ON_NONE;
+
 	/*
 	 * PGXCTODO: See if it's a temporary object, do we really need
 	 * to care about temporary objects here? What about the
 	 * temporary objects defined inside the rule?
 	 */
-	exec_type =	ExecUtilityFindNodes(OBJECT_RULE, relid, is_temp);
+	exec_type = ExecUtilityFindNodes(OBJECT_RULE, relid, is_temp);
 	return exec_type;
+}
+
+/*
+ * TreatDropStmtOnCoord
+ * Do a pre-treatment of Drop statement on a remote Coordinator
+ */
+static void
+DropStmtPreTreatment(DropStmt *stmt, const char *queryString, bool sentToRemote,
+					 bool *is_temp, RemoteQueryExecType *exec_type)
+{
+	bool		res_is_temp = false;
+	RemoteQueryExecType res_exec_type = EXEC_ON_ALL_NODES;
+
+	/* Nothing to do if not local Coordinator */
+	if (IS_PGXC_DATANODE || IsConnFromCoord())
+		return;
+
+	switch (stmt->removeType)
+	{
+		case OBJECT_TABLE:
+		case OBJECT_SEQUENCE:
+		case OBJECT_VIEW:
+		case OBJECT_INDEX:
+			{
+				/*
+				 * Check the list of objects going to be dropped.
+				 * XC does not allow yet to mix drop of temporary and
+				 * non-temporary objects because this involves to rewrite
+				 * query to process for tables.
+				 */
+				ListCell   *cell;
+				bool		is_first = true;
+
+				foreach(cell, stmt->objects)
+				{
+					RangeVar   *rel = makeRangeVarFromNameList((List *) lfirst(cell));
+					Oid         relid;
+
+					/*
+					 * Do not print result at all, error is thrown
+					 * after if necessary
+					 */
+					relid = RangeVarGetRelid(rel, NoLock, true);
+
+					/*
+					 * In case this relation ID is incorrect throw
+					 * a correct DROP error.
+					 */
+					if (!OidIsValid(relid) && !stmt->missing_ok)
+						DropTableThrowErrorExternal(rel,
+													stmt->removeType,
+													stmt->missing_ok);
+
+					/* In case of DROP ... IF EXISTS bypass */
+					if (!OidIsValid(relid) && stmt->missing_ok)
+						continue;
+
+					if (is_first)
+					{
+						res_exec_type = ExecUtilityFindNodes(stmt->removeType,
+														 relid,
+														 &res_is_temp);
+						is_first = false;
+					}
+					else
+					{
+						RemoteQueryExecType exec_type_loc;
+						bool is_temp_loc;
+						exec_type_loc = ExecUtilityFindNodes(stmt->removeType,
+															 relid,
+															 &is_temp_loc);
+						if (exec_type_loc != res_exec_type ||
+							is_temp_loc != res_is_temp)
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("DROP not supported for TEMP and non-TEMP objects"),
+									 errdetail("You should separate TEMP and non-TEMP objects")));
+					}
+				}
+			}
+			break;
+
+		case OBJECT_RULE:
+			{
+				/*
+				 * In the case of a rule we need to find the object on
+				 * which the rule is dependent and define if this rule
+				 * has a dependency with a temporary object or not.
+				 */
+				List *objname = linitial(stmt->objects);
+				Relation    relation = NULL;
+
+				get_object_address(OBJECT_RULE,
+								   objname, NIL,
+								   &relation,
+								   AccessExclusiveLock,
+								   stmt->missing_ok);
+
+				/* Do nothing if no relation */
+				if (relation && OidIsValid(relation->rd_id))
+					res_exec_type = ExecUtilityFindNodes(OBJECT_RULE,
+														 relation->rd_id,
+														 &res_is_temp);
+				else
+					res_exec_type = EXEC_ON_NONE;
+
+				/* Close relation if necessary */
+				if (relation)
+					relation_close(relation, NoLock);
+			}
+			break;
+
+		default:
+			res_is_temp = false;
+			res_exec_type = EXEC_ON_ALL_NODES;
+			break;
+	}
+
+	/* Save results */
+	*is_temp = res_is_temp;
+	*exec_type = res_exec_type;
 }
 #endif

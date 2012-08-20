@@ -13,7 +13,7 @@
  * between here and there is a bit arbitrary and historical.
  *
  *
- * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -33,9 +33,7 @@
 #include "optimizer/clauses.h"
 #endif
 #include "optimizer/prep.h"
-#include "optimizer/subselect.h"
 #include "optimizer/tlist.h"
-#include "optimizer/var.h"
 #include "parser/parsetree.h"
 #include "parser/parse_coerce.h"
 #include "utils/rel.h"
@@ -258,7 +256,8 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 			/* Not a table, so we need the whole row as a junk var */
 			var = makeWholeRowVar(rt_fetch(rc->rti, range_table),
 								  rc->rti,
-								  0);
+								  0,
+								  false);
 			snprintf(resname, sizeof(resname), "wholerow%u", rc->rowmarkId);
 			tle = makeTargetEntry((Expr *) var,
 								  list_length(tlist) + 1,
