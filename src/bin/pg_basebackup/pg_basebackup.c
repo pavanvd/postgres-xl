@@ -121,12 +121,13 @@ usage(void)
 	printf(_("  --help                   show this help, then exit\n"));
 	printf(_("  --version                output version information, then exit\n"));
 	printf(_("\nConnection options:\n"));
-	printf(_("  -s, --statusint=INTERVAL time between status packets sent to server (in seconds)\n"));
-	printf(_("  -h, --host=HOSTNAME      database server host or socket directory\n"));
-	printf(_("  -p, --port=PORT          database server port number\n"));
-	printf(_("  -U, --username=NAME      connect as specified database user\n"));
-	printf(_("  -w, --no-password        never prompt for password\n"));
-	printf(_("  -W, --password           force password prompt (should happen automatically)\n"));
+	printf(_("  -h, --host=HOSTNAME    database server host or socket directory\n"));
+	printf(_("  -p, --port=PORT        database server port number\n"));
+	printf(_("  -s, --status-interval=INTERVAL\n"
+			 "                         time between status packets sent to server (in seconds)\n"));
+	printf(_("  -U, --username=NAME    connect as specified database user\n"));
+	printf(_("  -w, --no-password      never prompt for password\n"));
+	printf(_("  -W, --password         force password prompt (should happen automatically)\n"));
 	printf(_("\nReport bugs to <pgsql-bugs@postgresql.org>.\n"));
 }
 
@@ -1206,7 +1207,7 @@ main(int argc, char **argv)
 		{"username", required_argument, NULL, 'U'},
 		{"no-password", no_argument, NULL, 'w'},
 		{"password", no_argument, NULL, 'W'},
-		{"statusint", required_argument, NULL, 's'},
+		{"status-interval", required_argument, NULL, 's'},
 		{"verbose", no_argument, NULL, 'v'},
 		{"progress", no_argument, NULL, 'P'},
 		{NULL, 0, NULL, 0}
