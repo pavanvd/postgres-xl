@@ -4880,6 +4880,11 @@ conninfo_uri_parse_params(char *params,
 							  libpq_gettext(
 									 "invalid URI query parameter \"%s\"\n"),
 							  keyword);
+			if (malloced)
+			{
+				free(keyword);
+				free(value);
+			}
 			return false;
 		}
 		if (malloced)
