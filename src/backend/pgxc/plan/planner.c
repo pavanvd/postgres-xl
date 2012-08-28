@@ -28,6 +28,7 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "catalog/pgxc_node.h"
+#include "commands/prepare.h"
 #include "executor/executor.h"
 #include "lib/stringinfo.h"
 #include "nodes/makefuncs.h"
@@ -88,6 +89,7 @@ static PlannedStmt *pgxc_handle_exec_direct(Query *query, int cursorOptions,
 static RemoteQuery *pgxc_FQS_create_remote_plan(Query *query,
 												ExecNodes *exec_nodes,
 												bool is_exec_direct);
+static void pgxc_set_remote_parameters(PlannedStmt *plan, ParamListInfo boundParams);
 static ExecNodes *pgxc_FQS_get_relation_nodes(RangeTblEntry *rte, Index varno,
 												Query *query);
 static bool pgxc_qual_hash_dist_equijoin(Relids varnos_1, Relids varnos_2,
@@ -439,6 +441,7 @@ pgxc_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 
 	/* we need Coordinator for evaluation, invoke standard planner */
 	result = standard_planner(query, cursorOptions, boundParams);
+	pgxc_set_remote_parameters(result, boundParams);
 	return result;
 }
 
@@ -493,6 +496,10 @@ pgxc_handle_exec_direct(Query *query, int cursorOptions,
 			result->invalItems = glob->invalItems;
 		}
 	}
+
+	/* Set existing remote parameters */
+	pgxc_set_remote_parameters(result, boundParams);
+
 	return result;
 }
 /*
@@ -621,6 +628,10 @@ pgxc_FQS_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 	 */
 	if (query->utilityStmt && IsA(query->utilityStmt, DeclareCursorStmt))
 		fetch_ctid_of(result->planTree, query);
+
+	/* Set existing remote parameters */
+	pgxc_set_remote_parameters(result, boundParams);
+
 	return result;
 }
 
@@ -2215,5 +2226,57 @@ pgxc_query_contains_utility(List *queries)
 	}
 
 	return false;
+}
+
+
+/*
+ * pgxc_set_remote_parameters
+ *
+ * Set the list of remote parameters for remote plan
+ */
+static void
+pgxc_set_remote_parameters(PlannedStmt *plan, ParamListInfo boundParams)
+{
+	Oid *param_types;
+	int cntParam, i;
+
+	/* Leave if no plan */
+	if (!plan)
+		return;
+
+	/* Leave if no parameters */
+	if (!boundParams)
+		return;
+
+	/*
+	 * Count the number of remote parameters available
+	 * We need to take into account all the parameters
+	 * that are prior to the latest available. This insures
+	 * that remote node will not complain about an incorrect
+	 * number of parameter. In case parameters with no types
+	 * are taken into account, they are considered as NULL entries.
+	 */
+	cntParam = 0;
+	for (i = 0; i < boundParams->numParams; i++)
+	{
+		if (OidIsValid(boundParams->params[i].ptype))
+			cntParam = i + 1;
+	}
+
+	/* If there are no parameters available, simply leave */
+	if (cntParam == 0)
+		return;
+
+	param_types = (Oid *) palloc(sizeof(Oid) * cntParam);
+
+	/* Then fill the array of types */
+	for (i = 0; i < cntParam; i++)
+		param_types[i] = boundParams->params[i].ptype;
+
+	/* Finally save the parameters in plan */
+	SetRemoteStatementName(plan->planTree, NULL,
+						   cntParam, param_types, 0);
+
+	return;
 }
 #endif

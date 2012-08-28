@@ -1604,7 +1604,7 @@ FetchTuple(ResponseCombiner *combiner)
 {
 	PGXCNodeHandle *conn;
 	TupleTableSlot *slot;
-	Oid 			nodeOid;
+	Oid 			nodeOid = -1;
 
 	/*
 	 * Case if we run local subplan.
@@ -1617,7 +1617,7 @@ FetchTuple(ResponseCombiner *combiner)
 		/* Advance subplan in a loop until we have something to return */
 		for (;;)
 		{
-			Datum 	value;
+			Datum 	value = NULL;
 			bool 	isnull;
 			int 	numnodes;
 			int		i;
@@ -4938,7 +4938,7 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection,
 
 	if (snapshot && pgxc_node_send_snapshot(connection, snapshot))
 		return false;
-	if (step->statement || step->cursor || step->param_types)
+	if (step->statement || step->cursor || step->remote_param_types)
 	{
 		/* need to use Extended Query Protocol */
 		int	fetch = 0;
@@ -4966,8 +4966,8 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection,
 							prepared ? NULL : step->sql_statement,
 							step->statement,
 							step->cursor,
-							step->num_params,
-							step->param_types,
+							step->remote_num_params,
+							step->remote_param_types,
 							remotestate->paramval_len,
 							remotestate->paramval_data,
 							step->has_row_marks ? true : step->read_only,
@@ -5593,7 +5593,7 @@ ParamListToDataRow(ParamListInfo params, char** result)
 	StringInfoData buf;
 	uint16 n16;
 	int i;
-	int real_num_params = params->numParams;
+	int real_num_params = 0;
 
 	/*
 	 * It is necessary to fetch parameters
@@ -5609,11 +5609,24 @@ ParamListToDataRow(ParamListInfo params, char** result)
 			(*params->paramFetch) (params, i + 1);
 
 		/*
-		 * In case parameter type is not defined, it is not necessary to include
-		 * it in message sent to backend nodes.
+		 * This is the last parameter found as useful, so we need
+		 * to include all the previous ones to keep silent the remote
+		 * nodes. All the parameters prior to the last usable having no
+		 * type available will be considered as NULL entries.
 		 */
-		if (!OidIsValid(param->ptype))
-			real_num_params--;
+		if (OidIsValid(param->ptype))
+			real_num_params = i + 1;
+	}
+
+	/*
+	 * If there are no parameters available, simply leave.
+	 * This is possible in the case of a query called through SPI
+	 * and using no parameters.
+	 */
+	if (real_num_params == 0)
+	{
+		*result = NULL;
+		return 0;
 	}
 
 	initStringInfo(&buf);
@@ -5623,16 +5636,16 @@ ParamListToDataRow(ParamListInfo params, char** result)
 	appendBinaryStringInfo(&buf, (char *) &n16, 2);
 
 	/* Parameter values */
-	for (i = 0; i < params->numParams; i++)
+	for (i = 0; i < real_num_params; i++)
 	{
 		ParamExternData *param = &params->params[i];
 		uint32 n32;
 
-		/* If parameter has no type defined it is not necessary to include it in message */
-		if (!OidIsValid(param->ptype))
-			continue;
-
-		if (param->isnull)
+		/*
+		 * Parameters with no types are considered as NULL and treated as integer
+		 * The same trick is used for dropped columns for remote DML generation.
+		 */
+		if (param->isnull || !OidIsValid(param->ptype))
 		{
 			n32 = htonl(-1);
 			appendBinaryStringInfo(&buf, (char *) &n32, 4);
@@ -6400,18 +6413,6 @@ PreCommit_Remote(char *prepareGID, char *nodestring, bool preparedLocalNode)
 void
 PreCommit_Remote(char *prepareGID, bool preparedLocalNode)
 {
-	/*
-	 * Made node connections persistent if we are committing transaction
-	 * that touched temporary tables. We never drop that flag, so after some
-	 * transaction has created a temp table the session's remote connections
-	 * become persistent.
-	 * We do not need to set that flag if transaction that has created a temp
-	 * table finally aborts - remote connections are not holding temporary
-	 * objects in this case.
-	 */
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && MyXactAccessedTempRel)
-		temp_object_included = true;
-
 	if (!preparedLocalNode)
 		PrePrepare_Remote(prepareGID, preparedLocalNode, false);
 
@@ -7313,8 +7314,8 @@ ExecRemoteQuery(RemoteQueryState *node)
 		PGXCNodeHandle **connections = NULL;
 		PGXCNodeHandle *primaryconnection = NULL;
 		int				i;
-		int				regular_conn_count;
-		int				total_conn_count;
+		int				regular_conn_count = 0;
+		int				total_conn_count = 0;
 		bool			need_tran_block;
 		PGXCNodeAllHandles *pgxc_connections;
 
