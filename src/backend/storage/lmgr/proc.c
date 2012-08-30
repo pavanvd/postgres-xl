@@ -1125,6 +1125,21 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 				!(autovac_pgxact->vacuumFlags & PROC_VACUUM_FOR_WRAPAROUND))
 			{
 				int			pid = autovac->pid;
+				StringInfoData locktagbuf;
+				StringInfoData logbuf;		/* errdetail for server log */
+
+				initStringInfo(&locktagbuf);
+				initStringInfo(&logbuf);
+				DescribeLockTag(&locktagbuf, &lock->tag);
+				appendStringInfo(&logbuf,
+					  _("Process %d waits for %s on %s."),
+						 MyProcPid,
+						 GetLockmodeName(lock->tag.locktag_lockmethodid,
+										 lockmode),
+						 locktagbuf.data);
+
+				/* release lock as quickly as possible */
+				LWLockRelease(ProcArrayLock);
 
 				elog(DEBUG2, "sending cancel to blocking autovacuum PID %d",
 					 pid);
