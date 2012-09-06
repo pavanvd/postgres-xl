@@ -3009,26 +3009,39 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 
 				/* Get operator */
 				value = slot_getattr(result, colnum++, &isnull); /* oprname */
-				oprname = DatumGetCString(value);
-				value = slot_getattr(result, colnum++, &isnull); /* oprnspname */
-				oprnspname = DatumGetCString(value);
-				/* Get left operand data type */
-				value = slot_getattr(result, colnum++, &isnull); /* typname */
-				ltypname = DatumGetCString(value);
-				value = slot_getattr(result, colnum++, &isnull); /* typnspname */
-				ltypnspname = DatumGetCString(value);
-				ltypid = get_typname_typid(ltypname,
-										   get_namespaceid(ltypnspname));
-				/* Get right operand data type */
-				value = slot_getattr(result, colnum++, &isnull); /* typname */
-				rtypname = DatumGetCString(value);
-				value = slot_getattr(result, colnum++, &isnull); /* typnspname */
-				rtypnspname = DatumGetCString(value);
-				rtypid = get_typname_typid(rtypname,
-										   get_namespaceid(rtypnspname));
-				/* lookup operator */
-				oprid = get_operid(oprname, ltypid, rtypid,
-								   get_namespaceid(oprnspname));
+				if (isnull)
+				{
+					/*
+					 * Operator is not specified for that kind, skip remaining
+					 * fields to lookup the operator
+					 */
+					oprid = InvalidOid;
+					colnum += 5;
+				}
+				else
+				{
+					oprname = DatumGetCString(value);
+					value = slot_getattr(result, colnum++, &isnull); /* oprnspname */
+					oprnspname = DatumGetCString(value);
+					/* Get left operand data type */
+					value = slot_getattr(result, colnum++, &isnull); /* typname */
+					ltypname = DatumGetCString(value);
+					value = slot_getattr(result, colnum++, &isnull); /* typnspname */
+					ltypnspname = DatumGetCString(value);
+					ltypid = get_typname_typid(ltypname,
+											   get_namespaceid(ltypnspname));
+					/* Get right operand data type */
+					value = slot_getattr(result, colnum++, &isnull); /* typname */
+					rtypname = DatumGetCString(value);
+					value = slot_getattr(result, colnum++, &isnull); /* typnspname */
+					rtypnspname = DatumGetCString(value);
+					rtypid = get_typname_typid(rtypname,
+											   get_namespaceid(rtypnspname));
+					/* lookup operator */
+					oprid = get_operid(oprname, ltypid, rtypid,
+									   get_namespaceid(oprnspname));
+				}
+
 				/* get numbers */
 				value = slot_getattr(result, colnum++, &isnull); /* numbers */
 				if (isnull)
