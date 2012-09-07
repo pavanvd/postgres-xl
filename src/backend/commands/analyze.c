@@ -3034,7 +3034,6 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 			for (i = 1; i <= STATISTIC_NUM_SLOTS; i++)
 			{
 				int2 		kind;
-				Oid			oprid;
 				char	   *oprname;
 				char	   *oprnspname;
 				Oid			ltypid, rtypid;
@@ -3060,6 +3059,55 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 					colnum += 8;
 					continue;
 				}
+				else
+				{
+					/*
+					 * Look up a statistics slot. If there is an entry of the
+					 * same kind already, leave it, assuming the statistics
+					 * is approximately the same on all nodes, so values from
+					 * one node are representing entire relation well.
+					 * If empty slot is found store values here. If no more
+					 * slots skip remaining values.
+					 */
+					for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+					{
+						if (stats->stakind[k] == 0 ||
+								(stats->stakind[k] == kind && stats->staop[k] == oprid))
+							break;
+					}
+
+					if (k >= STATISTIC_NUM_SLOTS)
+					{
+						/* No empty slots */
+						break;
+					}
+
+					/*
+					 * If it is existing slot, has numbers or values continue to
+					 * the next set. If slot exists but without numbers and
+					 * values, try to acquire them now
+					 */
+					if (stats->stakind[k] != 0 && (stats->numnumbers[k] > 0 ||
+							stats->numvalues[k] > 0))
+					{
+						colnum += 8;
+						continue;
+					}
+
+					/*
+					 * Initialize slot
+					 */
+					stats->stakind[k] = kind;
+					stats->staop[k] = InvalidOid;
+					stats->numnumbers[k] = 0;
+					stats->stanumbers[k] = NULL;
+					stats->numvalues[k] = 0;
+					stats->stavalues[k] = NULL;
+					stats->statypid[k] = InvalidOid;
+					stats->statyplen[k] = -1;
+					stats->statypalign[k] = 'i';
+					stats->statypbyval[k] = true;
+				}
 
 				/* Get operator */
 				value = slot_getattr(result, colnum++, &isnull); /* oprname */
@@ -3081,16 +3129,11 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 				rtypid = get_typname_typid(rtypname,
 										   get_namespaceid(rtypnspname));
 				/* lookup operator */
-				oprid = get_operid(oprname, ltypid, rtypid,
-								   get_namespaceid(oprnspname));
+				stats->staop[k] = get_operid(oprname, ltypid, rtypid,
+											 get_namespaceid(oprnspname));
 				/* get numbers */
 				value = slot_getattr(result, colnum++, &isnull); /* numbers */
-				if (isnull)
-				{
-					numbers = NULL;
-					nnumbers = 0;
-				}
-				else
+				if (!isnull)
 				{
 					ArrayType  *arry = DatumGetArrayTypeP(value);
 
@@ -3113,37 +3156,27 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 					 */
 					if ((Pointer) arry != DatumGetPointer(value))
 						pfree(arry);
+
+					stats->numnumbers[k] = nnumbers;
+					stats->stanumbers[k] = numbers;
 				}
-				/* get numbers */
-				value = slot_getattr(result, colnum++, &isnull); /* numbers */
-				if (isnull)
-				{
-					values = NULL;
-					nvalues = 0;
-				}
-				else
+				/* get values */
+				value = slot_getattr(result, colnum++, &isnull); /* values */
+				if (!isnull)
 				{
 					int 		j;
-					ArrayType  *arry = DatumGetArrayTypeP(value);
-					Form_pg_attribute att = onerel->rd_att->attrs[attnum - 1];
-					Oid			atttype = att->atttypid;
-					Form_pg_type typeForm;
-					HeapTuple	typeTuple;
-
-					/* Need to get info about the array element type */
-					typeTuple = SearchSysCache(TYPEOID,
-											   ObjectIdGetDatum(atttype),
-											   0, 0, 0);
-					if (!HeapTupleIsValid(typeTuple))
-						elog(ERROR, "cache lookup failed for type %u", atttype);
-					typeForm = (Form_pg_type) GETSTRUCT(typeTuple);
-
+					ArrayType  *arry;
+					int16		elmlen;
+					bool		elmbyval;
+					char		elmalign;
+					arry = DatumGetArrayTypeP(value);
+					/* We could cache this data, but not clear it's worth it */
+					get_typlenbyvalalign(ARR_ELEMTYPE(arry),
+										 &elmlen, &elmbyval, &elmalign);
 					/* Deconstruct array into Datum elements; NULLs not expected */
 					deconstruct_array(arry,
-									  atttype,
-									  typeForm->typlen,
-									  typeForm->typbyval,
-									  typeForm->typalign,
+									  ARR_ELEMTYPE(arry),
+									  elmlen, elmbyval, elmalign,
 									  &values, NULL, &nvalues);
 
 					/*
@@ -3151,72 +3184,24 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 					 * Datums that are pointers into the syscache value.  Copy them to
 					 * avoid problems if syscache decides to drop the entry.
 					 */
-					if (!typeForm->typbyval)
+					if (!elmbyval)
 					{
 						for (j = 0; j < nvalues; j++)
-						{
-							values[j] = datumCopy(values[j],
-												  typeForm->typbyval,
-												  typeForm->typlen);
-						}
+							values[j] = datumCopy(values[j], elmbyval, elmlen);
 					}
-
-					ReleaseSysCache(typeTuple);
 
 					/*
 					 * Free statarray if it's a detoasted copy.
 					 */
 					if ((Pointer) arry != DatumGetPointer(value))
 						pfree(arry);
-				}
 
-				/*
-				 * In the current stats structure find if this statistic kind
-				 * already exists. If does not exist copy data, otherwise merge
-				 */
-				for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
-				{
-					if (stats->stakind[k] == 0 ||
-						(stats->stakind[k] == kind && stats->staop[k] == oprid))
-						break;
-				}
-
-				if (k >= STATISTIC_NUM_SLOTS)
-				{
-					/*
-					 * This should not happen - all nodes have the same number
-					 * of statistics slots and contentes are identical.
-					 * For now clean up and skip numbers, probably we should
-					 * report the problem.
-					 */
-					if (numbers)
-						pfree(numbers);
-					if (values)
-						pfree(values);
-					continue;
-				}
-
-				if (stats->stakind[k] == 0)
-				{
-					/* empty slot, populate */
-					stats->stakind[k] = kind;
-					stats->staop[k] = oprid;
-					stats->numnumbers[k] = nnumbers;
-					stats->stanumbers[k] = numbers;
 					stats->numvalues[k] = nvalues;
 					stats->stavalues[k] = values;
-				}
-				else
-				{
-					/*
-					 * Merge statistics, ignore unknown statistic kinds and
-					 * assume statistics from one random node is representing
-					 * entire table well enough.
-					 */
-					if (numbers)
-						pfree(numbers);
-					if (values)
-						pfree(values);
+					stats->statypid[k] = ARR_ELEMTYPE(arry);
+					stats->statyplen[k] = elmlen;
+					stats->statypalign[k] = elmalign;
+					stats->statypbyval[k] = elmbyval;
 				}
 			}
 		}
