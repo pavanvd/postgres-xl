@@ -1469,10 +1469,12 @@ addRangeTableEntryForCTE(ParseState *pstate,
 					 parser_errposition(pstate, rv->location)));
 
 #ifdef PGXC
+#ifndef XCP
 		if (ctequery->returningList != NIL)
 			ereport(ERROR,
 			       (errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
 			       (errmsg("RETURNING clause not yet supported"))));
+#endif
 #endif
 	}
 
