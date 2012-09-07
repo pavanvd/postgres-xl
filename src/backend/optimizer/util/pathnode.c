@@ -942,6 +942,7 @@ redistribute_path(Path *subpath, char distributionType,
 	pathnode->path.pathtype = T_RemoteSubplan;
 	pathnode->path.parent = rel;
 	pathnode->path.param_info = subpath->param_info;
+	pathnode->path.rows = subpath->rows;
 	pathnode->path.pathkeys = subpath->pathkeys;
  	if (distributionType != LOCATOR_TYPE_NONE)
 	{
@@ -1324,6 +1325,7 @@ not_allowed_join:
 		RestrictInfo   *preferred = NULL;
 		Expr		   *new_inner_key = NULL;
 		Expr		   *new_outer_key = NULL;
+		char			distType = LOCATOR_TYPE_NONE;
 		ListCell 	   *lc;
 
 		/*
@@ -1356,13 +1358,14 @@ not_allowed_join:
 					QualCost cost;
 
 					/*
-					 * Check if both parts hash distributable and use the same
-					 * hash function (for now last is true if data types of the
-					 * expressions are the same.
+					 * Check if both parts are of the same data type and choose
+					 * distribution type to redistribute.
+					 * XXX We may want more sophisticated algorithm to choose
+					 * the best condition to redistribute parts along.
+					 * For now use simple but reliable approach.
 					 */
-					if (leftType != rightType && !IsTypeHashDistributable(leftType))
+					if (leftType != rightType)
 						continue;
-
 					/*
 					 * Evaluation cost will be needed to choose preferred
 					 * distribution
@@ -1386,6 +1389,7 @@ not_allowed_join:
 								preferred = ri;
 								new_inner_key = right;
 								new_outer_key = NULL; /* no need to change */
+								distType = outerd->distributionType;
 							}
 							continue;
 						}
@@ -1404,6 +1408,7 @@ not_allowed_join:
 								preferred = ri;
 								new_inner_key = left;
 								new_outer_key = NULL; /* no need to change */
+								distType = outerd->distributionType;
 							}
 							continue;
 						}
@@ -1425,6 +1430,7 @@ not_allowed_join:
 								preferred = ri;
 								new_inner_key = NULL; /* no need to change */
 								new_outer_key = right;
+								distType = innerd->distributionType;
 							}
 							continue;
 						}
@@ -1443,6 +1449,7 @@ not_allowed_join:
 								preferred = ri;
 								new_inner_key = NULL; /* no need to change */
 								new_outer_key = left;
+								distType = innerd->distributionType;
 							}
 							continue;
 						}
@@ -1456,6 +1463,17 @@ not_allowed_join:
 							(new_inner_key == NULL || new_outer_key == NULL))
 						continue;
 
+					/*
+					 * Skip this condition if the data type of the expressions
+					 * does not allow either HASH or MODULO distribution.
+					 * HASH distribution is preferrable.
+					 */
+					if (IsTypeHashDistributable(leftType))
+						distType = LOCATOR_TYPE_HASH;
+					else if (IsTypeModuloDistributable(leftType))
+						distType = LOCATOR_TYPE_MODULO;
+					else
+						continue;
 					/*
 					 * If this restriction the first or easier to calculate
 					 * then preferred, try to store it as new preferred
@@ -1533,7 +1551,7 @@ not_allowed_join:
 				/* Redistribute inner subquery */
 				pathnode->innerjoinpath = redistribute_path(
 						pathnode->innerjoinpath,
-						LOCATOR_TYPE_HASH,
+						distType,
 						nodes,
 						restrictNodes,
 						(Node *) new_inner_key);
@@ -1547,13 +1565,13 @@ not_allowed_join:
 				/* Redistribute outer subquery */
 				pathnode->outerjoinpath = redistribute_path(
 						pathnode->outerjoinpath,
-						LOCATOR_TYPE_HASH,
+						distType,
 						nodes,
 						restrictNodes,
 						(Node *) new_outer_key);
 			}
 			targetd = makeNode(Distribution);
-			targetd->distributionType = LOCATOR_TYPE_HASH;
+			targetd->distributionType = distType;
 			targetd->nodes = nodes;
 			targetd->restrictNodes = NULL;
 			pathnode->path.distribution = targetd;
@@ -3028,11 +3046,9 @@ create_nestloop_path(PlannerInfo *root,
 	pathnode->innerjoinpath = inner_path;
 	pathnode->joinrestrictinfo = restrict_clauses;
 
-#ifdef XCP
-	alternate = set_joinpath_distribution(root, pathnode);
-#endif
 	final_cost_nestloop(root, pathnode, workspace, sjinfo, semifactors);
 #ifdef XCP
+	alternate = set_joinpath_distribution(root, pathnode);
 	/*
 	 * Calculate costs of all alternates and return cheapest path
 	 */
@@ -3106,14 +3122,11 @@ create_mergejoin_path(PlannerInfo *root,
 	pathnode->path_mergeclauses = mergeclauses;
 	pathnode->outersortkeys = outersortkeys;
 	pathnode->innersortkeys = innersortkeys;
-	/* pathnode->materialize_inner will be set by cost_mergejoin */
-#ifdef XCP
-	alternate = set_joinpath_distribution(root, (JoinPath *) pathnode);
-#endif
 	/* pathnode->materialize_inner will be set by final_cost_mergejoin */
-
 	final_cost_mergejoin(root, pathnode, workspace, sjinfo);
 #ifdef XCP
+	alternate = set_joinpath_distribution(root, (JoinPath *) pathnode);
+
 	/*
 	 * Calculate costs of all alternates and return cheapest path
 	 */
@@ -3193,12 +3206,9 @@ create_hashjoin_path(PlannerInfo *root,
 	pathnode->jpath.joinrestrictinfo = restrict_clauses;
 	pathnode->path_hashclauses = hashclauses;
 	/* final_cost_hashjoin will fill in pathnode->num_batches */
-
-#ifdef XCP
-	alternate = set_joinpath_distribution(root, (JoinPath *) pathnode);
-#endif
 	final_cost_hashjoin(root, pathnode, workspace, sjinfo, semifactors);
 #ifdef XCP
+	alternate = set_joinpath_distribution(root, (JoinPath *) pathnode);
 	/*
 	 * Calculate costs of all alternates and return cheapest path
 	 */
