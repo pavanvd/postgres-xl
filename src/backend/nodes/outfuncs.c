@@ -28,6 +28,7 @@
 #include "nodes/relation.h"
 #ifdef XCP
 #include "fmgr.h"
+#include "miscadmin.h"
 #include "catalog/namespace.h"
 #include "pgxc/execRemote.h"
 #include "utils/lsyscache.h"
@@ -371,6 +372,7 @@ _printDatum(StringInfo str, Datum value, Oid typid)
 	FmgrInfo    finfo;
 	Datum		tmpval;
 	char	   *textvalue;
+	int			saveDateStyle;
 
 	/* Get output function for the type */
 	getTypeOutputInfo(typid, &typOutput, &typIsVarlena);
@@ -382,8 +384,20 @@ _printDatum(StringInfo str, Datum value, Oid typid)
 	else
 		tmpval = value;
 
+	/*
+	 * It was found that if configuration setting for date style is
+	 * "postgres,ymd" the output dates have format DD-MM-YYYY and they can not
+	 * be parsed correctly by receiving party. So force ISO format YYYY-MM-DD
+	 * in internal cluster communications, these values are always parsed
+	 * correctly.
+	 */
+	saveDateStyle = DateStyle;
+	DateStyle = USE_ISO_DATES;
+
 	textvalue = DatumGetCString(FunctionCall1(&finfo, tmpval));
 	_outToken(str, textvalue);
+
+	DateStyle = saveDateStyle;
 }
 #endif
 
