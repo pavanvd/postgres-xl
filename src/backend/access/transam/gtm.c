@@ -436,54 +436,6 @@ AlterSequenceGTM(char *seqname, GTM_Sequence increment, GTM_Sequence minval,
 	return conn ? alter_sequence(conn, &seqkey, increment, minval, maxval, startval, lastval, cycle, is_restart) : 0;
 }
 
-/*
- * get the current sequence value
- */
-
-GTM_Sequence
-GetCurrentValGTM(char *seqname)
-{
-	GTM_Sequence ret = -1;
-	GTM_SequenceKeyData seqkey;
-#ifdef XCP
-	char   *coordName = IS_PGXC_COORDINATOR ? PGXCNodeName : MyCoordName;
-	int		coordPid = IS_PGXC_COORDINATOR ? MyProcPid : MyCoordPid;
-	int		status;
-#endif
-	CheckConnection();
-	seqkey.gsk_keylen = strlen(seqname) + 1;
-	seqkey.gsk_key = seqname;
-
-#ifdef XCP
-	if (conn)
-		status = get_current(conn, &seqkey, coordName, coordPid, &ret);
-	else
-		status = GTM_RESULT_COMM_ERROR;
-
-	/* retry once */
-	if (status == GTM_RESULT_COMM_ERROR)
-	{
-		CloseGTM();
-		InitGTM();
-		if (conn)
-			status = get_current(conn, &seqkey, coordName, coordPid, &ret);
-	}
-	if (status != GTM_RESULT_OK)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("%s", GTMPQerrorMessage(conn))));
-#else
-	if (conn)
-		ret =  get_current(conn, &seqkey);
-
-	if (ret < 0)
-	{
-		CloseGTM();
-		InitGTM();
-	}
-#endif
-	return ret;
-}
 
 /*
  * Get the next sequence value

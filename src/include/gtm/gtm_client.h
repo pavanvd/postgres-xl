@@ -61,8 +61,8 @@ typedef union GTM_ResultData
 #ifdef XCP
 		GTM_Sequence			rangemax;
 #endif
-	} grd_seq;									/* SEQUENCE_GET_CURRENT
-												 * SEQUENCE_GET_NEXT */
+	} grd_seq;									/* SEQUENCE_GET_NEXT */
+
 	struct
 	{
 		int						seq_count;
@@ -281,8 +281,6 @@ int bkup_close_sequence(GTM_Conn *conn, GTM_SequenceKey key);
 int rename_sequence(GTM_Conn *conn, GTM_SequenceKey key, GTM_SequenceKey newkey);
 int bkup_rename_sequence(GTM_Conn *conn, GTM_SequenceKey key, GTM_SequenceKey newkey);
 #ifdef XCP
-int get_current(GTM_Conn *conn, GTM_SequenceKey key,
-			char *coord_name, int coord_procid, GTM_Sequence *result);
 int get_next(GTM_Conn *conn, GTM_SequenceKey key,
 		 char *coord_name, int coord_procid,
 		 GTM_Sequence range, GTM_Sequence *result, GTM_Sequence *rangemax);
@@ -294,7 +292,6 @@ int set_val(GTM_Conn *conn, GTM_SequenceKey key, char *coord_name,
 int bkup_set_val(GTM_Conn *conn, GTM_SequenceKey key, char *coord_name,
 			 int coord_procid, GTM_Sequence nextval, bool iscalled);
 #else
-GTM_Sequence get_current(GTM_Conn *conn, GTM_SequenceKey key);
 GTM_Sequence get_next(GTM_Conn *conn, GTM_SequenceKey key);
 GTM_Sequence bkup_get_next(GTM_Conn *conn, GTM_SequenceKey key);
 int set_val(GTM_Conn *conn, GTM_SequenceKey key, GTM_Sequence nextval, bool is_called);
