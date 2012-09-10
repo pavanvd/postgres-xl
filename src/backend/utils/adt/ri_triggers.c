@@ -267,7 +267,7 @@ RI_FKey_check(PG_FUNCTION_ARGS)
 	int			i;
 
 #ifdef PGXC
-	/* 
+	/*
 	 * Referential integrity is not supported on Coordinator as it has no data, so
 	 * we just come out of the function without actually performing any integrity checks.
 	 */
@@ -2778,7 +2778,6 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	}
 	appendStringInfo(&querybuf, ")");
 
-#ifndef XCP
 	/*
 	 * Temporarily increase work_mem so that the check query can be executed
 	 * more efficiently.  It seems okay to do this because the query is simple
@@ -2793,6 +2792,12 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	 */
 	save_nestlevel = NewGUCNestLevel();
 
+#ifndef XCP
+	/*
+	 * In multitenant extension we restrict permission on work_mem.
+	 * This code may be executed by ordinary user, so skip this optimization.
+	 * XXX look for workaround
+	 */
 	snprintf(workmembuf, sizeof(workmembuf), "%d", maintenance_work_mem);
 	(void) set_config_option("work_mem", workmembuf,
 							 PGC_USERSET, PGC_S_SESSION,
