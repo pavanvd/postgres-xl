@@ -385,21 +385,33 @@ ExecFinishInitProcNode(PlanState *node)
 	if (node == NULL)
 		return;
 
+	/* Special cases */
 	switch (nodeTag(node))
 	{
 		case T_RemoteSubplanState:
 			ExecFinishInitRemoteSubplan((RemoteSubplanState *) node);
 			break;
 
+		case T_AppendState:
+		{
+			AppendState    *append = (RemoteSubplanState *) node;
+			int 			i;
+
+			for (i = 0; i < append->as_nplans; i++)
+				ExecFinishInitProcNode(append->appendplans[i]);
+
+			break;
+		}
+
 		default:
-			/*
-			 * XXX Implement functions for different plan node types, for now
-			 * try to traverse the plan tree
-			 */
-			ExecFinishInitProcNode(node->lefttree);
-			ExecFinishInitProcNode(node->righttree);
 			break;
 	}
+
+	/*
+	 * Common case, recurse the tree
+	 */
+	ExecFinishInitProcNode(node->lefttree);
+	ExecFinishInitProcNode(node->righttree);
 
 	subps = NIL;
 	foreach(l, node->plan->initPlan)
