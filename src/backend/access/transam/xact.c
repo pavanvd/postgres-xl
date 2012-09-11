@@ -50,6 +50,7 @@
 #include "catalog/namespace.h"
 #include "catalog/storage.h"
 #include "commands/async.h"
+#include "commands/dbcommands.h"
 #include "commands/tablecmds.h"
 #include "commands/trigger.h"
 #include "executor/spi.h"
@@ -2433,6 +2434,15 @@ CommitTransaction(void)
 
 	CallXactCallbacks(XACT_EVENT_COMMIT);
 
+#ifdef PGXC
+	/*
+	 * Call any callback functions initialized for post-commit cleaning up
+	 * of database/tablespace operations. Mostly this should involve resetting
+	 * the abort callback functions registered during the db/tbspc operations.
+	 */
+	AtEOXact_DBCleanup(true);
+#endif
+
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_BEFORE_LOCKS,
 						 true, true);
@@ -2991,6 +3001,13 @@ AbortTransaction(void)
 	TransactionId latestXid;
 
 #ifdef PGXC
+	/*
+	 * Cleanup the files created during database/tablespace operations.
+	 * This must happen before we release locks, because we want to hold the
+	 * locks acquired initially while we cleanup the files.
+	 */
+	AtEOXact_DBCleanup(false);
+
 	/*
 	 * Save the current top transaction ID. We need this to close the
 	 * transaction at the GTM at thr end

@@ -151,3 +151,4 @@ test: xc_copy
 test: xc_alter_table
 test: xc_sequence
 test: xc_prepared_xacts
+test: xc_notrans_block
