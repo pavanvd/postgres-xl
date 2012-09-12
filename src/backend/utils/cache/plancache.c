@@ -443,6 +443,7 @@ ReleaseGenericPlan(CachedPlanSource *plansource)
 		CachedPlan *plan = plansource->gplan;
 
 #ifdef PGXC
+#ifndef XCP
 		/* Drop this plan on remote nodes */
 		if (plan)
 		{
@@ -461,10 +462,11 @@ ReleaseGenericPlan(CachedPlanSource *plansource)
 			}
 		}
 #endif
+#endif
 
 #ifdef XCP
 		/* Release SharedQueue if still held */
-		if (plan && list_length(plan->stmt_list) == 1)
+		if (IsConnFromDatanode() && plan && list_length(plan->stmt_list) == 1)
 		{
 			PlannedStmt *pstmt;
 
@@ -1838,11 +1840,14 @@ SetRemoteSubplan(CachedPlanSource *plansource, const char *plan_string)
 	stmt->distributionNodes = rstmt->distributionNodes;
 	stmt->distributionRestrict = rstmt->distributionRestrict;
 
-#ifdef XCP
-	if (stmt->pname && list_length(stmt->distributionRestrict) > 1)
+	/*
+	 * Set up SharedQueue if intermediate results need to be distributed
+	 * on multiple destination Datanodes.
+	 */
+	if (IsConnFromDatanode() && stmt->pname &&
+			list_length(stmt->distributionRestrict) > 1)
 		SharedQueueAcquire(stmt->pname,
 						   list_length(stmt->distributionRestrict) - 1);
-#endif
 
 	/*
 	 * Create and fill the CachedPlan struct within the new context.

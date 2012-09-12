@@ -701,12 +701,26 @@ PortalStart(Portal portal, ParamListInfo params,
 						Oid			keytype;
 						DestReceiver *dest;
 
-						addProducingPortal(portal);
+						PG_TRY();
+						{
+							/*
+							 * Call ExecutorStart to prepare the plan for execution
+							 */
+							ExecutorStart(queryDesc, eflags);
+						}
+						PG_CATCH();
+						{
+							/* Ensure SharedQueue is released */
+							SharedQueueUnBind(queryDesc->squeue);
+							queryDesc->squeue = NULL;
+							PG_RE_THROW();
+						}
+						PG_END_TRY();
 
 						/*
-						 * Call ExecutorStart to prepare the plan for execution
+						 * This tells PortalCleanup to shut down the executor
 						 */
-						ExecutorStart(queryDesc, eflags);
+						portal->queryDesc = queryDesc;
 
 						/*
 						 * Set up locator if result distribution is requested
@@ -728,6 +742,8 @@ PortalStart(Portal portal, ParamListInfo params,
 								queryDesc->plannedstmt->distributionKey,
 								locator, queryDesc->squeue);
 						queryDesc->dest = dest;
+
+						addProducingPortal(portal);
 					}
 					else
 					{
@@ -741,9 +757,7 @@ PortalStart(Portal portal, ParamListInfo params,
 					}
 					pfree(consMap);
 				}
-				/*
-				 * This tells PortalCleanup to shut down the executor
-				 */
+
 				portal->queryDesc = queryDesc;
 
 				/*
