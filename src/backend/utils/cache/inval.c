@@ -98,6 +98,9 @@
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "miscadmin.h"
+#ifdef XCP
+#include "pgxc/pgxc.h"
+#endif
 #include "storage/sinval.h"
 #include "storage/smgr.h"
 #include "utils/inval.h"
@@ -831,7 +834,18 @@ ProcessCommittedInvalidationMessages(SharedInvalidationMessage *msgs,
 void
 AtEOXact_Inval(bool isCommit)
 {
+#ifdef XCP
+	/*
+	 * StormDB distributed session may run on multiple backends, and we need
+	 * to broadcast invalidation messages so they reach other backends even
+	 * in case of rollback. If the session runs on single backend the
+	 * invalidation messages may be still applied locally. So the criteria may
+	 * be more complex.
+	 */
+	if (isCommit || IS_PGXC_DATANODE)
+#else
 	if (isCommit)
+#endif
 	{
 		/* Must be at top of stack */
 		Assert(transInvalInfo != NULL && transInvalInfo->parent == NULL);
