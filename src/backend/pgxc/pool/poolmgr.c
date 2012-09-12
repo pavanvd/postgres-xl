@@ -2686,9 +2686,6 @@ PoolerLoop(void)
 
 	for (;;)
 	{
-#ifdef XCP
-		struct timeval	maintenance_timeout;
-#endif
 		int			nfds;
 		fd_set		rfds;
 		int			retval;
@@ -2718,13 +2715,18 @@ PoolerLoop(void)
 		}
 
 #ifdef XCP
-		maintenance_timeout.tv_sec = PoolMaintenanceTimeout;
-		maintenance_timeout.tv_usec = 0;
-		/* wait for event */
-		retval = select(nfds + 1, &rfds, NULL, NULL, &maintenance_timeout);
-#else
-		retval = select(nfds + 1, &rfds, NULL, NULL, NULL);
+		if (PoolMaintenanceTimeout > 0)
+		{
+			struct timeval	maintenance_timeout;
+
+			maintenance_timeout.tv_sec = PoolMaintenanceTimeout;
+			maintenance_timeout.tv_usec = 0;
+			/* wait for event */
+			retval = select(nfds + 1, &rfds, NULL, NULL, &maintenance_timeout);
+		}
+		else
 #endif
+		retval = select(nfds + 1, &rfds, NULL, NULL, NULL);
 #ifdef XCP
 		/*
 		 * Emergency bailout if postmaster has died.  This is to avoid the
@@ -2775,11 +2777,13 @@ PoolerLoop(void)
 			if (FD_ISSET(server_fd, &rfds))
 				agent_create();
 		}
+#ifdef XCP
 		else if (retval == 0)
 		{
 			/* maintenance timeout */
 			pools_maintenance();
 		}
+#endif
 	}
 }
 
