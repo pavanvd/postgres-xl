@@ -16,7 +16,8 @@
  *
  *-------------------------------------------------------------------------
  */
-#ifdef PGXC
+#ifndef PGXC_H
+#define PGXC_H
 
 #include "storage/lwlock.h"
 #include "postgres.h"

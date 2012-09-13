@@ -18,8 +18,8 @@
  *-------------------------------------------------------------------------
  */
 
-#ifndef DATANODE_H
-#define DATANODE_H
+#ifndef PGXCNODE_H
+#define PGXCNODE_H
 #include "postgres.h"
 #include "gtm/gtm_c.h"
 #include "utils/timestamp.h"
@@ -243,4 +243,4 @@ extern void pgxc_node_set_query(PGXCNodeHandle *handle, const char *set_query);
 extern void RequestInvalidateRemoteHandles(void);
 #endif
 
-#endif
+#endif /* PGXCNODE_H */
