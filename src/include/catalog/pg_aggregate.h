@@ -392,9 +392,9 @@ DATA(insert ( 2829	float8_regr_accum	float8_regr_collect	float8_corr				0	1022	1
 
 /* boolean-and and boolean-or */
 #ifdef PGXC
-DATA(insert ( 2517	booland_statefunc	booland_statefunc	-		0	58		16		_null_ _null_ ));
-DATA(insert ( 2518	boolor_statefunc	boolor_statefunc	-		0	59		16		_null_ _null_ ));
-DATA(insert ( 2519	booland_statefunc	booland_statefunc	-		0	58		16		_null_ _null_ ));
+DATA(insert ( 2517	booland_statefunc	booland_statefunc	-		58	16		16		_null_ _null_ ));
+DATA(insert ( 2518	boolor_statefunc	boolor_statefunc	-		59	16		16		_null_ _null_ ));
+DATA(insert ( 2519	booland_statefunc	booland_statefunc	-		58	16		16		_null_ _null_ ));
 #endif
 #ifdef PGXC
 //DATA(insert ( 2517	booland_statefunc	-		58	16		_null_ ));
