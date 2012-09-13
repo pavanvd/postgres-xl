@@ -154,6 +154,7 @@ static bool extract_query_dependencies_walker(Node *node,
 								  PlannerInfo *context);
 
 #ifdef PGXC
+#ifndef XCP
 /* References for remote plans */
 static List * fix_remote_expr(PlannerInfo *root,
 			  List *clauses,
@@ -163,6 +164,10 @@ static List * fix_remote_expr(PlannerInfo *root,
 static Node *fix_remote_expr_mutator(Node *node,
 			  fix_remote_expr_context *context);
 static void set_remote_references(PlannerInfo *root, RemoteQuery *rscan, int rtoffset);
+#endif
+#endif
+#ifdef XCP
+static void set_remotesubplan_references(RemoteSubplan *rsplan, int rtoffset);
 #endif
 
 
@@ -461,6 +466,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 			}
 			break;
 #ifdef PGXC
+#ifndef XCP
 		case T_RemoteQuery:
 			{
 				RemoteQuery	   *splan = (RemoteQuery *) plan;
@@ -481,6 +487,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 			}
 			break;
 #endif
+#endif
 		case T_ForeignScan:
 			{
 				ForeignScan *splan = (ForeignScan *) plan;
@@ -496,15 +503,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 			break;
 #ifdef XCP
 		case T_RemoteSubplan:
-			{
-				RemoteSubplan  *splan = (RemoteSubplan *) plan;
-
-				splan->scan.scanrelid += rtoffset;
-				splan->scan.plan.targetlist =
-					fix_scan_list(root, splan->scan.plan.targetlist, rtoffset);
-				splan->scan.plan.qual =
-					fix_scan_list(root, splan->scan.plan.qual, rtoffset);
-			}
+			set_remotesubplan_references((RemoteSubplan *) plan, rtoffset);
 			break;
 #endif /* XCP */
 		case T_NestLoop:
@@ -2142,6 +2141,10 @@ extract_query_dependencies_walker(Node *node, PlannerInfo *context)
 	return expression_tree_walker(node, extract_query_dependencies_walker,
 								  (void *) context);
 }
+
+
+#ifdef PGXC
+#ifndef XCP
 /*
  * fix_remote_expr
  *	   Create a new set of targetlist entries or qual clauses by
@@ -2244,10 +2247,71 @@ set_remote_references(PlannerInfo *root, RemoteQuery *rscan, int rtoffset)
 	pfree(base_itlist);
 }
 
-#ifdef PGXC
 Node *
 pgxc_fix_scan_expr(PlannerInfo *root, Node *node, int rtoffset)
 {
 	return fix_scan_expr(root, node, rtoffset);
 }
+#endif /* XCP */
 #endif /* PGXC */
+
+
+#ifdef XCP
+/*
+ * set_remotesubplan_references
+ *    Usually RemoteSubplan node does not evaluate its target list, so it is
+ * enought to invoke set_dummy_tlist_references here. One exception is if the
+ * RemoteSubplan is set on top of ModifyTable. In this case target lists of both
+ * these plan nodes are NIL. If the subplan is not returning we want to leave
+ * target list NIL, if yes, we should make up target list as a list of simple
+ * references to entries from the first returning list.
+ */
+static void
+set_remotesubplan_references(RemoteSubplan *rsplan, int rtoffset)
+{
+	if (rsplan->scan.plan.targetlist == NIL)
+	{
+		ModifyTable *mt = (ModifyTable *) rsplan->scan.plan.lefttree;
+		if (IsA(mt, ModifyTable) && mt->returningLists)
+		{
+			List 	   *returningList;
+			List	   *output_targetlist;
+			ListCell   *l;
+
+			returningList = (List *) linitial(mt->returningLists);
+			output_targetlist = NIL;
+			foreach(l, returningList)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(l);
+				Var		   *newvar;
+
+				newvar = makeVar(OUTER_VAR,
+								 tle->resno,
+								 exprType((Node *) tle->expr),
+								 exprTypmod((Node *) tle->expr),
+								 exprCollation((Node *) tle->expr),
+								 0);
+				if (IsA(tle->expr, Var))
+				{
+					newvar->varnoold = ((Var *) tle->expr)->varno + rtoffset;
+					newvar->varoattno = ((Var *) tle->expr)->varattno;
+				}
+				else
+				{
+					newvar->varnoold = 0;		/* wasn't ever a plain Var */
+					newvar->varoattno = 0;
+				}
+
+				tle = flatCopyTargetEntry(tle);
+				tle->expr = (Expr *) newvar;
+				output_targetlist = lappend(output_targetlist, tle);
+			}
+			rsplan->scan.plan.targetlist = output_targetlist;
+		}
+	}
+	else
+		set_dummy_tlist_references((Plan *) rsplan, rtoffset);
+
+	Assert(rsplan->scan.plan.qual == NULL);
+}
+#endif
