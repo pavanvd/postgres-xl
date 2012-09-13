@@ -403,6 +403,10 @@ ExecFinishInitProcNode(PlanState *node)
 			break;
 		}
 
+		case T_SubqueryScanState:
+			ExecFinishInitProcNode(((SubqueryScanState *) node)->subplan);
+			break;
+
 		default:
 			break;
 	}
