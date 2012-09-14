@@ -3,7 +3,7 @@
  * readfuncs.c
  *	  Reader functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
@@ -78,7 +78,7 @@ set_portable_input(bool value)
 #define READ_TEMP_LOCALS()	\
 	char	   *token;		\
 	int			length;		\
-	(void) token /* possibly unused */
+	(void) token				/* possibly unused */
 
 /* ... but most need both */
 #define READ_LOCALS(nodeTypeName)			\
@@ -167,8 +167,10 @@ set_portable_input(bool value)
 
 #ifdef XCP
 /* Read fields of a Plan node */
-#define READ_PLAN_FIELDS() \
-	Plan *plan_node = (Plan *) local_node; \
+#define READ_PLAN_FIELDS(nodeTypeName) \
+	Plan *plan_node; \
+	READ_LOCALS(nodeTypeName); \
+	plan_node = (Plan *) local_node; \
 	token = pg_strtok(&length);		/* skip :startup_cost */ \
 	token = pg_strtok(&length);		/* get field value */ \
 	plan_node->startup_cost = atof(token); \
@@ -197,17 +199,19 @@ set_portable_input(bool value)
 	plan_node->allParam = _readBitmapset()
 
 /* Read fields of a Scan node */
-#define READ_SCAN_FIELDS() \
-	Scan *scan_node = (Scan *) local_node; \
-	READ_PLAN_FIELDS(); \
+#define READ_SCAN_FIELDS(nodeTypeName) \
+	Scan *scan_node; \
+	READ_PLAN_FIELDS(nodeTypeName); \
+	scan_node = (Scan *) local_node; \
 	token = pg_strtok(&length);		/* skip :scanrelid */ \
 	token = pg_strtok(&length);		/* get field value */ \
 	scan_node->scanrelid = atoi(token)
 
 /* Read fields of a Join node */
-#define READ_JOIN_FIELDS() \
-	Join *join_node = (Join *) local_node; \
-	READ_PLAN_FIELDS(); \
+#define READ_JOIN_FIELDS(nodeTypeName) \
+	Join *join_node; \
+	READ_PLAN_FIELDS(nodeTypeName); \
+	join_node = (Join *) local_node; \
 	token = pg_strtok(&length);		/* skip :jointype */ \
 	token = pg_strtok(&length);		/* get field value */ \
 	join_node->jointype = (JoinType) atoi(token); \
@@ -436,11 +440,10 @@ _readQuery(void)
 
 	READ_ENUM_FIELD(commandType, CmdType);
 	READ_ENUM_FIELD(querySource, QuerySource);
-	local_node->queryId = 0;			/* not saved in output format */
+	local_node->queryId = 0;	/* not saved in output format */
 	READ_BOOL_FIELD(canSetTag);
 	READ_NODE_FIELD(utilityStmt);
 	READ_INT_FIELD(resultRelation);
-	READ_NODE_FIELD(intoClause);
 	READ_BOOL_FIELD(hasAggs);
 	READ_BOOL_FIELD(hasWindowFuncs);
 	READ_BOOL_FIELD(hasSubLinks);
@@ -646,6 +649,7 @@ _readIntoClause(void)
 	READ_NODE_FIELD(options);
 	READ_ENUM_FIELD(onCommit, OnCommitAction);
 	READ_STRING_FIELD(tableSpaceName);
+	READ_BOOL_FIELD(skipData);
 
 	READ_DONE();
 }
@@ -1860,6 +1864,7 @@ _readRangeTblEntry(void)
 			break;
 		case RTE_SUBQUERY:
 			READ_NODE_FIELD(subquery);
+			READ_BOOL_FIELD(security_barrier);
 			break;
 		case RTE_JOIN:
 			READ_ENUM_FIELD(jointype, JoinType);
@@ -1922,9 +1927,7 @@ _readRangeTblEntry(void)
 static Plan *
 _readPlan(void)
 {
-	READ_LOCALS(Plan);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(Plan);
 
 	READ_DONE();
 }
@@ -1937,9 +1940,8 @@ _readPlan(void)
 static Result *
 _readResult(void)
 {
-	READ_LOCALS(Result);
+	READ_PLAN_FIELDS(Result);
 
-	READ_PLAN_FIELDS();
 	READ_NODE_FIELD(resconstantqual);
 
 	READ_DONE();
@@ -1952,9 +1954,8 @@ _readResult(void)
 static ModifyTable *
 _readModifyTable(void)
 {
-	READ_LOCALS(ModifyTable);
+	READ_PLAN_FIELDS(ModifyTable);
 
-	READ_PLAN_FIELDS();
 	READ_ENUM_FIELD(operation, CmdType);
 	READ_BOOL_FIELD(canSetTag);
 	READ_NODE_FIELD(resultRelations);
@@ -1974,9 +1975,8 @@ _readModifyTable(void)
 static Append *
 _readAppend(void)
 {
-	READ_LOCALS(Append);
+	READ_PLAN_FIELDS(Append);
 
-	READ_PLAN_FIELDS();
 	READ_NODE_FIELD(appendplans);
 
 	READ_DONE();
@@ -1990,9 +1990,8 @@ static MergeAppend *
 _readMergeAppend(void)
 {
 	int i;
-	READ_LOCALS(MergeAppend);
+	READ_PLAN_FIELDS(MergeAppend);
 
-	READ_PLAN_FIELDS();
 	READ_NODE_FIELD(mergeplans);
 	READ_INT_FIELD(numCols);
 
@@ -2096,9 +2095,8 @@ static RecursiveUnion *
 _readRecursiveUnion(void)
 {
 	int i;
-	READ_LOCALS(RecursiveUnion);
+	READ_PLAN_FIELDS(RecursiveUnion);
 
-	READ_PLAN_FIELDS();
 	READ_INT_FIELD(wtParam);
 	READ_INT_FIELD(numCols);
 
@@ -2130,9 +2128,8 @@ _readRecursiveUnion(void)
 static BitmapAnd *
 _readBitmapAnd(void)
 {
-	READ_LOCALS(BitmapAnd);
+	READ_PLAN_FIELDS(BitmapAnd);
 
-	READ_PLAN_FIELDS();
 	READ_NODE_FIELD(bitmapplans);
 
 	READ_DONE();
@@ -2145,9 +2142,8 @@ _readBitmapAnd(void)
 static BitmapOr *
 _readBitmapOr(void)
 {
-	READ_LOCALS(BitmapOr);
+	READ_PLAN_FIELDS(BitmapOr);
 
-	READ_PLAN_FIELDS();
 	READ_NODE_FIELD(bitmapplans);
 
 	READ_DONE();
@@ -2160,9 +2156,7 @@ _readBitmapOr(void)
 static Scan *
 _readScan(void)
 {
-	READ_LOCALS(Scan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(Scan);
 
 	READ_DONE();
 }
@@ -2174,9 +2168,7 @@ _readScan(void)
 static SeqScan *
 _readSeqScan(void)
 {
-	READ_LOCALS(SeqScan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(SeqScan);
 
 	READ_DONE();
 }
@@ -2188,9 +2180,7 @@ _readSeqScan(void)
 static IndexScan *
 _readIndexScan(void)
 {
-	READ_LOCALS(IndexScan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(IndexScan);
 
 	if (portable_input)
 		READ_RELID_FIELD(indexid);
@@ -2207,14 +2197,33 @@ _readIndexScan(void)
 
 
 /*
+ * _readIndexOnlyScan
+ */
+static IndexOnlyScan *
+_readIndexOnlyScan(void)
+{
+	READ_SCAN_FIELDS(IndexOnlyScan);
+
+	if (portable_input)
+		READ_RELID_FIELD(indexid);
+	else
+		READ_OID_FIELD(indexid);
+	READ_NODE_FIELD(indexqual);
+	READ_NODE_FIELD(indexorderby);
+	READ_NODE_FIELD(indextlist);
+	READ_ENUM_FIELD(indexorderdir, ScanDirection);
+
+	READ_DONE();
+}
+
+
+/*
  * _readBitmapIndexScan
  */
 static BitmapIndexScan *
 _readBitmapIndexScan(void)
 {
-	READ_LOCALS(BitmapIndexScan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(BitmapIndexScan);
 
 	if (portable_input)
 		READ_RELID_FIELD(indexid);
@@ -2233,9 +2242,7 @@ _readBitmapIndexScan(void)
 static BitmapHeapScan *
 _readBitmapHeapScan(void)
 {
-	READ_LOCALS(BitmapHeapScan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(BitmapHeapScan);
 
 	READ_NODE_FIELD(bitmapqualorig);
 
@@ -2249,9 +2256,7 @@ _readBitmapHeapScan(void)
 static TidScan *
 _readTidScan(void)
 {
-	READ_LOCALS(TidScan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(TidScan);
 
 	READ_NODE_FIELD(tidquals);
 
@@ -2265,13 +2270,9 @@ _readTidScan(void)
 static SubqueryScan *
 _readSubqueryScan(void)
 {
-	READ_LOCALS(SubqueryScan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(SubqueryScan);
 
 	READ_NODE_FIELD(subplan);
-	READ_NODE_FIELD(subrtable);
-	READ_NODE_FIELD(subrowmark);
 
 	READ_DONE();
 }
@@ -2283,9 +2284,7 @@ _readSubqueryScan(void)
 static FunctionScan *
 _readFunctionScan(void)
 {
-	READ_LOCALS(FunctionScan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(FunctionScan);
 
 	READ_NODE_FIELD(funcexpr);
 	READ_NODE_FIELD(funccolnames);
@@ -2303,9 +2302,7 @@ _readFunctionScan(void)
 static ValuesScan *
 _readValuesScan(void)
 {
-	READ_LOCALS(ValuesScan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(ValuesScan);
 
 	READ_NODE_FIELD(values_lists);
 
@@ -2319,9 +2316,7 @@ _readValuesScan(void)
 static CteScan *
 _readCteScan(void)
 {
-	READ_LOCALS(CteScan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(CteScan);
 
 	READ_INT_FIELD(ctePlanId);
 	READ_INT_FIELD(cteParam);
@@ -2336,9 +2331,7 @@ _readCteScan(void)
 static WorkTableScan *
 _readWorkTableScan(void)
 {
-	READ_LOCALS(WorkTableScan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(WorkTableScan);
 
 	READ_INT_FIELD(wtParam);
 
@@ -2352,9 +2345,7 @@ _readWorkTableScan(void)
 static Join *
 _readJoin(void)
 {
-	READ_LOCALS(Join);
-
-	READ_JOIN_FIELDS();
+	READ_JOIN_FIELDS(Join);
 
 	READ_DONE();
 }
@@ -2366,9 +2357,7 @@ _readJoin(void)
 static NestLoop *
 _readNestLoop(void)
 {
-	READ_LOCALS(NestLoop);
-
-	READ_JOIN_FIELDS();
+	READ_JOIN_FIELDS(NestLoop);
 
 	READ_NODE_FIELD(nestParams);
 
@@ -2384,9 +2373,7 @@ _readMergeJoin(void)
 {
 	int			numCols;
 	int			i;
-	READ_LOCALS(MergeJoin);
-
-	READ_JOIN_FIELDS();
+	READ_JOIN_FIELDS(MergeJoin);
 
 	READ_NODE_FIELD(mergeclauses);
 	numCols = list_length(local_node->mergeclauses);
@@ -2453,9 +2440,7 @@ _readMergeJoin(void)
 static HashJoin *
 _readHashJoin(void)
 {
-	READ_LOCALS(HashJoin);
-
-	READ_JOIN_FIELDS();
+	READ_JOIN_FIELDS(HashJoin);
 
 	READ_NODE_FIELD(hashclauses);
 
@@ -2469,9 +2454,7 @@ _readHashJoin(void)
 static Material *
 _readMaterial(void)
 {
-	READ_LOCALS(Material);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(Material);
 
 	READ_DONE();
 }
@@ -2484,9 +2467,7 @@ static Sort *
 _readSort(void)
 {
 	int i;
-	READ_LOCALS(Sort);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(Sort);
 
 	READ_INT_FIELD(numCols);
 
@@ -2590,9 +2571,7 @@ static Group *
 _readGroup(void)
 {
 	int i;
-	READ_LOCALS(Group);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(Group);
 
 	READ_INT_FIELD(numCols);
 
@@ -2661,9 +2640,7 @@ static Agg *
 _readAgg(void)
 {
 	int i;
-	READ_LOCALS(Agg);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(Agg);
 
 	READ_ENUM_FIELD(aggstrategy, AggStrategy);
 	READ_ENUM_FIELD(aggdistribution, AggDistribution);
@@ -2736,9 +2713,7 @@ static WindowAgg *
 _readWindowAgg(void)
 {
 	int i;
-	READ_LOCALS(WindowAgg);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(WindowAgg);
 
 	READ_INT_FIELD(winref);
 	READ_INT_FIELD(partNumCols);
@@ -2866,9 +2841,7 @@ static Unique *
 _readUnique(void)
 {
 	int i;
-	READ_LOCALS(Unique);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(Unique);
 
 	READ_INT_FIELD(numCols);
 
@@ -2936,9 +2909,7 @@ _readUnique(void)
 static Hash *
 _readHash(void)
 {
-	READ_LOCALS(Hash);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(Hash);
 
 	if (portable_input)
 		READ_RELID_FIELD(skewTable);
@@ -2963,9 +2934,7 @@ static SetOp *
 _readSetOp(void)
 {
 	int i;
-	READ_LOCALS(SetOp);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(SetOp);
 
 	READ_ENUM_FIELD(cmd, SetOpCmd);
 	READ_ENUM_FIELD(strategy, SetOpStrategy);
@@ -3001,9 +2970,7 @@ _readSetOp(void)
 static Limit *
 _readLimit(void)
 {
-	READ_LOCALS(Limit);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(Limit);
 
 	READ_NODE_FIELD(limitOffset);
 	READ_NODE_FIELD(limitCount);
@@ -3018,9 +2985,7 @@ _readLimit(void)
 static RemoteSubplan *
 _readRemoteSubplan(void)
 {
-	READ_LOCALS(RemoteSubplan);
-
-	READ_SCAN_FIELDS();
+	READ_SCAN_FIELDS(RemoteSubplan);
 
 	READ_CHAR_FIELD(distributionType);
 	READ_INT_FIELD(distributionKey);
@@ -3245,9 +3210,7 @@ _readPlanRowMark(void)
 static LockRows *
 _readLockRows(void)
 {
-	READ_LOCALS(LockRows);
-
-	READ_PLAN_FIELDS();
+	READ_PLAN_FIELDS(LockRows);
 
 	READ_NODE_FIELD(rowMarks);
 	READ_INT_FIELD(epqParam);
@@ -3409,6 +3372,8 @@ parseNodeString(void)
 		return_value = _readSeqScan();
 	else if (MATCH("INDEXSCAN", 9))
 		return_value = _readIndexScan();
+	else if (MATCH("INDEXONLYSCAN", 13))
+		return_value = _readIndexOnlyScan();
 	else if (MATCH("BITMAPINDEXSCAN", 15))
 		return_value = _readBitmapIndexScan();
 	else if (MATCH("BITMAPHEAPSCAN", 14))

@@ -52,6 +52,32 @@
 #ifdef XCP
 #include "utils/date.h"
 #include "utils/memutils.h"
+
+/*
+ * Locator details are private
+ */
+struct _Locator
+{
+	/*
+	 * Determine target nodes for value.
+	 * Resulting nodes are stored to the results array.
+	 * Function returns number of node references written to the array.
+	 */
+	int			(*locatefunc) (Locator *self, Datum value, bool isnull,
+								bool *hasprimary);
+	Oid			dataType; 		/* values of that type are passed to locateNodes function */
+	LocatorListType listType;
+	bool		primary;
+	/* locator-specific data */
+	/* XXX: move them into union ? */
+	int			roundRobinNode; /* for LOCATOR_TYPE_RROBIN */
+	LocatorHashFunc	hashfunc; /* for LOCATOR_TYPE_HASH */
+	int 		valuelen; /* 1, 2 or 4 for LOCATOR_TYPE_MODULO */
+
+	int			nodeCount; /* How many nodes are in the map */
+	void	   *nodeMap; /* map index to node reference according to listType */
+	void	   *results; /* array to output results */
+};
 #endif
 
 #ifndef XCP
@@ -64,6 +90,8 @@ int		num_preferred_data_nodes = 0;
 Oid		preferred_data_node[MAX_PREFERRED_NODES];
 
 #ifdef XCP
+static int modulo_value_len(Oid dataType);
+static LocatorHashFunc hash_func_ptr(Oid dataType);
 static int locate_static(Locator *self, Datum value, bool isnull,
 			  bool *hasprimary);
 static int locate_roundrobin(Locator *self, Datum value, bool isnull,
@@ -331,6 +359,9 @@ char *pColName;
 bool
 IsTypeHashDistributable(Oid col_type)
 {
+#ifdef XCP
+	return (hash_func_ptr(col_type) != NULL);
+#else
 	if(col_type == INT8OID
 	|| col_type == INT2OID
 	|| col_type == OIDOID
@@ -356,13 +387,11 @@ IsTypeHashDistributable(Oid col_type)
 	|| col_type == INTERVALOID
 	|| col_type == TIMETZOID
 	|| col_type == NUMERICOID
-#ifdef XCP
-	|| col_type == UUIDOID
-#endif
 	)
 		return true;
 
 	return false;
+#endif
 }
 
 /*
@@ -877,7 +906,7 @@ GetRelationNodesByQuals(Oid reloid, Index varno, Node *quals,
 char
 ConvertToLocatorType(int disttype)
 {
-	char		loctype;
+	char		loctype = LOCATOR_TYPE_NONE;
 
 	switch (disttype)
 	{
@@ -1193,6 +1222,63 @@ modulo_value_len(Oid dataType)
 	return valuelen;
 }
 
+
+static LocatorHashFunc
+hash_func_ptr(Oid dataType)
+{
+	switch (dataType)
+	{
+		case INT8OID:
+		case CASHOID:
+			return hashint8;
+		case INT2OID:
+			return hashint2;
+		case OIDOID:
+			return hashoid;
+		case INT4OID:
+		case ABSTIMEOID:
+		case RELTIMEOID:
+		case DATEOID:
+			return hashint4;
+		case BOOLOID:
+		case CHAROID:
+			return hashchar;
+		case NAMEOID:
+			return hashname;
+		case INT2VECTOROID:
+			return hashint2vector;
+		case VARCHAROID:
+		case TEXTOID:
+			return hashtext;
+		case OIDVECTOROID:
+			return hashoidvector;
+		case FLOAT4OID:
+			return hashfloat4;
+		case FLOAT8OID:
+			return hashfloat8;
+		case BPCHAROID:
+			return hashbpchar;
+		case BYTEAOID:
+			return hashvarlena;
+		case TIMEOID:
+			return time_hash;
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			return timestamp_hash;
+		case INTERVALOID:
+			return interval_hash;
+		case TIMETZOID:
+			return timetz_hash;
+		case NUMERICOID:
+			return hash_numeric;
+		case UUIDOID:
+			return uuid_hash;
+		default:
+			return NULL;
+	}
+}
+
+
 Locator *
 createLocator(char locatorType, RelationAccessType accessType,
 			  Oid dataType, LocatorListType listType, int nodeCount,
@@ -1402,76 +1488,10 @@ createLocator(char locatorType, RelationAccessType accessType,
 				}
 			}
 
-			switch (dataType)
-			{
-				case INT8OID:
-				case CASHOID:
-					locator->hashfunc = hashint8;
-					break;
-				case INT2OID:
-					locator->hashfunc = hashint2;
-					break;
-				case OIDOID:
-					locator->hashfunc = hashoid;
-					break;
-				case INT4OID:
-				case ABSTIMEOID:
-				case RELTIMEOID:
-				case DATEOID:
-					locator->hashfunc = hashint4;
-					break;
-				case BOOLOID:
-				case CHAROID:
-					locator->hashfunc = hashchar;
-					break;
-				case NAMEOID:
-					locator->hashfunc = hashname;
-					break;
-				case INT2VECTOROID:
-					locator->hashfunc = hashint2vector;
-					break;
-				case VARCHAROID:
-				case TEXTOID:
-					locator->hashfunc = hashtext;
-					break;
-				case OIDVECTOROID:
-					locator->hashfunc = hashoidvector;
-					break;
-				case FLOAT4OID:
-					locator->hashfunc = hashfloat4;
-					break;
-				case FLOAT8OID:
-					locator->hashfunc = hashfloat8;
-					break;
-				case BPCHAROID:
-					locator->hashfunc = hashbpchar;
-					break;
-				case BYTEAOID:
-					locator->hashfunc = hashvarlena;
-					break;
-				case TIMEOID:
-					locator->hashfunc = time_hash;
-					break;
-				case TIMESTAMPOID:
-				case TIMESTAMPTZOID:
-					locator->hashfunc = timestamp_hash;
-					break;
-				case INTERVALOID:
-					locator->hashfunc = interval_hash;
-					break;
-				case TIMETZOID:
-					locator->hashfunc = timetz_hash;
-					break;
-				case NUMERICOID:
-					locator->hashfunc = hash_numeric;
-					break;
-				case UUIDOID:
-					locator->hashfunc = uuid_hash;
-					break;
-				default:
-					ereport(ERROR, (errmsg("Error: unsupported data type for HASH locator: %d\n",
-									   dataType)));
-			}
+			locator->hashfunc = hash_func_ptr(dataType);
+			if (locator->hashfunc == NULL)
+				ereport(ERROR, (errmsg("Error: unsupported data type for HASH locator: %d\n",
+								   dataType)));
 			break;
 		case LOCATOR_TYPE_MODULO:
 			if (accessType == RELATION_ACCESS_INSERT)
@@ -1840,6 +1860,34 @@ locate_modulo_select(Locator *self, Datum value, bool isnull,
 		}
 		return 1;
 	}
+}
+
+
+int
+GET_NODES(Locator *self, Datum value, bool isnull, bool *hasprimary)
+{
+	return (*self->locatefunc) (self, value, isnull, hasprimary);
+}
+
+
+void *
+getLocatorResults(Locator *self)
+{
+	return self->results;
+}
+
+
+void *
+getLocatorNodeMap(Locator *self)
+{
+	return self->nodeMap;
+}
+
+
+int
+getLocatorNodeCount(Locator *self)
+{
+	return self->nodeCount;
 }
 #endif
 

@@ -3,7 +3,7 @@
  * rewriteHandler.c
  *		Primary module of query rewriter.
  *
- * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -13,7 +13,6 @@
  */
 #include "postgres.h"
 
-#include "access/heapam.h"
 #include "access/sysattr.h"
 #include "catalog/pg_type.h"
 #include "commands/trigger.h"
@@ -1312,7 +1311,8 @@ rewriteTargetListUD(Query *parsetree, RangeTblEntry *target_rte,
 		 */
 		var = makeWholeRowVar(target_rte,
 							  parsetree->resultRelation,
-							  0);
+							  0,
+							  false);
 
 		attrname = "wholerow";
 	}
@@ -1532,6 +1532,7 @@ ApplyRetrieveRule(Query *parsetree,
 
 	rte->rtekind = RTE_SUBQUERY;
 	rte->relid = InvalidOid;
+	rte->security_barrier = RelationIsSecurityView(relation);
 	rte->subquery = rule_action;
 	rte->inh = false;			/* must not be set for a subquery */
 
@@ -2582,25 +2583,38 @@ QueryRewriteCTAS(Query *parsetree)
 	StringInfoData cquery;
 	ListCell *col;
 	Query *cparsetree;
-	List *raw_parsetree_list;
+	List *raw_parsetree_list, *tlist;
 	char *selectstr;
+	CreateTableAsStmt *stmt;
+	IntoClause *into;
+	ListCell *lc;
 
-	if (parsetree->commandType != CMD_SELECT ||
-		(parsetree->intoClause == NULL))
+	if (parsetree->commandType != CMD_UTILITY ||
+		!IsA(parsetree->utilityStmt, CreateTableAsStmt))
 		elog(ERROR, "Unexpected commandType or intoClause is not set properly");
 
 	/* Get the target table */
-	relation = parsetree->intoClause->rel;
+	stmt = (CreateTableAsStmt *) parsetree->utilityStmt;
+	relation = stmt->into->rel;
 
 	/* Start building a CreateStmt for creating the target table */
-   	create_stmt = makeNode(CreateStmt);
+	create_stmt = makeNode(CreateStmt);
 	create_stmt->relation = relation;
+	into = stmt->into;
+
+	/* Obtain the target list of new table */
+	Assert(IsA(stmt->query, Query));
+	cparsetree = (Query *) stmt->query;
+	tlist = cparsetree->targetList;
 
 	/*
 	 * Based on the targetList, populate the column information for the target
-	 * table.
+	 * table. If a column name list was specified in CREATE TABLE AS, override
+	 * the column names derived from the query. (Too few column names are OK, too
+	 * many are not.).
 	 */
-	foreach(col, parsetree->targetList)
+	lc = list_head(into->colNames);
+	foreach(col, tlist)
 	{
 		TargetEntry *tle = (TargetEntry *)lfirst(col);
 		ColumnDef   *coldef;
@@ -2612,6 +2626,15 @@ QueryRewriteCTAS(Query *parsetree)
 
 		coldef = makeNode(ColumnDef);
 		typename = makeNode(TypeName);
+
+		/* Take the column name specified if any */
+		if (lc)
+		{
+			coldef->colname = strVal(lfirst(lc));
+			lc = lnext(lc);
+		}
+		else
+			coldef->colname = pstrdup(tle->resname);
 
 		coldef->inhcount = 0;
 		coldef->is_local = true;
@@ -2629,25 +2652,25 @@ QueryRewriteCTAS(Query *parsetree)
 
 		coldef->typeName = typename;
 
-		/*
-		 * XXX Should we look at the column specifications in the intoClause
-		 * instead of the target entry ?
-		 */
-		coldef->colname = pstrdup(tle->resname);
 		tableElts = lappend(tableElts, coldef);
 	}
+
+	if (lc != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("CREATE TABLE AS specifies too many column names")));
 
 	/*
 	 * Set column information and the distribution mechanism (which will be
 	 * NULL for SELECT INTO and the default mechanism will be picked)
 	 */
 	create_stmt->tableElts = tableElts;
-	create_stmt->distributeby = parsetree->intoClause->distributeby;
-	create_stmt->subcluster = parsetree->intoClause->subcluster;
+	create_stmt->distributeby = stmt->into->distributeby;
+	create_stmt->subcluster = stmt->into->subcluster;
 
-	create_stmt->tablespacename = parsetree->intoClause->tableSpaceName;
-	create_stmt->oncommit = parsetree->intoClause->onCommit;
-	create_stmt->options = parsetree->intoClause->options;
+	create_stmt->tablespacename = stmt->into->tableSpaceName;
+	create_stmt->oncommit = stmt->into->onCommit;
+	create_stmt->options = stmt->into->options;
 
 	/*
 	 * Check consistency of arguments
@@ -2678,14 +2701,14 @@ QueryRewriteCTAS(Query *parsetree)
 					NULL);
 
 	/*
-	 * Now fold the SELECT statement into an INSERT INTO statement. The
-	 * intoClause is no more required.
+	 * Now fold the CTAS statement into an INSERT INTO statement. The
+	 * utility is no more required.
 	 */
-	parsetree->intoClause = NULL;
+	parsetree->utilityStmt = NULL;
 
 	/* Get the SELECT query string */
 	initStringInfo(&cquery);
-	deparse_query(parsetree, &cquery, NIL);
+	deparse_query((Query *)stmt->query, &cquery, NIL);
 	selectstr = pstrdup(cquery.data);
 
 	/* Now, finally build the INSERT INTO statement */
@@ -2704,4 +2727,3 @@ QueryRewriteCTAS(Query *parsetree)
 			NULL, 0);
 }
 #endif
-

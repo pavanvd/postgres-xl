@@ -8,11 +8,15 @@
 -- conditio sine qua non
 SHOW track_counts;  -- must be on
 
+-- ensure that both seqscan and indexscan plans are allowed
+SET enable_seqscan TO on;
+SET enable_indexscan TO on;
+-- for the moment, we don't want index-only scans here
+SET enable_indexonlyscan TO off;
+
 -- wait to let any prior tests finish dumping out stats;
 -- else our messages might get lost due to contention
 SELECT pg_sleep(2.0);
-
-SET enforce_two_phase_commit TO off;
 
 -- save counters
 CREATE TEMP TABLE prevstats AS

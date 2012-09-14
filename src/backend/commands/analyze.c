@@ -3,7 +3,7 @@
  * analyze.c
  *	  the Postgres statistics generator
  *
- * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,20 +16,21 @@
 
 #include <math.h>
 
-#include "access/heapam.h"
 #include "access/transam.h"
 #include "access/tupconvert.h"
 #include "access/tuptoaster.h"
+#include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
-#include "catalog/namespace.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_inherits_fn.h"
 #include "catalog/pg_namespace.h"
 #include "commands/dbcommands.h"
+#include "commands/tablecmds.h"
 #include "commands/vacuum.h"
 #include "executor/executor.h"
+#include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_oper.h"
@@ -47,14 +48,17 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_rusage.h"
+#include "utils/sortsupport.h"
 #include "utils/syscache.h"
-#include "utils/tuplesort.h"
+#include "utils/timestamp.h"
 #include "utils/tqual.h"
 
 #ifdef XCP
 #include "catalog/pg_operator.h"
 #include "nodes/makefuncs.h"
+#include "pgxc/execRemote.h"
 #include "pgxc/pgxc.h"
+#include "pgxc/planner.h"
 #include "utils/snapmgr.h"
 #endif
 
@@ -83,14 +87,13 @@ typedef struct AnlIndexData
 int			default_statistics_target = 100;
 
 /* A few variables that don't seem worth passing around as parameters */
-static int	elevel = -1;
-
 static MemoryContext anl_context = NULL;
-
 static BufferAccessStrategy vac_strategy;
 
 
-static void do_analyze_rel(Relation onerel, VacuumStmt *vacstmt, bool inh);
+static void do_analyze_rel(Relation onerel, VacuumStmt *vacstmt,
+			   AcquireSampleRowsFunc acquirefunc, BlockNumber relpages,
+			   bool inh, int elevel);
 static void BlockSampler_Init(BlockSampler bs, BlockNumber nblocks,
 				  int samplesize);
 static bool BlockSampler_HasMore(BlockSampler bs);
@@ -101,13 +104,11 @@ static void compute_index_stats(Relation onerel, double totalrows,
 					MemoryContext col_context);
 static VacAttrStats *examine_attribute(Relation onerel, int attnum,
 				  Node *index_expr);
-static int acquire_sample_rows(Relation onerel, HeapTuple *rows,
-					int targrows, double *totalrows, double *totaldeadrows);
-static double random_fract(void);
-static double init_selection_state(int n);
-static double get_next_S(double t, int n, double *stateptr);
+static int acquire_sample_rows(Relation onerel, int elevel,
+					HeapTuple *rows, int targrows,
+					double *totalrows, double *totaldeadrows);
 static int	compare_rows(const void *a, const void *b);
-static int acquire_inherited_sample_rows(Relation onerel,
+static int acquire_inherited_sample_rows(Relation onerel, int elevel,
 							  HeapTuple *rows, int targrows,
 							  double *totalrows, double *totaldeadrows);
 static void update_attstats(Oid relid, bool inh,
@@ -115,7 +116,6 @@ static void update_attstats(Oid relid, bool inh,
 static Datum std_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static Datum ind_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 
-static bool std_typanalyze(VacAttrStats *stats);
 #ifdef XCP
 static void analyze_rel_coordinator(Relation onerel, int attr_cnt,
 						VacAttrStats **vacattrstats);
@@ -128,13 +128,17 @@ void
 analyze_rel(Oid relid, VacuumStmt *vacstmt, BufferAccessStrategy bstrategy)
 {
 	Relation	onerel;
+	int			elevel;
+	AcquireSampleRowsFunc acquirefunc = NULL;
+	BlockNumber relpages = 0;
 
-	/* Set up static variables */
+	/* Select logging level */
 	if (vacstmt->options & VACOPT_VERBOSE)
 		elevel = INFO;
 	else
 		elevel = DEBUG2;
 
+	/* Set up static variables */
 	vac_strategy = bstrategy;
 
 	/*
@@ -192,21 +196,6 @@ analyze_rel(Oid relid, VacuumStmt *vacstmt, BufferAccessStrategy bstrategy)
 	}
 
 	/*
-	 * Check that it's a plain table; we used to do this in get_rel_oids() but
-	 * seems safer to check after we've locked the relation.
-	 */
-	if (onerel->rd_rel->relkind != RELKIND_RELATION)
-	{
-		/* No need for a WARNING if we already complained during VACUUM */
-		if (!(vacstmt->options & VACOPT_VACUUM))
-			ereport(WARNING,
-					(errmsg("skipping \"%s\" --- cannot analyze non-tables or special system tables",
-							RelationGetRelationName(onerel))));
-		relation_close(onerel, ShareUpdateExclusiveLock);
-		return;
-	}
-
-	/*
 	 * Silently ignore tables that are temp tables of other backends ---
 	 * trying to analyze these is rather pointless, since their contents are
 	 * probably not up-to-date on disk.  (We don't throw a warning here; it
@@ -228,22 +217,70 @@ analyze_rel(Oid relid, VacuumStmt *vacstmt, BufferAccessStrategy bstrategy)
 	}
 
 	/*
+	 * Check that it's a plain table or foreign table; we used to do this in
+	 * get_rel_oids() but seems safer to check after we've locked the
+	 * relation.
+	 */
+	if (onerel->rd_rel->relkind == RELKIND_RELATION)
+	{
+		/* Regular table, so we'll use the regular row acquisition function */
+		acquirefunc = acquire_sample_rows;
+		/* Also get regular table's size */
+		relpages = RelationGetNumberOfBlocks(onerel);
+	}
+	else if (onerel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
+	{
+		/*
+		 * For a foreign table, call the FDW's hook function to see whether it
+		 * supports analysis.
+		 */
+		FdwRoutine *fdwroutine;
+		bool		ok = false;
+
+		fdwroutine = GetFdwRoutineByRelId(RelationGetRelid(onerel));
+
+		if (fdwroutine->AnalyzeForeignTable != NULL)
+			ok = fdwroutine->AnalyzeForeignTable(onerel,
+												 &acquirefunc,
+												 &relpages);
+
+		if (!ok)
+		{
+			ereport(WARNING,
+			 (errmsg("skipping \"%s\" --- cannot analyze this foreign table",
+					 RelationGetRelationName(onerel))));
+			relation_close(onerel, ShareUpdateExclusiveLock);
+			return;
+		}
+	}
+	else
+	{
+		/* No need for a WARNING if we already complained during VACUUM */
+		if (!(vacstmt->options & VACOPT_VACUUM))
+			ereport(WARNING,
+					(errmsg("skipping \"%s\" --- cannot analyze non-tables or special system tables",
+							RelationGetRelationName(onerel))));
+		relation_close(onerel, ShareUpdateExclusiveLock);
+		return;
+	}
+
+	/*
 	 * OK, let's do it.  First let other backends know I'm in ANALYZE.
 	 */
 	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-	MyProc->vacuumFlags |= PROC_IN_ANALYZE;
+	MyPgXact->vacuumFlags |= PROC_IN_ANALYZE;
 	LWLockRelease(ProcArrayLock);
 
 	/*
 	 * Do the normal non-recursive ANALYZE.
 	 */
-	do_analyze_rel(onerel, vacstmt, false);
+	do_analyze_rel(onerel, vacstmt, acquirefunc, relpages, false, elevel);
 
 	/*
 	 * If there are child tables, do recursive ANALYZE.
 	 */
 	if (onerel->rd_rel->relhassubclass)
-		do_analyze_rel(onerel, vacstmt, true);
+		do_analyze_rel(onerel, vacstmt, acquirefunc, relpages, true, elevel);
 
 	/*
 	 * Close source relation now, but keep lock so that no one deletes it
@@ -254,19 +291,26 @@ analyze_rel(Oid relid, VacuumStmt *vacstmt, BufferAccessStrategy bstrategy)
 	relation_close(onerel, NoLock);
 
 	/*
-	 * Reset my PGPROC flag.  Note: we need this here, and not in vacuum_rel,
+	 * Reset my PGXACT flag.  Note: we need this here, and not in vacuum_rel,
 	 * because the vacuum flag is cleared by the end-of-xact code.
 	 */
 	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-	MyProc->vacuumFlags &= ~PROC_IN_ANALYZE;
+	MyPgXact->vacuumFlags &= ~PROC_IN_ANALYZE;
 	LWLockRelease(ProcArrayLock);
 }
 
 /*
  *	do_analyze_rel() -- analyze one relation, recursively or not
+ *
+ * Note that "acquirefunc" is only relevant for the non-inherited case.
+ * If we supported foreign tables in inheritance trees,
+ * acquire_inherited_sample_rows would need to determine the appropriate
+ * acquirefunc for each child table.
  */
 static void
-do_analyze_rel(Relation onerel, VacuumStmt *vacstmt, bool inh)
+do_analyze_rel(Relation onerel, VacuumStmt *vacstmt,
+			   AcquireSampleRowsFunc acquirefunc, BlockNumber relpages,
+			   bool inh, int elevel)
 {
 	int			attr_cnt,
 				tcnt,
@@ -445,8 +489,8 @@ do_analyze_rel(Relation onerel, VacuumStmt *vacstmt, bool inh)
 	/*
 	 * Determine how many rows we need to sample, using the worst case from
 	 * all analyzable columns.	We use a lower bound of 100 rows to avoid
-	 * possible overflow in Vitter's algorithm.  (Note: that will also be
-	 * the target in the corner case where there are no analyzable columns.)
+	 * possible overflow in Vitter's algorithm.  (Note: that will also be the
+	 * target in the corner case where there are no analyzable columns.)
 	 */
 	targrows = 100;
 	for (i = 0; i < attr_cnt; i++)
@@ -470,11 +514,13 @@ do_analyze_rel(Relation onerel, VacuumStmt *vacstmt, bool inh)
 	 */
 	rows = (HeapTuple *) palloc(targrows * sizeof(HeapTuple));
 	if (inh)
-		numrows = acquire_inherited_sample_rows(onerel, rows, targrows,
+		numrows = acquire_inherited_sample_rows(onerel, elevel,
+												rows, targrows,
 												&totalrows, &totaldeadrows);
 	else
-		numrows = acquire_sample_rows(onerel, rows, targrows,
-									  &totalrows, &totaldeadrows);
+		numrows = (*acquirefunc) (onerel, elevel,
+								  rows, targrows,
+								  &totalrows, &totaldeadrows);
 
 	/*
 	 * Compute the statistics.	Temporary results during the calculations for
@@ -497,8 +543,7 @@ do_analyze_rel(Relation onerel, VacuumStmt *vacstmt, bool inh)
 		for (i = 0; i < attr_cnt; i++)
 		{
 			VacAttrStats *stats = vacattrstats[i];
-			AttributeOpts *aopt =
-			get_attribute_options(onerel->rd_id, stats->attr->attnum);
+			AttributeOpts *aopt;
 
 			stats->rows = rows;
 			stats->tupDesc = onerel->rd_att;
@@ -511,11 +556,12 @@ do_analyze_rel(Relation onerel, VacuumStmt *vacstmt, bool inh)
 			 * If the appropriate flavor of the n_distinct option is
 			 * specified, override with the corresponding value.
 			 */
+			aopt = get_attribute_options(onerel->rd_id, stats->attr->attnum);
 			if (aopt != NULL)
 			{
-				float8		n_distinct =
-				inh ? aopt->n_distinct_inherited : aopt->n_distinct;
+				float8		n_distinct;
 
+				n_distinct = inh ? aopt->n_distinct_inherited : aopt->n_distinct;
 				if (n_distinct != 0.0)
 					stats->stadistinct = n_distinct;
 			}
@@ -555,8 +601,11 @@ do_analyze_rel(Relation onerel, VacuumStmt *vacstmt, bool inh)
 	 */
 	if (!inh)
 		vac_update_relstats(onerel,
-							RelationGetNumberOfBlocks(onerel),
-							totalrows, hasindex, InvalidTransactionId);
+							relpages,
+							totalrows,
+							visibilitymap_count(onerel),
+							hasindex,
+							InvalidTransactionId);
 
 	/*
 	 * Same for indexes. Vacuum always scans all indexes, so if we're part of
@@ -573,7 +622,10 @@ do_analyze_rel(Relation onerel, VacuumStmt *vacstmt, bool inh)
 			totalindexrows = ceil(thisdata->tupleFract * totalrows);
 			vac_update_relstats(Irel[ind],
 								RelationGetNumberOfBlocks(Irel[ind]),
-								totalindexrows, false, InvalidTransactionId);
+								totalindexrows,
+								0,
+								false,
+								InvalidTransactionId);
 		}
 	}
 
@@ -873,12 +925,11 @@ examine_attribute(Relation onerel, int attnum, Node *index_expr)
 		stats->attrtypmod = attr->atttypmod;
 	}
 
-	typtuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(stats->attrtypid));
+	typtuple = SearchSysCacheCopy1(TYPEOID,
+								   ObjectIdGetDatum(stats->attrtypid));
 	if (!HeapTupleIsValid(typtuple))
 		elog(ERROR, "cache lookup failed for type %u", stats->attrtypid);
-	stats->attrtype = (Form_pg_type) palloc(sizeof(FormData_pg_type));
-	memcpy(stats->attrtype, GETSTRUCT(typtuple), sizeof(FormData_pg_type));
-	ReleaseSysCache(typtuple);
+	stats->attrtype = (Form_pg_type) GETSTRUCT(typtuple);
 	stats->anl_context = anl_context;
 	stats->tupattnum = attnum;
 
@@ -907,7 +958,7 @@ examine_attribute(Relation onerel, int attnum, Node *index_expr)
 
 	if (!ok || stats->compute_stats == NULL || stats->minrows <= 0)
 	{
-		pfree(stats->attrtype);
+		heap_freetuple(typtuple);
 		pfree(stats->attr);
 		pfree(stats);
 		return NULL;
@@ -971,8 +1022,8 @@ BlockSampler_Next(BlockSampler bs)
 	 * Knuth says to skip the current block with probability 1 - k/K.
 	 * If we are to skip, we should advance t (hence decrease K), and
 	 * repeat the same probabilistic test for the next block.  The naive
-	 * implementation thus requires a random_fract() call for each block
-	 * number.	But we can reduce this to one random_fract() call per
+	 * implementation thus requires an anl_random_fract() call for each block
+	 * number.	But we can reduce this to one anl_random_fract() call per
 	 * selected block, by noting that each time the while-test succeeds,
 	 * we can reinterpret V as a uniform random number in the range 0 to p.
 	 * Therefore, instead of choosing a new V, we just adjust p to be
@@ -987,7 +1038,7 @@ BlockSampler_Next(BlockSampler bs)
 	 * less than k, which means that we cannot fail to select enough blocks.
 	 *----------
 	 */
-	V = random_fract();
+	V = anl_random_fract();
 	p = 1.0 - (double) k / (double) K;
 	while (V < p)
 	{
@@ -1038,7 +1089,8 @@ BlockSampler_Next(BlockSampler bs)
  * density near the start of the table.
  */
 static int
-acquire_sample_rows(Relation onerel, HeapTuple *rows, int targrows,
+acquire_sample_rows(Relation onerel, int elevel,
+					HeapTuple *rows, int targrows,
 					double *totalrows, double *totaldeadrows)
 {
 	int			numrows = 0;	/* # rows now in reservoir */
@@ -1061,7 +1113,7 @@ acquire_sample_rows(Relation onerel, HeapTuple *rows, int targrows,
 	/* Prepare for sampling block numbers */
 	BlockSampler_Init(&bs, totalblocks, targrows);
 	/* Prepare for sampling rows */
-	rstate = init_selection_state(targrows);
+	rstate = anl_init_selection_state(targrows);
 
 	/* Outer loop over blocks to sample */
 	while (BlockSampler_HasMore(&bs))
@@ -1208,7 +1260,8 @@ acquire_sample_rows(Relation onerel, HeapTuple *rows, int targrows,
 					 * t.
 					 */
 					if (rowstoskip < 0)
-						rowstoskip = get_next_S(samplerows, targrows, &rstate);
+						rowstoskip = anl_get_next_S(samplerows, targrows,
+													&rstate);
 
 					if (rowstoskip <= 0)
 					{
@@ -1216,7 +1269,7 @@ acquire_sample_rows(Relation onerel, HeapTuple *rows, int targrows,
 						 * Found a suitable tuple, so save it, replacing one
 						 * old tuple at random
 						 */
-						int			k = (int) (targrows * random_fract());
+						int			k = (int) (targrows * anl_random_fract());
 
 						Assert(k >= 0 && k < targrows);
 						heap_freetuple(rows[k]);
@@ -1276,8 +1329,8 @@ acquire_sample_rows(Relation onerel, HeapTuple *rows, int targrows,
 }
 
 /* Select a random value R uniformly distributed in (0 - 1) */
-static double
-random_fract(void)
+double
+anl_random_fract(void)
 {
 	return ((double) random() + 1) / ((double) MAX_RANDOM_VALUE + 2);
 }
@@ -1290,21 +1343,21 @@ random_fract(void)
  * It is computed primarily based on t, the number of records already read.
  * The only extra state needed between calls is W, a random state variable.
  *
- * init_selection_state computes the initial W value.
+ * anl_init_selection_state computes the initial W value.
  *
- * Given that we've already read t records (t >= n), get_next_S
+ * Given that we've already read t records (t >= n), anl_get_next_S
  * determines the number of records to skip before the next record is
  * processed.
  */
-static double
-init_selection_state(int n)
+double
+anl_init_selection_state(int n)
 {
 	/* Initial value of W (for use when Algorithm Z is first applied) */
-	return exp(-log(random_fract()) / n);
+	return exp(-log(anl_random_fract()) / n);
 }
 
-static double
-get_next_S(double t, int n, double *stateptr)
+double
+anl_get_next_S(double t, int n, double *stateptr)
 {
 	double		S;
 
@@ -1315,7 +1368,7 @@ get_next_S(double t, int n, double *stateptr)
 		double		V,
 					quot;
 
-		V = random_fract();		/* Generate V */
+		V = anl_random_fract(); /* Generate V */
 		S = 0;
 		t += 1;
 		/* Note: "num" in Vitter's code is always equal to t - n */
@@ -1347,7 +1400,7 @@ get_next_S(double t, int n, double *stateptr)
 						tmp;
 
 			/* Generate U and X */
-			U = random_fract();
+			U = anl_random_fract();
 			X = t * (W - 1.0);
 			S = floor(X);		/* S is tentatively set to floor(X) */
 			/* Test if U <= h(S)/cg(X) in the manner of (6.3) */
@@ -1376,7 +1429,7 @@ get_next_S(double t, int n, double *stateptr)
 				y *= numer / denom;
 				denom -= 1;
 			}
-			W = exp(-log(random_fract()) / n);	/* Generate W in advance */
+			W = exp(-log(anl_random_fract()) / n);		/* Generate W in advance */
 			if (exp(log(y) / n) <= (t + X) / t)
 				break;
 		}
@@ -1391,8 +1444,8 @@ get_next_S(double t, int n, double *stateptr)
 static int
 compare_rows(const void *a, const void *b)
 {
-	HeapTuple	ha = *(HeapTuple *) a;
-	HeapTuple	hb = *(HeapTuple *) b;
+	HeapTuple	ha = *(const HeapTuple *) a;
+	HeapTuple	hb = *(const HeapTuple *) b;
 	BlockNumber ba = ItemPointerGetBlockNumber(&ha->t_self);
 	OffsetNumber oa = ItemPointerGetOffsetNumber(&ha->t_self);
 	BlockNumber bb = ItemPointerGetBlockNumber(&hb->t_self);
@@ -1418,7 +1471,8 @@ compare_rows(const void *a, const void *b)
  * We fail and return zero if there are no inheritance children.
  */
 static int
-acquire_inherited_sample_rows(Relation onerel, HeapTuple *rows, int targrows,
+acquire_inherited_sample_rows(Relation onerel, int elevel,
+							  HeapTuple *rows, int targrows,
 							  double *totalrows, double *totaldeadrows)
 {
 	List	   *tableOIDs;
@@ -1440,14 +1494,15 @@ acquire_inherited_sample_rows(Relation onerel, HeapTuple *rows, int targrows,
 	/*
 	 * Check that there's at least one descendant, else fail.  This could
 	 * happen despite analyze_rel's relhassubclass check, if table once had a
-	 * child but no longer does.
+	 * child but no longer does.  In that case, we can clear the
+	 * relhassubclass field so as not to make the same mistake again later.
+	 * (This is safe because we hold ShareUpdateExclusiveLock.)
 	 */
 	if (list_length(tableOIDs) < 2)
 	{
-		/*
-		 * XXX It would be desirable to clear relhassubclass here, but we
-		 * don't have adequate lock to do that safely.
-		 */
+		/* CCI because we already updated the pg_class row in this command */
+		CommandCounterIncrement();
+		SetRelationHasSubclass(RelationGetRelid(onerel), false);
 		return 0;
 	}
 
@@ -1511,6 +1566,7 @@ acquire_inherited_sample_rows(Relation onerel, HeapTuple *rows, int targrows,
 
 				/* Fetch a random sample of the child's rows */
 				childrows = acquire_sample_rows(childrel,
+												elevel,
 												rows + numrows,
 												childtargrows,
 												&trows,
@@ -1795,8 +1851,7 @@ typedef struct
 
 typedef struct
 {
-	FmgrInfo   *cmpFn;
-	int			cmpFlags;
+	SortSupport ssup;
 	int		   *tupnoLink;
 } CompareScalarsContext;
 
@@ -1816,7 +1871,7 @@ static int	compare_mcvs(const void *a, const void *b);
 /*
  * std_typanalyze -- the default type-specific typanalyze function
  */
-static bool
+bool
 std_typanalyze(VacAttrStats *stats)
 {
 	Form_pg_attribute attr = stats->attr;
@@ -2243,9 +2298,7 @@ compute_scalar_stats(VacAttrStatsP stats,
 	bool		is_varwidth = (!stats->attrtype->typbyval &&
 							   stats->attrtype->typlen < 0);
 	double		corr_xysum;
-	Oid			cmpFn;
-	int			cmpFlags;
-	FmgrInfo	f_cmpfn;
+	SortSupportData ssup;
 	ScalarItem *values;
 	int			values_cnt = 0;
 	int		   *tupnoLink;
@@ -2259,8 +2312,13 @@ compute_scalar_stats(VacAttrStatsP stats,
 	tupnoLink = (int *) palloc(samplerows * sizeof(int));
 	track = (ScalarMCVItem *) palloc(num_mcv * sizeof(ScalarMCVItem));
 
-	SelectSortFunction(mystats->ltopr, false, &cmpFn, &cmpFlags);
-	fmgr_info(cmpFn, &f_cmpfn);
+	memset(&ssup, 0, sizeof(ssup));
+	ssup.ssup_cxt = CurrentMemoryContext;
+	/* We always use the default collation for statistics */
+	ssup.ssup_collation = DEFAULT_COLLATION_OID;
+	ssup.ssup_nulls_first = false;
+
+	PrepareSortSupportFromOrderingOp(mystats->ltopr, &ssup);
 
 	/* Initial scan to find sortable values */
 	for (i = 0; i < samplerows; i++)
@@ -2328,8 +2386,7 @@ compute_scalar_stats(VacAttrStatsP stats,
 		CompareScalarsContext cxt;
 
 		/* Sort the collected values */
-		cxt.cmpFn = &f_cmpfn;
-		cxt.cmpFlags = cmpFlags;
+		cxt.ssup = &ssup;
 		cxt.tupnoLink = tupnoLink;
 		qsort_arg((void *) values, values_cnt, sizeof(ScalarItem),
 				  compare_scalars, (void *) &cxt);
@@ -2728,17 +2785,14 @@ compute_scalar_stats(VacAttrStatsP stats,
 static int
 compare_scalars(const void *a, const void *b, void *arg)
 {
-	Datum		da = ((ScalarItem *) a)->value;
-	int			ta = ((ScalarItem *) a)->tupno;
-	Datum		db = ((ScalarItem *) b)->value;
-	int			tb = ((ScalarItem *) b)->tupno;
+	Datum		da = ((const ScalarItem *) a)->value;
+	int			ta = ((const ScalarItem *) a)->tupno;
+	Datum		db = ((const ScalarItem *) b)->value;
+	int			tb = ((const ScalarItem *) b)->tupno;
 	CompareScalarsContext *cxt = (CompareScalarsContext *) arg;
-	int32		compare;
+	int			compare;
 
-	/* We always use the default collation for statistics */
-	compare = ApplySortFunction(cxt->cmpFn, cxt->cmpFlags,
-								DEFAULT_COLLATION_OID,
-								da, false, db, false);
+	compare = ApplySortComparator(da, false, db, false, cxt->ssup);
 	if (compare != 0)
 		return compare;
 
@@ -2762,8 +2816,8 @@ compare_scalars(const void *a, const void *b, void *arg)
 static int
 compare_mcvs(const void *a, const void *b)
 {
-	int			da = ((ScalarMCVItem *) a)->first;
-	int			db = ((ScalarMCVItem *) b)->first;
+	int			da = ((const ScalarMCVItem *) a)->first;
+	int			db = ((const ScalarMCVItem *) b)->first;
 
 	return da - db;
 }
@@ -2980,14 +3034,6 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 			for (i = 1; i <= STATISTIC_NUM_SLOTS; i++)
 			{
 				int2 		kind;
-				Oid			oprid;
-				char	   *oprname;
-				char	   *oprnspname;
-				Oid			ltypid, rtypid;
-				char	   *ltypname,
-						   *rtypname;
-				char	   *ltypnspname,
-						   *rtypnspname;
 				float4	   *numbers;
 				Datum	   *values;
 				int			nnumbers, nvalues;
@@ -3006,50 +3052,103 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 					colnum += 8;
 					continue;
 				}
-
-				/* Get operator */
-				value = slot_getattr(result, colnum++, &isnull); /* oprname */
-				if (isnull)
-				{
-					/*
-					 * Operator is not specified for that kind, skip remaining
-					 * fields to lookup the operator
-					 */
-					oprid = InvalidOid;
-					colnum += 5;
-				}
 				else
 				{
-					oprname = DatumGetCString(value);
-					value = slot_getattr(result, colnum++, &isnull); /* oprnspname */
-					oprnspname = DatumGetCString(value);
-					/* Get left operand data type */
-					value = slot_getattr(result, colnum++, &isnull); /* typname */
-					ltypname = DatumGetCString(value);
-					value = slot_getattr(result, colnum++, &isnull); /* typnspname */
-					ltypnspname = DatumGetCString(value);
-					ltypid = get_typname_typid(ltypname,
+					Oid			oprid;
+
+					/* Get operator */
+					value = slot_getattr(result, colnum++, &isnull); /* oprname */
+					if (isnull)
+					{
+						/*
+						 * Operator is not specified for that kind, skip remaining
+						 * fields to lookup the operator
+						 */
+						oprid = InvalidOid;
+						colnum += 5; /* skip operation nsp and types */
+					}
+					else
+					{
+						char	   *oprname;
+						char	   *oprnspname;
+						Oid			ltypid, rtypid;
+						char	   *ltypname,
+								   *rtypname;
+						char	   *ltypnspname,
+								   *rtypnspname;
+						oprname = DatumGetCString(value);
+						value = slot_getattr(result, colnum++, &isnull); /* oprnspname */
+						oprnspname = DatumGetCString(value);
+						/* Get left operand data type */
+						value = slot_getattr(result, colnum++, &isnull); /* typname */
+						ltypname = DatumGetCString(value);
+						value = slot_getattr(result, colnum++, &isnull); /* typnspname */
+						ltypnspname = DatumGetCString(value);
+						ltypid = get_typname_typid(ltypname,
 											   get_namespaceid(ltypnspname));
-					/* Get right operand data type */
-					value = slot_getattr(result, colnum++, &isnull); /* typname */
-					rtypname = DatumGetCString(value);
-					value = slot_getattr(result, colnum++, &isnull); /* typnspname */
-					rtypnspname = DatumGetCString(value);
-					rtypid = get_typname_typid(rtypname,
+						/* Get right operand data type */
+						value = slot_getattr(result, colnum++, &isnull); /* typname */
+						rtypname = DatumGetCString(value);
+						value = slot_getattr(result, colnum++, &isnull); /* typnspname */
+						rtypnspname = DatumGetCString(value);
+						rtypid = get_typname_typid(rtypname,
 											   get_namespaceid(rtypnspname));
-					/* lookup operator */
-					oprid = get_operid(oprname, ltypid, rtypid,
-									   get_namespaceid(oprnspname));
+						/* lookup operator */
+						oprid = get_operid(oprname, ltypid, rtypid,
+										   get_namespaceid(oprnspname));
+					}
+					/*
+					 * Look up a statistics slot. If there is an entry of the
+					 * same kind already, leave it, assuming the statistics
+					 * is approximately the same on all nodes, so values from
+					 * one node are representing entire relation well.
+					 * If empty slot is found store values here. If no more
+					 * slots skip remaining values.
+					 */
+					for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
+					{
+						if (stats->stakind[k] == 0 ||
+								(stats->stakind[k] == kind && stats->staop[k] == oprid))
+							break;
+					}
+
+					if (k >= STATISTIC_NUM_SLOTS)
+					{
+						/* No empty slots */
+						break;
+					}
+
+					/*
+					 * If it is an existing slot which has numbers or values
+					 * continue to the next set. If slot exists but without
+					 * numbers and values, try to acquire them now
+					 */
+					if (stats->stakind[k] != 0 && (stats->numnumbers[k] > 0 ||
+							stats->numvalues[k] > 0))
+					{
+						colnum += 2; /* skip numbers and values */
+						continue;
+					}
+
+					/*
+					 * Initialize slot
+					 */
+					stats->stakind[k] = kind;
+					stats->staop[k] = oprid;
+					stats->numnumbers[k] = 0;
+					stats->stanumbers[k] = NULL;
+					stats->numvalues[k] = 0;
+					stats->stavalues[k] = NULL;
+					stats->statypid[k] = InvalidOid;
+					stats->statyplen[k] = -1;
+					stats->statypalign[k] = 'i';
+					stats->statypbyval[k] = true;
 				}
+
 
 				/* get numbers */
 				value = slot_getattr(result, colnum++, &isnull); /* numbers */
-				if (isnull)
-				{
-					numbers = NULL;
-					nnumbers = 0;
-				}
-				else
+				if (!isnull)
 				{
 					ArrayType  *arry = DatumGetArrayTypeP(value);
 
@@ -3072,37 +3171,27 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 					 */
 					if ((Pointer) arry != DatumGetPointer(value))
 						pfree(arry);
+
+					stats->numnumbers[k] = nnumbers;
+					stats->stanumbers[k] = numbers;
 				}
-				/* get numbers */
-				value = slot_getattr(result, colnum++, &isnull); /* numbers */
-				if (isnull)
-				{
-					values = NULL;
-					nvalues = 0;
-				}
-				else
+				/* get values */
+				value = slot_getattr(result, colnum++, &isnull); /* values */
+				if (!isnull)
 				{
 					int 		j;
-					ArrayType  *arry = DatumGetArrayTypeP(value);
-					Form_pg_attribute att = onerel->rd_att->attrs[attnum - 1];
-					Oid			atttype = att->atttypid;
-					Form_pg_type typeForm;
-					HeapTuple	typeTuple;
-
-					/* Need to get info about the array element type */
-					typeTuple = SearchSysCache(TYPEOID,
-											   ObjectIdGetDatum(atttype),
-											   0, 0, 0);
-					if (!HeapTupleIsValid(typeTuple))
-						elog(ERROR, "cache lookup failed for type %u", atttype);
-					typeForm = (Form_pg_type) GETSTRUCT(typeTuple);
-
+					ArrayType  *arry;
+					int16		elmlen;
+					bool		elmbyval;
+					char		elmalign;
+					arry = DatumGetArrayTypeP(value);
+					/* We could cache this data, but not clear it's worth it */
+					get_typlenbyvalalign(ARR_ELEMTYPE(arry),
+										 &elmlen, &elmbyval, &elmalign);
 					/* Deconstruct array into Datum elements; NULLs not expected */
 					deconstruct_array(arry,
-									  atttype,
-									  typeForm->typlen,
-									  typeForm->typbyval,
-									  typeForm->typalign,
+									  ARR_ELEMTYPE(arry),
+									  elmlen, elmbyval, elmalign,
 									  &values, NULL, &nvalues);
 
 					/*
@@ -3110,72 +3199,25 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 					 * Datums that are pointers into the syscache value.  Copy them to
 					 * avoid problems if syscache decides to drop the entry.
 					 */
-					if (!typeForm->typbyval)
+					if (!elmbyval)
 					{
 						for (j = 0; j < nvalues; j++)
-						{
-							values[j] = datumCopy(values[j],
-												  typeForm->typbyval,
-												  typeForm->typlen);
-						}
+							values[j] = datumCopy(values[j], elmbyval, elmlen);
 					}
-
-					ReleaseSysCache(typeTuple);
 
 					/*
 					 * Free statarray if it's a detoasted copy.
 					 */
 					if ((Pointer) arry != DatumGetPointer(value))
 						pfree(arry);
-				}
 
-				/*
-				 * In the current stats structure find if this statistic kind
-				 * already exists. If does not exist copy data, otherwise merge
-				 */
-				for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
-				{
-					if (stats->stakind[k] == 0 ||
-						(stats->stakind[k] == kind && stats->staop[k] == oprid))
-						break;
-				}
-
-				if (k >= STATISTIC_NUM_SLOTS)
-				{
-					/*
-					 * This should not happen - all nodes have the same number
-					 * of statistics slots and contentes are identical.
-					 * For now clean up and skip numbers, probably we should
-					 * report the problem.
-					 */
-					if (numbers)
-						pfree(numbers);
-					if (values)
-						pfree(values);
-					continue;
-				}
-
-				if (stats->stakind[k] == 0)
-				{
-					/* empty slot, populate */
-					stats->stakind[k] = kind;
-					stats->staop[k] = oprid;
-					stats->numnumbers[k] = nnumbers;
-					stats->stanumbers[k] = numbers;
 					stats->numvalues[k] = nvalues;
 					stats->stavalues[k] = values;
-				}
-				else
-				{
-					/*
-					 * Merge statistics, ignore unknown statistic kinds and
-					 * assume statistics from one random node is representing
-					 * entire table well enough.
-					 */
-					if (numbers)
-						pfree(numbers);
-					if (values)
-						pfree(values);
+					/* store details about values data type */
+					stats->statypid[k] = ARR_ELEMTYPE(arry);
+					stats->statyplen[k] = elmlen;
+					stats->statypalign[k] = elmalign;
+					stats->statypbyval[k] = elmbyval;
 				}
 			}
 		}

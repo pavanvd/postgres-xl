@@ -103,7 +103,7 @@ make_ctid_col_ref(Query *qry)
 	ListCell		*lc1, *lc2;
 	RangeTblEntry		*rte1, *rte2;
 	int			tableRTEs, firstTableRTENumber;
-	RangeTblEntry		*rte_in_query;
+	RangeTblEntry		*rte_in_query = NULL;
 	AttrNumber		attnum;
 	Oid			vartypeid;
 	int32			type_mod;
@@ -166,6 +166,7 @@ make_ctid_col_ref(Query *qry)
 	}
 
 	attnum = specialAttNum("ctid");
+	Assert(rte_in_query);
 	get_rte_attribute_type(rte_in_query, attnum, &vartypeid, &type_mod, &varcollid);
 	return makeVar(firstTableRTENumber, attnum, vartypeid, type_mod, varcollid, 0);
 }
@@ -469,7 +470,6 @@ pgxc_handle_exec_direct(Query *query, int cursorOptions,
 			/* Try and set what we can, rest must have been zeroed out by makeNode() */
 			result->commandType = query->commandType;
 			result->canSetTag = query->canSetTag;
-			result->intoClause = query->intoClause;
 			/* Set result relations */
 			if (query->commandType != CMD_SELECT)
 				result->resultRelations = list_make1_int(query->resultRelation);
@@ -483,8 +483,7 @@ pgxc_handle_exec_direct(Query *query, int cursorOptions,
 			 * dependencies are in glob->invalItems. These fields can be retrieved
 			 * through set_plan_references().
 			 */
-			result->planTree = set_plan_references(glob, result->planTree,
-			                                       query->rtable, root->rowMarks);
+			result->planTree = set_plan_references(root, result->planTree);
 			result->relationOids = glob->relationOids;
 			result->invalItems = glob->invalItems;
 		}
@@ -593,15 +592,15 @@ pgxc_FQS_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 	 * dependencies are in glob->invalItems. These fields can be retrieved
 	 * through set_plan_references().
 	 */
-	top_plan = set_plan_references(glob, top_plan, query->rtable,
-									root->rowMarks);
+	top_plan = set_plan_references(root, top_plan);
+
 	/* build the PlannedStmt result */
 	result = makeNode(PlannedStmt);
 	/* Try and set what we can, rest must have been zeroed out by makeNode() */
 	result->commandType = query->commandType;
 	result->canSetTag = query->canSetTag;
 	result->utilityStmt = query->utilityStmt;
-	result->intoClause = query->intoClause;
+
 	/* Set result relations */
 	if (query->commandType != CMD_SELECT)
 		result->resultRelations = list_make1_int(query->resultRelation);
@@ -1328,7 +1327,7 @@ pgxc_FQS_get_relation_nodes(RangeTblEntry *rte, Index varno, Query *query)
 	CmdType command_type = query->commandType;
 	bool for_update = query->rowMarks ? true : false;
 	ExecNodes	*rel_exec_nodes;
-	RelationAccessType rel_access;
+	RelationAccessType rel_access = RELATION_ACCESS_READ;
 	RelationLocInfo *rel_loc_info;
 
 	Assert(rte == rt_fetch(varno, (query->rtable)));
@@ -1466,7 +1465,23 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 		 * that expression is encountered.
 		 */
 		case T_CaseTestExpr:
+			break;
+
+		/*
+		 * record_in() function throws error, thus requesting a result in the
+		 * form of anonymous record from datanode gets into error. Hence, if the
+		 * top expression of a target entry is ROW(), it's not shippable.
+		 */
 		case T_TargetEntry:
+		{
+			TargetEntry *tle = (TargetEntry *)node;
+			if (tle->expr)
+			{
+				char typtype = get_typtype(exprType((Node *)tle->expr));
+				if (!typtype || typtype == TYPTYPE_PSEUDO)
+					pgxc_set_shippability_reason(sc_context, SS_UNSHIPPABLE_EXPR);
+			}
+		}
 			break;
 
 		case T_SortGroupClause:
@@ -1668,7 +1683,12 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
 			}
 			/* We are checking shippability of whole query, go ahead */
 
-			if (query->hasRecursive || 	query->intoClause)
+			/* CREATE TABLE AS is not supported in FQS */
+			if (query->commandType == CMD_UTILITY &&
+				IsA(query->utilityStmt, CreateTableAsStmt))
+				pgxc_set_shippability_reason(sc_context, SS_UNSUPPORTED_EXPR);
+
+			if (query->hasRecursive)
 				pgxc_set_shippability_reason(sc_context, SS_UNSUPPORTED_EXPR);
 			/*
 			 * If the query needs Coordinator for evaluation or the query can be
@@ -2135,7 +2155,6 @@ pgxc_direct_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 	result->commandType = query->commandType;
 	result->canSetTag = query->canSetTag;
 	result->utilityStmt = query->utilityStmt;
-	result->intoClause = query->intoClause;
 	result->rtable = query->rtable;
 
 	/* EXECUTE DIRECT statements have their RemoteQuery node already built when analyzing */

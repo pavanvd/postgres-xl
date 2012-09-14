@@ -277,18 +277,19 @@ SELECT pg_get_viewdef('vsubdepartment'::regclass);
 (1 row)
 
 SELECT pg_get_viewdef('vsubdepartment'::regclass, true);
-                                    pg_get_viewdef                                    
---------------------------------------------------------------------------------------
-  WITH RECURSIVE subdepartment AS (                                                  +
-                  SELECT department.id, department.parent_department, department.name+
-                    FROM department                                                  +
-                   WHERE department.name = 'A'::text                                 +
-         UNION ALL                                                                   +
-                  SELECT d.id, d.parent_department, d.name                           +
-                    FROM department d, subdepartment sd                              +
-                   WHERE d.parent_department = sd.id                                 +
-         )                                                                           +
-  SELECT subdepartment.id, subdepartment.parent_department, subdepartment.name       +
+                                pg_get_viewdef                                 
+-------------------------------------------------------------------------------
+  WITH RECURSIVE subdepartment AS (                                           +
+                  SELECT department.id, department.parent_department,         +
+                     department.name                                          +
+                    FROM department                                           +
+                   WHERE department.name = 'A'::text                          +
+         UNION ALL                                                            +
+                  SELECT d.id, d.parent_department, d.name                    +
+                    FROM department d, subdepartment sd                       +
+                   WHERE d.parent_department = sd.id                          +
+         )                                                                    +
+  SELECT subdepartment.id, subdepartment.parent_department, subdepartment.name+
     FROM subdepartment;
 (1 row)
 
@@ -1006,7 +1007,7 @@ with cte(foo) as ( select 42 ) select * from ((select foo from cte)) q;
 select ( with cte(foo) as ( values(f1) )
          select (select foo from cte) )
 from int4_tbl order by 1;
-  ?column?   
+     foo     
 -------------
  -2147483647
      -123456
@@ -1018,7 +1019,7 @@ from int4_tbl order by 1;
 select ( with cte(foo) as ( values(f1) )
           values((select foo from cte)) )
 from int4_tbl order by 1;
-  ?column?   
+   column1   
 -------------
  -2147483647
      -123456
@@ -1498,6 +1499,71 @@ SELECT * FROM y order by 1;
 DROP TRIGGER y_trig ON y;
 ERROR:  trigger "y_trig" for table "y" does not exist
 DROP FUNCTION y_trigger();
+-- WITH attached to inherited UPDATE or DELETE
+CREATE TEMP TABLE parent ( id int, val text );
+CREATE TEMP TABLE child1 ( ) INHERITS ( parent );
+CREATE TEMP TABLE child2 ( ) INHERITS ( parent );
+INSERT INTO parent VALUES ( 1, 'p1' );
+INSERT INTO child1 VALUES ( 11, 'c11' ),( 12, 'c12' );
+INSERT INTO child2 VALUES ( 23, 'c21' ),( 24, 'c22' );
+WITH rcte AS ( SELECT sum(id) AS totalid FROM parent )
+UPDATE parent SET id = id + totalid FROM rcte;
+ERROR:  Partition column can't be updated in current version
+SELECT * FROM parent ORDER BY id;
+ id | val 
+----+-----
+  1 | p1
+ 11 | c11
+ 12 | c12
+ 23 | c21
+ 24 | c22
+(5 rows)
+
+WITH wcte AS ( INSERT INTO child1 VALUES ( 42, 'new' ) RETURNING id AS newid )
+UPDATE parent SET id = id + newid FROM wcte;
+ERROR:  RETURNING clause not yet supported
+SELECT * FROM parent ORDER BY id;
+ id | val 
+----+-----
+  1 | p1
+ 11 | c11
+ 12 | c12
+ 23 | c21
+ 24 | c22
+(5 rows)
+
+WITH rcte AS ( SELECT max(id) AS maxid FROM parent )
+DELETE FROM parent USING rcte WHERE id = maxid;
+ERROR:  Cannot generate remote query plan
+DETAIL:  This relation rowtype cannot be fetched
+SELECT * FROM parent ORDER BY id;
+ id | val 
+----+-----
+  1 | p1
+ 11 | c11
+ 12 | c12
+ 23 | c21
+ 24 | c22
+(5 rows)
+
+WITH wcte AS ( INSERT INTO child2 VALUES ( 42, 'new2' ) RETURNING id AS newid )
+DELETE FROM parent USING wcte WHERE id = newid;
+ERROR:  RETURNING clause not yet supported
+SELECT * FROM parent ORDER BY id;
+ id | val 
+----+-----
+  1 | p1
+ 11 | c11
+ 12 | c12
+ 23 | c21
+ 24 | c22
+(5 rows)
+
+-- check EXPLAIN VERBOSE for a wCTE with RETURNING
+EXPLAIN (VERBOSE, COSTS OFF, NODES OFF, NUM_NODES OFF)
+WITH wcte AS ( INSERT INTO int8_tbl VALUES ( 42, 47 ) RETURNING q2 )
+DELETE FROM a USING wcte WHERE aa = q2;
+ERROR:  RETURNING clause not yet supported
 -- error cases
 -- data-modifying WITH tries to use its own output
 WITH RECURSIVE t AS (

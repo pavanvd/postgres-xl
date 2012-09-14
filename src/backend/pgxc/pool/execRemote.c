@@ -7723,6 +7723,13 @@ determine_param_types(Plan *plan,  struct find_params_context *context)
 				return true;
 			break;
 
+		case T_IndexOnlyScan:
+			if (expression_tree_walker((Node *) ((IndexOnlyScan *) plan)->indexqual,
+									   determine_param_types_walker,
+									   (void *) context))
+				return true;
+			break;
+
 		case T_BitmapIndexScan:
 			if (expression_tree_walker((Node *) ((BitmapIndexScan *) plan)->indexqual,
 									   determine_param_types_walker,

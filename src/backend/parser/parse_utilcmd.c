@@ -16,7 +16,7 @@
  * a quick copyObject() call before manipulating the query tree.
  *
  *
- * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
@@ -27,8 +27,6 @@
 
 #include "postgres.h"
 
-#include "access/genam.h"
-#include "access/heapam.h"
 #include "access/reloptions.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
@@ -65,7 +63,6 @@
 #endif
 #include "parser/parser.h"
 #include "rewrite/rewriteManip.h"
-#include "storage/lock.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -138,8 +135,8 @@ static void transformColumnDefinition(CreateStmtContext *cxt,
 						  ColumnDef *column);
 static void transformTableConstraint(CreateStmtContext *cxt,
 						 Constraint *constraint);
-static void transformInhRelation(CreateStmtContext *cxt,
-					 InhRelation *inhrelation);
+static void transformTableLikeClause(CreateStmtContext *cxt,
+						 TableLikeClause *table_like_clause);
 static void transformOfType(CreateStmtContext *cxt,
 				TypeName *ofTypename);
 static char *chooseIndexName(const RangeVar *relation, IndexStmt *index_stmt);
@@ -194,6 +191,7 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	List	   *save_alist;
 	ListCell   *elements;
 	Oid			namespaceid;
+	Oid			existing_relid;
 
 	/*
 	 * We must not scribble on the passed-in CreateStmt, so copy it.  (This is
@@ -203,30 +201,25 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 
 	/*
 	 * Look up the creation namespace.	This also checks permissions on the
-	 * target namespace, so that we throw any permissions error as early as
-	 * possible.
+	 * target namespace, locks it against concurrent drops, checks for a
+	 * preexisting relation in that namespace with the same name, and updates
+	 * stmt->relation->relpersistence if the select namespace is temporary.
 	 */
-	namespaceid = RangeVarGetAndCheckCreationNamespace(stmt->relation);
-	RangeVarAdjustRelationPersistence(stmt->relation, namespaceid);
+	namespaceid =
+		RangeVarGetAndCheckCreationNamespace(stmt->relation, NoLock,
+											 &existing_relid);
 
 	/*
 	 * If the relation already exists and the user specified "IF NOT EXISTS",
 	 * bail out with a NOTICE.
 	 */
-	if (stmt->if_not_exists)
+	if (stmt->if_not_exists && OidIsValid(existing_relid))
 	{
-		Oid			existing_relid;
-
-		existing_relid = get_relname_relid(stmt->relation->relname,
-										   namespaceid);
-		if (existing_relid != InvalidOid)
-		{
-			ereport(NOTICE,
-					(errcode(ERRCODE_DUPLICATE_TABLE),
-					 errmsg("relation \"%s\" already exists, skipping",
-							stmt->relation->relname)));
-			return NIL;
-		}
+		ereport(NOTICE,
+				(errcode(ERRCODE_DUPLICATE_TABLE),
+				 errmsg("relation \"%s\" already exists, skipping",
+						stmt->relation->relname)));
+		return NIL;
 	}
 
 	/*
@@ -296,8 +289,8 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 				transformTableConstraint(&cxt, (Constraint *) element);
 				break;
 
-			case T_InhRelation:
-				transformInhRelation(&cxt, (InhRelation *) element);
+			case T_TableLikeClause:
+				transformTableLikeClause(&cxt, (TableLikeClause *) element);
 				break;
 
 			default:
@@ -469,7 +462,7 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 			column->typeName->typeOid = INT2OID;
 		}
 		else if (strcmp(typname, "serial") == 0 ||
-			strcmp(typname, "serial4") == 0)
+				 strcmp(typname, "serial4") == 0)
 		{
 			is_serial = true;
 			column->typeName->names = NIL;
@@ -718,6 +711,31 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 				break;
 		}
 	}
+
+	/*
+	 * Generate ALTER FOREIGN TABLE ALTER COLUMN statement which adds
+	 * per-column foreign data wrapper options for this column.
+	 */
+	if (column->fdwoptions != NIL)
+	{
+		AlterTableStmt *stmt;
+		AlterTableCmd *cmd;
+
+		cmd = makeNode(AlterTableCmd);
+		cmd->subtype = AT_AlterColumnGenericOptions;
+		cmd->name = column->colname;
+		cmd->def = (Node *) column->fdwoptions;
+		cmd->behavior = DROP_RESTRICT;
+		cmd->missing_ok = false;
+
+		stmt = makeNode(AlterTableStmt);
+		stmt->relation = cxt->relation;
+		stmt->cmds = NIL;
+		stmt->relkind = OBJECT_FOREIGN_TABLE;
+		stmt->cmds = lappend(stmt->cmds, cmd);
+
+		cxt->alist = lappend(cxt->alist, stmt);
+	}
 }
 
 /*
@@ -762,14 +780,14 @@ transformTableConstraint(CreateStmtContext *cxt, Constraint *constraint)
 }
 
 /*
- * transformInhRelation
+ * transformTableLikeClause
  *
- * Change the LIKE <subtable> portion of a CREATE TABLE statement into
+ * Change the LIKE <srctable> portion of a CREATE TABLE statement into
  * column definitions which recreate the user defined column portions of
- * <subtable>.
+ * <srctable>.
  */
 static void
-transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
+transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_clause)
 {
 	AttrNumber	parent_attno;
 	Relation	relation;
@@ -777,15 +795,22 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 	TupleConstr *constr;
 	AclResult	aclresult;
 	char	   *comment;
+	ParseCallbackState pcbstate;
 
-	relation = parserOpenTable(cxt->pstate, inhRelation->relation,
-							   AccessShareLock);
+	setup_parser_errposition_callback(&pcbstate, cxt->pstate, table_like_clause->relation->location);
 
-	if (relation->rd_rel->relkind != RELKIND_RELATION)
+	relation = relation_openrv(table_like_clause->relation, AccessShareLock);
+
+	if (relation->rd_rel->relkind != RELKIND_RELATION
+		&& relation->rd_rel->relkind != RELKIND_VIEW
+		&& relation->rd_rel->relkind != RELKIND_FOREIGN_TABLE
+		&& relation->rd_rel->relkind != RELKIND_COMPOSITE_TYPE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("inherited relation \"%s\" is not a table",
-						inhRelation->relation->relname)));
+				 errmsg("\"%s\" is not a table, view, composite type, or foreign table",
+						table_like_clause->relation->relname)));
+
+	cancel_parser_errposition_callback(&pcbstate);
 
 #ifdef PGXC
 #ifndef XCP
@@ -794,19 +819,46 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 	 * This will override transaction direct commit as no 2PC
 	 * can be used for transactions involving temporary objects.
 	 */
-	if (IsTempTable(RangeVarGetRelid(inhRelation->relation, NoLock, false, false)))
+	if (IsTempTable(RelationGetRelid(relation)))
 		ExecSetTempObjectIncluded();
+
+	/*
+	 * Block the creation of tables using views in their LIKE clause.
+	 * Views are not created on Datanodes, so this will result in an error
+	 * PGXCTODO: In order to fix this problem, it will be necessary to
+	 * transform the query string of CREATE TABLE into something not using
+	 * the view definition. Now Postgres-XC only uses the raw string...
+	 * There is some work done with event triggers in 9.3, so it might
+	 * be possible to use that code to generate the SQL query to be sent to
+	 * remote nodes. When this is done, this error will be removed.
+	 */
+	if (relation->rd_rel->relkind == RELKIND_VIEW)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("Postgres-XC does not support VIEW in LIKE clauses"),
+				 errdetail("The feature is not currently supported")));
 #endif
 #endif
 
 	/*
-	 * Check for SELECT privilages
+	 * Check for privileges
 	 */
-	aclresult = pg_class_aclcheck(RelationGetRelid(relation), GetUserId(),
-								  ACL_SELECT);
-	if (aclresult != ACLCHECK_OK)
-		aclcheck_error(aclresult, ACL_KIND_CLASS,
-					   RelationGetRelationName(relation));
+	if (relation->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
+	{
+		aclresult = pg_type_aclcheck(relation->rd_rel->reltype, GetUserId(),
+									 ACL_USAGE);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error(aclresult, ACL_KIND_TYPE,
+						   RelationGetRelationName(relation));
+	}
+	else
+	{
+		aclresult = pg_class_aclcheck(RelationGetRelid(relation), GetUserId(),
+									  ACL_SELECT);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error(aclresult, ACL_KIND_CLASS,
+						   RelationGetRelationName(relation));
+	}
 
 	tupleDesc = RelationGetDescr(relation);
 	constr = tupleDesc->constr;
@@ -872,7 +924,7 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 		 * Copy default, if present and the default has been requested
 		 */
 		if (attribute->atthasdef &&
-			(inhRelation->options & CREATE_TABLE_LIKE_DEFAULTS))
+			(table_like_clause->options & CREATE_TABLE_LIKE_DEFAULTS))
 		{
 			Node	   *this_default = NULL;
 			AttrDefault *attrdef;
@@ -900,13 +952,13 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 		}
 
 		/* Likewise, copy storage if requested */
-		if (inhRelation->options & CREATE_TABLE_LIKE_STORAGE)
+		if (table_like_clause->options & CREATE_TABLE_LIKE_STORAGE)
 			def->storage = attribute->attstorage;
 		else
 			def->storage = 0;
 
 		/* Likewise, copy comment if requested */
-		if ((inhRelation->options & CREATE_TABLE_LIKE_COMMENTS) &&
+		if ((table_like_clause->options & CREATE_TABLE_LIKE_COMMENTS) &&
 			(comment = GetComment(attribute->attrelid,
 								  RelationRelationId,
 								  attribute->attnum)) != NULL)
@@ -928,7 +980,7 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 	 * Copy CHECK constraints if requested, being careful to adjust attribute
 	 * numbers
 	 */
-	if ((inhRelation->options & CREATE_TABLE_LIKE_CONSTRAINTS) &&
+	if ((table_like_clause->options & CREATE_TABLE_LIKE_CONSTRAINTS) &&
 		tupleDesc->constr)
 	{
 		AttrNumber *attmap = varattnos_map_schema(tupleDesc, cxt->columns);
@@ -951,9 +1003,9 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 			cxt->ckconstraints = lappend(cxt->ckconstraints, n);
 
 			/* Copy comment on constraint */
-			if ((inhRelation->options & CREATE_TABLE_LIKE_COMMENTS) &&
-				(comment = GetComment(get_constraint_oid(RelationGetRelid(relation),
-														 n->conname, false),
+			if ((table_like_clause->options & CREATE_TABLE_LIKE_COMMENTS) &&
+				(comment = GetComment(get_relation_constraint_oid(RelationGetRelid(relation),
+														  n->conname, false),
 									  ConstraintRelationId,
 									  0)) != NULL)
 			{
@@ -974,7 +1026,7 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 	/*
 	 * Likewise, copy indexes if requested
 	 */
-	if ((inhRelation->options & CREATE_TABLE_LIKE_INDEXES) &&
+	if ((table_like_clause->options & CREATE_TABLE_LIKE_INDEXES) &&
 		relation->rd_rel->relhasindex)
 	{
 		AttrNumber *attmap = varattnos_map_schema(tupleDesc, cxt->columns);
@@ -995,7 +1047,7 @@ transformInhRelation(CreateStmtContext *cxt, InhRelation *inhRelation)
 			index_stmt = generateClonedIndexStmt(cxt, parent_index, attmap);
 
 			/* Copy comment on index */
-			if (inhRelation->options & CREATE_TABLE_LIKE_COMMENTS)
+			if (table_like_clause->options & CREATE_TABLE_LIKE_COMMENTS)
 			{
 				comment = GetComment(parent_index_oid, RelationRelationId, 0);
 
@@ -2078,7 +2130,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	}
 #else
 		if (IS_PGXC_COORDINATOR && cxt->distributeby
-				&& ( cxt->distributeby->disttype == DISTTYPE_HASH ||
+				&& (cxt->distributeby->disttype == DISTTYPE_HASH ||
 					cxt->distributeby->disttype == DISTTYPE_MODULO)
 				&& !isLocalSafe)
 			ereport(ERROR,
@@ -2125,7 +2177,7 @@ transformFKConstraints(CreateStmtContext *cxt,
 			 */
 			if (IS_PGXC_COORDINATOR && !cxt->fallback_dist_col)
 			{
-				Oid pk_rel_id = RangeVarGetRelid(constraint->pktable, NoLock, false, false);
+				Oid pk_rel_id = RangeVarGetRelid(constraint->pktable, NoLock, false);
 
 				/* make sure it is a partitioned column */
 				if (list_length(constraint->pk_attrs) != 0
@@ -2640,7 +2692,15 @@ transformAlterTableStmt(AlterTableStmt *stmt, const char *queryString)
 	 * new commands we add after this must not upgrade the lock level
 	 * requested here.
 	 */
-	rel = relation_openrv(stmt->relation, lockmode);
+	rel = relation_openrv_extended(stmt->relation, lockmode, stmt->missing_ok);
+	if (rel == NULL)
+	{
+		/* this message is consistent with relation_openrv */
+		ereport(NOTICE,
+				(errmsg("relation \"%s\" does not exist, skipping",
+						stmt->relation->relname)));
+		return NIL;
+	}
 
 	/* Set up pstate and CreateStmtContext */
 	pstate = make_parsestate(NULL);
@@ -3223,7 +3283,7 @@ checkLocalFKConstraints(CreateStmtContext *cxt)
 #endif
 		}
 
-		pk_rel_id = RangeVarGetRelid(constraint->pktable, NoLock, false, false);
+		pk_rel_id = RangeVarGetRelid(constraint->pktable, NoLock, false);
 #ifdef XCP
 		rel_loc_info = GetRelationLocInfo(pk_rel_id);
 		/* If referenced table is replicated, the constraint is safe */

@@ -3,7 +3,7 @@
  * varsup.c
  *	  postgres OID & XID variables support routines
  *
- * Copyright (c) 2000-2011, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *
  * IDENTIFICATION
@@ -23,13 +23,12 @@
 #include "postmaster/autovacuum.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
-#include "utils/builtins.h"
+#include "utils/syscache.h"
 #ifdef PGXC
 #include "pgxc/pgxc.h"
 #include "access/gtm.h"
 #include "storage/procarray.h"
 #endif
-#include "utils/syscache.h"
 
 
 /* Number of OIDs to prefetch (preallocate) per XLOG write */
@@ -103,7 +102,7 @@ GetNextTransactionId(void)
 /*
  * Allocate the next XID for a new transaction or subtransaction.
  *
- * The new XID is also stored into MyProc before returning.
+ * The new XID is also stored into MyPgXact before returning.
  *
  * Note: when this is called, we are actually already inside a valid
  * transaction, since XIDs are now not allocated until the transaction
@@ -129,7 +128,7 @@ GetNewTransactionId(bool isSubXact)
 	if (IsBootstrapProcessingMode())
 	{
 		Assert(!isSubXact);
-		MyProc->xid = BootstrapTransactionId;
+		MyPgXact->xid = BootstrapTransactionId;
 		return BootstrapTransactionId;
 	}
 
@@ -138,7 +137,10 @@ GetNewTransactionId(bool isSubXact)
 		elog(ERROR, "cannot assign TransactionIds during recovery");
 
 #ifdef PGXC
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	/* Initialize transaction ID */
+	xid = InvalidTransactionId;
+
+	if ((IS_PGXC_COORDINATOR && !IsConnFromCoord()) || IsPGXCNodeXactDatanodeDirect())
 	{
 		/*
 		 * Get XID from GTM before acquiring the lock.
@@ -148,7 +150,7 @@ GetNewTransactionId(bool isSubXact)
 		 * block all other processes.
 		 * GXID can just be obtained from a remote Coordinator
 		 */
-		if (IsAutoVacuumWorkerProcess() && (MyProc->vacuumFlags & PROC_IN_VACUUM))
+		if (IsAutoVacuumWorkerProcess() && (MyPgXact->vacuumFlags & PROC_IN_VACUUM))
 			xid = (TransactionId) BeginTranAutovacuumGTM();
 		else
 			xid = (TransactionId) BeginTranGTM(timestamp);
@@ -159,8 +161,8 @@ GetNewTransactionId(bool isSubXact)
 	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
 
 #ifdef PGXC
-	/* Only remote Coordinator can get a GXID */
-	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
+	/* Only remote Coordinator or a Datanode accessed directly by an application can get a GXID */
+	if ((IS_PGXC_COORDINATOR && !IsConnFromCoord()) || IsPGXCNodeXactDatanodeDirect())
 	{
 		if (TransactionIdIsValid(xid))
 		{
@@ -194,7 +196,7 @@ GetNewTransactionId(bool isSubXact)
 			 * from snapshots so use a special function for this purpose.
 			 * For a simple worker get transaction ID like a normal transaction would do.
 			 */
-			if (MyProc->vacuumFlags & PROC_IN_VACUUM)
+			if (MyPgXact->vacuumFlags & PROC_IN_VACUUM)
 				next_xid = (TransactionId) BeginTranAutovacuumGTM();
 			else
 				next_xid = (TransactionId) BeginTranGTM(timestamp);
@@ -231,10 +233,11 @@ GetNewTransactionId(bool isSubXact)
 			elog(LOG, "Falling back to local Xid. Was = %d, now is = %d",
 					next_xid, ShmemVariableCache->nextXid);
 			xid = ShmemVariableCache->nextXid;
+
 		}
- 	}
+	}
 #else
- 	xid = ShmemVariableCache->nextXid;
+	xid = ShmemVariableCache->nextXid;
 #endif /* PGXC */
 
 	/*----------
@@ -350,19 +353,19 @@ GetNewTransactionId(bool isSubXact)
 	 * latestCompletedXid is present in the ProcArray, which is essential for
 	 * correct OldestXmin tracking; see src/backend/access/transam/README.
 	 *
-	 * XXX by storing xid into MyProc without acquiring ProcArrayLock, we are
-	 * relying on fetch/store of an xid to be atomic, else other backends
+	 * XXX by storing xid into MyPgXact without acquiring ProcArrayLock, we
+	 * are relying on fetch/store of an xid to be atomic, else other backends
 	 * might see a partially-set xid here.	But holding both locks at once
 	 * would be a nasty concurrency hit.  So for now, assume atomicity.
 	 *
-	 * Note that readers of PGPROC xid fields should be careful to fetch the
+	 * Note that readers of PGXACT xid fields should be careful to fetch the
 	 * value only once, rather than assume they can read a value multiple
 	 * times and get the same answer each time.
 	 *
 	 * The same comments apply to the subxact xid count and overflow fields.
 	 *
-	 * A solution to the atomic-store problem would be to give each PGPROC its
-	 * own spinlock used only for fetching/storing that PGPROC's xid and
+	 * A solution to the atomic-store problem would be to give each PGXACT its
+	 * own spinlock used only for fetching/storing that PGXACT's xid and
 	 * related fields.
 	 *
 	 * If there's no room to fit a subtransaction XID into PGPROC, set the
@@ -384,20 +387,21 @@ GetNewTransactionId(bool isSubXact)
 		 * TransactionId and int fetch/store are atomic.
 		 */
 		volatile PGPROC *myproc = MyProc;
+		volatile PGXACT *mypgxact = MyPgXact;
 
 		if (!isSubXact)
-			myproc->xid = xid;
+			mypgxact->xid = xid;
 		else
 		{
-			int			nxids = myproc->subxids.nxids;
+			int			nxids = mypgxact->nxids;
 
 			if (nxids < PGPROC_MAX_CACHED_SUBXIDS)
 			{
 				myproc->subxids.xids[nxids] = xid;
-				myproc->subxids.nxids = nxids + 1;
+				mypgxact->nxids = nxids + 1;
 			}
 			else
-				myproc->subxids.overflowed = true;
+				mypgxact->overflowed = true;
 		}
 	}
 

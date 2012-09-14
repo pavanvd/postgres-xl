@@ -1087,6 +1087,8 @@ SharedQueueUnBind(SharedQueue squeue)
 			ConsState *cstate = &squeue->sq_consumers[i];
 			LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock, LW_EXCLUSIVE);
 			/* is consumer working yet ? */
+			if (cstate->cs_status == CONSUMER_ACTIVE)
+				cstate->cs_status = CONSUMER_ERROR;
 			if (cstate->cs_status != CONSUMER_DONE)
 			{
 				c_count++;

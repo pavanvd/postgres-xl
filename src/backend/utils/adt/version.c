@@ -3,7 +3,7 @@
  * version.c
  *	 Returns the PostgreSQL version string
  *
- * Copyright (c) 1998-2011, PostgreSQL Global Development Group
+ * Copyright (c) 1998-2012, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *
@@ -22,3 +22,13 @@ pgsql_version(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_TEXT_P(cstring_to_text(PG_VERSION_STR));
 }
+
+#ifdef PGXC
+#ifndef XCP
+Datum
+pgxc_version(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_TEXT_P(cstring_to_text(PGXC_VERSION_STR));
+}
+#endif
+#endif
