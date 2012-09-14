@@ -167,7 +167,7 @@ static void set_remote_references(PlannerInfo *root, RemoteQuery *rscan, int rto
 #endif
 #endif
 #ifdef XCP
-static void set_remotesubplan_references(RemoteSubplan *rsplan, int rtoffset);
+static void set_remotesubplan_references(PlannerInfo *root, Plan *plan, int rtoffset);
 #endif
 
 
@@ -503,7 +503,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 			break;
 #ifdef XCP
 		case T_RemoteSubplan:
-			set_remotesubplan_references((RemoteSubplan *) plan, rtoffset);
+			set_remotesubplan_references(root, plan, rtoffset);
 			break;
 #endif /* XCP */
 		case T_NestLoop:
@@ -2259,19 +2259,20 @@ pgxc_fix_scan_expr(PlannerInfo *root, Node *node, int rtoffset)
 #ifdef XCP
 /*
  * set_remotesubplan_references
- *    Usually RemoteSubplan node does not evaluate its target list, so it is
- * enought to invoke set_dummy_tlist_references here. One exception is if the
+ *    Usually RemoteSubplan node does just translates its target list, so it is
+ * enought to invoke fix_scan_list here. One exception is if the
  * RemoteSubplan is set on top of ModifyTable. In this case target lists of both
  * these plan nodes are NIL. If the subplan is not returning we want to leave
  * target list NIL, if yes, we should make up target list as a list of simple
  * references to entries from the first returning list.
+ * The qual of RemoteSubplan is always NULL.
  */
 static void
-set_remotesubplan_references(RemoteSubplan *rsplan, int rtoffset)
+set_remotesubplan_references(PlannerInfo *root, Plan *plan, int rtoffset)
 {
-	if (rsplan->scan.plan.targetlist == NIL)
+	if (plan->targetlist == NIL)
 	{
-		ModifyTable *mt = (ModifyTable *) rsplan->scan.plan.lefttree;
+		ModifyTable *mt = (ModifyTable *) plan->lefttree;
 		if (IsA(mt, ModifyTable) && mt->returningLists)
 		{
 			List 	   *returningList;
@@ -2306,12 +2307,22 @@ set_remotesubplan_references(RemoteSubplan *rsplan, int rtoffset)
 				tle->expr = (Expr *) newvar;
 				output_targetlist = lappend(output_targetlist, tle);
 			}
-			rsplan->scan.plan.targetlist = output_targetlist;
+			plan->targetlist = output_targetlist;
 		}
 	}
 	else
-		set_dummy_tlist_references((Plan *) rsplan, rtoffset);
-
-	Assert(rsplan->scan.plan.qual == NULL);
+	{
+		/*
+		 * The RemoteSubplan may look like a subject for a dummy tlist.
+		 * It works in most cases. However it may be a subplan of a ModifyTable
+		 * running against a relation with dropped columns. Sanity check assumes
+		 * that subplan will return a NULL constant as a value for the dropped
+		 * column, however set_dummy_tlist_references would replace it with a
+		 * Var. We cannot detemine the parent plan here, so just process it as
+		 * a scan. Executor will ignore this anyway.
+		 */
+		plan->targetlist = fix_scan_list(root, plan->targetlist, rtoffset);
+	}
+	Assert(plan->qual == NULL);
 }
 #endif
