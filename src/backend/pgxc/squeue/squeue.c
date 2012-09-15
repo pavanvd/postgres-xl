@@ -40,6 +40,7 @@
 int NSQueues = 64;
 int SQueueSize = 64;
 
+#define LONG_TUPLE -42
 
 typedef struct ConsumerSync
 {
@@ -179,6 +180,10 @@ static void *SQueueSyncs;
 		} \
 	} while(0)
 
+
+static bool sq_push_long_tuple(ConsState *cstate, RemoteDataRow datarow);
+static void sq_pull_long_tuple(ConsState *cstate, RemoteDataRow datarow,
+							   ConsumerSync *sync);
 
 /*
  * SharedQueuesInit
@@ -583,24 +588,26 @@ SharedQueueDump(SharedQueue squeue, int consumerIdx,
 		if (QUEUE_FREE_SPACE(cstate) < sizeof(int) + tmpslot->tts_datarow->msglen)
 		{
 			/*
-			 * If stored tuple does not fit empty queue we can not continue.
+			 * If stored tuple does not fit empty queue we are entering special
+			 * procedure of pushing it through.
 			 */
-			if (cstate->cs_ntuples == 0)
+			if (cstate->cs_ntuples <= 0)
 			{
-				/* let consumer know we have a trouble */
-				cstate->cs_status = CONSUMER_ERROR;
-				/* ... and wake it up */
-				SetLatch(&squeue->sq_sync->sqs_consumer_sync[consumerIdx].cs_latch);
 				/*
-				 * Caller is holding a lock on the queue, but won't have
-				 * a chance to release, so do it now.
+				 * If pushing throw is completed wake up and proceed to next
+				 * tuple, there could be enough space in the consumer queue to
+				 * fit more.
 				 */
-				LWLockRelease(squeue->sq_sync->sqs_consumer_sync[consumerIdx].cs_lwlock);
-				ereport(ERROR,
-						(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
-						 errmsg("tuple does not fit consumer queue"),
-						 errdetail("Produced tuple is larger then consumer queue."),
-						 errhint("Consider increasing of SQUEUE_SIZE.")));
+				bool done = sq_push_long_tuple(cstate, tmpslot->tts_datarow);
+
+				/*
+				 * sq_push_long_tuple writes some data anyway, so wake up
+				 * the consumer.
+				 */
+				SetLatch(&squeue->sq_sync->sqs_consumer_sync[consumerIdx].cs_latch);
+
+				if (done)
+					continue;
 			}
 
 			/* Restore read position to get same tuple next time */
@@ -609,7 +616,7 @@ SharedQueueDump(SharedQueue squeue, int consumerIdx,
 			cstate->stat_buff_returns++;
 #endif
 
-			/* We may have advanced the mark, try to truncate */
+			/* We might advance the mark, try to truncate */
 			tuplestore_trim(tuplestore);
 
 			/* Prepare for writing, set proper read pointer */
@@ -794,7 +801,7 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 	LWLockAcquire(sqsync->sqs_consumer_sync[consumerIdx].cs_lwlock, LW_EXCLUSIVE);
 
 	Assert(cstate->cs_status != CONSUMER_DONE);
-	while (cstate->cs_ntuples == 0)
+	while (cstate->cs_ntuples <= 0)
 	{
 		if (cstate->cs_status == CONSUMER_EOF)
 		{
@@ -843,7 +850,11 @@ SharedQueueRead(SharedQueue squeue, int consumerIdx,
 	datarow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + datalen);
 	datarow->msgnode = InvalidOid;
 	datarow->msglen = datalen;
-	QUEUE_READ(cstate, datalen, datarow->msg);
+	if (datalen > cstate->cs_qlength - sizeof(int))
+		sq_pull_long_tuple(cstate, datarow,
+						&sqsync->sqs_consumer_sync[consumerIdx]);
+	else
+		QUEUE_READ(cstate, datalen, datarow->msg);
 	ExecStoreDataRowTuple(datarow, slot, true);
 	(cstate->cs_ntuples)--;
 #ifdef SQUEUE_STAT
@@ -1290,4 +1301,139 @@ SharedQueuesCleanup(int code, Datum arg)
 	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_LOCKS, true, true);
 	ResourceOwnerRelease(CurrentResourceOwner, RESOURCE_RELEASE_AFTER_LOCKS, true, true);
 	CurrentResourceOwner = NULL;
+}
+
+
+/*
+ * sq_push_long_tuple
+ *    Routine to push through the consumer state tuple longer the the consumer
+ *    queue. Long tuple is written by a producer partially, and only when the
+ *    consumer queue is empty.
+ *    The consumer can determine that the tuple being read is long if the length
+ *    of the tuple which is read before data is exceeding queue length.
+ * 	  Consumers is switching to the long tuple mode and read in the portion of
+ *	  data which is already in the queue. After reading in each portion of data
+ *    consumer sets cs_ntuples to LONG_TUPLE to indicate it is in long tuple
+ *    mode, and writes out number of already read bytes to the beginning of the
+ *    queue.
+ *    While Consumer is reading in tuple data Producer may work on other task:
+ *    execute query and send tuples to other Customers. If Producer sees the
+ *    LONG_TUPLE indicator it may write out next portion. The tuple remains
+ *    current in the tuplestore, and Producer just needs to read offset from
+ *    the buffer to know what part of data to write next.
+ *    After tuple is completely written the Producer is advancing to next tuple
+ *    and continue operation in normal mode.
+ */
+static bool
+sq_push_long_tuple(ConsState *cstate, RemoteDataRow datarow)
+{
+	if (cstate->cs_ntuples == 0)
+	{
+		/* the tuple is too big to fit the queue, start pushing it through */
+		int len;
+		/*
+		 * Output actual message size, to prepare consumer:
+		 * allocate memory and set up transmission.
+		 */
+		QUEUE_WRITE(cstate, sizeof(int), (char *) &datarow->msglen);
+		/* Output as much as possible */
+		len = cstate->cs_qlength - sizeof(int);
+		Assert(datarow->msglen > len);
+		QUEUE_WRITE(cstate, len, datarow->msg);
+		cstate->cs_ntuples = 1;
+		return false;
+	}
+	else
+	{
+		int offset;
+		int	len;
+
+		/* Continue pushing through long tuple */
+		Assert(cstate->cs_ntuples == LONG_TUPLE);
+		/*
+		 * Consumer outputs number of bytes already read at the beginning of
+		 * the queue.
+		 */
+		memcpy(&offset, cstate->cs_qstart, sizeof(int));
+
+		Assert(offset > 0 && offset < datarow->msglen);
+
+		/* remaining data */
+		len = datarow->msglen - offset;
+		/*
+		 * We are sending remaining lengs just for sanity check at the consumer
+		 * side
+		 */
+		QUEUE_WRITE(cstate, sizeof(int), (char *) &len);
+		if (len > cstate->cs_qlength - sizeof(int))
+		{
+			/* does not fit yet */
+			len = cstate->cs_qlength - sizeof(int);
+			QUEUE_WRITE(cstate, len, datarow->msg + offset);
+			cstate->cs_ntuples = 1;
+			return false;
+		}
+		else
+		{
+			/* now we are done */
+			QUEUE_WRITE(cstate, len, datarow->msg + offset);
+			cstate->cs_ntuples = 1;
+			return true;
+		}
+	}
+}
+
+
+/*
+ * sq_pull_long_tuple
+ *    Read in from the queue data of a long tuple which does not the queue.
+ *    See sq_push_long_tuple for more details
+ */
+static void
+sq_pull_long_tuple(ConsState *cstate, RemoteDataRow datarow,
+							   ConsumerSync *sync)
+{
+	int offset = 0;
+	int len = datarow->msglen;
+
+	for (;;)
+	{
+		/* determine how many bytes to read */
+		if (len > cstate->cs_qlength - sizeof(int))
+			len = cstate->cs_qlength - sizeof(int);
+
+		/* read data */
+		QUEUE_READ(cstate, len, datarow->msg + offset);
+
+		/* remember how many we read already */
+		offset += len;
+
+		/* check if we are done */
+		if (offset == datarow->msglen)
+			return;
+
+		/* need more, set up queue to accept data from the producer */
+		Assert(cstate->cs_ntuples == 1); /* allow exactly one incomplete tuple */
+		cstate->cs_ntuples = LONG_TUPLE; /* long tuple mode marker */
+		/* Inform producer how many bytes we have already */
+		memcpy(cstate->cs_qstart, &offset, sizeof(int));
+		/* Release locks and wait until producer supply more data */
+		while (cstate->cs_ntuples == LONG_TUPLE)
+		{
+			/* prepare wait */
+			ResetLatch(&sync->cs_latch);
+			LWLockRelease(sync->cs_lwlock);
+			/* Wait for notification about available info */
+			WaitLatch(&sync->cs_latch, WL_LATCH_SET | WL_POSTMASTER_DEATH, -1);
+			/* got the notification, restore lock and try again */
+			LWLockAcquire(sync->cs_lwlock, LW_EXCLUSIVE);
+		}
+		/* Read length of remaining data */
+		QUEUE_READ(cstate, sizeof(int), (char *) &len);
+
+		/* Make sure we are doing the same tuple */
+		Assert(offset + len == datarow->msglen);
+
+		/* next iteration */
+	}
 }
