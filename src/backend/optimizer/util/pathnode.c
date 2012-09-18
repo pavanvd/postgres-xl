@@ -3046,11 +3046,14 @@ create_nestloop_path(PlannerInfo *root,
 	pathnode->innerjoinpath = inner_path;
 	pathnode->joinrestrictinfo = restrict_clauses;
 
-	final_cost_nestloop(root, pathnode, workspace, sjinfo, semifactors);
 #ifdef XCP
 	alternate = set_joinpath_distribution(root, pathnode);
+#endif
+	final_cost_nestloop(root, pathnode, workspace, sjinfo, semifactors);
+
+#ifdef XCP
 	/*
-	 * Calculate costs of all alternates and return cheapest path
+	 * Also calculate costs of all alternates and return cheapest path
 	 */
 	foreach(lc, alternate)
 	{
@@ -3122,13 +3125,15 @@ create_mergejoin_path(PlannerInfo *root,
 	pathnode->path_mergeclauses = mergeclauses;
 	pathnode->outersortkeys = outersortkeys;
 	pathnode->innersortkeys = innersortkeys;
-	/* pathnode->materialize_inner will be set by final_cost_mergejoin */
-	final_cost_mergejoin(root, pathnode, workspace, sjinfo);
 #ifdef XCP
 	alternate = set_joinpath_distribution(root, (JoinPath *) pathnode);
+#endif
+	/* pathnode->materialize_inner will be set by final_cost_mergejoin */
+	final_cost_mergejoin(root, pathnode, workspace, sjinfo);
 
+#ifdef XCP
 	/*
-	 * Calculate costs of all alternates and return cheapest path
+	 * Also calculate costs of all alternates and return cheapest path
 	 */
 	foreach(lc, alternate)
 	{
@@ -3205,10 +3210,13 @@ create_hashjoin_path(PlannerInfo *root,
 	pathnode->jpath.innerjoinpath = inner_path;
 	pathnode->jpath.joinrestrictinfo = restrict_clauses;
 	pathnode->path_hashclauses = hashclauses;
-	/* final_cost_hashjoin will fill in pathnode->num_batches */
-	final_cost_hashjoin(root, pathnode, workspace, sjinfo, semifactors);
 #ifdef XCP
 	alternate = set_joinpath_distribution(root, (JoinPath *) pathnode);
+#endif
+	/* final_cost_hashjoin will fill in pathnode->num_batches */
+	final_cost_hashjoin(root, pathnode, workspace, sjinfo, semifactors);
+
+#ifdef XCP
 	/*
 	 * Calculate costs of all alternates and return cheapest path
 	 */
