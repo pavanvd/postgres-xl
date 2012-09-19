@@ -478,6 +478,9 @@ IsDistColumnForRelId(Oid relid, char *part_col_name)
 bool
 IsTypeModuloDistributable(Oid col_type)
 {
+#ifdef XCP
+	return (modulo_value_len(col_type) != -1);
+#else
 	if(col_type == INT8OID
 	|| col_type == INT2OID
 	|| col_type == OIDOID
@@ -507,6 +510,7 @@ IsTypeModuloDistributable(Oid col_type)
 		return true;
 
 	return false;
+#endif
 }
 
 /*
@@ -1189,37 +1193,21 @@ FreeExecNodes(ExecNodes **exec_nodes)
 static int
 modulo_value_len(Oid dataType)
 {
-	HeapTuple	tuple;
-	Form_pg_type typeForm;
-	int 		valuelen;
-
-	tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(dataType));
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for type %u", dataType);
-	typeForm = (Form_pg_type) GETSTRUCT(tuple);
-
-	if (typeForm->typbyval)
+	switch (dataType)
 	{
-		switch (typeForm->typlen)
-		{
-			case 1:
-				valuelen = 1;
-				break;
-			case 2:
-			case 3:
-				valuelen = 2;
-				break;
-			case 4:
-			default:
-				valuelen = 4;
-				break;
-		}
+		case BOOLOID:
+		case CHAROID:
+			return 1;
+		case INT2OID:
+			return 2;
+		case INT4OID:
+		case ABSTIMEOID:
+		case RELTIMEOID:
+		case DATEOID:
+			return 4;
+		default:
+			return -1;
 	}
-	else
-		valuelen = -1;
-
-	ReleaseSysCache(tuple);
-	return valuelen;
 }
 
 
@@ -1252,10 +1240,6 @@ hash_func_ptr(Oid dataType)
 			return hashtext;
 		case OIDVECTOROID:
 			return hashoidvector;
-		case FLOAT4OID:
-			return hashfloat4;
-		case FLOAT8OID:
-			return hashfloat8;
 		case BPCHAROID:
 			return hashbpchar;
 		case BYTEAOID:
