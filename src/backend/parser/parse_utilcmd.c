@@ -3403,12 +3403,33 @@ checkLocalFKConstraints(CreateStmtContext *cxt)
 									" to hash/modulo distribution column in referenced table.")));
 				/* find the fk attribute matching the distribution column */
 				lattr = NULL;
-				forboth(fklc, constraint->fk_attrs, pklc, constraint->pk_attrs)
+				if (list_length(constraint->pk_attrs) == 0)
 				{
-					if (strcmp(rel_loc_info->partAttrName, strVal(lfirst(pklc))) == 0)
+					/*
+					 * PK attribute list may be missing, use names of FK
+					 * attributes to compare
+					 */
+					foreach(fklc, constraint->fk_attrs)
 					{
-						lattr = strVal(lfirst(fklc));
-						break;
+						char *attrname = strVal(lfirst(fklc));
+						if (strcmp(rel_loc_info->partAttrName, attrname) == 0)
+						{
+							lattr = attrname;
+							break;
+						}
+					}
+				}
+				else
+				{
+					forboth(fklc, constraint->fk_attrs,
+							pklc, constraint->pk_attrs)
+					{
+						if (strcmp(rel_loc_info->partAttrName,
+								   strVal(lfirst(pklc))) == 0)
+						{
+							lattr = strVal(lfirst(fklc));
+							break;
+						}
 					}
 				}
 				/* distribution column is not referenced? */
@@ -3464,18 +3485,41 @@ checkLocalFKConstraints(CreateStmtContext *cxt)
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("Hash/Modulo distribution column does not refer"
 								" to hash/modulo distribution column in referenced table.")));
-			forboth(fklc, constraint->fk_attrs, pklc, constraint->pk_attrs)
+			if (list_length(constraint->pk_attrs) == 0)
 			{
-				if (strcmp(lattr, strVal(lfirst(fklc))) == 0)
+				/* case if primary attribute list is missing */
+				foreach(fklc, constraint->fk_attrs)
 				{
-					found = true;
-					if (strcmp(rel_loc_info->partAttrName, strVal(lfirst(pklc))) == 0)
-						break;
-					else
-						ereport(ERROR,
-								(errcode(ERRCODE_SYNTAX_ERROR),
-								 errmsg("Hash/Modulo distribution column does not refer"
-										" to hash/modulo distribution column in referenced table.")));
+					char *attrname = strVal(lfirst(fklc));
+					if (strcmp(lattr, attrname) == 0)
+					{
+						found = true;
+						if (strcmp(rel_loc_info->partAttrName, attrname) == 0)
+							break;
+						else
+							ereport(ERROR,
+									(errcode(ERRCODE_SYNTAX_ERROR),
+									 errmsg("Hash/Modulo distribution column does not refer"
+											" to hash/modulo distribution column in referenced table.")));
+					}
+				}
+			}
+			else
+			{
+				forboth(fklc, constraint->fk_attrs, pklc, constraint->pk_attrs)
+				{
+					if (strcmp(lattr, strVal(lfirst(fklc))) == 0)
+					{
+						found = true;
+						if (strcmp(rel_loc_info->partAttrName,
+								   strVal(lfirst(pklc))) == 0)
+							break;
+						else
+							ereport(ERROR,
+									(errcode(ERRCODE_SYNTAX_ERROR),
+									 errmsg("Hash/Modulo distribution column does not refer"
+											" to hash/modulo distribution column in referenced table.")));
+					}
 				}
 			}
 			if (!found)
