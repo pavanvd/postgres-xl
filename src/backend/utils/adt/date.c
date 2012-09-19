@@ -24,6 +24,9 @@
 #include "libpq/pqformat.h"
 #include "miscadmin.h"
 #include "parser/scansup.h"
+#ifdef XCP
+#include "pgxc/pgxc.h"
+#endif
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
@@ -191,7 +194,15 @@ date_out(PG_FUNCTION_ARGS)
 	{
 		j2date(date + POSTGRES_EPOCH_JDATE,
 			   &(tm->tm_year), &(tm->tm_mon), &(tm->tm_mday));
+#ifdef XCP
+		/*
+		 * We want other nodes could parse encoded dates correctly.
+		 * ISO date style is best suitable for that
+		 */
+		EncodeDateOnly(tm, IS_PGXC_DATANODE ? USE_ISO_DATES : DateStyle, buf);
+#else
 		EncodeDateOnly(tm, DateStyle, buf);
+#endif
 	}
 
 	result = pstrdup(buf);
