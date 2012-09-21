@@ -6266,6 +6266,12 @@ set_config_option(const char *name, const char *value,
 			value = quote_identifier(value);
 
 		/*
+		 * Quote value if it is including memory or time units
+		 */
+		if (value && (record->flags & (GUC_UNIT_MEMORY | GUC_UNIT_TIME)))
+			value = quote_identifier(value);
+
+		/*
 		 * Save new parameter value with the node manager.
 		 * XXX here we may check: if value equals to configuration default
 		 * just reset parameter instead. Minus one table entry, shorter SET
@@ -6303,7 +6309,8 @@ set_config_option(const char *name, const char *value,
 		step->combine_type = COMBINE_TYPE_SAME;
 		step->exec_nodes = NULL;
 		step->sql_statement = poolcmd.data;
-		step->force_autocommit = false;
+		/* force_autocommit is actually does not start transaction on nodes */
+		step->force_autocommit = true;
 		step->exec_type = EXEC_ON_CURRENT;
 		ExecRemoteUtility(step);
 		pfree(step);
