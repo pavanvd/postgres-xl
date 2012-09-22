@@ -2068,6 +2068,11 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	{
 		if (equal(root->distribution, distribution))
 		{
+			if (IsLocatorReplicated(distribution->distributionType) &&
+					contain_volatile_functions(result_plan->targetlist))
+				ereport(ERROR,
+						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+						 errmsg("can not update replicated table with result of volatile function")));
 			/*
 			 * Source tuple will be consumed on the same node where it is
 			 * produced, so if it is known some node does not yield tuples
