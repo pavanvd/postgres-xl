@@ -1235,7 +1235,7 @@ GTM_BkupBeginTransactionGetGXIDMulti(char *coord_name,
 		gtm_txninfo = &GTMTransactions.gt_transactions_array[txn[ii]];
 		if (gtm_txninfo->gti_in_use)
 		{
-			GTM_RWLockRelease(&GTMTransactions.gt_TransArrayLock);
+			GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
 			elog(ERROR, "GTM_TransactionInfo already in use.  Cannot assign the transaction: handle (%d).",
 				 txn[ii]);
 			return;
