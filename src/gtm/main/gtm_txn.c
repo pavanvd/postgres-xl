@@ -1228,14 +1228,14 @@ GTM_BkupBeginTransactionGetGXIDMulti(char *coord_name,
 	MemoryContext oldContext;
 
 	oldContext = MemoryContextSwitchTo(TopMemoryContext);
-	GTM_RWLockAcquire(&GTMTransactions.gt_XidGenLock, GTM_LOCKMODE_WRITE);
+	GTM_RWLockAcquire(&GTMTransactions.gt_TransArrayLock, GTM_LOCKMODE_WRITE);
 
 	for (ii = 0; ii < txn_count; ii++)
 	{
 		gtm_txninfo = &GTMTransactions.gt_transactions_array[txn[ii]];
 		if (gtm_txninfo->gti_in_use)
 		{
-			GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
+			GTM_RWLockRelease(&GTMTransactions.gt_TransArrayLock);
 			elog(ERROR, "GTM_TransactionInfo already in use.  Cannot assign the transaction: handle (%d).",
 				 txn[ii]);
 			return;
@@ -1254,7 +1254,7 @@ GTM_BkupBeginTransactionGetGXIDMulti(char *coord_name,
 	}
 
 
-	GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
+	GTM_RWLockRelease(&GTMTransactions.gt_TransArrayLock);
 	MemoryContextSwitchTo(oldContext);
 }
 
