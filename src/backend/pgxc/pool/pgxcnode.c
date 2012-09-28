@@ -2685,6 +2685,21 @@ PGXCNodeResetParams(bool only_local)
 }
 
 
+static char *
+quote_ident_cstr(char *rawstr)
+{
+	text       *rawstr_text;
+	text       *result_text;
+	char       *result;
+
+	rawstr_text = cstring_to_text(rawstr);
+	result_text = DatumGetTextP(DirectFunctionCall1(quote_ident,
+													PointerGetDatum(rawstr_text)));
+	result = text_to_cstring(result_text);
+
+	return result;
+}
+
 static void
 get_set_command(HTAB *table, StringInfo command, bool local)
 {
@@ -2697,8 +2712,13 @@ get_set_command(HTAB *table, StringInfo command, bool local)
 	hash_seq_init(&hseq_status, table);
 	while ((entry = (ParamEntry *) hash_seq_search(&hseq_status)))
 	{
+		char *value = NameStr(entry->value);
+
+		if (strlen(value) == 0)
+			value = "''";
+
 		appendStringInfo(command, "SET %s %s TO %s;", local ? "LOCAL" : "",
-						 NameStr(entry->name), NameStr(entry->value));
+			 NameStr(entry->name), quote_ident_cstr(value));
 	}
 }
 
