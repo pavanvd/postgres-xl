@@ -48,7 +48,8 @@ RemoteCopy_GetRelationLoc(RemoteCopyData *state,
 	state->rel_loc = GetRelationLocInfo(RelationGetRelid(rel));
 
 #ifdef XCP
-	if (AttributeNumberIsValid(state->rel_loc->partAttrNum))
+	if (state->rel_loc &&
+			AttributeNumberIsValid(state->rel_loc->partAttrNum))
 	{
 		TupleDesc tdesc;
 		Form_pg_attribute pattr;
