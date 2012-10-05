@@ -36,7 +36,9 @@ static void RemoteCopy_QuoteStr(StringInfo query_buf, char *value);
 
 /*
  * RemoteCopy_GetRelationLoc
- * Get relation node list based on COPY data involved
+ * Get relation node list based on COPY data involved. An empty list is
+ * returned to caller if relation involved has no locator information
+ * as it is the case of a system relation.
  */
 void
 RemoteCopy_GetRelationLoc(RemoteCopyData *state,
@@ -45,6 +47,8 @@ RemoteCopy_GetRelationLoc(RemoteCopyData *state,
 {
 #ifndef XCP
 	ExecNodes  *exec_nodes = makeNode(ExecNodes);
+#else
+	ExecNodes  *exec_nodes = NULL;
 #endif
 
 	/*
@@ -78,6 +82,7 @@ RemoteCopy_GetRelationLoc(RemoteCopyData *state,
 		 * This case corresponds to a replicated table with COPY TO
 		 *
 		 */
+		exec_nodes = makeNode(ExecNodes);
 		if (!state->is_from &&
 			IsLocatorReplicated(state->rel_loc->locatorType))
 			exec_nodes->nodeList = GetPreferredReplicationNode(state->rel_loc->nodeList);
@@ -89,7 +94,7 @@ RemoteCopy_GetRelationLoc(RemoteCopyData *state,
 	}
 
 	state->idx_dist_by_col = -1;
-	if (state->rel_loc->partAttrNum != 0)
+	if (state->rel_loc && state->rel_loc->partAttrNum != 0)
 	{
 		/*
 		 * Find the column used as key for data distribution.
