@@ -2718,7 +2718,7 @@ get_set_command(HTAB *table, StringInfo command, bool local)
 			value = "''";
 
 		appendStringInfo(command, "SET %s %s TO %s;", local ? "LOCAL" : "",
-			 NameStr(entry->name), quote_ident_cstr(value));
+			 NameStr(entry->name), value);
 	}
 }
 
