@@ -139,9 +139,6 @@ parse_analyze(Node *parseTree, const char *sourceText,
 	if (post_parse_analyze_hook)
 		(*post_parse_analyze_hook) (pstate, query);
 
-	if (post_parse_analyze_hook)
-		(*post_parse_analyze_hook) (pstate, query);
-
 	free_parsestate(pstate);
 
 	return query;
@@ -2924,37 +2921,7 @@ ParseAnalyze_rtable_walk(List *rtable)
 		RangeTblEntry *rte = (RangeTblEntry *) lfirst(item);
 
 		resetStringInfo(&buf);
-		if (rte->rtekind == RTE_RELATION &&
-				get_rel_namespace(rte->relid) == PG_CATALOG_NAMESPACE)
-		{
-			Oid relid = InvalidOid;
-			const char *relname = get_rel_name(rte->relid);
-
-			/* Check if the relname is in storm_catalog_remap_string */
-			appendStringInfoString(&buf, relname);
-			appendStringInfoChar(&buf, ',');
-
-			elog(DEBUG2, "the constructed name is %s", buf.data);
-
-			/*
-			 * The unqualified relation name should be satisfied from the
-			 * storm_catalog appropriately. Just provide a warning for now if
-			 * it is not..
-			 */
-			if (strstr(storm_catalog_remap_string, buf.data))
-				relid = RelnameGetRelid((const char *)relname);
-			else
-				continue;
-
-			if (get_rel_namespace(relid) != STORM_CATALOG_NAMESPACE)
-				ereport(WARNING,
-					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-					 errmsg("Entry (%s) present in storm_catalog_remap_string "
-							"but object not picked from STORM_CATALOG",relname)));
-			else /* change the relid to the storm_catalog one */
-				rte->relid = relid;
-		}
-		else if (rte->rtekind == RTE_FUNCTION &&
+		if (rte->rtekind == RTE_FUNCTION &&
 				 get_func_namespace(((FuncExpr *) rte->funcexpr)->funcid) ==
 				 PG_CATALOG_NAMESPACE)
 		{
