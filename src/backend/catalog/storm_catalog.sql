@@ -257,11 +257,13 @@ GRANT SELECT on storm_catalog.pg_settings TO PUBLIC;
 REVOKE ALL on pg_catalog.pg_settings FROM public;
 
 CREATE FUNCTION storm_catalog.pg_stat_get_activity(
-        pid integer, OUT datid oid, OUT procpid integer, OUT usesysid oid,
-        OUT application_name text, OUT current_query text, OUT waiting boolean,
-        OUT xact_start timestamp with time zone,
+        procpid integer, OUT datid oid, OUT pid integer, OUT usesysid oid,
+        OUT application_name text, OUT state text, OUT query text,
+		OUT waiting boolean, OUT xact_start timestamp with time zone,
         OUT query_start timestamp with time zone,
-        OUT backend_start timestamp with time zone, OUT client_addr inet,
+        OUT backend_start timestamp with time zone,
+        OUT state_change timestamp with time zone,
+		OUT client_addr inet,
         OUT client_hostname text, OUT client_port integer)
 RETURNS SETOF record AS
 $BODY$
@@ -285,7 +287,8 @@ CREATE FUNCTION storm_catalog.pg_lock_status(
         OUT page integer, OUT tuple smallint, OUT virtualxid text,
         OUT transactionid xid, OUT classid oid, OUT objid oid,
         OUT objsubid smallint, OUT virtualtransaction text,
-        OUT pid integer, OUT mode text, OUT granted boolean)
+        OUT pid integer, OUT mode text, OUT granted boolean,
+		OUT fastpath boolean)
 RETURNS SETOF record AS
 $BODY$
 BEGIN
