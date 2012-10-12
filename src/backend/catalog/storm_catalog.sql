@@ -97,23 +97,6 @@ GRANT SELECT on storm_catalog.pg_stat_database_conflicts TO PUBLIC;
 
 REVOKE ALL on pg_catalog.pg_stat_database_conflicts FROM public;
 
-CREATE VIEW storm_catalog.pg_stat_activity AS
-    SELECT *
-      FROM pg_catalog.pg_stat_activity
-     WHERE datid = (SELECT oid FROM pg_database WHERE datname = current_database());
-
-GRANT SELECT on storm_catalog.pg_stat_activity TO PUBLIC;
-
-REVOKE ALL on pg_catalog.pg_stat_activity FROM public;
-
-CREATE VIEW storm_catalog.pg_locks AS
-    SELECT *
-      FROM pg_catalog.pg_locks
-     WHERE database = (SELECT oid FROM pg_database WHERE datname = current_database());
-
-GRANT SELECT on storm_catalog.pg_locks TO PUBLIC;
-
-REVOKE ALL on pg_catalog.pg_locks FROM public;
 
 CREATE VIEW storm_catalog.pg_prepared_xacts AS
     SELECT *
@@ -282,6 +265,14 @@ GRANT EXECUTE on FUNCTION storm_catalog.pg_stat_get_activity(integer) TO PUBLIC;
 
 REVOKE ALL on FUNCTION pg_catalog.pg_stat_get_activity(integer) FROM PUBLIC;
 
+CREATE VIEW storm_catalog.pg_stat_activity AS
+    SELECT *
+      FROM storm_catalog.pg_stat_get_activity(NULL);
+
+GRANT SELECT on storm_catalog.pg_stat_activity TO PUBLIC;
+
+REVOKE ALL on pg_catalog.pg_stat_activity FROM public;
+
 CREATE FUNCTION storm_catalog.pg_lock_status(
         OUT locktype text, OUT database oid, OUT relation oid,
         OUT page integer, OUT tuple smallint, OUT virtualxid text,
@@ -306,3 +297,10 @@ GRANT EXECUTE on FUNCTION storm_catalog.pg_lock_status() TO PUBLIC;
 
 REVOKE ALL on FUNCTION pg_catalog.pg_lock_status() FROM PUBLIC;
 
+CREATE VIEW storm_catalog.pg_locks AS
+    SELECT *
+      FROM storm_catalog.pg_lock_status();
+
+GRANT SELECT on storm_catalog.pg_locks TO PUBLIC;
+
+REVOKE ALL on pg_catalog.pg_locks FROM public;
