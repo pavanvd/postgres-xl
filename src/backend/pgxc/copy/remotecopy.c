@@ -25,7 +25,6 @@
 #include "utils/rel.h"
 
 static void RemoteCopy_QuoteStr(StringInfo query_buf, char *value);
-static void RemoteCopy_QuoteIdentifier(StringInfo query_buf, char *value);
 
 /*
  * RemoteCopy_GetRelationLoc
@@ -149,7 +148,8 @@ RemoteCopy_BuildStatement(RemoteCopyData *state,
 		{
 			if (prev)
 				appendStringInfoString(&state->query_buf, ", ");
-			RemoteCopy_QuoteIdentifier(&state->query_buf, strVal(lfirst(cell)));
+			appendStringInfoString(&state->query_buf,
+								   quote_identifier(strVal(lfirst(cell))));
 			prev = cell;
 		}
 
@@ -173,8 +173,8 @@ RemoteCopy_BuildStatement(RemoteCopyData *state,
 						!pgxc_is_expr_shippable(expression_planner(defexpr), NULL))
 						{
 							appendStringInfoString(&state->query_buf, ", ");
-							RemoteCopy_QuoteIdentifier(&state->query_buf,
-												NameStr(tupDesc->attrs[attnum - 1]->attname));
+							appendStringInfoString(&state->query_buf,
+							   quote_identifier(NameStr(tupDesc->attrs[attnum - 1]->attname)));
 						}
 				}
 			}
@@ -242,7 +242,8 @@ RemoteCopy_BuildStatement(RemoteCopyData *state,
 		{
 			if (prev)
 				appendStringInfoString(&state->query_buf, ", ");
-			RemoteCopy_QuoteIdentifier(&state->query_buf, strVal(lfirst(cell)));
+			appendStringInfoString(&state->query_buf,
+								   quote_identifier(strVal(lfirst(cell))));
 			prev = cell;
 		}
 	}
@@ -256,7 +257,8 @@ RemoteCopy_BuildStatement(RemoteCopyData *state,
 		{
 			if (prev)
 				appendStringInfoString(&state->query_buf, ", ");
-			RemoteCopy_QuoteIdentifier(&state->query_buf, strVal(lfirst(cell)));
+			appendStringInfoString(&state->query_buf,
+								   quote_identifier(strVal(lfirst(cell))));
 			prev = cell;
 		}
 	}
@@ -336,7 +338,6 @@ FreeRemoteCopyData(RemoteCopyData *state)
 	pfree(state);
 }
 
-
 #define APPENDSOFAR(query_buf, start, current) \
 	if (current > start) \
 		appendBinaryStringInfo(query_buf, start, current - start)
@@ -382,46 +383,4 @@ RemoteCopy_QuoteStr(StringInfo query_buf, char *value)
 	}
 	APPENDSOFAR(query_buf, start, current);
 	appendStringInfoChar(query_buf, '\'');
-}
-
-/*
- * RemoteCopy_QuoteIdentifier
- * Determine if identifier needs to be quoted and surround it with double quotes
- */
-static void
-RemoteCopy_QuoteIdentifier(StringInfo query_buf, char *value)
-{
-	char   *start = value;
-	char   *current = value;
-	char	c;
-	int		len = strlen(value);
-	bool	need_quote = (strspn(value, "_abcdefghijklmnopqrstuvwxyz0123456789") < len) ||
-		(strchr("_abcdefghijklmnopqrstuvwxyz", value[0]) == NULL);
-
-	if (need_quote)
-	{
-		appendStringInfoChar(query_buf, '"');
-
-		while ((c = *current) != '\0')
-		{
-			switch (c)
-			{
-				case '"':
-					APPENDSOFAR(query_buf, start, current);
-					/* Double current */
-					appendStringInfoChar(query_buf, c);
-					/* Second current will be appended next time */
-					start = current;
-					/* fallthru */
-				default:
-					current++;
-			}
-		}
-		APPENDSOFAR(query_buf, start, current);
-		appendStringInfoChar(query_buf, '"');
-	}
-	else
-	{
-		appendBinaryStringInfo(query_buf, value, len);
-	}
 }
