@@ -97,23 +97,6 @@ GRANT SELECT on storm_catalog.pg_stat_database_conflicts TO PUBLIC;
 
 REVOKE ALL on pg_catalog.pg_stat_database_conflicts FROM public;
 
-CREATE VIEW storm_catalog.pg_stat_activity AS
-    SELECT *
-      FROM pg_catalog.pg_stat_activity
-     WHERE datid = (SELECT oid FROM pg_database WHERE datname = current_database());
-
-GRANT SELECT on storm_catalog.pg_stat_activity TO PUBLIC;
-
-REVOKE ALL on pg_catalog.pg_stat_activity FROM public;
-
-CREATE VIEW storm_catalog.pg_locks AS
-    SELECT *
-      FROM pg_catalog.pg_locks
-     WHERE database = (SELECT oid FROM pg_database WHERE datname = current_database());
-
-GRANT SELECT on storm_catalog.pg_locks TO PUBLIC;
-
-REVOKE ALL on pg_catalog.pg_locks FROM public;
 
 CREATE VIEW storm_catalog.pg_prepared_xacts AS
     SELECT *
@@ -257,11 +240,13 @@ GRANT SELECT on storm_catalog.pg_settings TO PUBLIC;
 REVOKE ALL on pg_catalog.pg_settings FROM public;
 
 CREATE FUNCTION storm_catalog.pg_stat_get_activity(
-        pid integer, OUT datid oid, OUT procpid integer, OUT usesysid oid,
-        OUT application_name text, OUT current_query text, OUT waiting boolean,
-        OUT xact_start timestamp with time zone,
+        procpid integer, OUT datid oid, OUT pid integer, OUT usesysid oid,
+        OUT application_name text, OUT state text, OUT query text,
+		OUT waiting boolean, OUT xact_start timestamp with time zone,
         OUT query_start timestamp with time zone,
-        OUT backend_start timestamp with time zone, OUT client_addr inet,
+        OUT backend_start timestamp with time zone,
+        OUT state_change timestamp with time zone,
+		OUT client_addr inet,
         OUT client_hostname text, OUT client_port integer)
 RETURNS SETOF record AS
 $BODY$
@@ -280,12 +265,21 @@ GRANT EXECUTE on FUNCTION storm_catalog.pg_stat_get_activity(integer) TO PUBLIC;
 
 REVOKE ALL on FUNCTION pg_catalog.pg_stat_get_activity(integer) FROM PUBLIC;
 
+CREATE VIEW storm_catalog.pg_stat_activity AS
+    SELECT *
+      FROM storm_catalog.pg_stat_get_activity(NULL);
+
+GRANT SELECT on storm_catalog.pg_stat_activity TO PUBLIC;
+
+REVOKE ALL on pg_catalog.pg_stat_activity FROM public;
+
 CREATE FUNCTION storm_catalog.pg_lock_status(
         OUT locktype text, OUT database oid, OUT relation oid,
         OUT page integer, OUT tuple smallint, OUT virtualxid text,
         OUT transactionid xid, OUT classid oid, OUT objid oid,
         OUT objsubid smallint, OUT virtualtransaction text,
-        OUT pid integer, OUT mode text, OUT granted boolean)
+        OUT pid integer, OUT mode text, OUT granted boolean,
+		OUT fastpath boolean)
 RETURNS SETOF record AS
 $BODY$
 BEGIN
@@ -303,3 +297,10 @@ GRANT EXECUTE on FUNCTION storm_catalog.pg_lock_status() TO PUBLIC;
 
 REVOKE ALL on FUNCTION pg_catalog.pg_lock_status() FROM PUBLIC;
 
+CREATE VIEW storm_catalog.pg_locks AS
+    SELECT *
+      FROM storm_catalog.pg_lock_status();
+
+GRANT SELECT on storm_catalog.pg_locks TO PUBLIC;
+
+REVOKE ALL on pg_catalog.pg_locks FROM public;
