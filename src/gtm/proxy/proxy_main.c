@@ -1555,6 +1555,9 @@ ProcessCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn,
 	{
 		case MSG_NODE_REGISTER:
 		case MSG_NODE_UNREGISTER:
+#ifdef XCP
+		case MSG_REGISTER_SESSION:
+#endif
 			ProcessPGXCNodeCommand(conninfo, gtm_conn, mtype, input_message);
 			break;
 
@@ -1873,6 +1876,9 @@ ProcessResponse(GTMProxy_ThreadInfo *thrinfo, GTMProxy_CommandInfo *cmdinfo,
 		case MSG_TXN_GET_GID_DATA:
 		case MSG_NODE_REGISTER:
 		case MSG_NODE_UNREGISTER:
+#ifdef XCP
+		case MSG_REGISTER_SESSION:
+#endif
 		case MSG_SNAPSHOT_GXID_GET:
 		case MSG_SEQUENCE_INIT:
 		case MSG_SEQUENCE_GET_CURRENT:
@@ -2178,6 +2184,11 @@ ProcessPGXCNodeCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn,
 			GTMProxy_ProxyPGXCNodeCommand(conninfo, gtm_conn, mtype, cmd_data);
 			break;
 		}
+#ifdef XCP
+		case MSG_REGISTER_SESSION:
+			GTMProxy_ProxyCommand(conninfo, gtm_conn, mtype, message);
+			break;
+#endif
 		default:
 			Assert(0);			/* Shouldn't come here.. Keep compiler quiet */
 	}
@@ -2441,6 +2452,10 @@ GTMProxy_CommandPending(GTMProxy_ConnectionInfo *conninfo, GTM_MessageType mtype
 	GTMProxy_CommandInfo *cmdinfo;
 	GTMProxy_ThreadInfo *thrinfo = GetMyThreadInfo;
 
+#ifdef XCP
+	MemoryContext oldContext = MemoryContextSwitchTo(TopMemoryContext);
+#endif
+
 	/*
 	 * Add the message to the pending command list
 	 */
@@ -2450,6 +2465,10 @@ GTMProxy_CommandPending(GTMProxy_ConnectionInfo *conninfo, GTM_MessageType mtype
 	cmdinfo->ci_res_index = 0;
 	cmdinfo->ci_data = cmd_data;
 	thrinfo->thr_pending_commands[mtype] = gtm_lappend(thrinfo->thr_pending_commands[mtype], cmdinfo);
+
+#ifdef XCP
+	MemoryContextSwitchTo(oldContext);
+#endif
 
 	return;
 }

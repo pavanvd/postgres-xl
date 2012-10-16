@@ -366,6 +366,11 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 		case END_BACKUP_RESULT:
 			break;
 
+#ifdef XCP
+		case REGISTER_SESSION_RESULT:
+			break;
+#endif
+
 		case TXN_BEGIN_RESULT:
 			if (gtmpqGetnchar((char *)&result->gr_resdata.grd_txnhandle,
 						   sizeof (GTM_TransactionHandle), conn))
@@ -749,6 +754,7 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 
 			break;
 		}
+
 		default:
 			printfGTMPQExpBuffer(&conn->errorMessage,
 							  "unexpected result type from server; result typr was \"%d\"\n",

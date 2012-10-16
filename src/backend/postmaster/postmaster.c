@@ -352,7 +352,9 @@ int			PGXCNodeId = -1;
  */
 uint32			PGXCNodeIdentifier = 0;
 
+#ifndef XCP
 static bool isNodeRegistered = false;
+#endif
 #endif
 
 /*
@@ -2258,9 +2260,14 @@ pmdie(SIGNAL_ARGS)
 
 #ifdef PGXC /* PGXC_COORD */
 				/* and the pool manager too */
+#ifdef XCP
+				if (PgPoolerPID != 0)
+#else
 				if (IS_PGXC_COORDINATOR && PgPoolerPID != 0)
+#endif
 					signal_child(PgPoolerPID, SIGTERM);
 
+#ifndef XCP
 				/* Unregister Node on GTM */
 				if (isNodeRegistered)
 				{
@@ -2269,6 +2276,7 @@ pmdie(SIGNAL_ARGS)
 					else if (IS_PGXC_DATANODE)
 						UnregisterGTM(GTM_NODE_DATANODE);
 				}
+#endif
 #endif
 
 				/*
@@ -2347,6 +2355,7 @@ pmdie(SIGNAL_ARGS)
 #endif /* XCP */
 					signal_child(PgPoolerPID, SIGTERM);
 
+#ifndef XCP
 				/* Unregister Node on GTM */
 				if (isNodeRegistered)
 				{
@@ -2355,6 +2364,7 @@ pmdie(SIGNAL_ARGS)
 					else if (IS_PGXC_DATANODE)
 						UnregisterGTM(GTM_NODE_DATANODE);
 				}
+#endif /* XCP */
 #endif /* PGXC */
 				pmState = PM_WAIT_BACKENDS;
 			}
@@ -4484,6 +4494,7 @@ sigusr1_handler(SIGNAL_ARGS)
 	}
 
 #ifdef PGXC
+#ifndef XCP
 	/*
 	 * Register node to GTM.
 	 * A node can only be registered if it has reached a stable recovery state
@@ -4516,6 +4527,7 @@ sigusr1_handler(SIGNAL_ARGS)
 						 errmsg("Can not register Datanode on GTM")));
 		}
 	}
+#endif
 #endif
 
 	if (CheckPostmasterSignal(PMSIGNAL_WAKEN_ARCHIVER) &&

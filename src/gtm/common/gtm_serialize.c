@@ -701,6 +701,13 @@ gtm_get_pgxcnodeinfo_size(GTM_PGXCNodeInfo *data)
 
 	len += sizeof(GTM_PGXCNodeStatus);   /* status */
 
+#ifdef XCP
+	len += sizeof(uint32);			/* max_sessions */
+	len += sizeof(uint32);			/* num_sessions */
+	if (data->num_sessions > 0)		/* sessions */
+		len += (data->num_sessions * sizeof(GTM_PGXCSession));
+#endif
+
 	return len;
 }
 
@@ -786,6 +793,21 @@ gtm_serialize_pgxcnodeinfo(GTM_PGXCNodeInfo *data, char *buf, size_t buflen)
 	/* GTM_PGXCNodeInfo.status */
 	memcpy(buf + len, &(data->status), sizeof(GTM_PGXCNodeStatus));
 	len += sizeof(GTM_PGXCNodeStatus);
+
+#ifdef XCP
+	/* GTM_PGXCNodeInfo.sessions */
+	len_wk = data->max_sessions;
+	memcpy(buf + len, &len_wk, sizeof(uint32));
+	len += sizeof(uint32);
+	len_wk = data->num_sessions;
+	memcpy(buf + len, &len_wk, sizeof(uint32));
+	len += sizeof(uint32);
+	if (len_wk > 0)
+	{
+		memcpy(buf + len, data->sessions, len_wk * sizeof(GTM_PGXCSession));
+		len += len_wk * sizeof(GTM_PGXCSession);
+	}
+#endif
 
 	/* NOTE: nothing to be done for node_lock */
 	return len;
@@ -875,6 +897,24 @@ gtm_deserialize_pgxcnodeinfo(GTM_PGXCNodeInfo *data, const char *buf, size_t buf
 	memcpy(&(data->status), buf + len, sizeof(GTM_PGXCNodeStatus));
 	len += sizeof(GTM_PGXCNodeStatus);
 
+#ifdef XCP
+	/* GTM_PGXCNodeInfo.sessions */
+	memcpy(&len_wk, buf + len, sizeof(uint32));
+	len += sizeof(uint32);
+	data->max_sessions = len_wk;
+	if (len_wk > 0)
+		data->sessions = (GTM_PGXCSession *)
+				genAlloc(len_wk * sizeof(GTM_PGXCSession));
+	memcpy(&len_wk, buf + len, sizeof(uint32));
+	len += sizeof(uint32);
+	data->num_sessions = len_wk;
+	if (len_wk > 0)
+	{
+		memcpy(data->sessions, buf + len, len_wk * sizeof(GTM_PGXCSession));
+		len += len_wk * sizeof(GTM_PGXCSession);
+	}
+#endif
+
 	/* NOTE: nothing to be done for node_lock */
 
 	return len;
@@ -894,7 +934,13 @@ gtm_get_sequence_size(GTM_SeqInfo *seq)
 	len += sizeof(GTM_SequenceKeyType);   /* gs_key.gsk_type */
 	len += sizeof(GTM_Sequence);  /* gs_value */
 	len += sizeof(GTM_Sequence);  /* gs_init_value */
+#ifdef XCP
+	len += sizeof(uint32);		  /* gs_max_lastvals */
+	len += sizeof(uint32);		  /* gs_lastval_count */
+	len += seq->gs_lastval_count * sizeof(GTM_SeqLastVal); /* gs_last_values */
+#else
 	len += sizeof(GTM_Sequence);  /* gs_last_value */
+#endif
 	len += sizeof(GTM_Sequence);  /* gs_increment_by */
 	len += sizeof(GTM_Sequence);  /* gs_min_value */
 	len += sizeof(GTM_Sequence);  /* gs_max_value */
@@ -935,8 +981,18 @@ gtm_serialize_sequence(GTM_SeqInfo *s, char *buf, size_t buflen)
 	memcpy(buf + len, &s->gs_init_value, sizeof(GTM_Sequence));
 	len += sizeof(GTM_Sequence);  /* gs_init_value */
 
+#ifdef XCP
+	memcpy(buf + len, &s->gs_max_lastvals, sizeof(uint32));
+	len += sizeof(uint32);		  /* gs_max_lastvals */
+	memcpy(buf + len, &s->gs_lastval_count, sizeof(uint32));
+	len += sizeof(uint32);		  /* gs_lastval_count */
+	memcpy(buf + len, s->gs_last_values,
+			s->gs_lastval_count * sizeof(GTM_SeqLastVal));
+	len += s->gs_lastval_count * sizeof(GTM_SeqLastVal); /* gs_last_values */
+#else
 	memcpy(buf + len, &s->gs_last_value, sizeof(GTM_Sequence));
 	len += sizeof(GTM_Sequence);  /* gs_last_value */
+#endif
 
 	memcpy(buf + len, &s->gs_increment_by, sizeof(GTM_Sequence));
 	len += sizeof(GTM_Sequence);  /* gs_increment_by */
@@ -990,8 +1046,24 @@ gtm_deserialize_sequence(const char *buf, size_t buflen)
 	memcpy(&seq->gs_init_value, buf + len, sizeof(GTM_Sequence));
 	len += sizeof(GTM_Sequence);  /* gs_init_value */
 
+#ifdef XCP
+	memcpy(&seq->gs_max_lastvals, buf + len, sizeof(uint32));
+	len += sizeof(uint32);		  /* gs_max_lastvals */
+	if (seq->gs_max_lastvals > 0)
+		seq->gs_last_values = (GTM_SeqLastVal *)
+				genAlloc(seq->gs_max_lastvals * sizeof(GTM_SeqLastVal));
+	memcpy(&seq->gs_lastval_count, buf + len, sizeof(uint32));
+	len += sizeof(uint32);		  /* gs_lastval_count */
+	if (seq->gs_lastval_count > 0)
+	{
+		memcpy(seq->gs_last_values, buf + len,
+				seq->gs_lastval_count * sizeof(GTM_SeqLastVal));
+		len += seq->gs_lastval_count * sizeof(GTM_SeqLastVal); /* gs_last_values */
+	}
+#else
 	memcpy(&seq->gs_last_value, buf + len, sizeof(GTM_Sequence));
 	len += sizeof(GTM_Sequence);  /* gs_last_value */
+#endif
 
 	memcpy(&seq->gs_increment_by, buf + len, sizeof(GTM_Sequence));
 	len += sizeof(GTM_Sequence);  /* gs_increment_by */

@@ -32,6 +32,10 @@
 
 #include "gtm/gtm_ip.h"
 
+#ifdef XCP
+#include "storage/backendid.h"
+#endif
+
 static void finishStandbyConn(GTM_ThreadInfo *thrinfo);
 extern bool Backup_synchronously;
 
@@ -483,3 +487,106 @@ finishStandbyConn(GTM_ThreadInfo *thrinfo)
 		thrinfo->thr_conn->standby = NULL;
 	}
 }
+
+
+#ifdef XCP
+/*
+ * Process MSG_REGISTER_SESSION message
+ */
+void
+ProcessPGXCRegisterSession(Port *myport, StringInfo message)
+{
+	char			coord_name[SP_NODE_NAME];
+	int32			coord_procid;
+	int32			coord_backendid;
+	int32			len;
+	MemoryContext	oldContext;
+	int 			old_procid;
+	StringInfoData	buf;
+
+	len = pq_getmsgint(message, sizeof(len));
+	if (len >= SP_NODE_NAME)
+		ereport(ERROR,
+				(EINVAL,
+				 errmsg("Invalid name length.")));
+
+	memcpy(coord_name, (char *)pq_getmsgbytes(message, len), len);
+	coord_name[len] = '\0';
+
+	coord_procid = pq_getmsgint(message, sizeof(coord_procid));
+
+	coord_backendid = pq_getmsgint(message, sizeof(coord_backendid));
+
+	/*
+	 * Check if all required data are supplied
+	 */
+	if (len > 0 || coord_procid > 0 || coord_backendid != InvalidBackendId)
+	{
+		oldContext = MemoryContextSwitchTo(TopMostMemoryContext);
+
+		/*
+		 * Register the session
+		 */
+		old_procid = Recovery_PGXCNodeRegisterCoordProcess(coord_name, coord_procid,
+														   coord_backendid);
+		MemoryContextSwitchTo(oldContext);
+
+		/*
+		 * If there was a session with same backend id clean it up.
+		 */
+		if (old_procid)
+			GTM_CleanupSeqSession(coord_name, old_procid);
+	}
+
+	/*
+	 * If there is a standby forward the info to it
+	 */
+	if (GetMyThreadInfo->thr_conn->standby)
+	{
+		int _rc;
+		GTM_Conn *oldconn = GetMyThreadInfo->thr_conn->standby;
+		int count = 0;
+		GTM_PGXCNodeInfo *standbynode;
+
+		elog(DEBUG1, "calling register_session() for standby GTM %p.",
+			 GetMyThreadInfo->thr_conn->standby);
+
+		do
+		{
+			_rc = register_session(GetMyThreadInfo->thr_conn->standby,
+								   coord_name, coord_procid, coord_backendid);
+
+			elog(DEBUG1, "register_session() returns rc %d.", _rc);
+		}
+		while (gtm_standby_check_communication_error(&count, oldconn));
+
+		/* Now check if there're other standby registered. */
+		standbynode = find_standby_node_info();
+		if (!standbynode)
+			GTMThreads->gt_standby_ready = false;
+
+		if (Backup_synchronously && (myport->remote_type != GTM_NODE_GTM_PROXY))
+			gtm_sync_standby(GetMyThreadInfo->thr_conn->standby);
+
+	}
+
+	/* Make up response */
+	pq_beginmessage(&buf, 'S');
+	pq_sendint(&buf, REGISTER_SESSION_RESULT, 4);
+	/* For proxy write out header */
+	if (myport->remote_type == GTM_NODE_GTM_PROXY)
+	{
+		GTM_ProxyMsgHeader proxyhdr;
+		proxyhdr.ph_conid = myport->conn_id;
+		pq_sendbytes(&buf, (char *)&proxyhdr, sizeof (GTM_ProxyMsgHeader));
+	}
+	pq_endmessage(myport, &buf);
+	/* Flush connections */
+	if (myport->remote_type != GTM_NODE_GTM_PROXY)
+	{
+		if (GetMyThreadInfo->thr_conn->standby)
+			gtmpqFlush(GetMyThreadInfo->thr_conn->standby);
+		pq_flush(myport);
+	}
+}
+#endif

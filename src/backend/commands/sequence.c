@@ -983,6 +983,15 @@ currval_oid(PG_FUNCTION_ARGS)
 				 errmsg("permission denied for sequence %s",
 						RelationGetRelationName(seqrel))));
 
+#ifdef XCP
+	{
+		char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
+
+		result = (int64) GetCurrentValGTM(seqname);
+
+		pfree(seqname);
+	}
+#else
 	if (!elm->last_valid)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -990,13 +999,8 @@ currval_oid(PG_FUNCTION_ARGS)
 						RelationGetRelationName(seqrel))));
 
 #ifdef PGXC
-#ifdef XCP
-	/* Allow to execute on datanodes */
-	if (seqrel->rd_backend != MyBackendId)
-#else
 	if (IS_PGXC_COORDINATOR &&
 		seqrel->rd_backend != MyBackendId)
-#endif
 	{
 		char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
 
@@ -1012,6 +1016,7 @@ currval_oid(PG_FUNCTION_ARGS)
 	result = elm->last;
 #ifdef PGXC
 	}
+#endif
 #endif
 	relation_close(seqrel, NoLock);
 

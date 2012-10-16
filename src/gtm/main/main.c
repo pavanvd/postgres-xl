@@ -989,6 +989,7 @@ GTM_ThreadMain(void *argp)
 		pq_getmsgend(&inBuf);
 
 		GTM_RegisterPGXCNode(thrinfo->thr_conn->con_port, sp.sp_node_name);
+
 		thrinfo->thr_conn->con_port->remote_type = sp.sp_remotetype;
 		thrinfo->thr_conn->con_port->is_postmaster = sp.sp_ispostmaster;
 	}
@@ -1200,6 +1201,9 @@ ProcessCommand(Port *myport, StringInfo input_message)
 		case MSG_NODE_UNREGISTER:
 		case MSG_BKUP_NODE_UNREGISTER:
 		case MSG_NODE_LIST:
+#ifdef XCP
+		case MSG_REGISTER_SESSION:
+#endif
 			ProcessPGXCNodeCommand(myport, mtype, input_message);
 			break;
 		case MSG_BEGIN_BACKUP:
@@ -1436,6 +1440,12 @@ ProcessPGXCNodeCommand(Port *myport, GTM_MessageType mtype, StringInfo message)
 		case MSG_NODE_LIST:
 			ProcessPGXCNodeList(myport, message);
 			break;
+
+#ifdef XCP
+		case MSG_REGISTER_SESSION:
+			ProcessPGXCRegisterSession(myport, message);
+			break;
+#endif
 
 		default:
 			Assert(0);			/* Shouldn't come here.. keep compiler quite */
@@ -1685,12 +1695,14 @@ ProcessQueryCommand(Port *myport, GTM_MessageType mtype, StringInfo message)
 
 }
 
+
 static void
 GTM_RegisterPGXCNode(Port *myport, char *PGXCNodeName)
 {
 	elog(DEBUG3, "Registering coordinator with name %s", PGXCNodeName);
 	myport->node_name = strdup(PGXCNodeName);
 }
+
 
 /*
  * Validate the proposed data directory

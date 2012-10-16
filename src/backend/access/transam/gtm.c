@@ -18,7 +18,17 @@
 #include "utils/elog.h"
 #include "miscadmin.h"
 #include "pgxc/pgxc.h"
+#ifdef XCP
+#include "postgres.h"
+#include "gtm/gtm_c.h"
+#include "postmaster/autovacuum.h"
+#include "storage/backendid.h"
+#include "utils/lsyscache.h"
 
+/* To access sequences */
+#define MyCoordName \
+	OidIsValid(MyCoordId) ? get_pgxc_nodename(MyCoordId) : ""
+#endif
 /* Configuration variables */
 char *GtmHost = "localhost";
 int GtmPort = 6666;
@@ -94,6 +104,11 @@ InitGTM(void)
 
 		CloseGTM();
 	}
+
+#ifdef XCP
+	if (IS_PGXC_COORDINATOR)
+		register_session(conn, PGXCNodeName, MyProcPid, MyBackendId);
+#endif
 }
 
 void
@@ -422,21 +437,43 @@ GetCurrentValGTM(char *seqname)
 {
 	GTM_Sequence ret = -1;
 	GTM_SequenceKeyData seqkey;
+#ifdef XCP
+	char   *coordName = IS_PGXC_COORDINATOR ? PGXCNodeName : MyCoordName;
+	int		coordPid = IS_PGXC_COORDINATOR ? MyProcPid : MyCoordPid;
+	int		status;
+#endif
 	CheckConnection();
 	seqkey.gsk_keylen = strlen(seqname) + 1;
 	seqkey.gsk_key = seqname;
 
+#ifdef XCP
+	if (conn)
+		status = get_current(conn, &seqkey, coordName, coordPid, &ret);
+	else
+		status = GTM_RESULT_COMM_ERROR;
+
+	/* retry once */
+	if (status == GTM_RESULT_COMM_ERROR)
+	{
+		CloseGTM();
+		InitGTM();
+		if (conn)
+			status = get_current(conn, &seqkey, coordName, coordPid, &ret);
+	}
+	if (status != GTM_RESULT_OK)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("%s", GTMPQerrorMessage(conn))));
+#else
 	if (conn)
 		ret =  get_current(conn, &seqkey);
+
 	if (ret < 0)
 	{
 		CloseGTM();
 		InitGTM();
-#ifdef XCP
-		if (conn)
-			ret = get_current(conn, &seqkey);
-#endif
 	}
+#endif
 	return ret;
 }
 
@@ -448,21 +485,42 @@ GetNextValGTM(char *seqname)
 {
 	GTM_Sequence ret = -1;
 	GTM_SequenceKeyData seqkey;
+#ifdef XCP
+	char   *coordName = IS_PGXC_COORDINATOR ? PGXCNodeName : MyCoordName;
+	int		coordPid = IS_PGXC_COORDINATOR ? MyProcPid : MyCoordPid;
+	int		status;
+#endif
 	CheckConnection();
 	seqkey.gsk_keylen = strlen(seqname) + 1;
 	seqkey.gsk_key = seqname;
 
+#ifdef XCP
 	if (conn)
-		ret =  get_next(conn, &seqkey);
+		status = get_next(conn, &seqkey, coordName, coordPid, &ret);
+	else
+		status = GTM_RESULT_COMM_ERROR;
+
+	/* retry once */
+	if (status == GTM_RESULT_COMM_ERROR)
+	{
+		CloseGTM();
+		InitGTM();
+		if (conn)
+			status = get_next(conn, &seqkey, coordName, coordPid, &ret);
+	}
+	if (status != GTM_RESULT_OK)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("%s", GTMPQerrorMessage(conn))));
+#else
+	if (conn)
+		ret = get_next(conn, &seqkey);
 	if (ret < 0)
 	{
 		CloseGTM();
 		InitGTM();
-#ifdef XCP
-		if (conn)
-			ret = get_next(conn, &seqkey);
-#endif
 	}
+#endif
 	return ret;
 }
 
@@ -473,11 +531,19 @@ int
 SetValGTM(char *seqname, GTM_Sequence nextval, bool iscalled)
 {
 	GTM_SequenceKeyData seqkey;
+#ifdef XCP
+	char   *coordName = IS_PGXC_COORDINATOR ? PGXCNodeName : MyCoordName;
+	int		coordPid = IS_PGXC_COORDINATOR ? MyProcPid : MyCoordPid;
+#endif
 	CheckConnection();
 	seqkey.gsk_keylen = strlen(seqname) + 1;
 	seqkey.gsk_key = seqname;
 
+#ifdef XCP
+	return conn ? set_val(conn, &seqkey, coordName, coordPid, nextval, iscalled) : -1;
+#else
 	return conn ? set_val(conn, &seqkey, nextval, iscalled) : -1;
+#endif
 }
 
 /*
