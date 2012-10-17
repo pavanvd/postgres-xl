@@ -482,9 +482,13 @@ explain (num_nodes off, nodes off, costs off)
 ---------------------------------------------------------
  Result
    ->  Append
-         ->  Data Node Scan on t1 "_REMOTE_TABLE_QUERY_"
-         ->  Data Node Scan on t2 "_REMOTE_TABLE_QUERY_"
-(4 rows)
+         ->  Remote Subquery Scan on all
+               ->  Index Scan using t1_ab_idx on t1
+                     Index Cond: ((a || b) = 'ab'::text)
+         ->  Remote Subquery Scan on all
+               ->  Index Only Scan using t2_pkey on t2
+                     Index Cond: (ab = 'ab'::text)
+(8 rows)
 
 explain (num_nodes off, nodes off, costs off)
  SELECT * FROM
@@ -496,9 +500,13 @@ explain (num_nodes off, nodes off, costs off)
 ---------------------------------------------------------
  HashAggregate
    ->  Append
-         ->  Data Node Scan on t1 "_REMOTE_TABLE_QUERY_"
-         ->  Data Node Scan on t2 "_REMOTE_TABLE_QUERY_"
-(4 rows)
+         ->  Remote Subquery Scan on all
+               ->  Index Scan using t1_ab_idx on t1
+                     Index Cond: ((a || b) = 'ab'::text)
+         ->  Remote Subquery Scan on all
+               ->  Index Only Scan using t2_pkey on t2
+                     Index Cond: (ab = 'ab'::text)
+(8 rows)
 
 reset enable_seqscan;
 reset enable_indexscan;
@@ -510,10 +518,11 @@ explain (num_nodes off, nodes off, costs off)
    UNION ALL
    SELECT 2 AS t, * FROM tenk1 b) c
  WHERE t = 2;
-                         QUERY PLAN                         
-------------------------------------------------------------
- Result
-   ->  Append
-         ->  Data Node Scan on tenk1 "_REMOTE_TABLE_QUERY_"
-(3 rows)
+              QUERY PLAN               
+---------------------------------------
+ Remote Subquery Scan on all
+   ->  Result
+         ->  Append
+               ->  Seq Scan on tenk1 b
+(4 rows)
 

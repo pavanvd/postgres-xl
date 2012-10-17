@@ -102,14 +102,11 @@ COPY x TO stdout;
 9999	\N	\\N	NN	\N
 1	1	stuff	test_1	\N
 2	2	stuff	test_2	\N
-3	3	stuff	test_3	\N
-4	4	stuff	test_4	\N
 5	5	stuff	test_5	\N
 10001	22	32	42	52
 10002	23	33	43	53
 10004	25	35	45	55
 6	\N	45	80	90
-7	\N	x	\\x	\\x
 8	\N	,	\\,	\\
 4000	\N	C	\N	\N
 4002	2	null	\N	\N
@@ -118,8 +115,11 @@ COPY x TO stdout;
 4007	7	XX	XX	XX
 4008	8	Delimiter	:	:
 10000	21	31	41	51
+3	3	stuff	test_3	\N
+4	4	stuff	test_4	\N
 10003	24	34	44	54
 10005	26	36	46	56
+7	\N	x	\\x	\\x
 3000	\N	c	\N	\N
 4001	1	empty		
 4004	4	BackslashX	\\X	\\X
@@ -129,13 +129,10 @@ COPY x (c, e) TO stdout;
 stuff	\N
 stuff	\N
 stuff	\N
-stuff	\N
-stuff	\N
 32	52
 33	53
 35	55
 45	90
-x	\\x
 ,	\\
 C	\N
 null	\N
@@ -144,8 +141,11 @@ N	N
 XX	XX
 Delimiter	:
 31	51
+stuff	\N
+stuff	\N
 34	54
 36	56
+x	\\x
 c	\N
 empty	
 BackslashX	\\X
@@ -154,14 +154,11 @@ COPY x (b, e) TO stdout WITH NULL 'I''m null';
 I'm null	I'm null
 1	I'm null
 2	I'm null
-3	I'm null
-4	I'm null
 5	I'm null
 22	52
 23	53
 25	55
 I'm null	90
-I'm null	\\x
 I'm null	\\
 I'm null	I'm null
 2	I'm null
@@ -170,8 +167,11 @@ I'm null	I'm null
 7	XX
 8	:
 21	51
+3	I'm null
+4	I'm null
 24	54
 26	56
+I'm null	\\x
 I'm null	I'm null
 1	
 4	\\X
