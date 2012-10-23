@@ -393,21 +393,22 @@ int GTM_SeqAlter(GTM_SequenceKey seqkey,
 		/* Restart command has been used, reset the sequence */
 		seqinfo->gs_called = false;
 #ifdef XCP
-		seqinfo->gs_init_value = lastval;
+		seqinfo->gs_value = lastval;
 #else
 		seqinfo->gs_init_value = seqinfo->gs_last_value = lastval;
 #endif
 	}
-	else
-	{
 #ifdef XCP
+	if (seqinfo->gs_init_value != startval)
 		seqinfo->gs_init_value = startval;
 #else
+	else
+	{
 		/* Start has been used, reinitialize init value */
 		if (seqinfo->gs_init_value != startval)
 			seqinfo->gs_init_value = seqinfo->gs_last_value = startval;
-#endif
 	}
+#endif
 
 	/* Remove the old key with the old name */
 	GTM_RWLockRelease(&seqinfo->gs_lock);
