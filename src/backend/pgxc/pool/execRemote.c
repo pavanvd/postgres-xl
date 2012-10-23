@@ -331,6 +331,7 @@ CreateResponseCombiner(int node_count, CombineType combine_type)
 	combiner->errorDetail = NULL;
 	combiner->tuple_desc = NULL;
 #ifdef XCP
+	combiner->returning_node = InvalidOid;
 	combiner->currentRow = NULL;
 #else
 	combiner->currentRow.msg = NULL;
@@ -833,8 +834,8 @@ HandleCopyDataRow(RemoteQueryState *combiner, char *msg_body, size_t len)
 
 /*
  * Handle DataRow ('D') message from a Datanode connection
- * The function returns true if buffer can accept more data rows.
- * Caller must stop reading if function returns false
+ * The function returns true if data row is accepted and successfully stored
+ * within the combiner.
  */
 #ifdef XCP
 static bool
@@ -860,6 +861,21 @@ HandleDataRow(ResponseCombiner *combiner, char *msg_body, size_t len, Oid node)
 	 */
 	if (combiner->errorMessage)
 		return false;
+
+	/*
+	 * Replicated INSERT/UPDATE/DELETE with RETURNING: receive only tuples
+	 * from one node, skip others as duplicates
+	 */
+	if (combiner->combine_type == COMBINE_TYPE_SAME)
+	{
+		if (OidIsValid(combiner->returning_node))
+		{
+			if (combiner->returning_node != node)
+				return false;
+		}
+		else
+			combiner->returning_node = node;
+	}
 
 	/*
 	 * We are copying message because it points into connection buffer, and

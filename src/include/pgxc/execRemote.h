@@ -123,6 +123,7 @@ typedef struct RemoteQueryState
 	char	   *errorMessage;			/* error message to send back to client */
 	char	   *errorDetail;			/* error detail to send back to client */
 #ifdef XCP
+	Oid			returning_node;			/* returning replicated node */
 	RemoteDataRow currentRow;			/* next data ro to be wrapped into a tuple */
 #else
 	RemoteDataRowData currentRow;		/* next data ro to be wrapped into a tuple */
