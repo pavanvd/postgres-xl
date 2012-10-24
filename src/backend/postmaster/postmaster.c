@@ -2320,6 +2320,11 @@ pmdie(SIGNAL_ARGS)
 				signal_child(BgWriterPID, SIGTERM);
 			if (WalReceiverPID != 0)
 				signal_child(WalReceiverPID, SIGTERM);
+#ifdef XCP
+			/* and the pool manager too */
+			if (PgPoolerPID != 0)
+				signal_child(PgPoolerPID, SIGTERM);
+#endif /* XCP */
 			if (pmState == PM_RECOVERY)
 			{
 				/*
@@ -2347,15 +2352,11 @@ pmdie(SIGNAL_ARGS)
 				if (WalWriterPID != 0)
 					signal_child(WalWriterPID, SIGTERM);
 #ifdef PGXC
+#ifndef XCP
 				/* and the pool manager too */
-#ifdef XCP
-				if (PgPoolerPID != 0)
-#else
 				if (IS_PGXC_COORDINATOR && PgPoolerPID != 0)
-#endif /* XCP */
 					signal_child(PgPoolerPID, SIGTERM);
 
-#ifndef XCP
 				/* Unregister Node on GTM */
 				if (isNodeRegistered)
 				{
