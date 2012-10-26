@@ -76,10 +76,6 @@ static List *get_rel_oids(Oid relid, const RangeVar *vacrel);
 static void vac_truncate_clog(TransactionId frozenXID);
 static bool vacuum_rel(Oid relid, VacuumStmt *vacstmt, bool do_toast,
 		   bool for_wraparound);
-#ifdef XCP
-static void vacuum_rel_coordinator(Relation onerel);
-#endif
-
 
 /*
  * Primary entry point for VACUUM and ANALYZE commands.
@@ -1381,7 +1377,7 @@ get_remote_relstat(char *nspname, char *relname, bool replicated,
  * This function only updates optimizer statistics based on info from the
  * data nodes.
  */
-static void
+void
 vacuum_rel_coordinator(Relation onerel)
 {
 	char 	   *nspname;

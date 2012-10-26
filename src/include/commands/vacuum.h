@@ -162,6 +162,7 @@ extern void vacuum_set_xid_limits(int freeze_min_age, int freeze_table_age,
 extern void vac_update_datfrozenxid(void);
 extern void vacuum_delay_point(void);
 #ifdef XCP
+extern void vacuum_rel_coordinator(Relation onerel);
 TargetEntry *make_relation_tle(Oid reloid, const char *relname, const char *column);
 #endif
 

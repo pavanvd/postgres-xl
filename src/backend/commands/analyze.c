@@ -117,7 +117,7 @@ static Datum std_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static Datum ind_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 
 #ifdef XCP
-static void analyze_rel_coordinator(Relation onerel, int attr_cnt,
+static void analyze_rel_coordinator(Relation onerel, bool inh, int attr_cnt,
 						VacAttrStats **vacattrstats);
 #endif
 
@@ -420,10 +420,22 @@ do_analyze_rel(Relation onerel, VacuumStmt *vacstmt,
 	if (IS_PGXC_COORDINATOR && onerel->rd_locator_info)
 	{
 		/*
-		 * Skip getting local statistic and fetch it from remote nodes
+		 * Fetch attribute statistics from remote nodes.
 		 */
-		analyze_rel_coordinator(onerel, attr_cnt, vacattrstats);
+		analyze_rel_coordinator(onerel, inh, attr_cnt, vacattrstats);
+		/*
+		 * If it is a VACUUM or doing inherited relation precise values for
+		 * relpages and reltuples are set in other place. Otherwise request
+		 * doing it now.
+		 */
+		if (!inh && !(vacstmt->options & VACOPT_VACUUM))
+			vacuum_rel_coordinator(onerel);
+		/*
+		 * Skip acquiring local stats. Coordinator does not store data of
+		 * distributed tables.
+		 */
 		nindexes = 0;
+		hasindex = false;
 		Irel = NULL;
 		goto cleanup;
 	}
@@ -2825,7 +2837,7 @@ compare_mcvs(const void *a, const void *b)
 
 #ifdef XCP
 static void
-analyze_rel_coordinator(Relation onerel, int attr_cnt,
+analyze_rel_coordinator(Relation onerel, bool inh, int attr_cnt,
 						VacAttrStats **vacattrstats)
 {
 	char 		   *nspname;
@@ -3238,6 +3250,6 @@ analyze_rel_coordinator(Relation onerel, int attr_cnt,
 			stats->stadistinct /= numnodes[i];
 		}
 	}
-	update_attstats(RelationGetRelid(onerel), false, attr_cnt, vacattrstats);
+	update_attstats(RelationGetRelid(onerel), inh, attr_cnt, vacattrstats);
 }
 #endif
