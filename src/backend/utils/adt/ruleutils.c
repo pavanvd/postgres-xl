@@ -4224,6 +4224,12 @@ get_utility_query_def(Query *query, deparse_context *context)
 			{
 				ColumnDef *coldef = (ColumnDef *) node;
 				TypeName *typename = coldef->typeName;
+#ifdef XCP
+				appendStringInfo(buf, "%s %s",
+								 quote_identifier(coldef->colname),
+								 format_type_with_typemod(typename->typeOid,
+														  typename->typemod));
+#else
 				Type type;
 
 				/* error out if we have no recourse at all */
@@ -4243,6 +4249,7 @@ get_utility_query_def(Query *query, deparse_context *context)
 				appendStringInfo(buf, "%s %s", quote_identifier(coldef->colname),
 						typeTypeName(type));
 				ReleaseSysCache(type);
+#endif
 			}
 			else
 				elog(ERROR, "Invalid table column definition.");
