@@ -821,6 +821,7 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 	 */
 	if (IsTempTable(RelationGetRelid(relation)))
 		ExecSetTempObjectIncluded();
+#endif
 
 	/*
 	 * Block the creation of tables using views in their LIKE clause.
@@ -837,7 +838,6 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("Postgres-XC does not support VIEW in LIKE clauses"),
 				 errdetail("The feature is not currently supported")));
-#endif
 #endif
 
 	/*
