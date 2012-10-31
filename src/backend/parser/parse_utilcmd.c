@@ -3203,6 +3203,75 @@ CheckLocalIndexColumn (char loctype, char *partcolname, char *indexcolname)
 }
 
 
+#ifdef XCP
+/*
+ * Given relation, find the index of the attribute in the primary key,
+ * which is the distribution key. Returns -1 if table is not a Hash/Modulo
+ * distributed, does not have a primary key or distribution key is not in the
+ * primary key (last should not happen).
+ */
+static int
+find_relation_pk_dist_index(Relation rel)
+{
+	int 		result = -1;
+	List	   *indexoidlist;
+	ListCell   *indexoidscan;
+	int			partAttNum = InvalidAttrNumber;
+	bool 		pk_found = false;
+
+	if (rel->rd_locator_info)
+		partAttNum = rel->rd_locator_info->partAttrNum;
+
+	if (partAttNum == InvalidAttrNumber)
+		return -1;
+
+	/*
+	 * Look up the primary key
+	 */
+	indexoidlist = RelationGetIndexList(rel);
+
+	foreach(indexoidscan, indexoidlist)
+	{
+		Oid			indexoid = lfirst_oid(indexoidscan);
+		HeapTuple	indexTuple;
+		Form_pg_index indexForm;
+
+		indexTuple = SearchSysCache1(INDEXRELID,
+								 ObjectIdGetDatum(indexoid));
+		if (!HeapTupleIsValid(indexTuple)) /* should not happen */
+			elog(ERROR, "cache lookup failed for index %u", indexoid);
+		indexForm = ((Form_pg_index) GETSTRUCT(indexTuple));
+		if (indexForm->indisprimary)
+		{
+			int i;
+
+			pk_found = true;
+
+			/*
+			 * Loop over index attributes to find
+			 * the distribution key
+			 */
+			for (i = 0; i < indexForm->indnatts; i++)
+			{
+				if (indexForm->indkey.values[i] == partAttNum)
+				{
+					result = i;
+					break;
+				}
+			}
+		}
+		ReleaseSysCache(indexTuple);
+		if (pk_found)
+			break;
+	}
+
+	list_free(indexoidlist);
+
+	return result;
+}
+#endif
+
+
 /*
  * check to see if the constraint can be enforced locally
  * if not, an error will be thrown
@@ -3406,21 +3475,34 @@ checkLocalFKConstraints(CreateStmtContext *cxt)
 				if (list_length(constraint->pk_attrs) == 0)
 				{
 					/*
-					 * PK attribute list may be missing, use names of FK
-					 * attributes to compare
+					 * PK attribute list may be missing, so FK must reference
+					 * the primary table's primary key. The primary key may
+					 * consist of multiple attributes, one of them is a
+					 * distribution key. We should find the foreign attribute
+					 * referencing that primary attribute and set it as the
+					 * distribution key of the table.
 					 */
-					foreach(fklc, constraint->fk_attrs)
+					int 		pk_attr_idx;
+					Relation	rel;
+
+					rel = relation_open(pk_rel_id, AccessShareLock);
+					pk_attr_idx = find_relation_pk_dist_index(rel);
+					relation_close(rel, AccessShareLock);
+
+					if (pk_attr_idx >= 0 &&
+							pk_attr_idx < list_length(constraint->fk_attrs))
 					{
-						char *attrname = strVal(lfirst(fklc));
-						if (strcmp(rel_loc_info->partAttrName, attrname) == 0)
-						{
-							lattr = attrname;
-							break;
-						}
+						lattr = strVal(list_nth(constraint->fk_attrs, pk_attr_idx));
 					}
 				}
 				else
 				{
+					/*
+					 * One of the primary attributes must be the primary
+					 * tabble's distribution key. We should find the foreign
+					 * attribute referencing that primary attribute and set it
+					 * as the distribution key of the table.
+					 */
 					forboth(fklc, constraint->fk_attrs,
 							pklc, constraint->pk_attrs)
 					{
