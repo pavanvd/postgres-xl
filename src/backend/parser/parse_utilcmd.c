@@ -3560,7 +3560,8 @@ checkLocalFKConstraints(CreateStmtContext *cxt)
 				continue;
 			}
 			/*
-			 * Now determine if defined distribution is matching to referenced
+			 * Here determine if already defined distribution is matching
+			 * to distribution of primary table.
 			 */
 			if (ltype != rel_loc_info->locatorType || lattr == NULL)
 				ereport(ERROR,
@@ -3569,21 +3570,35 @@ checkLocalFKConstraints(CreateStmtContext *cxt)
 								" to hash/modulo distribution column in referenced table.")));
 			if (list_length(constraint->pk_attrs) == 0)
 			{
-				/* case if primary attribute list is missing */
-				foreach(fklc, constraint->fk_attrs)
+				/*
+				 * PK attribute list may be missing, so FK must reference
+				 * the primary table's primary key. The primary key may
+				 * consist of multiple attributes, one of them is a
+				 * distribution key. We should find the foreign attribute
+				 * referencing that primary attribute and make sure it is a
+				 * distribution key of the table.
+				 */
+				int 		pk_attr_idx;
+				Relation	rel;
+
+				rel = relation_open(pk_rel_id, AccessShareLock);
+				pk_attr_idx = find_relation_pk_dist_index(rel);
+				relation_close(rel, AccessShareLock);
+
+				/*
+				 * Two first conditions are just avoid assertion failure in
+				 * list_nth. First should never happen, because the primary key
+				 * of hash/modulo distributed table must contain distribution
+				 * key. Second may only happen if list of foreign columns is
+				 * shorter then the primary key. In that case statement would
+				 * probably fail later, but no harm if it fails here.
+				 */
+				if (pk_attr_idx >= 0 &&
+						pk_attr_idx < list_length(constraint->fk_attrs) &&
+						strcmp(lattr, strVal(list_nth(constraint->fk_attrs,
+													  pk_attr_idx))) == 0)
 				{
-					char *attrname = strVal(lfirst(fklc));
-					if (strcmp(lattr, attrname) == 0)
-					{
-						found = true;
-						if (strcmp(rel_loc_info->partAttrName, attrname) == 0)
-							break;
-						else
-							ereport(ERROR,
-									(errcode(ERRCODE_SYNTAX_ERROR),
-									 errmsg("Hash/Modulo distribution column does not refer"
-											" to hash/modulo distribution column in referenced table.")));
-					}
+					found = true;
 				}
 			}
 			else
