@@ -3996,6 +3996,10 @@ _copyValue(const Value *from)
 }
 
 #ifdef PGXC
+/* ****************************************************************
+ *					barrier.h copy functions
+ * ****************************************************************
+ */
 static BarrierStmt *
 _copyBarrierStmt(const BarrierStmt *from)
 {
@@ -4017,6 +4021,84 @@ _copyPauseClusterStmt(const PauseClusterStmt *from)
 	return newnode;
 }
 #endif
+/* ****************************************************************
+ *					nodemgr.h copy functions
+ * ****************************************************************
+ */
+static AlterNodeStmt *
+_copyAlterNodeStmt(const AlterNodeStmt *from)
+{
+	AlterNodeStmt *newnode = makeNode(AlterNodeStmt);
+
+	COPY_STRING_FIELD(node_name);
+	COPY_NODE_FIELD(options);
+
+	return newnode;
+}
+
+static CreateNodeStmt *
+_copyCreateNodeStmt(const CreateNodeStmt *from)
+{
+	CreateNodeStmt *newnode = makeNode(CreateNodeStmt);
+
+	COPY_STRING_FIELD(node_name);
+	COPY_NODE_FIELD(options);
+
+	return newnode;
+}
+
+static DropNodeStmt *
+_copyDropNodeStmt(const DropNodeStmt *from)
+{
+	DropNodeStmt *newnode = makeNode(DropNodeStmt);
+
+	COPY_STRING_FIELD(node_name);
+
+	return newnode;
+}
+
+/* ****************************************************************
+ *					groupmgr.h copy functions
+ * ****************************************************************
+ */
+static CreateGroupStmt *
+_copyCreateGroupStmt(const CreateGroupStmt *from)
+{
+	CreateGroupStmt *newnode = makeNode(CreateGroupStmt);
+
+	COPY_STRING_FIELD(group_name);
+	COPY_NODE_FIELD(nodes);
+
+	return newnode;
+}
+
+static DropGroupStmt *
+_copyDropGroupStmt(const DropGroupStmt *from)
+{
+	DropGroupStmt *newnode = makeNode(DropGroupStmt);
+
+	COPY_STRING_FIELD(group_name);
+
+	return newnode;
+}
+
+/* ****************************************************************
+ *					poolutils.h copy functions
+ * ****************************************************************
+ */
+static CleanConnStmt *
+_copyCleanConnStmt(const CleanConnStmt *from)
+{
+	CleanConnStmt *newnode = makeNode(CleanConnStmt);
+
+	COPY_NODE_FIELD(nodes);
+	COPY_STRING_FIELD(dbname);
+	COPY_STRING_FIELD(username);
+	COPY_SCALAR_FIELD(is_coord);
+	COPY_SCALAR_FIELD(is_force);
+
+	return newnode;
+}
 #endif
 
 /*
@@ -4635,6 +4717,24 @@ copyObject(const void *from)
 			retval = _copyPauseClusterStmt(from);
 			break;
 #endif
+		case T_AlterNodeStmt:
+			retval = _copyAlterNodeStmt(from);
+			break;
+		case T_CreateNodeStmt:
+			retval = _copyCreateNodeStmt(from);
+			break;
+		case T_DropNodeStmt:
+			retval = _copyDropNodeStmt(from);
+			break;
+		case T_CreateGroupStmt:
+			retval = _copyCreateGroupStmt(from);
+			break;
+		case T_DropGroupStmt:
+			retval = _copyDropGroupStmt(from);
+			break;
+		case T_CleanConnStmt:
+			retval = _copyCleanConnStmt(from);
+			break;
 #endif
 		case T_CreateSchemaStmt:
 			retval = _copyCreateSchemaStmt(from);

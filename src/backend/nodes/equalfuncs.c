@@ -2445,6 +2445,66 @@ _equalPauseClusterStmt(PauseClusterStmt *a, PauseClusterStmt *b)
 	return true;
 }
 #endif
+/*
+ * stuff from nodemgr.h
+ */
+
+static bool
+_equalAlterNodeStmt(const AlterNodeStmt *a, const AlterNodeStmt *b)
+{
+	COMPARE_STRING_FIELD(node_name);
+	COMPARE_NODE_FIELD(options);
+	return true;
+}
+
+static bool
+_equalCreateNodeStmt(const CreateNodeStmt *a, const CreateNodeStmt *b)
+{
+	COMPARE_STRING_FIELD(node_name);
+	COMPARE_NODE_FIELD(options);
+	return true;
+}
+
+static bool
+_equalDropNodeStmt(const DropNodeStmt *a, const DropNodeStmt *b)
+{
+	COMPARE_STRING_FIELD(node_name);
+	return true;
+}
+
+/*
+ * stuff from groupmgr.h
+ */
+
+static bool
+_equalCreateGroupStmt(const CreateGroupStmt *a, const CreateGroupStmt *b)
+{
+	COMPARE_STRING_FIELD(group_name);
+	COMPARE_NODE_FIELD(nodes);
+	return true;
+}
+
+static bool
+_equalDropGroupStmt(const DropGroupStmt *a, const DropGroupStmt *b)
+{
+	COMPARE_STRING_FIELD(group_name);
+	return true;
+}
+
+/*
+ * stuff from poolutils.h
+ */
+static bool
+_equalCleanConnStmt(const CleanConnStmt *a, const CleanConnStmt *b)
+{
+	COMPARE_NODE_FIELD(nodes);
+	COMPARE_STRING_FIELD(dbname);
+	COMPARE_STRING_FIELD(username);
+	COMPARE_SCALAR_FIELD(is_coord);
+	COMPARE_SCALAR_FIELD(is_force);
+	return true;
+}
+
 #endif
 
 /*
@@ -2912,6 +2972,24 @@ equal(const void *a, const void *b)
 			retval = _equalPauseClusterStmt(a, b);
 			break;
 #endif
+		case T_AlterNodeStmt:
+			retval = _equalAlterNodeStmt(a, b);
+			break;
+		case T_CreateNodeStmt:
+			retval = _equalCreateNodeStmt(a, b);
+			break;
+		case T_DropNodeStmt:
+			retval = _equalDropNodeStmt(a, b);
+			break;
+		case T_CreateGroupStmt:
+			retval = _equalCreateGroupStmt(a, b);
+			break;
+		case T_DropGroupStmt:
+			retval = _equalDropGroupStmt(a, b);
+			break;
+		case T_CleanConnStmt:
+			retval = _equalCleanConnStmt(a, b);
+			break;
 #endif
 		case T_CreateSchemaStmt:
 			retval = _equalCreateSchemaStmt(a, b);
