@@ -1264,7 +1264,9 @@ typedef enum AlterTableType
 	AT_AddNodeList,				/* ADD NODE nodelist */
 	AT_DeleteNodeList,			/* DELETE NODE nodelist */
 #endif
-	AT_GenericOptions			/* OPTIONS (...) */
+	AT_GenericOptions,			/* OPTIONS (...) */
+	/* this will be in a more natural position in 9.3: */
+	AT_ReAddConstraint			/* internal to commands/tablecmds.c */
 } AlterTableType;
 
 typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
