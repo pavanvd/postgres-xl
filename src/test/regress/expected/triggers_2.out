@@ -697,12 +697,11 @@ INSERT INTO serializable_update_tab SELECT a, repeat('xyzxz', 100), 'new'
 BEGIN;
 SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 UPDATE serializable_update_tab SET description = 'no no', id = 1 WHERE id = 1;
-ERROR:  Partition column can't be updated in current version
 COMMIT;
 SELECT description FROM serializable_update_tab WHERE id = 1;
  description 
 -------------
- new
+ no no
 (1 row)
 
 DROP TABLE serializable_update_tab;

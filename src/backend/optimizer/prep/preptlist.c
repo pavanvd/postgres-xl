@@ -111,15 +111,9 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 					TargetEntry *keyTle;
 					keyTle = (TargetEntry *) list_nth(tlist,
 											  rel_loc_info->partAttrNum - 1);
-					/*
-					 * We do not support update of distribution key yet
-					 */
-					if (command_type == CMD_UPDATE && !IsA(keyTle->expr, Var))
-						ereport(ERROR,
-								(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-								(errmsg("Partition column can't be updated in current version"))));
 
 					distribution->distributionExpr = (Node *) keyTle->expr;
+
 					/*
 					 * We can restrict the distribution if the expression
 					 * is evaluated to a constant

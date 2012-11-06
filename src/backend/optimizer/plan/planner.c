@@ -108,6 +108,8 @@ static void get_column_info_for_window(PlannerInfo *root, WindowClause *wc,
 static Plan *grouping_distribution(PlannerInfo *root, Plan *plan,
 					  int numGroupCols, AttrNumber *groupColIdx,
 					  List *current_pathkeys, Distribution **distribution);
+static bool equal_distributions(PlannerInfo *root, Distribution *dst1,
+					Distribution *dst2);
 #endif
 #ifdef PGXC
 #ifndef XCP
@@ -2066,18 +2068,23 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 	 */
 	if (root->distribution)
 	{
-		if (equal(root->distribution, distribution))
+		if (equal_distributions(root, root->distribution, distribution))
 		{
 			if (IsLocatorReplicated(distribution->distributionType) &&
-					contain_volatile_functions(result_plan->targetlist))
+					contain_volatile_functions((Node *) result_plan->targetlist))
 				ereport(ERROR,
 						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
 						 errmsg("can not update replicated table with result of volatile function")));
 			/*
 			 * Source tuple will be consumed on the same node where it is
-			 * produced, so if it is known some node does not yield tuples
-			 * we do not want to execute subquery on these nodes at all.
-			 * So just copy the restriction.
+			 * produced, so if it is known that some node does not yield tuples
+			 * we do not want to send subquery for execution on these nodes
+			 * at all.
+			 * So copy the restriction to the external distribution.
+			 * XXX Is that ever possible if external restriction is already
+			 * defined? If yes we probably should use intersection of the sets,
+			 * and if resulting set is empty create dummy plan and set it as
+			 * the result_plan. Need to think this over
 			 */
 			root->distribution->restrictNodes =
 					bms_copy(distribution->restrictNodes);
@@ -2086,18 +2093,37 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		{
 			RemoteSubplan *distributePlan;
 			/*
-			 * We could not allow TIDs travel to other data nodes.
-			 * I am not sure if the fact the resulting distribution matches
-			 * to requested the TIDs will be on proper node, but if they
-			 * are not equal they definitely won't.
-			 * TODO change planner in order to increase chance of building
-			 * proper plan. I believe there are cases when it is impossible
-			 * to build such plan, but we should do our best to find out the
-			 * path. At least if we fail to do that we should surely detect
-			 * the case and report it
+			 * If the planned statement is either UPDATE or DELETE different
+			 * distributions here mean the ModifyTable node will be placed on
+			 * top of RemoteSubquery. UPDATE and DELETE versions of ModifyTable
+			 * use TID of incoming tuple to apply the changes, but the
+			 * RemoteSubquery node supplies RemoteTuples, without such field.
+			 * Therefore we can not execute such plan.
+			 * Most common case is when UPDATE statement modifies the
+			 * distribution column. Also incorrect distributed plan is possible
+			 * if planning a complex UPDATE or DELETE statement involving table
+			 * join.
+			 * We output different error messages in UPDATE and DELETE cases
+			 * mostly for compatibility with PostgresXC. It is hard to determine
+			 * here, if such plan is because updated partitioning key or poorly
+			 * planned join, so in case of UPDATE we assume the first case as
+			 * more probable, for DELETE the second case is only possible.
+			 * The error message may be misleading, if that is UPDATE and join,
+			 * but hope we will target distributed update problem soon.
+			 * There are two ways of fixing that:
+			 * 1. Improve distribution planner to never consider to redistribute
+			 * target table. So if planner finds that it has no choice, it would
+			 * throw error somewhere else. So here we only be catching cases of
+			 * updating distribution columns.
+			 * 2. Modify executor and allow distribution column updates. However
+			 * there are a lot of issues behind the scene when implementing that
+			 * approach.
 			 */
-			if (parse->commandType == CMD_UPDATE ||
-					parse->commandType == CMD_DELETE)
+			if (parse->commandType == CMD_UPDATE)
+				ereport(ERROR,
+						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+						(errmsg("Partition column can't be updated in current version"))));
+			if (parse->commandType == CMD_DELETE)
 				ereport(ERROR,
 						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
 						 errmsg("could not plan this distributed statement"),
@@ -3725,5 +3751,53 @@ grouping_distribution(PlannerInfo *root, Plan *plan,
 		return result_plan;
 	}
 	return plan;
+}
+
+
+/*
+ * Check if two distributions are equal.
+ * Distributions are considered equal if they are of the same type, on the same
+ * nodes and if they have distribution expressions defined they are equal
+ * (either the same expressions or they are member of the same equivalence
+ * class)
+ */
+static bool
+equal_distributions(PlannerInfo *root, Distribution *dst1,
+					Distribution *dst2)
+{
+	/* fast path */
+	if (dst1 == dst2)
+		return true;
+	if (dst1 == NULL || dst2 == NULL)
+		return false;
+
+	/* Conditions that easier to check go first */
+	if (dst1->distributionType != dst2->distributionType)
+		return false;
+
+	if (!bms_equal(dst1->nodes, dst2->nodes))
+		return false;
+
+	if (equal(dst1->distributionExpr, dst2->distributionExpr))
+		return true;
+
+	/*
+	 * For more thorough expression check we need to ensure they both are
+	 * defined
+	 */
+	if (dst1->distributionExpr == NULL || dst2->distributionExpr == NULL)
+		return false;
+
+	/*
+	 * More thorough check, but allows some important cases, like if
+	 * distribution column is not updated (implicit set distcol=distcol) or
+	 * set distcol = CONST, ... WHERE distcol = CONST - pattern used by many
+	 * applications
+	 */
+	if (exprs_known_equal(root, dst1->distributionExpr, dst2->distributionExpr))
+		return true;
+
+	/* The restrictNodes field does not matter for distribution equality */
+	return false;
 }
 #endif
