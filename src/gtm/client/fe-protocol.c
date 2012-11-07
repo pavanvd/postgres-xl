@@ -801,6 +801,28 @@ gtmpqFreeResultData(GTM_Result *result, GTM_PGXCNodeType remote_type)
 	if (remote_type == GTM_NODE_GTM_PROXY)
 		return;
 
+#ifdef XCP
+	/*
+	 * Passing in GTM_NODE_DEFAULT as a remote_type is an ugly way to signal
+	 * that result data are freed for the connection close, so we need
+	 * to clean up completely to avoid memory leak.
+	 * The result structure should be freed after the call, but let's try to
+	 * keep it valid, just in case, if GTM_NODE_DEFAULT is passed in as
+	 * remote_type for intermediate clean up.
+	 */
+	if (remote_type == GTM_NODE_DEFAULT)
+	{
+		if (result->gr_snapshot.sn_xip)
+			free(result->gr_snapshot.sn_xip);
+		result->gr_snapshot.sn_xip = NULL;
+		result->gr_snapshot.sn_recent_global_xmin = InvalidGlobalTransactionId;
+		result->gr_snapshot.sn_xmax = InvalidGlobalTransactionId;
+		result->gr_snapshot.sn_xmin = InvalidGlobalTransactionId;
+		result->gr_snapshot.sn_xcnt = 0;
+		result->gr_xip_size = 0;
+	}
+#endif
+
 	switch (result->gr_type)
 	{
 		case SEQUENCE_INIT_RESULT:

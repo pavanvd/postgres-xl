@@ -889,7 +889,24 @@ freeGTM_Conn(GTM_Conn *conn)
 		free(conn->outBuffer);
 	termGTMPQExpBuffer(&conn->errorMessage);
 	termGTMPQExpBuffer(&conn->workBuffer);
-
+#ifdef XCP
+	if (conn->result)
+	{
+		/*
+		 * XXX: We actually need to rework gtmpqFreeResultData.
+		 * It has special handling for GTM_NODE_GTM_PROXY where it does not free
+		 * anything at all, I think because proxy is reusing data structures,
+		 * and now special handling is added for GTM_NODE_DEFAULT which I
+		 * believe is not normally used for valid connection, that means
+		 * "free everything because result itself is going to be freed".
+		 * It would be nice if we check remote_type outside and either do not
+		 * call the function at all or pass in a flag, claryfying what should
+		 * be kept for reuse.
+		 */
+		gtmpqFreeResultData(conn->result, GTM_NODE_DEFAULT);
+		free(conn->result);
+	}
+#endif
 	free(conn);
 }
 
