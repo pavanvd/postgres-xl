@@ -892,21 +892,38 @@ freeGTM_Conn(GTM_Conn *conn)
 #ifdef XCP
 	if (conn->result)
 	{
-		/*
-		 * XXX: We actually need to rework gtmpqFreeResultData.
-		 * It has special handling for GTM_NODE_GTM_PROXY where it does not free
-		 * anything at all, I think because proxy is reusing data structures,
-		 * and now special handling is added for GTM_NODE_DEFAULT which I
-		 * believe is not normally used for valid connection, that means
-		 * "free everything because result itself is going to be freed".
-		 * It would be nice if we check remote_type outside and either do not
-		 * call the function at all or pass in a flag, claryfying what should
-		 * be kept for reuse.
-		 */
-		gtmpqFreeResultData(conn->result, GTM_NODE_DEFAULT);
+		/* Free last snapshot if defined */
+		if (conn->result->gr_snapshot.sn_xip)
+			free(conn->result->gr_snapshot.sn_xip);
+
+		/* Depending on result type there could be allocated data */
+		switch (conn->result->gr_type)
+		{
+			case SEQUENCE_INIT_RESULT:
+			case SEQUENCE_RESET_RESULT:
+			case SEQUENCE_CLOSE_RESULT:
+			case SEQUENCE_RENAME_RESULT:
+			case SEQUENCE_ALTER_RESULT:
+			case SEQUENCE_SET_VAL_RESULT:
+				if (conn->result->gr_resdata.grd_seqkey.gsk_key)
+					free(conn->result->gr_resdata.grd_seqkey.gsk_key);
+				break;
+
+			case SEQUENCE_GET_CURRENT_RESULT:
+			case SEQUENCE_GET_NEXT_RESULT:
+			case SEQUENCE_GET_LAST_RESULT:
+				if (conn->result->gr_resdata.grd_seq.seqkey.gsk_key)
+					free(conn->result->gr_resdata.grd_seq.seqkey.gsk_key);
+				break;
+
+			default:
+				break;
+		}
+
 		free(conn->result);
 	}
 #endif
+
 	free(conn);
 }
 
