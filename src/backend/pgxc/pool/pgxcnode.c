@@ -514,6 +514,9 @@ pgxc_node_receive(const int conn_count,
 	}
 
 retry:
+#ifdef XCP
+	CHECK_FOR_INTERRUPTS();
+#endif
 	res_select = select(nfds + 1, &readfds, NULL, NULL, timeout);
 	if (res_select < 0)
 	{

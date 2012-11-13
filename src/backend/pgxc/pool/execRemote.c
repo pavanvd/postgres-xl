@@ -56,7 +56,16 @@
 
 /* Enforce the use of two-phase commit when temporary objects are used */
 bool EnforceTwoPhaseCommit = true;
-
+/*
+ * In XC it is in seconds, in StormDB in milliseconds
+ * We do not want it too long, when query is terminating abnormally we just
+ * want to read in already available data, if datanode connection will reach a
+ * consistent state after that, we will go normal clean up procedure: send down
+ * ABORT etc., if data node is not responding we will signal pooler to drop
+ * the connection.
+ * It is better to drop and recreate datanode connection then wait for several
+ * seconds while it being cleaned up when, for example, cancelling query.
+ */
 #define END_QUERY_TIMEOUT	20
 #ifndef XCP
 #define ROLLBACK_RESP_LEN	9
@@ -5356,9 +5365,13 @@ ExecEndRemoteQuery(RemoteQueryState *node)
 		if (res == RESPONSE_EOF)
 		{
 			struct timeval timeout;
+#ifdef XCP
+			timeout.tv_sec = END_QUERY_TIMEOUT / 1000;
+			timeout.tv_usec = (END_QUERY_TIMEOUT % 1000) * 1000;
+#else
 			timeout.tv_sec = END_QUERY_TIMEOUT;
 			timeout.tv_usec = 0;
-
+#endif
 			if (pgxc_node_receive(1, &conn, &timeout))
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
@@ -7502,8 +7515,13 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
 		if (res == RESPONSE_EOF)
 		{
 			struct timeval timeout;
+#ifdef XCP
+			timeout.tv_sec = END_QUERY_TIMEOUT / 1000;
+			timeout.tv_usec = (END_QUERY_TIMEOUT % 1000) * 1000;
+#else
 			timeout.tv_sec = END_QUERY_TIMEOUT;
 			timeout.tv_usec = 0;
+#endif
 
 			if (pgxc_node_receive(1, &conn, &timeout))
 				ereport(ERROR,
