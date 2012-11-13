@@ -34,6 +34,7 @@
 #ifdef XCP
 #include "executor/nodeSubplan.h"
 #include "nodes/nodeFuncs.h"
+#include "pgstat.h"
 #endif
 #include "nodes/nodes.h"
 #include "nodes/nodeFuncs.h"
@@ -8664,6 +8665,59 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 	 */
 	if (node->bound)
 		pgxc_connections_cleanup(combiner);
+
+	/*
+	 * Update coordinator statistics
+	 */
+	if (IS_PGXC_COORDINATOR)
+	{
+		EState *estate = combiner->ss.ps.state;
+
+		if (estate->es_num_result_relations > 0 && estate->es_processed > 0)
+		{
+			switch (estate->es_plannedstmt->commandType)
+			{
+				case CMD_INSERT:
+					/* One statement can insert into only one relation */
+					pgstat_count_remote_insert(
+								estate->es_result_relations[0].ri_RelationDesc,
+								estate->es_processed);
+					break;
+				case CMD_UPDATE:
+				case CMD_DELETE:
+					{
+						/*
+						 * We can not determine here how many row were updated
+						 * or delete in each table, so assume same number of
+						 * affected row in each table.
+						 * If resulting number of rows is 0 because of rounding,
+						 * increment each counter at least on 1.
+						 */
+						int		i;
+						int 	n;
+						bool 	update;
+
+						update = (estate->es_plannedstmt->commandType == CMD_UPDATE);
+						n = estate->es_processed / estate->es_num_result_relations;
+						if (n == 0)
+							n = 1;
+						for (i = 0; i < estate->es_num_result_relations; i++)
+						{
+							Relation r;
+							r = estate->es_result_relations[i].ri_RelationDesc;
+							if (update)
+								pgstat_count_remote_update(r, n);
+							else
+								pgstat_count_remote_delete(r, n);
+						}
+					}
+					break;
+				default:
+					/* nothing to count */
+					break;
+			}
+		}
+	}
 
 	/*
 	 * Close portals. While cursors_connections exist there are open portals

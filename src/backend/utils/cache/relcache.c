@@ -906,9 +906,14 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 		relation->trigdesc = NULL;
 
 #ifdef PGXC
+#ifdef XCP
+	if (IS_PGXC_COORDINATOR &&
+		relation->rd_id >= FirstNormalObjectId)
+#else
 	if (IS_PGXC_COORDINATOR &&
 		relation->rd_id >= FirstNormalObjectId &&
 		!IsAutoVacuumWorkerProcess())
+#endif
 		RelationBuildLocator(relation);
 #endif
 	/*

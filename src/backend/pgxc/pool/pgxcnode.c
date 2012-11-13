@@ -652,8 +652,11 @@ retry:
 
 	if (nread < 0)
 	{
+#ifndef XCP
+		/* too noisy */
 		if (close_if_error)
 			elog(DEBUG1, "dnrd errno = %d", errno);
+#endif
 		if (errno == EINTR)
 			goto retry;
 		/* Some systems return EAGAIN/EWOULDBLOCK for no data */

@@ -79,6 +79,10 @@
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#ifdef XCP
+#include "pgxc/pgxc.h"
+#include "pgxc/pgxcnode.h"
+#endif
 #include "postmaster/autovacuum.h"
 #include "postmaster/fork_process.h"
 #include "postmaster/postmaster.h"
@@ -2149,6 +2153,16 @@ do_autovacuum(void)
 
 	heap_endscan(relScan);
 	heap_close(classRel, AccessShareLock);
+
+#ifdef XCP
+	/*
+	 * Coordinator needs to access Datanodes to process distributed table.
+	 */
+	if (IS_PGXC_COORDINATOR)
+	{
+		InitMultinodeExecutor(false);
+	}
+#endif
 
 	/*
 	 * Create a buffer access strategy object for VACUUM to use.  We want to

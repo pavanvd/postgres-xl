@@ -852,6 +852,15 @@ DoCopy(const CopyStmt *stmt, const char *queryString)
 		cstate = BeginCopyFrom(rel, stmt->filename,
 							   stmt->attlist, stmt->options);
 		processed = CopyFrom(cstate);	/* copy from file to database */
+#ifdef XCP
+		/*
+		 * We should record insert to distributed table.
+		 * Bulk inserts into local tables are recorded when heap tuples are
+		 * written.
+		 */
+		if (IS_PGXC_COORDINATOR && rel->rd_locator_info)
+			pgstat_count_remote_insert(rel, (int) processed);
+#endif
 		EndCopyFrom(cstate);
 	}
 	else
