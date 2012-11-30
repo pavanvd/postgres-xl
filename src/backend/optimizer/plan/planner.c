@@ -1234,9 +1234,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		 */
 		if (parse->hasWindowFuncs)
 		{
-#ifdef XCP
-			elog(ERROR, "Window functions are not supported yet");
-#endif
 			wflists = find_window_functions((Node *) tlist,
 											list_length(parse->windowClause));
 			if (wflists->numWindowFuncs > 0)
@@ -1774,11 +1771,18 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			result_plan->targetlist = (List *) copyObject(window_tlist);
 #ifdef XCP
 			/*
-			 * RemoteSubplan is conditionally projection capable - it is
-			 * pushing projection to the data nodes
+			 * StormDB can not guarantee correct result of windowing function
+			 * if aggregation is pushed down to Datanodes. So if current plan
+			 * produces a distributed result set we should bring it to
+			 * coordinator.
 			 */
-			if (IsA(result_plan, RemoteSubplan))
-				result_plan->lefttree->targetlist = result_plan->targetlist;
+			if (distribution)
+			{
+				result_plan = (Plan *)
+						make_remotesubplan(root, result_plan, NULL,
+										   distribution, current_pathkeys);
+				distribution = NULL;
+			}
 #endif
 
 			foreach(l, activeWindows)
@@ -1821,6 +1825,30 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 						result_plan = (Plan *) sort_plan;
 						current_pathkeys = window_pathkeys;
 					}
+#ifdef XCP
+					/*
+					 * In StormDB Sort may be pushed down to the Datanodes,
+					 * and therefore we may get the sort_plan is not really a
+					 * Sort node. In this case we should get sort columns from
+					 * the top RemoteSubplan
+					 */
+					if (!IsA(sort_plan, Sort))
+					{
+						RemoteSubplan *pushdown;
+						pushdown = find_push_down_plan(sort_plan, true);
+						Assert(pushdown && pushdown->sort);
+						get_column_info_for_window(root, wc, tlist,
+												   pushdown->sort->numCols,
+												   pushdown->sort->sortColIdx,
+												   &partNumCols,
+												   &partColIdx,
+												   &partOperators,
+												   &ordNumCols,
+												   &ordColIdx,
+												   &ordOperators);
+					}
+					else
+#endif
 					/* In either case, extract the per-column information */
 					get_column_info_for_window(root, wc, tlist,
 											   sort_plan->numCols,

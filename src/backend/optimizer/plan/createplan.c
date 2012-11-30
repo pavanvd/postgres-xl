@@ -5312,8 +5312,8 @@ add_sort_column(AttrNumber colIdx, Oid sortOp, Oid coll, bool nulls_first,
 		 * collations with different notions of equality.
 		 */
 		if (sortColIdx[i] == colIdx &&
-			sortOperators[numCols] == sortOp &&
-			collations[numCols] == coll)
+			sortOperators[i] == sortOp &&
+			collations[i] == coll)
 		{
 			/* Already sorting by this col, so extra sort key is useless */
 			return numCols;
