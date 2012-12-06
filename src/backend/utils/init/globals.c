@@ -138,3 +138,7 @@ int			GinFuzzySearchLimit = 0;
  * and logging plugins.
  */
 object_access_hook_type object_access_hook = NULL;
+
+#ifdef PGXC
+bool useLocalXid = false;
+#endif
