@@ -8251,7 +8251,6 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 	GlobalTransactionId gxid = InvalidGlobalTransactionId;
 	Snapshot			snapshot;
 	TimestampTz			timestamp;
-	CommandId			cid;
 	int 				i;
 	bool				is_read_only;
 
@@ -8311,7 +8310,6 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 	/* send down subplan */
 	snapshot = GetActiveSnapshot();
 	timestamp = GetCurrentGTMStartTimestamp();
-	cid = GetCurrentCommandId(false);
 	/*
 	 * Datanode should not send down statements that may modify
 	 * the database. Potgres assumes that all sessions under the same
@@ -8331,14 +8329,6 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Could not begin transaction on data node.")));
 
-		if (pgxc_node_send_cmd_id(connection, cid))
-		{
-			combiner->conn_count = 0;
-			pfree(combiner->connections);
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Failed to send command to data nodes")));
-		}
 		if (pgxc_node_send_timestamp(connection, timestamp))
 		{
 			combiner->conn_count = 0;
@@ -8528,6 +8518,7 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 		}
 		else if (node->execNodes)
 		{
+			CommandId		cid;
 			int 			i;
 
 			/*
@@ -8536,10 +8527,25 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 			Assert(combiner->conn_count > 0);
 
 			combiner->extended_query = true;
+			cid = estate->es_snapshot->curcid;
 
 			for (i = 0; i < combiner->conn_count; i++)
 			{
 				CHECK_OWNERSHIP(combiner->connections[i], combiner);
+
+				/*
+				 * Update Command Id. Other command may be executed after we
+				 * prepare and advanced Command Id. We should use one that
+				 * was active at the moment when command started.
+				 */
+				if (pgxc_node_send_cmd_id(combiner->connections[i], cid))
+				{
+					combiner->conn_count = 0;
+					pfree(combiner->connections);
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("Failed to send command to data nodes")));
+				}
 
 				/* bind */
 				pgxc_node_send_bind(combiner->connections[i], plan->cursor,
