@@ -19,6 +19,7 @@ extern int GtmPort;
 #ifdef XCP
 extern bool IsXidFromGTM;
 #endif
+extern GlobalTransactionId currentGxid;
 
 extern bool IsGTMConnected(void);
 extern void InitGTM(void);

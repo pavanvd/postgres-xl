@@ -2630,6 +2630,13 @@ AtEOXact_GlobalTxn(bool commit)
 			else
 				RollbackTranGTM(s->topGlobalTransansactionId);
 		}
+		else if (GlobalTransactionIdIsValid(currentGxid))
+		{
+			if (commit)
+				CommitTranGTM(currentGxid);
+			else
+				RollbackTranGTM(currentGxid);
+		}
 	}
 #endif
 	s->topGlobalTransansactionId = InvalidGlobalTransactionId;
