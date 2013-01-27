@@ -39,6 +39,9 @@ static void init_GTM_TransactionInfo(GTM_TransactionInfo *gtm_txninfo,
 									 GTM_IsolationLevel isolevel,
 									 GTMProxy_ConnID connid,
 									 bool readonly);
+#ifdef XCP
+GlobalTransactionId ControlXid;  /* last one written to control file */
+#endif
 GTM_Transactions GTMTransactions;
 
 void
@@ -99,6 +102,10 @@ GTM_InitTxnManager(void)
 	GTMTransactions.gt_lastslot = -1;
 
 	GTMTransactions.gt_gtm_state = GTM_STARTING;
+
+#ifdef XCP
+	ControlXid = FirstNormalGlobalTransactionId;
+#endif
 
 	return;
 }
@@ -504,6 +511,9 @@ GTM_GetGlobalTransactionIdMulti(GTM_TransactionHandle handle[], int txn_count)
 	GlobalTransactionId xid, start_xid = InvalidGlobalTransactionId;
 	GTM_TransactionInfo *gtm_txninfo = NULL;
 	int ii;
+#ifdef XCP
+	bool save_control = false;
+#endif
 
 	if (Recovery_IsStandby())
 	{
@@ -580,7 +590,24 @@ GTM_GetGlobalTransactionIdMulti(GTM_TransactionHandle handle[], int txn_count)
 		gtm_txninfo->gti_gxid = xid;
 	}
 
+#ifdef XCP
+	/* Periodically write the xid and sequence info out to the control file.
+	 * Try and handle wrapping, too.
+	 */
+	if (xid - ControlXid > CONTROL_INTERVAL || xid < ControlXid)
+	{
+		save_control = true;
+		ControlXid = xid;
+	}
+#endif
+
 	GTM_RWLockRelease(&GTMTransactions.gt_XidGenLock);
+
+#ifdef XCP
+	/* save control info when not holding the XidGenLock */
+	if (save_control)
+		SaveControlInfo();
+#endif
 
 	return start_xid;
 }
@@ -2588,7 +2615,15 @@ GTM_RestoreTxnInfo(FILE *ctlf, GlobalTransactionId next_gxid)
 			(!GlobalTransactionIdIsValid(next_gxid)))
 			next_gxid = InitialGXIDValue_Default;
 		else if (!GlobalTransactionIdIsValid(next_gxid))
+#ifdef XCP
+		{
+			/* Add in extra amount in case we had not gracefully stopped */
+			next_gxid = saved_gxid + CONTROL_INTERVAL;
+			ControlXid = next_gxid;
+		}
+#else
 			next_gxid = saved_gxid;
+#endif
 	}
 	else if (!GlobalTransactionIdIsValid(next_gxid))
 		next_gxid = InitialGXIDValue_Default;

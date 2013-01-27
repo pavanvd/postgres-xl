@@ -72,6 +72,11 @@ int			tcp_keepalives_count;
 char		*error_reporter;
 char		*status_reader;
 bool		isStartUp;
+#ifdef XCP
+GTM_MutexLock   control_lock;
+char		GTMControlFileTmp[GTM_MAX_PATH];
+#define GTM_CONTROL_FILE_TMP		"gtm.control.tmp"
+#endif
 
 /* If this is GTM or not */
 /*
@@ -182,6 +187,9 @@ BaseInit()
 	CreateDataDirLockFile();
 
 	sprintf(GTMControlFile, "%s/%s", GTMDataDir, GTM_CONTROL_FILE);
+#ifdef XCP
+	sprintf(GTMControlFileTmp, "%s/%s", GTMDataDir, GTM_CONTROL_FILE_TMP);
+#endif
 	if (GTMLogFile == NULL)
 	{
 		GTMLogFile = (char *) malloc(GTM_MAX_PATH);
@@ -206,6 +214,9 @@ BaseInit()
 		fflush(stdout);
 		fflush(stderr);
 	}
+#ifdef XCP
+	GTM_MutexLockInit(&control_lock);
+#endif
 }
 
 static void
@@ -278,6 +289,38 @@ gtm_status()
 	fprintf(stderr, "gtm_status(): must be implemented to scan the shmem.\n");
 	exit(0);
 }
+
+#ifdef XCP
+/*
+ * Save control file info
+ */
+void
+SaveControlInfo(void)
+{
+	FILE	   *ctlf;
+
+	GTM_MutexLockAcquire(&control_lock);
+
+	ctlf = fopen(GTMControlFileTmp, "w");
+
+	if (ctlf == NULL)
+	{
+		fprintf(stderr, "Failed to create/open the control file\n");
+		fclose(ctlf);
+		GTM_MutexLockRelease(&control_lock);
+		return;
+	}
+
+	GTM_SaveTxnInfo(ctlf);
+	GTM_SaveSeqInfo(ctlf);
+	fclose(ctlf);
+
+	remove(GTMControlFile);
+	rename(GTMControlFileTmp, GTMControlFile);
+
+	GTM_MutexLockRelease(&control_lock);
+}
+#endif
 
 int
 main(int argc, char *argv[])
@@ -584,11 +627,19 @@ main(int argc, char *argv[])
 	}
 	else
 	{
+#ifdef XCP
+		GTM_MutexLockAcquire(&control_lock);
+#endif
+
 		ctlf = fopen(GTMControlFile, "r");
 		GTM_RestoreTxnInfo(ctlf, next_gxid);
 		GTM_RestoreSeqInfo(ctlf);
 		if (ctlf)
 			fclose(ctlf);
+
+#ifdef XCP
+		GTM_MutexLockRelease(&control_lock);
+#endif
 	}
 
 	if (Recovery_IsStandby())
@@ -769,7 +820,9 @@ ServerLoop(void)
 
 		if (GTMAbortPending)
 		{
+#ifndef XCP
 			FILE *ctlf;
+#endif
 
 			/*
 			 * XXX We should do a clean shutdown here. For the time being, just
@@ -784,6 +837,9 @@ ServerLoop(void)
 			 */
 			GTM_SetShuttingDown();
 
+#ifdef XCP
+			SaveControlInfo();
+#else
 			ctlf = fopen(GTMControlFile, "w");
 			if (ctlf == NULL)
 			{
@@ -793,6 +849,7 @@ ServerLoop(void)
 
 			GTM_SaveTxnInfo(ctlf);
 			GTM_SaveSeqInfo(ctlf);
+#endif
 
 #if 0
 			/*
@@ -808,7 +865,9 @@ ServerLoop(void)
 			}
 #endif
 
+#ifndef XCP
 			fclose(ctlf);
+#endif
 
 			exit(1);
 		}
