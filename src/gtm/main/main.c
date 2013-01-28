@@ -730,13 +730,13 @@ main(int argc, char *argv[])
 			elog(ERROR, "Failed to update the standby-GTM status as \"CONNECTED\".");
 			exit(1);
 		}
-		elog(LOG, "Updating the standby-GTM status as \"CONNECTED\" succeeded.");
+		elog(DEBUG1, "Updating the standby-GTM status as \"CONNECTED\" succeeded.");
 		if (!gtm_standby_finish_startup())
 		{
 			elog(ERROR, "Failed to close the initial connection to the active-GTM.");
 			exit(1);
 		}
-		elog(LOG, "Startup connection with the active-GTM closed.");
+		elog(DEBUG1, "Startup connection with the active-GTM closed.");
 	}
 
 	/*

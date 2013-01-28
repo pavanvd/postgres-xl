@@ -395,7 +395,7 @@ GTMProxy_SigleHandler(int signal)
 {
 	int ii;
 
-	elog(LOG, "Received signal %d\n", signal);
+	elog(DEBUG1, "Received signal %d\n", signal);
 
 	switch (signal)
 	{
@@ -414,11 +414,11 @@ GTMProxy_SigleHandler(int signal)
 			 * The mask is set to block signals.  They're blocked until all the
 			 * threads reconnect to the new GTM.
 			 */
-			elog(LOG, "Accepted SIGUSR1\n");
+			elog(DEBUG1, "Accepted SIGUSR1\n");
 			if (MyThreadID != TopMostThreadID)
 			{
 
-				elog(LOG, "Not on main thread, proxy the signal to the main thread.");
+				elog(DEBUG1, "Not on main thread, proxy the signal to the main thread.");
 
 				pthread_kill(TopMostThreadID, SIGUSR1);
 				return;
@@ -428,18 +428,18 @@ GTMProxy_SigleHandler(int signal)
 			 */
 			PG_SETMASK(&BlockSig);
 
-			elog(LOG, "I'm the main thread. Accepted SIGUSR1.");
+			elog(DEBUG1, "I'm the main thread. Accepted SIGUSR1.");
 
 			/*
 			 * Set Reconnect Info
 			 */
 			if (!ReadyToReconnect)
 			{
-				elog(LOG, "SIGUSR1 detected, but not ready to handle this. Ignored");
+				elog(DEBUG1, "SIGUSR1 detected, but not ready to handle this. Ignored");
 				PG_SETMASK(&UnBlockSig);
 				return;
 			}
-			elog(LOG, "SIGUSR1 detected. Set reconnect info for each worker thread");
+			elog(DEBUG1, "SIGUSR1 detected. Set reconnect info for each worker thread");
 			if (GTMProxy_ReadReconnectInfo() != 0)
 			{
 				/* Failed to read reconnect information from reconnect data file */
@@ -477,7 +477,7 @@ GTMProxy_SigleHandler(int signal)
 			for (ii = 0; ii < GTMProxyWorkerThreads; ii++)
 				pthread_kill(Proxy_ThreadInfo[ii]->thr_id, SIGUSR2);
 
-			elog(LOG, "SIGUSR2 issued to all the worker threads.");
+			elog(DEBUG1, "SIGUSR2 issued to all the worker threads.");
 			PG_SETMASK(&UnBlockSig);
 
 			/*
@@ -490,13 +490,13 @@ GTMProxy_SigleHandler(int signal)
 			/* Main thread has nothing to do twith this signal and should not receive this. */
 			PG_SETMASK(&BlockSig);
 
-			elog(LOG, "Detected SIGUSR2, thread:%ld", MyThreadID);
+			elog(DEBUG1, "Detected SIGUSR2, thread:%ld", MyThreadID);
 
 			if (MyThreadID == TopMostThreadID)
 			{
 				/* This should not be reached. Just in case. */
 
-				elog(LOG, "SIGUSR2 received by the main thread.  Ignoring.");
+				elog(DEBUG1, "SIGUSR2 received by the main thread.  Ignoring.");
 
 				PG_SETMASK(&UnBlockSig);
 				return;
@@ -951,9 +951,9 @@ ServerLoop(void)
 			 * the resource but this may not happen so many times.
 			 */
 
-			elog(LOG, "Main Thread reconnecting to new GTM.");
+			elog(DEBUG1, "Main Thread reconnecting to new GTM.");
 			RegisterProxy(TRUE);
-			elog(LOG, "Reconnected.");
+			elog(DEBUG1, "Reconnected.");
 
 			/* If it is done, then release the lock for worker threads. */
 			GTM_RWLockRelease(&ReconnectControlLock);
@@ -1005,7 +1005,7 @@ ServerLoop(void)
 		{
 			if (errno != EINTR && errno != EWOULDBLOCK)
 			{
-				ereport(LOG,
+				ereport(DEBUG1,
 						(EACCES,
 						 errmsg("select() failed in postmaster: %m")));
 				return STATUS_ERROR;
@@ -3315,12 +3315,12 @@ workerThreadReconnectToGTM(void)
 		GTMPQfinish(GetMyThreadInfo->thr_gtm_conn);
 	sprintf(gtm_connect_string, "host=%s port=%d node_name=%s remote_type=%d",
 			GTMServerHost, GTMServerPortNumber, GTMProxyNodeName, GTM_NODE_GTM_PROXY);
-	elog(LOG, "Worker thread connecting to %s", gtm_connect_string);
+	elog(DEBUG1, "Worker thread connecting to %s", gtm_connect_string);
 	GetMyThreadInfo->thr_gtm_conn = PQconnectGTM(gtm_connect_string);
 
 	if (GetMyThreadInfo->thr_gtm_conn == NULL)
 		elog(FATAL, "Worker thread GTM connection failed.");
-	elog(LOG, "Worker thread connection done.");
+	elog(DEBUG1, "Worker thread connection done.");
 
 	/* Initialize the command processing */
 	GetMyThreadInfo->reconnect_issued = FALSE;

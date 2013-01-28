@@ -100,7 +100,7 @@ ProcessPGXCNodeRegister(Port *myport, StringInfo message, bool is_backup)
 	memcpy(datafolder, (char *)pq_getmsgbytes(message, len), len);
 	datafolder[len] = '\0';
 
-	elog(LOG,
+	elog(DEBUG1,
 		 "ProcessPGXCNodeRegister: ipaddress = \"%s\", node name = \"%s\", proxy name = \"%s\", "
 		 "datafolder \"%s\"",
 		 ipaddress, node_name, proxyname, datafolder);
@@ -117,7 +117,7 @@ ProcessPGXCNodeRegister(Port *myport, StringInfo message, bool is_backup)
 				(EINVAL,
 				 errmsg("Unknown node type.")));
 
-	elog(LOG, "Node type = %d", type);
+	elog(DEBUG1, "Node type = %d", type);
 
 	/*
 	 * We must use the TopMostMemoryContext because the Node ID information is
@@ -190,7 +190,7 @@ ProcessPGXCNodeRegister(Port *myport, StringInfo message, bool is_backup)
 			int count = 0;
 			GTM_PGXCNodeInfo *standbynode;
 
-			elog(LOG, "calling node_register_internal() for standby GTM %p.",
+			elog(DEBUG1, "calling node_register_internal() for standby GTM %p.",
 				 GetMyThreadInfo->thr_conn->standby);
 
 		retry:
@@ -202,7 +202,7 @@ ProcessPGXCNodeRegister(Port *myport, StringInfo message, bool is_backup)
 											  datafolder,
 											  status);
 
-			elog(LOG, "node_register_internal() returns rc %d.", _rc);
+			elog(DEBUG1, "node_register_internal() returns rc %d.", _rc);
 
 			if (gtm_standby_check_communication_error(&count, oldconn))
 				goto retry;
@@ -301,7 +301,7 @@ ProcessPGXCNodeUnregister(Port *myport, StringInfo message, bool is_backup)
 			GTM_Conn *oldconn = GetMyThreadInfo->thr_conn->standby;
 			int count = 0;
 
-			elog(LOG, "calling node_unregister() for standby GTM %p.",
+			elog(DEBUG1, "calling node_unregister() for standby GTM %p.",
 				 GetMyThreadInfo->thr_conn->standby);
 
 		retry:
@@ -316,7 +316,7 @@ ProcessPGXCNodeUnregister(Port *myport, StringInfo message, bool is_backup)
 			if (Backup_synchronously && (myport->remote_type != GTM_NODE_GTM_PROXY))
 				gtm_sync_standby(GetMyThreadInfo->thr_conn->standby);
 
-			elog(LOG, "node_unregister() returns rc %d.", _rc);
+			elog(DEBUG1, "node_unregister() returns rc %d.", _rc);
 		}
 		/*
 		 * Send a SUCCESS message back to the client
@@ -388,7 +388,7 @@ ProcessPGXCNodeList(Port *myport, StringInfo message)
 
 		s_datalen[i] = gtm_serialize_pgxcnodeinfo(data[i], s_data[i], s_len+1);
 
-		elog(LOG, "gtm_get_pgxcnodeinfo_size: s_len=%ld, s_datalen=%ld", s_len, s_datalen[i]);
+		elog(DEBUG1, "gtm_get_pgxcnodeinfo_size: s_len=%ld, s_datalen=%ld", s_len, s_datalen[i]);
 	}
 
 	MemoryContextSwitchTo(oldContext);
@@ -430,7 +430,7 @@ ProcessPGXCNodeList(Port *myport, StringInfo message)
 		free(s_data[i]);
 	}
 
-	elog(LOG, "ProcessPGXCNodeList() ok.");
+	elog(DEBUG1, "ProcessPGXCNodeList() ok.");
 }
 
 void
