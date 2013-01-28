@@ -2550,7 +2550,8 @@ GTMProxy_HandleDisconnect(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn)
 	/* Mark node as disconnected if it is a postmaster backend */
 	Recovery_PGXCNodeDisconnect(conninfo->con_port);
 
-	 /* Start the message. */
+	proxyhdr.ph_conid = conninfo->con_id;
+	/* Start the message. */
 	if (gtmpqPutMsgStart('C', true, gtm_conn) ||
 		gtmpqPutnchar((char *)&proxyhdr, sizeof (GTM_ProxyMsgHeader), gtm_conn) ||
 		gtmpqPutInt(MSG_BACKEND_DISCONNECT, sizeof (GTM_MessageType), gtm_conn) ||
@@ -2579,8 +2580,6 @@ GTMProxy_HandleDisconnect(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn)
 		StreamClose(conninfo->con_port->sock);
 	ConnFree(conninfo->con_port);
 	conninfo->con_port = NULL;
-
-	proxyhdr.ph_conid = conninfo->con_id;
 
 	return;
 }

@@ -2583,6 +2583,20 @@ AtEOXact_GlobalTxn(bool commit)
 				RollbackTranGTM(s->topGlobalTransansactionId);
 		}
 	}
+#ifdef XCP
+	/*
+	 * If GTM is connected the current gxid is acquired from GTM directly.
+	 * So directly report transaction end.
+	 */
+	else if (IsGTMConnected())
+	{
+		if (commit)
+			CommitTranGTM(s->topGlobalTransansactionId);
+		else
+			RollbackTranGTM(s->topGlobalTransansactionId);
+		CloseGTM();
+	}
+#else
 	else if (IS_PGXC_DATANODE || IsConnFromCoord())
 	{
 		/* If we are autovacuum, commit on GTM */
@@ -2595,7 +2609,7 @@ AtEOXact_GlobalTxn(bool commit)
 				RollbackTranGTM(s->topGlobalTransansactionId);
 		}
 	}
-
+#endif
 	s->topGlobalTransansactionId = InvalidGlobalTransactionId;
 	s->auxilliaryTransactionId = InvalidGlobalTransactionId;
 
