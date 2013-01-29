@@ -106,7 +106,7 @@ InitGTM(void)
 	}
 
 #ifdef XCP
-	if (IS_PGXC_COORDINATOR)
+	else if (IS_PGXC_COORDINATOR)
 		register_session(conn, PGXCNodeName, MyProcPid, MyBackendId);
 #endif
 }
