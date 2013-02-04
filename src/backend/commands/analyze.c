@@ -641,6 +641,12 @@ do_analyze_rel(Relation onerel, VacuumStmt *vacstmt,
 		}
 	}
 
+#ifdef XCP
+	/*
+	 * Coordinator skips getting local stats of distributed table up to here
+	 */
+cleanup:
+#endif
 	/*
 	 * Report ANALYZE to the stats collector, too.	However, if doing
 	 * inherited stats we shouldn't report, because the stats collector only
@@ -649,12 +655,6 @@ do_analyze_rel(Relation onerel, VacuumStmt *vacstmt,
 	if (!inh)
 		pgstat_report_analyze(onerel, totalrows, totaldeadrows);
 
-#ifdef XCP
-	/*
-	 * Coordinator skips getting local stats of distributed table up to here
-	 */
-cleanup:
-#endif
 	/* If this isn't part of VACUUM ANALYZE, let index AMs do cleanup */
 	if (!(vacstmt->options & VACOPT_VACUUM))
 	{
