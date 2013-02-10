@@ -1149,8 +1149,8 @@ SharedQueueUnBind(SharedQueue squeue)
 void
 SharedQueueRelease(const char *sqname)
 {
-	bool		found;
-	SharedQueue sq;
+	bool					found;
+	volatile SharedQueue 	sq;
 
 	elog(DEBUG1, "Shared Queue release: %s", sqname);
 
@@ -1159,12 +1159,27 @@ SharedQueueRelease(const char *sqname)
 	sq = (SharedQueue) hash_search(SharedQueues, sqname, HASH_FIND, &found);
 	if (found)
 	{
-		SQueueSync *sqsync = sq->sq_sync;
-		int 		myid;  /* Node Id of the parent data node */
-		int			i;
-		char		ntype = PGXC_NODE_DATANODE;
+		volatile SQueueSync    *sqsync = sq->sq_sync;
+		int 					myid;  /* Node Id of the parent data node */
+		int						i;
+		char					ntype = PGXC_NODE_DATANODE;
 
 		Assert(sqsync && sqsync->queue == sq);
+
+		/*
+		 * Case if the shared queue was never bound.
+		 */
+		if (sq->sq_nodeid == -1)
+		{
+			sq->sq_sync = NULL;
+			sqsync->queue = NULL;
+			if (hash_search(SharedQueues, sqname, HASH_REMOVE, NULL) != sq)
+				elog(PANIC, "Shared queue data corruption");
+			elog(DEBUG1, "Finalized squeue %s", sqname);
+			LWLockRelease(SQueuesLock);
+			return;
+		}
+
 		myid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE, &ntype);
 		/*
 		 * that is the producer, change status of active consumers to error,
@@ -1175,7 +1190,7 @@ SharedQueueRelease(const char *sqname)
 			/*
 			 * Since producer is the only process that may unbind shared queue
 			 * we may release the lock and allow other processes to bind and
-			 * unbind other shared queues.
+			 * unbind other shared queues, until we are waiting.
 			 */
 			LWLockRelease(SQueuesLock);
 			while (true)
@@ -1224,6 +1239,10 @@ SharedQueueRelease(const char *sqname)
 				else
 					break;
 			}
+			/*
+			 * All consumers are released, now we can remove the shared queue
+			 * from the table.
+			 */
 			LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
 			DisownLatch(&sqsync->sqs_producer_latch);
 			/* Now it is OK to remove hash table entry */
@@ -1235,47 +1254,57 @@ SharedQueueRelease(const char *sqname)
 		}
 		else
 		{
-			ConsState *cstate;
 			elog(DEBUG1, "Looking for consumer %d in %s", myid, sqname);
 			/* find specified node in the consumer lists */
 			for (i = 0; i < sq->sq_nconsumers; i++)
 			{
-				cstate = &(sq->sq_consumers[i]);
+				ConsState *cstate = &(sq->sq_consumers[i]);
 				if (cstate->cs_node == myid)
-					break;
-				cstate = NULL;
-			}
-			if (cstate == NULL)
-			{
-				for (i = 0; i < sq->sq_nconsumers; i++)
 				{
-					cstate = &(sq->sq_consumers[i]);
-					if (cstate->cs_node == -1)
-						break;
-					cstate = NULL;
+					LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock,
+								  LW_EXCLUSIVE);
+					if (cstate->cs_status != CONSUMER_DONE)
+					{
+						/* Inform producer the consumer have done the job */
+						cstate->cs_status = CONSUMER_DONE;
+						/* no need to receive notifications */
+						if (cstate->cs_pid > 0)
+						{
+							DisownLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
+							cstate->cs_pid = 0;
+						}
+						/*
+						 * notify the producer, it may be waiting while
+						 * consumers are finishing
+						 */
+						SetLatch(&sqsync->sqs_producer_latch);
+						elog(DEBUG1, "Release consumer %d of %s", i, sqname);
+					}
+					LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
+					/* exit */
+					LWLockRelease(SQueuesLock);
+					return;
 				}
 			}
-
-			LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock,
-						  LW_EXCLUSIVE);
-			if (cstate->cs_status != CONSUMER_DONE)
+			/*
+			 * The consumer was never bound. Find empty consumer slot and
+			 * register node here to let producer know that the node will never
+			 * consuming.
+			 */
+			for (i = 0; i < sq->sq_nconsumers; i++)
 			{
-				/* Inform producer the consumer have done the job */
-				cstate->cs_status = CONSUMER_DONE;
-				/* no need to receive notifications */
-				if (cstate->cs_pid > 0)
+				ConsState *cstate = &(sq->sq_consumers[i]);
+				if (cstate->cs_node == -1)
 				{
-					DisownLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
-					cstate->cs_pid = 0;
+					LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock,
+								  LW_EXCLUSIVE);
+					/* Inform producer the consumer have done the job */
+					cstate->cs_status = CONSUMER_DONE;
+					SetLatch(&sqsync->sqs_producer_latch);
+					elog(DEBUG1, "Release not bound consumer %d of %s", i, sqname);
+					LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
 				}
-				/*
-				 * notify the producer, it may be waiting while
-				 * consumers are finishing
-				 */
-				SetLatch(&sqsync->sqs_producer_latch);
-				elog(DEBUG1, "Release consumer %d of %s", i, sqname);
 			}
-			LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
 		}
 	}
 	LWLockRelease(SQueuesLock);
