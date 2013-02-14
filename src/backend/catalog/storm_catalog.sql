@@ -26,7 +26,7 @@ GRANT SELECT on storm_catalog.pg_shdescription TO PUBLIC;
 REVOKE ALL on pg_catalog.pg_shdescription FROM public;
 
 CREATE VIEW storm_catalog.pg_database AS
-    SELECT oid, datname, datdba, encoding, datcollate, datctype,
+    SELECT tableoid, oid, datname, datdba, encoding, datcollate, datctype,
            datistemplate, datallowconn, datconnlimit, datlastsysoid,
            datfrozenxid, dattablespace, datacl
       FROM pg_catalog.pg_database
