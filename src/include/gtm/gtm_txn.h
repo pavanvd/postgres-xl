@@ -169,7 +169,8 @@ typedef struct GTM_Transactions
 
 extern GTM_Transactions	GTMTransactions;
 
-#define GTM_CountOpenTransactions()		(gtm_list_length(GTMTransactions.gt_open_transactions))
+/* NOTE: This macro should be used with READ lock held on gt_TransArrayLock! */
+#define GTM_CountOpenTransactions()	(gtm_list_length(GTMTransactions.gt_open_transactions))
 
 /*
  * Two hash tables will be maintained to quickly find the
