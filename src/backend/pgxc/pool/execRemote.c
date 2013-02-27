@@ -341,6 +341,7 @@ CreateResponseCombiner(int node_count, CombineType combine_type)
 	combiner->errorDetail = NULL;
 	combiner->tuple_desc = NULL;
 #ifdef XCP
+	combiner->probing_primary = false;
 	combiner->returning_node = InvalidOid;
 	combiner->currentRow = NULL;
 #else
@@ -878,6 +879,12 @@ HandleDataRow(ResponseCombiner *combiner, char *msg_body, size_t len, Oid node)
 	 */
 	if (combiner->combine_type == COMBINE_TYPE_SAME)
 	{
+		/* Do not return rows when probing primary, instead return when doing
+		 * first normal node. Just save some CPU and traffic in case if
+		 * probing fails.
+		 */
+		if (combiner->probing_primary)
+			return false;
 		if (OidIsValid(combiner->returning_node))
 		{
 			if (combiner->returning_node != node)
@@ -1764,6 +1771,13 @@ FetchTuple(ResponseCombiner *combiner)
 		if (combiner->extended_query &&
 				conn->state == DN_CONNECTION_STATE_IDLE)
 		{
+			/*
+			 * We do not allow to suspend if querying primary node, so that
+			 * only may mean the current node is secondary and subplan was not
+			 * executed there yet. Return and go on with second phase.
+			 */
+			if (combiner->probing_primary)
+				return NULL;
 			if (pgxc_node_send_execute(conn, combiner->cursor, 1000) != 0)
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
@@ -1798,12 +1812,26 @@ FetchTuple(ResponseCombiner *combiner)
 		else if (res == RESPONSE_SUSPENDED)
 		{
 			/*
-			 * If we are doing merge sort continue with current connection and
-			 * send request for more rows from it, otherwise make next
-			 * connection current
+			 * If we are doing merge sort or probing primary node we should
+			 * remain on the same node, so query next portion immediately.
+			 * Otherwise leave node suspended and fetch lazily.
 			 */
-			if (combiner->merge_sort)
+			if (combiner->merge_sort || combiner->probing_primary)
+			{
+				if (pgxc_node_send_execute(conn, combiner->cursor, 1000) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("Failed to fetch from data node")));
+				if (pgxc_node_send_flush(conn) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("Failed to fetch from data node")));
+				if (pgxc_node_receive(1, &conn, NULL))
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("Failed to fetch from data node")));
 				continue;
+			}
 			if (++combiner->current_conn >= combiner->conn_count)
 				combiner->current_conn = 0;
 			conn = combiner->connections[combiner->current_conn];
@@ -1844,6 +1872,17 @@ FetchTuple(ResponseCombiner *combiner)
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
 							 errmsg("Failed to fetch from data node")));
+			}
+			/*
+			 * Do not wait for response from primary, it needs to wait
+			 * for other nodes to respond. Instead go ahead and send query to
+			 * other nodes. It will fail there, but we can continue with
+			 * normal cleanup.
+			 */
+			if (combiner->probing_primary)
+			{
+				REMOVE_CURR_CONN(combiner);
+				return NULL;
 			}
 		}
 		else if (res == RESPONSE_READY)
@@ -7598,22 +7637,28 @@ ExecEndRemoteQuery(RemoteQueryState *node)
  * Routines to support RemoteSubplan plan node
  *
  **********************************************/
-Node *
+
+
+/*
+ * The routine walks recursively over the plan tree and changes cursor names of
+ * RemoteSubplan nodes to make them different from launched from the other
+ * datanodes. The routine changes cursor names in place, so caller should
+ * take writable copy of the plan tree.
+ */
+void
 RemoteSubplanMakeUnique(Node *plan, int unique)
 {
 	if (plan == NULL)
-		return NULL;
+		return;
 
 	if (IsA(plan, List))
 	{
-		List *newlist = NIL;
 		ListCell *lc;
 		foreach(lc, (List *) plan)
 		{
-			newlist = lappend(newlist, RemoteSubplanMakeUnique(lfirst(lc),
-															   unique));
+			RemoteSubplanMakeUnique(lfirst(lc), unique);
 		}
-		return (Node *) newlist;
+		return;
 	}
 
 	/*
@@ -7621,55 +7666,38 @@ RemoteSubplanMakeUnique(Node *plan, int unique)
 	 */
 	if (IsA(plan, RemoteSubplan))
 	{
-		RemoteSubplan *subplan = (RemoteSubplan *) plan;
-		StringInfoData strinfo;
-
-		initStringInfo(&strinfo);
-		appendStringInfo(&strinfo, "%s_%d", subplan->cursor, unique);
-		subplan->cursor = strinfo.data;
+		((RemoteSubplan *)plan)->unique = unique;
 	}
 	/* Otherwise it is a Plan descendant */
-	((Plan *) plan)->initPlan = (List *)
-			RemoteSubplanMakeUnique((Node *) ((Plan *) plan)->initPlan,
-									unique);
-	((Plan *) plan)->lefttree = (Plan *)
-			RemoteSubplanMakeUnique((Node *) ((Plan *) plan)->lefttree,
-									unique);
-	((Plan *) plan)->righttree = (Plan *)
-			RemoteSubplanMakeUnique((Node *) ((Plan *) plan)->righttree,
-									unique);
+	RemoteSubplanMakeUnique((Node *) ((Plan *) plan)->initPlan, unique);
+	RemoteSubplanMakeUnique((Node *) ((Plan *) plan)->lefttree, unique);
+	RemoteSubplanMakeUnique((Node *) ((Plan *) plan)->righttree, unique);
 	/* Tranform special cases */
 	switch (nodeTag(plan))
 	{
 		case T_Append:
-			((Append *) plan)->appendplans = (List *)
-					RemoteSubplanMakeUnique(
-							(Node *) ((Append *) plan)->appendplans, unique);
+			RemoteSubplanMakeUnique((Node *) ((Append *) plan)->appendplans,
+									unique);
 			break;
 		case T_MergeAppend:
-			((MergeAppend *) plan)->mergeplans = (List *)
-					RemoteSubplanMakeUnique(
-							(Node *) ((MergeAppend *) plan)->mergeplans, unique);
+			RemoteSubplanMakeUnique((Node *) ((MergeAppend *) plan)->mergeplans,
+									unique);
 			break;
 		case T_BitmapAnd:
-			((BitmapAnd *) plan)->bitmapplans = (List *)
-					RemoteSubplanMakeUnique(
-							(Node *) ((BitmapAnd *) plan)->bitmapplans, unique);
+			RemoteSubplanMakeUnique((Node *) ((BitmapAnd *) plan)->bitmapplans,
+									unique);
 			break;
 		case T_BitmapOr:
-			((BitmapOr *) plan)->bitmapplans = (List *)
-					RemoteSubplanMakeUnique(
-							(Node *) ((BitmapOr *) plan)->bitmapplans, unique);
+			RemoteSubplanMakeUnique((Node *) ((BitmapOr *) plan)->bitmapplans,
+									unique);
 			break;
 		case T_SubqueryScan:
-			((SubqueryScan *) plan)->subplan = (Plan *)
-					RemoteSubplanMakeUnique(
-							(Node *) ((SubqueryScan *) plan)->subplan, unique);
+			RemoteSubplanMakeUnique((Node *) ((SubqueryScan *) plan)->subplan,
+									unique);
 			break;
 		default:
 			break;
 	}
-	return plan;
 }
 
 struct find_params_context
@@ -8089,8 +8117,7 @@ ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags)
 			 * traverse the subtree and change SharedQueue name to make it
 			 * unique.
 			 */
-			outerPlan(node) = (Plan *)
-					RemoteSubplanMakeUnique((Node *) outerPlan(node), PGXCNodeId);
+			RemoteSubplanMakeUnique((Node *) outerPlan(node), PGXCNodeId);
 		}
 		rstmt.planTree = outerPlan(node);
 		/*
@@ -8253,11 +8280,17 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 	TimestampTz			timestamp;
 	int 				i;
 	bool				is_read_only;
+	char				cursor[NAMEDATALEN];
 
 	/*
 	 * Name is required to store plan as a statement
 	 */
 	Assert(plan->cursor);
+
+	if (plan->unique)
+		snprintf(cursor, NAMEDATALEN, "%s_%d", plan->cursor, plan->unique);
+	else
+		strncpy(cursor, plan->cursor, NAMEDATALEN);
 
 	/* If it is alreaty fully initialized nothing to do */
 	if (combiner->connections)
@@ -8345,9 +8378,8 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Failed to send command to data nodes")));
 		}
-		pgxc_node_send_plan(connection, plan->cursor,
-							"Remote Subplan", node->subplanstr,
-							node->nParamRemote, paramtypes);
+		pgxc_node_send_plan(connection, cursor, "Remote Subplan",
+							node->subplanstr, node->nParamRemote, paramtypes);
 		if (pgxc_node_flush(connection))
 		{
 			combiner->conn_count = 0;
@@ -8462,14 +8494,33 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 	EState		   *estate = combiner->ss.ps.state;
 	TupleTableSlot *resultslot = combiner->ss.ps.ps_ResultTupleSlot;
 
+primary_mode_phase_two:
 	if (!node->bound)
 	{
 		int fetch = 0;
 		int paramlen = 0;
 		char *paramdata = NULL;
+		/*
+		 * Conditions when we want to execute query on the primary node first:
+		 * Coordinator running replicated ModifyTable on multiple nodes
+		 */
+		bool primary_mode = combiner->probing_primary ||
+				(IS_PGXC_COORDINATOR &&
+				 combiner->combine_type == COMBINE_TYPE_SAME &&
+				 OidIsValid(primary_data_node) &&
+				 combiner->conn_count > 1);
+		char cursor[NAMEDATALEN];
 
 		if (plan->cursor)
+		{
 			fetch = 1000;
+			if (plan->unique)
+				snprintf(cursor, NAMEDATALEN, "%s_%d", plan->cursor, plan->unique);
+			else
+				strncpy(cursor, plan->cursor, NAMEDATALEN);
+		}
+		else
+			cursor[0] = '\0';
 
 		/*
 		 * Send down all available parameters, if any is used by the plan
@@ -8489,17 +8540,35 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 		{
 			int i;
 
-			combiner->conn_count = combiner->cursor_count;
-			memcpy(combiner->connections, combiner->cursor_connections,
-						combiner->cursor_count * sizeof(PGXCNodeHandle *));
+			/*
+			 * On second phase of primary mode connections are properly set,
+			 * so do not copy.
+			 */
+			if (!combiner->probing_primary)
+			{
+				combiner->conn_count = combiner->cursor_count;
+				memcpy(combiner->connections, combiner->cursor_connections,
+							combiner->cursor_count * sizeof(PGXCNodeHandle *));
+			}
 
 			for (i = 0; i < combiner->conn_count; i++)
 			{
 				PGXCNodeHandle *conn = combiner->connections[i];
 
 				CHECK_OWNERSHIP(conn, combiner);
-				/* close previous cursor */
-				pgxc_node_send_close(conn, false, combiner->cursor);
+
+				/* close previous cursor only on phase 1 */
+				if (!primary_mode || !combiner->probing_primary)
+					pgxc_node_send_close(conn, false, combiner->cursor);
+
+				/*
+				 * If we now should probe primary, skip execution on non-primary
+				 * nodes
+				 */
+				if (primary_mode && !combiner->probing_primary &&
+						conn->nodeoid != primary_data_node)
+					continue;
+
 				/* rebind */
 				pgxc_node_send_bind(conn, combiner->cursor, combiner->cursor,
 									paramlen, paramdata);
@@ -8513,6 +8582,15 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
 							 errmsg("Failed to send command to data nodes")));
+				}
+
+				/*
+				 * There could be only one primary node, but can not leave the
+				 * loop now, because we need to close cursors.
+				 */
+				if (primary_mode && !combiner->probing_primary)
+				{
+					combiner->current_conn = i;
 				}
 			}
 		}
@@ -8531,14 +8609,24 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 
 			for (i = 0; i < combiner->conn_count; i++)
 			{
-				CHECK_OWNERSHIP(combiner->connections[i], combiner);
+				PGXCNodeHandle *conn = combiner->connections[i];
+
+				CHECK_OWNERSHIP(conn, combiner);
+
+				/*
+				 * If we now should probe primary, skip execution on non-primary
+				 * nodes
+				 */
+				if (primary_mode && !combiner->probing_primary &&
+						conn->nodeoid != primary_data_node)
+					continue;
 
 				/*
 				 * Update Command Id. Other command may be executed after we
 				 * prepare and advanced Command Id. We should use one that
 				 * was active at the moment when command started.
 				 */
-				if (pgxc_node_send_cmd_id(combiner->connections[i], cid))
+				if (pgxc_node_send_cmd_id(conn, cid))
 				{
 					combiner->conn_count = 0;
 					pfree(combiner->connections);
@@ -8548,13 +8636,11 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 				}
 
 				/* bind */
-				pgxc_node_send_bind(combiner->connections[i], plan->cursor,
-									plan->cursor, paramlen, paramdata);
+				pgxc_node_send_bind(conn, cursor, cursor, paramlen, paramdata);
 				/* execute */
-				pgxc_node_send_execute(combiner->connections[i], plan->cursor,
-									   fetch);
+				pgxc_node_send_execute(conn, cursor, fetch);
 				/* submit */
-				if (pgxc_node_send_flush(combiner->connections[i]))
+				if (pgxc_node_send_flush(conn))
 				{
 					combiner->conn_count = 0;
 					pfree(combiner->connections);
@@ -8563,13 +8649,46 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 							 errmsg("Failed to send command to data nodes")));
 				}
 
+				/*
+				 * There could be only one primary node, so if we executed
+				 * subquery on the phase one of primary mode we can leave the
+				 * loop now.
+				 */
+				if (primary_mode && !combiner->probing_primary)
+				{
+					combiner->current_conn = i;
+					break;
+				}
 			}
-			combiner->cursor = plan->cursor;
-			combiner->cursor_count = combiner->conn_count;
-			combiner->cursor_connections = (PGXCNodeHandle **) palloc(
-						combiner->conn_count * sizeof(PGXCNodeHandle *));
-			memcpy(combiner->cursor_connections, combiner->connections,
-						combiner->conn_count * sizeof(PGXCNodeHandle *));
+
+			/*
+			 * On second phase of primary mode connections are backed up
+			 * already, so do not copy.
+			 */
+			if (primary_mode)
+			{
+				if (combiner->probing_primary)
+				{
+					combiner->cursor = pstrdup(cursor);
+				}
+				else
+				{
+					combiner->cursor_count = combiner->conn_count;
+					combiner->cursor_connections = (PGXCNodeHandle **) palloc(
+								combiner->conn_count * sizeof(PGXCNodeHandle *));
+					memcpy(combiner->cursor_connections, combiner->connections,
+								combiner->conn_count * sizeof(PGXCNodeHandle *));
+				}
+			}
+			else
+			{
+				combiner->cursor = pstrdup(cursor);
+				combiner->cursor_count = combiner->conn_count;
+				combiner->cursor_connections = (PGXCNodeHandle **) palloc(
+							combiner->conn_count * sizeof(PGXCNodeHandle *));
+				memcpy(combiner->cursor_connections, combiner->connections,
+							combiner->conn_count * sizeof(PGXCNodeHandle *));
+			}
 		}
 
 		if (combiner->merge_sort)
@@ -8588,7 +8707,18 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 									   combiner,
 									   work_mem);
 		}
-		node->bound = true;
+		if (primary_mode)
+		{
+			if (combiner->probing_primary)
+			{
+				combiner->probing_primary = false;
+				node->bound = true;
+			}
+			else
+				combiner->probing_primary = true;
+		}
+		else
+			node->bound = true;
 	}
 
 	if (combiner->tuplesortstate)
@@ -8602,6 +8732,9 @@ ExecRemoteSubplan(RemoteSubplanState *node)
 		TupleTableSlot *slot = FetchTuple(combiner);
 		if (!TupIsNull(slot))
 			return slot;
+		else if (combiner->probing_primary)
+			/* phase1 is successfully completed, run on other nodes */
+			goto primary_mode_phase_two;
 	}
 	if (combiner->errorMessage)
 	{
@@ -8758,12 +8891,23 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 	for (i = 0; i < combiner->conn_count; i++)
 	{
 		PGXCNodeHandle *conn;
+		char			cursor[NAMEDATALEN];
+
+		if (plan->cursor)
+		{
+			if (plan->unique)
+				snprintf(cursor, NAMEDATALEN, "%s_%d", plan->cursor, plan->unique);
+			else
+				strncpy(cursor, plan->cursor, NAMEDATALEN);
+		}
+		else
+			cursor[0] = '\0';
 
 		conn = combiner->connections[i];
 
 		CHECK_OWNERSHIP(conn, combiner);
 
-		if (pgxc_node_send_close(conn, true, plan->cursor) != 0)
+		if (pgxc_node_send_close(conn, true, cursor) != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Failed to close data node statement")));

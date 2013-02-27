@@ -136,6 +136,7 @@ typedef struct
 	bool 		execOnAll;
 	SimpleSort *sort;
 	char	   *cursor;
+	int			unique;
 } RemoteSubplan;
 #endif
 

@@ -4882,6 +4882,7 @@ make_remotesubplan(PlannerInfo *root,
 		node->sort->nullsFirst = nullsFirst;
 	}
 	node->cursor = get_internal_cursor();
+	node->unique = 0;
 	return node;
 }
 #endif /* XCP */

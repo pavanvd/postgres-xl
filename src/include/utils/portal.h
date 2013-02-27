@@ -231,6 +231,7 @@ extern void PortalCreateProducerStore(Portal portal);
 extern List *getProducingPortals(void);
 extern void addProducingPortal(Portal portal);
 extern void removeProducingPortal(Portal portal);
+extern bool portalIsProducing(Portal portal);
 #endif
 
 #endif   /* PORTAL_H */

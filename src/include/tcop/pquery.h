@@ -43,7 +43,7 @@ extern long PortalRunFetch(Portal portal,
 			   DestReceiver *dest);
 
 #ifdef XCP
-extern int	AdvanceProducingPortal(Portal portal);
+extern int	AdvanceProducingPortal(Portal portal, bool can_wait);
 #endif
 
 #endif   /* PQUERY_H */

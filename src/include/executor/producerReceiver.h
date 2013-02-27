@@ -28,5 +28,6 @@ extern void SetProducerDestReceiverParams(DestReceiver *self,
 extern DestReceiver *SetSelfConsumerDestReceiver(DestReceiver *self,
 							DestReceiver *consumer);
 extern void SetProducerTempMemory(DestReceiver *self, MemoryContext tmpcxt);
+extern bool ProducerReceiverPushBuffers(DestReceiver *self);
 
 #endif   /* PRODUCER_RECEIVER_H */

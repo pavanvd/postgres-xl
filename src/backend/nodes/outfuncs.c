@@ -1360,6 +1360,7 @@ _outRemoteSubplan(StringInfo str, const RemoteSubplan *node)
 	WRITE_BOOL_FIELD(execOnAll);
 	WRITE_NODE_FIELD(sort);
 	WRITE_STRING_FIELD(cursor);
+	WRITE_INT_FIELD(unique);
 }
 
 static void

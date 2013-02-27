@@ -652,10 +652,9 @@ PortalStart(Portal portal, ParamListInfo params,
 					 * RemoteSubplan nodes in the execution plan tree.
 					 * We need to make them unique.
 					 */
-					queryDesc->plannedstmt->planTree = (Plan *)
-							RemoteSubplanMakeUnique(
-									(Node *) queryDesc->plannedstmt->planTree,
-									selfid);
+					RemoteSubplanMakeUnique(
+							(Node *) queryDesc->plannedstmt->planTree,
+							selfid);
 					/*
 					 * Call ExecutorStart to prepare the plan for execution
 					 */
@@ -1129,7 +1128,7 @@ PortalRun(Portal portal, long count, bool isTopLevel,
 						while (count == 0 || nprocessed < count)
 						{
 							if (!portal->queryDesc->estate->es_finished)
-								AdvanceProducingPortal(portal);
+								AdvanceProducingPortal(portal, false);
 							/* make read pointer active */
 							tuplestore_select_read_pointer(portal->holdStore, 1);
 							/* perform reads */
@@ -1202,10 +1201,18 @@ PortalRun(Portal portal, long count, bool isTopLevel,
 					 */
 					for (;;)
 					{
+						List *producing = getProducingPortals();
+						bool done;
+
 						/*
-						 * Obtain a tuple from the queue
+						 * Obtain a tuple from the queue.
+						 * If the session is running producing cursors it is
+						 * not safe to wait for available tuple. Two sessions
+						 * may deadlock each other. So if session is producing
+						 * it should keep advancing producing cursors.
 						 */
-						SharedQueueRead(squeue, myindex, slot);
+						done = SharedQueueRead(squeue, myindex, slot,
+											   list_length(producing) == 0);
 
 						/*
 						 * if the tuple is null, then we assume there is nothing
@@ -1215,8 +1222,29 @@ PortalRun(Portal portal, long count, bool isTopLevel,
 						 */
 						if (TupIsNull(slot))
 						{
-							queryDesc->squeue = NULL;
-							break;
+							if (!done && producing)
+							{
+								/* No data to read, advance producing portals */
+								ListCell   *lc = list_head(producing);
+								while (lc)
+								{
+									Portal p = (Portal) lfirst(lc);
+									/* Get reference to next entry before
+									 * advancing current portal, because the
+									 * function may remove current entry from
+									 * the list.
+									 */
+									lc = lnext(lc);
+
+									AdvanceProducingPortal(p, false);
+								}
+								continue;
+							}
+							else
+							{
+								queryDesc->squeue = NULL;
+								break;
+							}
 						}
 						/*
 						 * Send the tuple
@@ -2164,28 +2192,30 @@ DoPortalRewind(Portal portal)
 }
 
 #ifdef XCP
+/*
+ * Execute the specified portal's query and distribute tuples to consumers.
+ * Returs 1 if portal should keep producing, 0 if all consumers have enough
+ * rows in the buffers to pause producing temporarily, -1 if the query is
+ * completed.
+ */
 int
-AdvanceProducingPortal(Portal portal)
+AdvanceProducingPortal(Portal portal, bool can_wait)
 {
 	Portal		saveActivePortal;
 	ResourceOwner saveResourceOwner;
 	MemoryContext savePortalContext;
 	MemoryContext oldContext;
 	QueryDesc  *queryDesc;
+	SharedQueue squeue;
 	DestReceiver *treceiver;
 	int			result;
 
-	if (portal->status == PORTAL_FAILED)
-	{
-		removeProducingPortal(portal);
-		return -1;
-	}
-
 	queryDesc = PortalGetQueryDesc(portal);
+	squeue = queryDesc->squeue;
 
 	Assert(queryDesc);
 	/* Make sure the portal is producing */
-	Assert(queryDesc->squeue && queryDesc->myindex == -1);
+	Assert(squeue && queryDesc->myindex == -1);
 	/* Make sure there is proper receiver */
 	Assert(queryDesc->dest && queryDesc->dest->mydest == DestProducer);
 
@@ -2207,7 +2237,7 @@ AdvanceProducingPortal(Portal portal)
 		 * That is the first pass thru if the hold store is not initialized yet,
 		 * Need to initialize stuff.
 		 */
-		if (portal->holdStore == NULL)
+		if (portal->holdStore == NULL && portal->status != PORTAL_FAILED)
 		{
 			int idx;
 			char storename[64];
@@ -2236,7 +2266,8 @@ AdvanceProducingPortal(Portal portal)
 			Assert(idx == 1);
 		}
 
-		if (!queryDesc->estate->es_finished)
+		if (queryDesc->estate && !queryDesc->estate->es_finished &&
+				portal->status != PORTAL_FAILED)
 		{
 			/*
 			 * If the portal's hold store has tuples available for read and
@@ -2250,7 +2281,7 @@ AdvanceProducingPortal(Portal portal)
 			 */
 			tuplestore_select_read_pointer(portal->holdStore, 1);
 			if (!tuplestore_ateof(portal->holdStore) &&
-					SharedQueueCanPause(queryDesc->squeue))
+					SharedQueueCanPause(squeue))
 				result = 0;
 			else
 				result = 1;
@@ -2278,12 +2309,71 @@ AdvanceProducingPortal(Portal portal)
 		}
 
 		/* Try to dump local tuplestores */
-		if (queryDesc->estate->es_finished &&
+		if ((queryDesc->estate == NULL || queryDesc->estate->es_finished) &&
 				ProducerReceiverPushBuffers(queryDesc->dest))
 		{
-			/* No more local data, we done the producer work */
-			removeProducingPortal(portal);
+			if (can_wait && queryDesc->estate == NULL)
+			{
+				(*queryDesc->dest->rDestroy) (queryDesc->dest);
+				queryDesc->dest = NULL;
+				portal->queryDesc = NULL;
+				squeue = NULL;
 
+				removeProducingPortal(portal);
+				FreeQueryDesc(queryDesc);
+
+				/*
+				 * Current context is the portal context, which is going
+				 * to be deleted
+				 */
+				MemoryContextSwitchTo(TopTransactionContext);
+
+				ActivePortal = saveActivePortal;
+				CurrentResourceOwner = saveResourceOwner;
+				PortalContext = savePortalContext;
+
+				if (portal->resowner)
+				{
+					bool		isCommit = (portal->status != PORTAL_FAILED);
+
+					ResourceOwnerRelease(portal->resowner,
+										 RESOURCE_RELEASE_BEFORE_LOCKS,
+										 isCommit, false);
+					ResourceOwnerRelease(portal->resowner,
+										 RESOURCE_RELEASE_LOCKS,
+										 isCommit, false);
+					ResourceOwnerRelease(portal->resowner,
+										 RESOURCE_RELEASE_AFTER_LOCKS,
+										 isCommit, false);
+					ResourceOwnerDelete(portal->resowner);
+				}
+				portal->resowner = NULL;
+
+				/*
+				 * Delete tuplestore if present.  We should do this even under error
+				 * conditions; since the tuplestore would have been using cross-
+				 * transaction storage, its temp files need to be explicitly deleted.
+				 */
+				if (portal->holdStore)
+				{
+					MemoryContext oldcontext;
+
+					oldcontext = MemoryContextSwitchTo(portal->holdContext);
+					tuplestore_end(portal->holdStore);
+					MemoryContextSwitchTo(oldcontext);
+					portal->holdStore = NULL;
+				}
+
+				/* delete tuplestore storage, if any */
+				if (portal->holdContext)
+					MemoryContextDelete(portal->holdContext);
+
+				/* release subsidiary storage */
+				MemoryContextDelete(PortalGetHeapMemory(portal));
+
+				/* release portal struct (it's in PortalMemory) */
+				pfree(portal);
+			}
 			/* report portal is not producing */
 			result = -1;
 		}
@@ -2300,7 +2390,8 @@ AdvanceProducingPortal(Portal portal)
 		 * Reset producer to allow consumers to finish, so receiving node will
 		 * handle the error.
 		 */
-		SharedQueueReset(queryDesc->squeue, -1);
+		if (squeue)
+			SharedQueueReset(squeue, -1);
 
 		/* Restore global vars and propagate error */
 		ActivePortal = saveActivePortal;

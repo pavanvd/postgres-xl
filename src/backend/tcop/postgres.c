@@ -422,7 +422,7 @@ SocketBackend(StringInfo inBuf)
 					 */
 					lc = lnext(lc);
 
-					result = AdvanceProducingPortal(p);
+					result = AdvanceProducingPortal(p, true);
 					if (result == 0)
 					{
 						/* Portal is paused */

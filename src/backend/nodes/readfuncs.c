@@ -2997,6 +2997,7 @@ _readRemoteSubplan(void)
 	READ_BOOL_FIELD(execOnAll);
 	READ_NODE_FIELD(sort);
 	READ_STRING_FIELD(cursor);
+	READ_INT_FIELD(unique);
 
 	READ_DONE();
 }

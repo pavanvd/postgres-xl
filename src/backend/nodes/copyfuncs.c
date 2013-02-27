@@ -1115,7 +1115,7 @@ _copySimpleSort(const SimpleSort *from)
  * _copyRemoteSubplan
  */
 static RemoteSubplan *
-_copyRemoteSubplan(RemoteSubplan *from)
+_copyRemoteSubplan(const RemoteSubplan *from)
 {
 	RemoteSubplan *newnode = makeNode(RemoteSubplan);
 
@@ -1135,6 +1135,7 @@ _copyRemoteSubplan(RemoteSubplan *from)
 	COPY_SCALAR_FIELD(execOnAll);
 	COPY_NODE_FIELD(sort);
 	COPY_STRING_FIELD(cursor);
+	COPY_SCALAR_FIELD(unique);
 
 	return newnode;
 }
@@ -1143,7 +1144,7 @@ _copyRemoteSubplan(RemoteSubplan *from)
  * _copyDistribution
  */
 static Distribution *
-_copyDistribution(Distribution *from)
+_copyDistribution(const Distribution *from)
 {
 	Distribution *newnode = makeNode(Distribution);
 
@@ -4001,7 +4002,7 @@ _copyBarrierStmt(const BarrierStmt *from)
 
 #ifdef XCP
 static PauseClusterStmt *
-_copyPauseClusterStmt(PauseClusterStmt *from)
+_copyPauseClusterStmt(const PauseClusterStmt *from)
 {
 	PauseClusterStmt *newnode = makeNode(PauseClusterStmt);
 

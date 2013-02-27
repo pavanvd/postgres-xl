@@ -542,13 +542,6 @@ PortalDrop(Portal portal, bool isTopCommit)
 				(errcode(ERRCODE_INVALID_CURSOR_STATE),
 				 errmsg("cannot drop active portal \"%s\"", portal->name)));
 
-#ifdef XCP
-	/*
-	 * If portal is producing remove it from the list
-	 */
-	removeProducingPortal(portal);
-#endif
-
 	/*
 	 * Allow portalcmds.c to clean up the state it knows about, in particular
 	 * shutting down the executor if still active.	This step potentially runs
@@ -576,6 +569,17 @@ PortalDrop(Portal portal, bool isTopCommit)
 
 	/* drop cached plan reference, if any */
 	PortalReleaseCachedPlan(portal);
+
+#ifdef XCP
+	/*
+	 * Skip memory release if portal is still producining, means has tuples in
+	 * local memory, and has to push them to consumers. It would loose the
+	 * tuples if free the memory now.
+	 * The cleanup should be completed if the portal finished producing.
+	 */
+	if (portalIsProducing(portal))
+		return;
+#endif
 
 	/*
 	 * Release any resources still attached to the portal.	There are several
@@ -896,16 +900,16 @@ AtCleanup_Portals(void)
 		if (portal->portalPinned)
 			portal->portalPinned = false;
 
-#ifdef PGXC		
+#ifdef PGXC
 		/* XXX This is a PostgreSQL bug (already reported on the list by
 		 * Pavan). We comment out the assertion until the bug is fixed
 		 * upstream.
-		 */ 
+		 */
 
 		/* We had better not be calling any user-defined code here */
 		/* Assert(portal->cleanup == NULL); */
 #endif
-		
+
 		/* Zap it. */
 		PortalDrop(portal, false);
 	}
@@ -1073,6 +1077,13 @@ void
 removeProducingPortal(Portal portal)
 {
 	producingPortals = list_delete_ptr(producingPortals, portal);
+}
+
+
+bool
+portalIsProducing(Portal portal)
+{
+	return list_member_ptr(producingPortals, portal);
 }
 #endif
 

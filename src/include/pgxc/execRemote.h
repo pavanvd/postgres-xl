@@ -148,6 +148,7 @@ typedef struct RemoteQueryState
 	ListCell  **tapemarks;
 	bool		merge_sort;             /* perform mergesort of node tuples */
 	bool		extended_query;         /* running extended query protocol */
+	bool		probing_primary;		/* trying replicated on primary node */
 #else
 	/*
 	 * To handle special case - if there is a simple sort and sort connection
@@ -306,7 +307,7 @@ extern RemoteQueryState *ExecInitRemoteQuery(RemoteQuery *node, EState *estate, 
 extern TupleTableSlot* ExecRemoteQuery(RemoteQueryState *step);
 extern void ExecEndRemoteQuery(RemoteQueryState *step);
 #ifdef XCP
-extern Node *RemoteSubplanMakeUnique(Node *plan, int unique);
+extern void RemoteSubplanMakeUnique(Node *plan, int unique);
 extern RemoteSubplanState *ExecInitRemoteSubplan(RemoteSubplan *node, EState *estate, int eflags);
 extern void ExecFinishInitRemoteSubplan(RemoteSubplanState *node);
 extern TupleTableSlot* ExecRemoteSubplan(RemoteSubplanState *node);

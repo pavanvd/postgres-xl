@@ -17,8 +17,8 @@
 
 #include "executor/producerReceiver.h"
 #include "pgxc/nodemgr.h"
+#include "tcop/pquery.h"
 #include "utils/tuplestore.h"
-
 
 typedef struct
 {
@@ -49,7 +49,19 @@ producerStartupReceiver(DestReceiver *self, int operation, TupleDesc typeinfo)
 {
 	ProducerState *myState = (ProducerState *) self;
 
-	myState->typeinfo = typeinfo;
+	if (ActivePortal)
+	{
+		/* Normally ExecutorContext is current here. However we should better
+		 * create local producer storage in the Portal's context: producer
+		 * may keep pushing records to consumers after executor is destroyed.
+		 */
+		MemoryContext savecontext;
+		savecontext = MemoryContextSwitchTo(PortalGetHeapMemory(ActivePortal));
+		myState->typeinfo = CreateTupleDescCopy(typeinfo);
+		MemoryContextSwitchTo(savecontext);
+	}
+	else
+		myState->typeinfo = typeinfo;
 
 	if (myState->consumer)
 		(*myState->consumer->rStartup) (myState->consumer, operation, typeinfo);
@@ -93,8 +105,18 @@ producerReceiveSlot(TupleTableSlot *slot, DestReceiver *self)
 		}
 		else if (myState->squeue)
 		{
+			/*
+			 * If the tuple will not fit to the consumer queue it will be stored
+			 * in the local tuplestore. The tuplestore should be in the portal
+			 * context, because ExecutorContext may be destroyed when tuples
+			 * are not yet pushed to the consumer queue.
+			 */
+			MemoryContext savecontext;
+			Assert(ActivePortal);
+			savecontext = MemoryContextSwitchTo(PortalGetHeapMemory(ActivePortal));
 			SharedQueueWrite(myState->squeue, consumerIdx, slot,
 							 &myState->tstores[consumerIdx], myState->tmpcxt);
+			MemoryContextSwitchTo(savecontext);
 			myState->othercount++;
 		}
 	}

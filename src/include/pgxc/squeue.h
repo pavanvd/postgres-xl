@@ -51,8 +51,8 @@ extern int	SharedQueueFinish(SharedQueue squeue, TupleDesc tupDesc,
 extern void SharedQueueWrite(SharedQueue squeue, int consumerIdx,
 				 TupleTableSlot *slot, Tuplestorestate **tuplestore,
 				 MemoryContext tmpcxt);
-extern void SharedQueueRead(SharedQueue squeue, int consumerIdx,
-				TupleTableSlot *slot);
+extern bool SharedQueueRead(SharedQueue squeue, int consumerIdx,
+				TupleTableSlot *slot, bool canwait);
 extern void SharedQueueReset(SharedQueue squeue, int consumerIdx);
 extern bool SharedQueueCanPause(SharedQueue squeue);
 
