@@ -3301,6 +3301,7 @@ static void
 workerThreadReconnectToGTM(void)
 {
 	char gtm_connect_string[1024];
+	MemoryContext   oldContext;
 
 	/*
 	 * First of all, we should acquire reconnect control lock in READ mode
@@ -3311,6 +3312,8 @@ workerThreadReconnectToGTM(void)
 	PG_SETMASK(&UnBlockSig);
 
 	/* Disconnect the current connection and re-connect to the new GTM */
+	oldContext = MemoryContextSwitchTo(TopMostMemoryContext);
+
 	if (GetMyThreadInfo->thr_gtm_conn)
 		GTMPQfinish(GetMyThreadInfo->thr_gtm_conn);
 	sprintf(gtm_connect_string, "host=%s port=%d node_name=%s remote_type=%d",
@@ -3321,6 +3324,8 @@ workerThreadReconnectToGTM(void)
 	if (GetMyThreadInfo->thr_gtm_conn == NULL)
 		elog(FATAL, "Worker thread GTM connection failed.");
 	elog(DEBUG1, "Worker thread connection done.");
+
+	MemoryContextSwitchTo(oldContext);
 
 	/* Initialize the command processing */
 	GetMyThreadInfo->reconnect_issued = FALSE;
