@@ -4451,7 +4451,7 @@ readTimeLineHistory(TimeLineID targetTLI)
 	if (targetTLI == 1)
 		return list_make1_int((int) targetTLI);
 
-	if (InArchiveRecovery)
+	if (ArchiveRecoveryRequested)
 	{
 		TLHistoryFileName(histfname, targetTLI);
 		fromArchive =
@@ -4548,7 +4548,7 @@ existsTimeLineHistory(TimeLineID probeTLI)
 	if (probeTLI == 1)
 		return false;
 
-	if (InArchiveRecovery)
+	if (ArchiveRecoveryRequested)
 	{
 		TLHistoryFileName(histfname, probeTLI);
 		RestoreArchivedFile(path, histfname, "RECOVERYHISTORY", 0);
@@ -5762,11 +5762,6 @@ readRecoveryCommandFile(void)
 	 */
 	if (rtliGiven)
 	{
-		/*
-		 * Temporarily set InArchiveRecovery, so that existsTimeLineHistory
-		 * or findNewestTimeLine below will check the archive.
-		 */
-		InArchiveRecovery = true;
 		if (rtli)
 		{
 			/* Timeline 1 does not have a history file, all else should */
@@ -5783,7 +5778,6 @@ readRecoveryCommandFile(void)
 			recoveryTargetTLI = findNewestTimeLine(recoveryTargetTLI);
 			recoveryTargetIsLatest = true;
 		}
-		InArchiveRecovery = false;
 	}
 
 	FreeConfigVariables(head);
