@@ -7505,6 +7505,7 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
 {
 	/* clean up the buffer */
 	list_free_deep(combiner->rowBuffer);
+	combiner->rowBuffer = NIL;
 
 	/*
 	 * Read in and discard remaining data from the connections, if any
