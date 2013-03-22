@@ -70,6 +70,7 @@
 #include "pgxc/nodemgr.h"
 #include "pgxc/squeue.h"
 #include "utils/snapmgr.h"
+#include "parser/parse_utilcmd.h"
 #endif
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgwriter.h"
@@ -851,6 +852,19 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&enable_remotegroup,
 		true,
+		NULL, NULL, NULL
+	},
+#else
+	{
+		{"loose_constraints", PGC_USERSET, COORDINATORS,
+			gettext_noop("Relax enforcing of constraints"),
+			gettext_noop("If enabled then constraints like foreign keys "
+						 "are not enforced. It's the users responsibility "
+						 "to maintain referential integrity at the application "
+						 "level")
+		},
+		&loose_constraints,
+		false,
 		NULL, NULL, NULL
 	},
 #endif

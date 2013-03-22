@@ -571,9 +571,27 @@ DefineIndex(RangeVar *heapRelation,
 			}
 		}
 		if (!isSafe)
+#ifdef XCP
+		{
+			if (loose_constraints)
+			{
+				ereport(WARNING,
+					(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+					errmsg("Unique index of partitioned table must contain the hash/modulo distribution column.")));
+				/* create index still, just that it won't be unique */
+				unique = false;
+				isconstraint = false;
+			}
+			else
+				ereport(ERROR,
+					(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+					errmsg("Unique index of partitioned table must contain the hash/modulo distribution column.")));
+		}
+#else
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
 					errmsg("Unique index of partitioned table must contain the hash/modulo distribution column.")));
+#endif
 	}
 #endif
 	/*

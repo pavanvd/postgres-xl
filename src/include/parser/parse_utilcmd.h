@@ -18,6 +18,7 @@
 #include "parser/parse_node.h"
 
 #ifdef XCP
+extern bool loose_constraints;
 extern List *transformCreateStmt(CreateStmt *stmt, const char *queryString,
 					bool autodistribute);
 #else
