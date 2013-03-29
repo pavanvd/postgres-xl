@@ -30,7 +30,7 @@ CREATE VIEW storm_catalog.pg_database AS
            datistemplate, datallowconn, datconnlimit, datlastsysoid,
            datfrozenxid, dattablespace, datacl
       FROM pg_catalog.pg_database
-	 WHERE datallowconn AND has_database_privilege(datname, 'CONNECT');
+	 WHERE datallowconn AND has_database_privilege(datname, 'CREATE');
 
 GRANT SELECT on storm_catalog.pg_database TO PUBLIC;
 
