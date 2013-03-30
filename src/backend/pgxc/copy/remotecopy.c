@@ -23,6 +23,9 @@
 #include "rewrite/rewriteHandler.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
+#ifdef PGXC
+#include "utils/lsyscache.h"
+#endif
 
 static void RemoteCopy_QuoteStr(StringInfo query_buf, char *value);
 
@@ -137,7 +140,9 @@ RemoteCopy_BuildStatement(RemoteCopyData *state,
 	initStringInfo(&state->query_buf);
 	appendStringInfoString(&state->query_buf, "COPY ");
 	appendStringInfo(&state->query_buf, "%s",
-					 quote_identifier(RelationGetRelationName(rel)));
+					 quote_qualified_identifier(
+							get_namespace_name(RelationGetNamespace(rel)),
+							RelationGetRelationName(rel)));
 
 	if (attnamelist)
 	{
