@@ -1060,6 +1060,37 @@ exec_simple_query(const char *query_string)
 	 */
 	parsetree_list = pg_parse_query(query_string);
 
+#ifdef XCP
+	if (IS_PGXC_COORDINATOR && !IsConnFromCoord() &&
+			list_length(parsetree_list) > 1)
+	{
+		/*
+		 * There is a bug in PostgresXC, if one query contains multiple utility
+		 * statements, entire query may be sent multiple times to the Datanodes
+		 * for execution. That is becoming a severe problem, if query contains
+		 * COMMIT or ROLLBACK. After executed for the first time the transaction
+		 * handling statement would write CLOG entry for current xid, but other
+		 * executions would be done with the same xid, causing PANIC on the
+		 * Datanodes because of already existing CLOG record. Datanode is
+		 * restarting all sessions if it PANICs, and affects all cluster users.
+		 * Multiple utility statements may result in strange error messages,
+		 * but somteime they work, and used in many applications, so we do not
+		 * want to disable them completely, just protect against severe
+		 * vulnerability here.
+		 */
+		foreach(parsetree_item, parsetree_list)
+		{
+			Node	   *parsetree = (Node *) lfirst(parsetree_item);
+
+			if (IsTransactionExitStmt(parsetree))
+				ereport(ERROR,
+						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
+						 errmsg("StormDB does not allow COMMIT or ROLLBACK "
+								"in multi-statement queries")));
+		}
+	}
+#endif
+
 	/* Log immediately if dictated by log_statement */
 	if (check_log_statement(parsetree_list))
 	{
