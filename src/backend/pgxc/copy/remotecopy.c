@@ -139,10 +139,18 @@ RemoteCopy_BuildStatement(RemoteCopyData *state,
 	 */
 	initStringInfo(&state->query_buf);
 	appendStringInfoString(&state->query_buf, "COPY ");
-	appendStringInfo(&state->query_buf, "%s",
-					 quote_qualified_identifier(
-							get_namespace_name(RelationGetNamespace(rel)),
-							RelationGetRelationName(rel)));
+
+	/*
+	 * The table name should be qualified, unless the table is a temporary table
+	 */
+	if (rel->rd_backend == MyBackendId)
+		appendStringInfo(&state->query_buf, "%s",
+						 quote_identifier(RelationGetRelationName(rel)));
+	else
+		appendStringInfo(&state->query_buf, "%s",
+						 quote_qualified_identifier(
+								get_namespace_name(RelationGetNamespace(rel)),
+								RelationGetRelationName(rel)));
 
 	if (attnamelist)
 	{
