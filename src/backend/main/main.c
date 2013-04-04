@@ -194,7 +194,9 @@ main(int argc, char *argv[])
 		exit(GucInfoMain());
 
 	if (argc > 1 && strcmp(argv[1], "--single") == 0)
-		exit(PostgresMain(argc, argv, get_current_username(progname)));
+		PostgresMain(argc, argv,
+					 NULL,          /* no dbname */
+					 get_current_username(progname)); /* does not return */
 
 	exit(PostmasterMain(argc, argv));
 }
