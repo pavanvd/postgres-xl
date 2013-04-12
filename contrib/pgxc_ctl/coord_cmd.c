@@ -485,7 +485,6 @@ cmd_t *prepare_configureNode(char *nodeName)
 
 		if (is_none(aval(VAR_datanodeMasterServers)[dnIdx]))
 			continue;
-
 		if (sval(VAR_primaryDatanode) && (strcmp(sval(VAR_primaryDatanode), aval(VAR_datanodeNames)[dnIdx]) == 0))
 		{
 			/* Primary Node */
