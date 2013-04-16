@@ -693,7 +693,8 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId)
 	if ((IS_PGXC_COORDINATOR && stmt->distributeby) ||
 			(isRestoreMode && stmt->distributeby != NULL))
 #else
-	if (IS_PGXC_COORDINATOR && relkind == RELKIND_RELATION)
+	if ((IS_PGXC_COORDINATOR || (isRestoreMode && stmt->distributeby != NULL))
+		&& relkind == RELKIND_RELATION)
 #endif
 	{
 		AddRelationDistribution(relationId, stmt->distributeby,
