@@ -200,7 +200,6 @@
 	     ./pg_ctl start -Z restoremode -D ../data3 -p 5455
 	    </programlisting>
       </listitem>
-      </listitem>
 
       <listitem>
         <para>
