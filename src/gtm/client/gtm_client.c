@@ -54,8 +54,8 @@ static int open_sequence_internal(GTM_Conn *conn, GTM_SequenceKey key, GTM_Seque
 								  GTM_Sequence startval, bool cycle, bool is_backup);
 #ifdef XCP
 static int get_next_internal(GTM_Conn *conn, GTM_SequenceKey key,
-				  char *coord_name, int coord_procid, GTM_Sequence *result,
-				  bool is_backup);
+				  char *coord_name, int coord_procid, GTM_Sequence range,
+				  GTM_Sequence *result, GTM_Sequence *rangemax, bool is_backup);
 static int set_val_internal(GTM_Conn *conn, GTM_SequenceKey key,
 				 char *coord_name, int coord_procid, GTM_Sequence nextval,
 				 bool iscalled, bool is_backup);
@@ -1449,16 +1449,20 @@ send_failed:
  */
 int
 get_next(GTM_Conn *conn, GTM_SequenceKey key,
-		 char *coord_name, int coord_procid, GTM_Sequence *result)
+	 char *coord_name, int coord_procid, GTM_Sequence range,
+	 GTM_Sequence *result, GTM_Sequence *rangemax)
 {
-	return get_next_internal(conn, key, coord_name, coord_procid, result, false);
+	return get_next_internal(conn, key, coord_name, coord_procid,
+							 range, result, rangemax, false);
 }
 
 int
 bkup_get_next(GTM_Conn *conn, GTM_SequenceKey key,
-			  char *coord_name, int coord_procid, GTM_Sequence *result)
+	 char *coord_name, int coord_procid, GTM_Sequence range,
+	 GTM_Sequence *result, GTM_Sequence *rangemax)
 {
-	return get_next_internal(conn, key, coord_name, coord_procid, result, true);
+	return get_next_internal(conn, key, coord_name, coord_procid,
+							 range, result, rangemax, true);
 }
 #else
 GTM_Sequence
@@ -1477,8 +1481,8 @@ bkup_get_next(GTM_Conn *conn, GTM_SequenceKey key)
 #ifdef XCP
 static int
 get_next_internal(GTM_Conn *conn, GTM_SequenceKey key,
-				  char *coord_name, int coord_procid, GTM_Sequence *result,
-				  bool is_backup)
+				  char *coord_name, int coord_procid, GTM_Sequence range,
+				  GTM_Sequence *result, GTM_Sequence *rangemax, bool is_backup)
 #else
 static GTM_Sequence
 get_next_internal(GTM_Conn *conn, GTM_SequenceKey key, bool is_backup)
@@ -1496,7 +1500,8 @@ get_next_internal(GTM_Conn *conn, GTM_SequenceKey key, bool is_backup)
 		gtmpqPutnchar(key->gsk_key, key->gsk_keylen, conn) ||
 		gtmpqPutInt(coord_namelen, 4, conn) ||
 		(coord_namelen > 0 && gtmpqPutnchar(coord_name, coord_namelen, conn)) ||
-		gtmpqPutInt(coord_procid, 4, conn))
+		gtmpqPutInt(coord_procid, 4, conn) ||
+		gtmpqPutnchar((char *)&range, sizeof (GTM_Sequence), conn))
 		goto send_failed;
 #else
 	/* Start the message. */
@@ -1527,7 +1532,10 @@ get_next_internal(GTM_Conn *conn, GTM_SequenceKey key, bool is_backup)
 
 #ifdef XCP
 		if (res->gr_status == GTM_RESULT_OK)
+		{
 			*result = res->gr_resdata.grd_seq.seqval;
+			*rangemax = res->gr_resdata.grd_seq.rangemax;
+		}
 		return res->gr_status;
 #else
 		if (res->gr_status == GTM_RESULT_OK)

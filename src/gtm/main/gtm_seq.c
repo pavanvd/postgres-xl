@@ -47,6 +47,9 @@ static int seq_add_seqinfo(GTM_SeqInfo *seqinfo);
 static int seq_remove_seqinfo(GTM_SeqInfo *seqinfo);
 static GTM_SequenceKey seq_copy_key(GTM_SequenceKey key);
 static int seq_drop_with_dbkey(GTM_SequenceKey nsp);
+#ifdef XCP
+static GTM_Sequence get_rangemax(GTM_SeqInfo *seqinfo, GTM_Sequence range);
+#endif
 
 /*
  * Get the hash value given the sequence key
@@ -700,7 +703,7 @@ GTM_SeqGetCurrent(GTM_SequenceKey seqkey, char *coord_name,
 		ereport(ERROR,
 				(EINVAL,
 				 errmsg("sequence \"%s\" does not exist", seqkey->gsk_key)));
-		return EINVAL;
+		return;
 	}
 
 	GTM_RWLockAcquire(&seqinfo->gs_lock, GTM_LOCKMODE_READ);
@@ -831,7 +834,8 @@ GTM_SeqSetVal(GTM_SequenceKey seqkey, char *coord_name,
  */
 int
 GTM_SeqGetNext(GTM_SequenceKey seqkey, char *coord_name,
-			   int coord_procid, GTM_Sequence *result)
+			   int coord_procid, GTM_Sequence range,
+			   GTM_Sequence *result, GTM_Sequence *rangemax)
 {
 	GTM_SeqInfo *seqinfo = seq_find_seqinfo(seqkey);
 
@@ -910,10 +914,75 @@ GTM_SeqGetNext(GTM_SequenceKey seqkey, char *coord_name,
 			}
 		}
 	}
-	seq_set_lastval(seqinfo, coord_name, coord_procid, *result);
+	/* if range is specified calculate valid max value for this range */
+	if (range > 1)
+		*rangemax = get_rangemax(seqinfo, range);
+	else
+		*rangemax = *result;
+	/*
+	 * lastval has to be set to rangemax obtained above because
+	 * values upto it will be consumed by this nextval caller and
+	 * the next caller should get values starting above this
+	 * lastval. Same reasoning for gs_value, but we still return
+	 * result as the first calculated gs_value above to form the
+	 * local starting seed at the caller. This will go upto the
+	 * rangemax value before contacting GTM again..
+	 */
+	seq_set_lastval(seqinfo, coord_name, coord_procid, *rangemax);
+	seqinfo->gs_value = *rangemax;
 	GTM_RWLockRelease(&seqinfo->gs_lock);
 	seq_release_seqinfo(seqinfo);
 	return 0;
+}
+
+/*
+ * Given a sequence and the requested range for its values, calculate
+ * the legitimate maximum permissible value for this range. In
+ * particular we need to be careful about overflow and underflow for
+ * mix and max types of sequences..
+ */
+static GTM_Sequence
+get_rangemax(GTM_SeqInfo *seqinfo, GTM_Sequence range)
+{
+	GTM_Sequence rangemax = seqinfo->gs_value;
+
+	/*
+	 * Deduct 1 from range because the currval has been accounted
+	 * for already before this call has been made
+	 */
+	range--;
+	if (SEQ_IS_ASCENDING(seqinfo))
+	{
+		/*
+		 * Check if the sequence will overflow because of the range
+		 * request. If yes, cap it at close to or equal to max value
+		 */
+		while (range != 0 &&
+				(seqinfo->gs_max_value - seqinfo->gs_increment_by >=
+				  rangemax))
+		{
+			rangemax += seqinfo->gs_increment_by;
+			range--;
+		}
+	}
+	else
+	{
+		/*
+		 * Check if the sequence will underflow because of the range
+		 * request. If yes, cap it at close to or equal to min value
+		 *
+		 * Note: The gs_increment_by is a signed integer and is negative for
+		 * descending sequences. So we don't need special handling below
+		 */
+		while (range != 0 &&
+				(seqinfo->gs_min_value - seqinfo->gs_increment_by <=
+				 rangemax))
+		{
+			rangemax += seqinfo->gs_increment_by;
+			range--;
+		}
+	}
+	return rangemax;
 }
 #else
 /*
@@ -1518,6 +1587,8 @@ ProcessSequenceGetNextCommand(Port *myport, StringInfo message, bool is_backup)
 	StringInfoData buf;
 	GTM_Sequence seqval;
 #ifdef XCP
+	GTM_Sequence range;
+	GTM_Sequence rangemax;
 	uint32 coord_namelen;
 	char  *coord_name;
 	uint32 coord_procid;
@@ -1532,8 +1603,11 @@ ProcessSequenceGetNextCommand(Port *myport, StringInfo message, bool is_backup)
 	else
 		coord_name = NULL;
 	coord_procid = pq_getmsgint(message, sizeof(coord_procid));
+	memcpy(&range, pq_getmsgbytes(message, sizeof (GTM_Sequence)),
+		   sizeof (GTM_Sequence));
 
-	if (GTM_SeqGetNext(&seqkey, coord_name, coord_procid, &seqval))
+	if (GTM_SeqGetNext(&seqkey, coord_name, coord_procid, range,
+					&seqval, &rangemax))
 		ereport(ERROR,
 				(ERANGE,
 				 errmsg("Can not get current value of the sequence")));
@@ -1561,7 +1635,8 @@ ProcessSequenceGetNextCommand(Port *myport, StringInfo message, bool is_backup)
 		retry:
 #ifdef XCP
 			bkup_get_next(GetMyThreadInfo->thr_conn->standby, &seqkey,
-						  coord_name, coord_procid, &loc_seq);
+						  coord_name, coord_procid,
+						  range, &loc_seq, &rangemax);
 #else
 			loc_seq = bkup_get_next(GetMyThreadInfo->thr_conn->standby, &seqkey);
 #endif
@@ -1591,6 +1666,9 @@ ProcessSequenceGetNextCommand(Port *myport, StringInfo message, bool is_backup)
 		pq_sendint(&buf, seqkey.gsk_keylen, 4);
 		pq_sendbytes(&buf, seqkey.gsk_key, seqkey.gsk_keylen);
 		pq_sendbytes(&buf, (char *)&seqval, sizeof (GTM_Sequence));
+#ifdef XCP
+		pq_sendbytes(&buf, (char *)&rangemax, sizeof (GTM_Sequence));
+#endif
 		pq_endmessage(myport, &buf);
 
 		if (myport->remote_type != GTM_NODE_GTM_PROXY)

@@ -559,6 +559,12 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 			if (gtmpqGetnchar((char *)&result->gr_resdata.grd_seq.seqval,
 						   sizeof (GTM_Sequence), conn))
 				result->gr_status = GTM_RESULT_ERROR;
+#ifdef XCP
+			if (result->gr_type == SEQUENCE_GET_NEXT_RESULT &&
+				 gtmpqGetnchar((char *)&result->gr_resdata.grd_seq.rangemax,
+						   sizeof (GTM_Sequence), conn))
+				result->gr_status = GTM_RESULT_ERROR;
+#endif
 			break;
 
 		case SEQUENCE_LIST_RESULT:

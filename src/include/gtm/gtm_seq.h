@@ -89,7 +89,8 @@ int GTM_SeqClose(GTM_SequenceKey seqkey);
 int GTM_SeqRename(GTM_SequenceKey seqkey, GTM_SequenceKey newseqkey);
 #ifdef XCP
 int GTM_SeqGetNext(GTM_SequenceKey seqkey, char *coord_name,
-			   int coord_procid, GTM_Sequence *result);
+			   int coord_procid, GTM_Sequence range,
+			   GTM_Sequence *result, GTM_Sequence *rangemax);
 void GTM_SeqGetCurrent(GTM_SequenceKey seqkey, char *coord_name,
 				  int coord_procid, GTM_Sequence *result);
 int GTM_SeqSetVal(GTM_SequenceKey seqkey, char *coord_name,

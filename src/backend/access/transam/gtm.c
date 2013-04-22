@@ -481,7 +481,11 @@ GetCurrentValGTM(char *seqname)
  * Get the next sequence value
  */
 GTM_Sequence
+#ifdef XCP
+GetNextValGTM(char *seqname, GTM_Sequence range, GTM_Sequence *rangemax)
+#else
 GetNextValGTM(char *seqname)
+#endif
 {
 	GTM_Sequence ret = -1;
 	GTM_SequenceKeyData seqkey;
@@ -496,7 +500,8 @@ GetNextValGTM(char *seqname)
 
 #ifdef XCP
 	if (conn)
-		status = get_next(conn, &seqkey, coordName, coordPid, &ret);
+		status = get_next(conn, &seqkey, coordName,
+						  coordPid, range, &ret, rangemax);
 	else
 		status = GTM_RESULT_COMM_ERROR;
 
@@ -506,7 +511,8 @@ GetNextValGTM(char *seqname)
 		CloseGTM();
 		InitGTM();
 		if (conn)
-			status = get_next(conn, &seqkey, coordName, coordPid, &ret);
+			status = get_next(conn, &seqkey, coordName, coordPid,
+							  range, &ret, rangemax);
 	}
 	if (status != GTM_RESULT_OK)
 		ereport(ERROR,

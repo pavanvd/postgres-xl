@@ -42,7 +42,12 @@ extern int UnregisterGTM(GTM_PGXCNodeType type);
 
 /* Sequence interface APIs with GTM */
 extern GTM_Sequence GetCurrentValGTM(char *seqname);
+#ifdef XCP
+extern GTM_Sequence GetNextValGTM(char *seqname,
+					GTM_Sequence range, GTM_Sequence *rangemax);
+#else
 extern GTM_Sequence GetNextValGTM(char *seqname);
+#endif
 extern int SetValGTM(char *seqname, GTM_Sequence nextval, bool iscalled);
 extern int CreateSequenceGTM(char *seqname, GTM_Sequence increment, 
 		GTM_Sequence minval, GTM_Sequence maxval, GTM_Sequence startval,

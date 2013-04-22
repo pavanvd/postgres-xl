@@ -53,6 +53,9 @@ typedef union GTM_ResultData
 	{
 		GTM_SequenceKeyData		seqkey;
 		GTM_Sequence			seqval;
+#ifdef XCP
+		GTM_Sequence			rangemax;
+#endif
 	} grd_seq;									/* SEQUENCE_GET_CURRENT
 												 * SEQUENCE_GET_NEXT */
 	struct
@@ -276,9 +279,11 @@ int bkup_rename_sequence(GTM_Conn *conn, GTM_SequenceKey key, GTM_SequenceKey ne
 int get_current(GTM_Conn *conn, GTM_SequenceKey key,
 			char *coord_name, int coord_procid, GTM_Sequence *result);
 int get_next(GTM_Conn *conn, GTM_SequenceKey key,
-		 char *coord_name, int coord_procid, GTM_Sequence *result);
+		 char *coord_name, int coord_procid,
+		 GTM_Sequence range, GTM_Sequence *result, GTM_Sequence *rangemax);
 int bkup_get_next(GTM_Conn *conn, GTM_SequenceKey key,
-			  char *coord_name, int coord_procid, GTM_Sequence *result);
+		 char *coord_name, int coord_procid,
+		 GTM_Sequence range, GTM_Sequence *result, GTM_Sequence *rangemax);
 int set_val(GTM_Conn *conn, GTM_SequenceKey key, char *coord_name,
 		int coord_procid, GTM_Sequence nextval, bool iscalled);
 int bkup_set_val(GTM_Conn *conn, GTM_SequenceKey key, char *coord_name,
