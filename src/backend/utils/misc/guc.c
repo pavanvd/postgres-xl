@@ -67,6 +67,7 @@
 #include "pgxc/xc_maintenance_mode.h"
 #endif
 #ifdef XCP
+#include "commands/sequence.h"
 #include "pgxc/nodemgr.h"
 #include "pgxc/squeue.h"
 #include "utils/snapmgr.h"
@@ -2556,6 +2557,17 @@ static struct config_int ConfigureNamesInt[] =
 	},
 #ifdef PGXC
 #ifdef XCP
+	{
+		{"sequence_range", PGC_USERSET, COORDINATORS | DATA_NODES,
+			gettext_noop("The range of values to ask from GTM for sequences. "
+			             "If CACHE parameter is set then that overrides this."),
+			NULL,
+		},
+		&SequenceRangeVal,
+		1, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
 	{
 		{"pool_conn_keepalive", PGC_SIGHUP, DATA_NODES,
 			gettext_noop("Close connections if they are idle in the pool for that time."),

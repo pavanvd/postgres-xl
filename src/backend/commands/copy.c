@@ -25,6 +25,10 @@
 #include "access/xact.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
+#ifdef XCP
+#include "catalog/dependency.h"
+#include "commands/sequence.h"
+#endif
 #include "commands/copy.h"
 #include "commands/defrem.h"
 #include "commands/trigger.h"
@@ -783,6 +787,9 @@ DoCopy(const CopyStmt *stmt, const char *queryString)
 	bool		pipe = (stmt->filename == NULL);
 	Relation	rel;
 	uint64		processed;
+#ifdef XCP
+	int oldSeqRangeVal = SequenceRangeVal;
+#endif
 
 	/* Disallow file COPY except to superusers. */
 	if (!pipe && !superuser())
@@ -841,6 +848,26 @@ DoCopy(const CopyStmt *stmt, const char *queryString)
 		rel = NULL;
 	}
 
+#ifdef XCP
+	/*
+	 * The COPY might involve sequences. We want to cache a range of
+	 * sequence values to avoid contacting the GTM repeatedly. This
+	 * improves the COPY performance by quite a margin. We set the
+	 * SequenceRangeVal GUC parameter to bring about this effect.
+	 * Note that we could have checked the attribute list to ascertain
+	 * if this GUC is really needed or not. However since this GUC
+	 * only affects nextval calculations, if sequences are not present
+	 * no harm is done..
+	 *
+	 * The user might have set the GUC value himself. Honor that if so
+	 */
+
+#define MAX_CACHEVAL	1024
+	if (getOwnedSequences(RelationGetRelid(rel)) != NIL &&
+				SequenceRangeVal == DEFAULT_CACHEVAL)
+		SequenceRangeVal = MAX_CACHEVAL;
+#endif
+
 	if (is_from)
 	{
 		Assert(rel);
@@ -870,6 +897,11 @@ DoCopy(const CopyStmt *stmt, const char *queryString)
 		processed = DoCopyTo(cstate);	/* copy from database to file */
 		EndCopyTo(cstate);
 	}
+
+#ifdef XCP
+	/* Set the SequenceRangeVal GUC to its earlier value */
+	SequenceRangeVal = oldSeqRangeVal;
+#endif
 
 	/*
 	 * Close the relation. If reading, we can release the AccessShareLock we

@@ -41,6 +41,9 @@
 /* PGXC_COORD */
 #include "access/gtm.h"
 #include "utils/memutils.h"
+#ifdef XCP
+#include "utils/timestamp.h"
+#endif
 #endif
 
 /*
@@ -54,6 +57,12 @@
  * The "special area" of a sequence's buffer page looks like this.
  */
 #define SEQ_MAGIC	  0x1717
+
+/* Configuration options */
+#ifdef XCP
+
+int			SequenceRangeVal = 1;
+#endif
 
 typedef struct sequence_magic
 {
@@ -82,6 +91,10 @@ typedef struct SeqTableData
 	/* if last != cached, we have not used up all the cached values */
 	int64		increment;		/* copy of sequence's increment field */
 	/* note that increment is zero until we first do read_info() */
+#ifdef XCP
+	TimestampTz last_call_time; /* the time when the last call as made */
+	int64		range_multiplier; /* multiply this value with 2 next time */
+#endif
 } SeqTableData;
 
 typedef SeqTableData *SeqTable;
@@ -749,6 +762,63 @@ nextval_internal(Oid relid)
 		 * concurrency
 		 */
 #ifdef XCP
+		/*
+		 * If the user has set a CACHE parameter, we use that. Else we pass in
+		 * the SequenceRangeVal value
+		 */
+		if (range == DEFAULT_CACHEVAL && SequenceRangeVal > range)
+		{
+			TimestampTz curtime = GetCurrentTimestamp();
+
+			if (!TimestampDifferenceExceeds(elm->last_call_time,
+													curtime, 1000))
+			{
+				/*
+				 * The previous GetNextValGTM call was made just a while back.
+				 * Request double the range of what was requested in the
+				 * earlier call. Honor the SequenceRangeVal boundary
+				 * value to limit very large range requests!
+				 */
+				elm->range_multiplier *= 2;
+				if (elm->range_multiplier < SequenceRangeVal)
+					range = elm->range_multiplier;
+				else
+					elm->range_multiplier = range = SequenceRangeVal;
+
+				elog(DEBUG1, "increase sequence range %ld", range);
+			}
+			else if (TimestampDifferenceExceeds(elm->last_call_time,
+												curtime, 5000))
+			{
+				/* The previous GetNextValGTM call was pretty old */
+				range = elm->range_multiplier = DEFAULT_CACHEVAL;
+				elog(DEBUG1, "reset sequence range %ld", range);
+			}
+			else if (TimestampDifferenceExceeds(elm->last_call_time,
+												curtime, 3000))
+			{
+				/*
+				 * The previous GetNextValGTM call was made quite some time
+				 * ago. Try to reduce the range request to reduce the gap
+				 */
+				if (elm->range_multiplier != DEFAULT_CACHEVAL)
+				{
+					range = elm->range_multiplier =
+								rint(elm->range_multiplier/2);
+					elog(DEBUG1, "decrease sequence range %ld", range);
+				}
+			}
+			else
+			{
+				/*
+				 * Current range_multiplier alllows to cache sequence values
+				 * for 1-3 seconds of work. Keep that rate.
+				 */
+				range = elm->range_multiplier;
+			}
+			elm->last_call_time = curtime;
+		}
+
 		result = (int64) GetNextValGTM(seqname, range, &rangemax);
 #else
 		result = (int64) GetNextValGTM(seqname);
@@ -1339,6 +1409,10 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
 		elm->lxid = InvalidLocalTransactionId;
 		elm->last_valid = false;
 		elm->last = elm->cached = elm->increment = 0;
+#ifdef XCP
+		elm->last_call_time = 0;
+		elm->range_multiplier = DEFAULT_CACHEVAL;
+#endif
 		elm->next = seqtab;
 		seqtab = elm;
 	}

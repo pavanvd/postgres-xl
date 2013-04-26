@@ -83,6 +83,10 @@ extern void ResetSequence(Oid seq_relid);
 extern void seq_redo(XLogRecPtr lsn, XLogRecord *rptr);
 extern void seq_desc(StringInfo buf, uint8 xl_info, char *rec);
 
+#ifdef XCP
+#define DEFAULT_CACHEVAL	1
+extern int SequenceRangeVal;
+#endif
 #ifdef PGXC
 /*
  * List of actions that registered the callback.
