@@ -863,7 +863,7 @@ DoCopy(const CopyStmt *stmt, const char *queryString)
 	 */
 
 #define MAX_CACHEVAL	1024
-	if (getOwnedSequences(RelationGetRelid(rel)) != NIL &&
+	if (rel && getOwnedSequences(RelationGetRelid(rel)) != NIL &&
 				SequenceRangeVal == DEFAULT_CACHEVAL)
 		SequenceRangeVal = MAX_CACHEVAL;
 #endif
