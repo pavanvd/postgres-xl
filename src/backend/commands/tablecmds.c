@@ -1011,6 +1011,14 @@ ExecuteTruncate(TruncateStmt *stmt)
 	SubTransactionId mySubid;
 	ListCell   *cell;
 
+#ifdef PGXC
+	if (stmt->restart_seqs)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("PGXC does not support RESTART IDENTITY yet"),
+				 errdetail("The feature is not supported currently")));
+#endif
+
 	/*
 	 * Open, exclusive-lock, and check all the explicitly-specified relations
 	 */
