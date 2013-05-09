@@ -1,7 +1,7 @@
 --
 -- Tests for some likely failure cases with combo cmin/cmax mechanism
 --
-CREATE TEMP TABLE combocidtest (foobar int);
+CREATE TEMP TABLE combocidtest (foobar int) distribute by replication;
 BEGIN;
 -- a few dummy ops to push up the CommandId counter
 INSERT INTO combocidtest SELECT 1 LIMIT 0;
@@ -48,9 +48,10 @@ INSERT INTO combocidtest VALUES (333);
 DECLARE c CURSOR FOR SELECT ctid,cmin,* FROM combocidtest ORDER BY ctid;
 DELETE FROM combocidtest;
 FETCH ALL FROM c;
- ctid | cmin | foobar 
-------+------+--------
-(0 rows)
+ ctid  | cmin | foobar 
+-------+------+--------
+ (0,3) |    0 |    333
+(1 row)
 
 ROLLBACK;
 SELECT ctid,cmin,* FROM combocidtest ORDER BY ctid;

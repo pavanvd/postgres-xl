@@ -1,7 +1,7 @@
 --
 -- Tests for some likely failure cases with combo cmin/cmax mechanism
 --
-CREATE TEMP TABLE combocidtest (foobar int);
+CREATE TEMP TABLE combocidtest (foobar int) distribute by replication;
 
 BEGIN;
 
