@@ -2075,10 +2075,11 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
 
 #ifdef XCP
 	/*
-	 * Released connections are now appear in the pool and we may want to close
-	 * them eventually.
+	 * Released connections are now in the pool and we may want to close
+	 * them eventually. Update the oldest_idle value to reflect the latest
+	 * last access time..
 	 */
-	if (!force_destroy && agent->pool->oldest_idle == (time_t) 0)
+	if (!force_destroy)
 		agent->pool->oldest_idle = time(NULL);
 #endif
 
@@ -2186,7 +2187,10 @@ create_database_pool(const char *database, const char *user_name, const char *pg
 	databasePool->database = pstrdup(database);
 	 /* Copy the user name */
 	databasePool->user_name = pstrdup(user_name);
-#ifndef XCP
+#ifdef XCP
+	/* Reset the oldest_idle value */
+	databasePool->oldest_idle = (time_t) 0;
+#else
 	 /* Copy the pgoptions */
 	databasePool->pgoptions = pstrdup(pgoptions);
 #endif
@@ -2675,6 +2679,9 @@ static void
 PoolerLoop(void)
 {
 	StringInfoData 	input_message;
+#ifdef XCP
+	time_t			now, last_maintenance = (time_t) 0;
+#endif
 
 	server_fd = pool_listen(PoolerPort, UnixSocketDir);
 	if (server_fd == -1)
@@ -2776,12 +2783,27 @@ PoolerLoop(void)
 			}
 			if (FD_ISSET(server_fd, &rfds))
 				agent_create();
+
+#ifdef XCP
+			/*
+			 * If the Pooler is sufficiently busy, then the maintenance
+			 * activity can starve. Avoid that..
+			 */
+			now = time(NULL);
+			if (difftime(now, last_maintenance) > PoolMaintenanceTimeout)
+			{
+				/* maintenance timeout */
+				pools_maintenance();
+				last_maintenance = now;
+			}
+#endif
 		}
 #ifdef XCP
 		else if (retval == 0)
 		{
 			/* maintenance timeout */
 			pools_maintenance();
+			last_maintenance = time(NULL);
 		}
 #endif
 	}
