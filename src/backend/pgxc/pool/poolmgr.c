@@ -2077,9 +2077,9 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
 	/*
 	 * Released connections are now in the pool and we may want to close
 	 * them eventually. Update the oldest_idle value to reflect the latest
-	 * last access time..
+	 * last access time if not already updated..
 	 */
-	if (!force_destroy)
+	if (!force_destroy && agent->pool->oldest_idle == (time_t) 0)
 		agent->pool->oldest_idle = time(NULL);
 #endif
 
@@ -2680,7 +2680,7 @@ PoolerLoop(void)
 {
 	StringInfoData 	input_message;
 #ifdef XCP
-	time_t			now, last_maintenance = (time_t) 0;
+	time_t			last_maintenance = (time_t) 0;
 #endif
 
 	server_fd = pool_listen(PoolerPort, UnixSocketDir);
@@ -2725,8 +2725,25 @@ PoolerLoop(void)
 		if (PoolMaintenanceTimeout > 0)
 		{
 			struct timeval	maintenance_timeout;
+			int				timeout_val;
+			double			timediff;
 
-			maintenance_timeout.tv_sec = PoolMaintenanceTimeout;
+			/*
+			 * Decide the timeout value based on when the last
+			 * maintenance activity was carried out. If the last
+			 * maintenance was done quite a while ago schedule the select
+			 * with no timeout. It will serve any incoming activity
+			 * and if there's none it will cause the maintenance
+			 * to be scheduled as soon as possible
+			 */
+			timediff = difftime(time(NULL), last_maintenance);
+
+			if (timediff > PoolMaintenanceTimeout)
+				timeout_val = 0;
+			else
+				timeout_val = PoolMaintenanceTimeout - rint(timediff);
+
+			maintenance_timeout.tv_sec = timeout_val;
 			maintenance_timeout.tv_usec = 0;
 			/* wait for event */
 			retval = select(nfds + 1, &rfds, NULL, NULL, &maintenance_timeout);
@@ -2783,20 +2800,6 @@ PoolerLoop(void)
 			}
 			if (FD_ISSET(server_fd, &rfds))
 				agent_create();
-
-#ifdef XCP
-			/*
-			 * If the Pooler is sufficiently busy, then the maintenance
-			 * activity can starve. Avoid that..
-			 */
-			now = time(NULL);
-			if (difftime(now, last_maintenance) > PoolMaintenanceTimeout)
-			{
-				/* maintenance timeout */
-				pools_maintenance();
-				last_maintenance = now;
-			}
-#endif
 		}
 #ifdef XCP
 		else if (retval == 0)
@@ -3037,7 +3040,7 @@ shrink_pool(DatabasePool *pool)
 			else
 			{
 				if (pool->oldest_idle == (time_t) 0 ||
-						difftime(slot->released, pool->oldest_idle) > 0)
+						difftime(pool->oldest_idle, slot->released) > 0)
 					pool->oldest_idle = slot->released;
 
 				i++;
