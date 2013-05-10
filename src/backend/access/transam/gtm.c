@@ -538,11 +538,14 @@ GetNextValGTM(char *seqname)
 				 errmsg("%s", GTMPQerrorMessage(conn))));
 #else
 	if (conn)
-		ret = get_next(conn, &seqkey);
-	if (ret < 0)
+		status =  get_next(conn, &seqkey, &ret);
+	if (status != GTM_RESULT_OK)
 	{
 		CloseGTM();
 		InitGTM();
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("%s", GTMPQerrorMessage(conn))));
 	}
 #endif
 	return ret;
