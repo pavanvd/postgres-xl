@@ -2410,4 +2410,153 @@ AdvanceProducingPortal(Portal portal, bool can_wait)
 
 	return result;
 }
+
+
+/*
+ * Iterate over producing portal, determine already closed, and clean them up,
+ * waiting while consumers finish their work. Closed producers should be
+ * cleaned up and resources are released before proceeding with handling of
+ * next request.
+ */
+void
+cleanupClosedProducers(void)
+{
+	bool haveClosedPortals = true;
+	while (haveClosedPortals)
+	{
+		ListCell   *lc = list_head(getProducingPortals());
+		haveClosedPortals = false;
+		while (lc)
+		{
+			Portal p = (Portal) lfirst(lc);
+			QueryDesc  *queryDesc = PortalGetQueryDesc(p);
+			SharedQueue squeue = queryDesc->squeue;
+
+			/*
+			 * Get next already, because next call may remove cell from
+			 * the list and invalidate next reference
+			 */
+			lc = lnext(lc);
+
+			/* When portal is closed executor state is not set */
+			if (queryDesc->estate == NULL)
+			{
+				/*
+				 * Set up global portal context pointers.
+				 */
+				Portal		saveActivePortal = ActivePortal;
+				ResourceOwner saveResourceOwner = CurrentResourceOwner;
+				MemoryContext savePortalContext = PortalContext;
+
+				PG_TRY();
+				{
+					MemoryContext oldContext;
+					ActivePortal = p;
+					CurrentResourceOwner = p->resowner;
+					PortalContext = PortalGetHeapMemory(p);
+
+					oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(p));
+
+					/* If something is in local buffers try to push it through */
+					if (ProducerReceiverPushBuffers(queryDesc->dest))
+					{
+						/* Push succeeded, free everything up */
+						(*queryDesc->dest->rDestroy) (queryDesc->dest);
+						queryDesc->dest = NULL;
+						p->queryDesc = NULL;
+						squeue = NULL;
+
+						removeProducingPortal(p);
+						FreeQueryDesc(queryDesc);
+
+						/*
+						 * Current context is the portal context, which is going
+						 * to be deleted
+						 */
+						MemoryContextSwitchTo(TopTransactionContext);
+
+						ActivePortal = saveActivePortal;
+						CurrentResourceOwner = saveResourceOwner;
+						PortalContext = savePortalContext;
+
+						if (p->resowner)
+						{
+							bool		isCommit = (p->status != PORTAL_FAILED);
+
+							ResourceOwnerRelease(p->resowner,
+												 RESOURCE_RELEASE_BEFORE_LOCKS,
+												 isCommit, false);
+							ResourceOwnerRelease(p->resowner,
+												 RESOURCE_RELEASE_LOCKS,
+												 isCommit, false);
+							ResourceOwnerRelease(p->resowner,
+												 RESOURCE_RELEASE_AFTER_LOCKS,
+												 isCommit, false);
+							ResourceOwnerDelete(p->resowner);
+						}
+						p->resowner = NULL;
+
+						/*
+						 * Delete tuplestore if present.  We should do this even under error
+						 * conditions; since the tuplestore would have been using cross-
+						 * transaction storage, its temp files need to be explicitly deleted.
+						 */
+						if (p->holdStore)
+						{
+							MemoryContext oldcontext;
+
+							oldcontext = MemoryContextSwitchTo(p->holdContext);
+							tuplestore_end(p->holdStore);
+							MemoryContextSwitchTo(oldcontext);
+							p->holdStore = NULL;
+						}
+
+						/* delete tuplestore storage, if any */
+						if (p->holdContext)
+							MemoryContextDelete(p->holdContext);
+
+						/* release subsidiary storage */
+						MemoryContextDelete(PortalGetHeapMemory(p));
+
+						/* release portal struct (it's in PortalMemory) */
+						pfree(p);
+					}
+					else
+					{
+						/*
+						 * Could not push everything, need to return on next
+						 * iteration. Consumers should free up some space in
+						 * the SharedQueue by that time.
+						 */
+						haveClosedPortals = true;
+					}
+					MemoryContextSwitchTo(oldContext);
+				}
+				PG_CATCH();
+				{
+					/* Uncaught error while executing portal: mark it dead */
+					p->status = PORTAL_FAILED;
+					/*
+					 * Reset producer to allow consumers to finish, so receiving node will
+					 * handle the error.
+					 */
+					if (squeue)
+						SharedQueueReset(squeue, -1);
+
+					/* Restore global vars and propagate error */
+					ActivePortal = saveActivePortal;
+					CurrentResourceOwner = saveResourceOwner;
+					PortalContext = savePortalContext;
+
+					PG_RE_THROW();
+				}
+				PG_END_TRY();
+
+				ActivePortal = saveActivePortal;
+				CurrentResourceOwner = saveResourceOwner;
+				PortalContext = savePortalContext;
+			}
+		}
+	}
+}
 #endif

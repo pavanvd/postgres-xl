@@ -4440,6 +4440,15 @@ PostgresMain(int argc, char *argv[],
 			}
 
 			ReadyForQuery(whereToSendOutput);
+#ifdef XCP
+			/*
+			 * Before we read any new command we now should wait while all
+			 * already closed portals which are still producing finish their
+			 * work.
+			 */
+			if (IS_PGXC_DATANODE && IsConnFromDatanode())
+				cleanupClosedProducers();
+#endif
 #ifdef PGXC
 			/*
 			 * Helps us catch any problems where we did not send down a snapshot

@@ -263,6 +263,7 @@ SharedQueueAcquire(const char *sqname, int ncons)
 	Assert(IsConnFromDatanode());
 	Assert(ncons > 0);
 
+tryagain:
 	LWLockAcquire(SQueuesLock, LW_EXCLUSIVE);
 
 	sq = (SharedQueue) hash_search(SharedQueues, sqname, HASH_ENTER, &found);
@@ -324,7 +325,52 @@ SharedQueueAcquire(const char *sqname, int ncons)
 	}
 	else
 	{
-		Assert(sq->sq_nconsumers == ncons);
+		/*
+		 * A race condition is possible here. The previous operation might  use
+		 * the same Shared Queue name if that was different execution of the
+		 * same Portal. So here we should try to determine if that Shared Queue
+		 * belongs to this execution or that is not-yet-released Shared Queue
+		 * of previous operation.
+		 * Though at the moment I am not sure, but I believe the BIND stage is
+		 * only happening after completion of ACQUIRE stage, so it is enough
+		 * to verify the producer (the very first node that binds) is not bound
+		 * yet. If it is bound, sleep for a moment and try again. No reason to
+		 * sleep longer, the producer needs just a quantum of CPU time to UNBIND
+		 * itself.
+		 */
+		if (sq->sq_pid != 0)
+		{
+			int 		selfid;  /* Node Id of the parent data node */
+			int			i;
+			char		ntype = PGXC_NODE_DATANODE;
+			bool		old_squeue = true;
+
+			selfid = PGXCNodeGetNodeIdFromName(PGXC_PARENT_NODE, &ntype);
+			for (i = 0; i < sq->sq_nconsumers; i++)
+			{
+				ConsState *cstate = &(sq->sq_consumers[i]);
+				if (cstate->cs_node == selfid)
+				{
+					SQueueSync *sqsync = sq->sq_sync;
+
+					LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock,
+								  LW_EXCLUSIVE);
+					/* verify status */
+					if (cstate->cs_status != CONSUMER_DONE)
+						old_squeue = false;
+
+					LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
+					break;
+				}
+			}
+			if (old_squeue)
+			{
+				LWLockRelease(SQueuesLock);
+				pg_usleep(1L);
+				goto tryagain;
+			}
+
+		}
 	}
 	LWLockRelease(SQueuesLock);
 }
