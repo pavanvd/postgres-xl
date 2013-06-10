@@ -1100,7 +1100,17 @@ PoolManagerAbortTransactions(char *dbname, char *username, int **proc_pids)
 	int		dblen = dbname ? strlen(dbname) + 1 : 0;
 	int		userlen = username ? strlen(username) + 1 : 0;
 
+#ifdef XCP
+	/*
+	 * New connection may be established to clean connections to
+	 * specified nodes and databases.
+	 */
+	if (poolHandle == NULL)
+		PoolManagerConnect(get_database_name(MyDatabaseId),
+						   GetUserNameFromId(GetUserId()));
+#else
 	Assert(poolHandle);
+#endif
 
 	/* Message type */
 	pool_putbytes(&poolHandle->port, &msgtype, 1);
