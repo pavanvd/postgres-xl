@@ -4037,6 +4037,8 @@ cost_remote_subplan(Path *path,
 	Cost		startup_cost = input_startup_cost + remote_query_cost;
 	Cost		run_cost = input_total_cost - input_startup_cost;
 
+	path->rows = tuples;
+
 	/*
 	 * Charge 2x cpu_operator_cost per tuple to reflect bookkeeping overhead.
 	 */

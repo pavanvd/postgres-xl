@@ -935,35 +935,72 @@ redistribute_path(Path *subpath, char distributionType,
 				  Bitmapset *nodes, Bitmapset *restrictNodes,
 				  Node* distributionExpr)
 {
+	Distribution   *distribution = NULL;
 	RelOptInfo	   *rel = subpath->parent;
 	RemoteSubPath  *pathnode;
 
-	pathnode = makeNode(RemoteSubPath);
-	pathnode->path.pathtype = T_RemoteSubplan;
-	pathnode->path.parent = rel;
-	pathnode->path.param_info = subpath->param_info;
-	pathnode->path.rows = subpath->rows;
-	pathnode->path.pathkeys = subpath->pathkeys;
  	if (distributionType != LOCATOR_TYPE_NONE)
 	{
-		Distribution   *distribution;
-
 		distribution = makeNode(Distribution);
 		distribution->distributionType = distributionType;
 		distribution->nodes = nodes;
 		distribution->restrictNodes = restrictNodes;
 		distribution->distributionExpr = distributionExpr;
+	}
+
+	/*
+	 * If inner path node is a MaterialPath pull it up to store tuples on
+	 * the destination nodes and avoid sending them over the network.
+	 */
+	if (IsA(subpath, MaterialPath))
+	{
+		MaterialPath *mpath = (MaterialPath *) subpath;
+		/* If subpath is already a RemoteSubPath, just replace distribution */
+		if (IsA(mpath->subpath, RemoteSubPath))
+		{
+			pathnode = (RemoteSubPath *) mpath->subpath;
+		}
+		else
+		{
+			pathnode = makeNode(RemoteSubPath);
+			pathnode->path.pathtype = T_RemoteSubplan;
+			pathnode->path.parent = rel;
+			pathnode->path.param_info = subpath->param_info;
+			pathnode->path.pathkeys = subpath->pathkeys;
+			pathnode->subpath = mpath->subpath;
+			mpath->subpath = (Path *) pathnode;
+		}
+		subpath = pathnode->subpath;
 		pathnode->path.distribution = distribution;
+		mpath->path.distribution = (Distribution *) copyObject(distribution);
+		/* (re)calculate costs */
+		cost_remote_subplan((Path *) pathnode, subpath->startup_cost,
+							subpath->total_cost, subpath->rows, rel->width,
+							IsLocatorReplicated(distributionType) ?
+									bms_num_members(nodes) : 1);
+		mpath->subpath = (Path *) pathnode;
+		cost_material(&mpath->path,
+					  pathnode->path.startup_cost,
+					  pathnode->path.total_cost,
+					  pathnode->path.rows,
+					  rel->width);
+		return (Path *) mpath;
 	}
 	else
-		pathnode->path.distribution = NULL;
-	pathnode->subpath = subpath;
-	cost_remote_subplan((Path *) pathnode, subpath->startup_cost,
-						subpath->total_cost, subpath->parent->rows,
-						subpath->parent->width,
-						IsLocatorReplicated(distributionType) ?
-								bms_num_members(nodes) : 1);
-	return (Path *) pathnode;
+	{
+		pathnode = makeNode(RemoteSubPath);
+		pathnode->path.pathtype = T_RemoteSubplan;
+		pathnode->path.parent = rel;
+		pathnode->path.param_info = subpath->param_info;
+		pathnode->path.pathkeys = subpath->pathkeys;
+		pathnode->subpath = subpath;
+		pathnode->path.distribution = distribution;
+		cost_remote_subplan((Path *) pathnode, subpath->startup_cost,
+							subpath->total_cost, subpath->rows, rel->width,
+							IsLocatorReplicated(distributionType) ?
+									bms_num_members(nodes) : 1);
+		return (Path *) pathnode;
+	}
 }
 
 
