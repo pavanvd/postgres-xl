@@ -2137,7 +2137,9 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
 			}
 		}
 	}
+#ifndef XCP
 	pgxc_node_report_error(combiner);
+#endif
 
 	return 0;
 }
@@ -2815,6 +2817,7 @@ pgxc_node_remote_prepare(char *prepareGID, bool localNode)
 	StringInfoData 	nodestr;
 	char			prepare_cmd[256];
 	char			abort_cmd[256];
+	GlobalTransactionId auxXid;
 	char		   *commit_cmd = "COMMIT TRANSACTION";
 	int				i;
 	ResponseCombiner combiner;
@@ -3052,6 +3055,7 @@ pgxc_node_remote_prepare(char *prepareGID, bool localNode)
 prepare_err:
 	sprintf(abort_cmd, "ROLLBACK PREPARED '%s'", prepareGID);
 
+	auxXid = GetAuxilliaryTransactionId();
 	conn_count = 0;
 	for (i = 0; i < handles->dn_conn_count; i++)
 	{
@@ -3067,7 +3071,18 @@ prepare_err:
 			Assert(conn->sock != NO_SOCKET);
 			Assert(conn->transaction_status == 'I');
 			Assert(conn->state == DN_CONNECTION_STATE_IDLE);
-			/* Send down prepare command */
+			/* Send down abort prepared command */
+			if (pgxc_node_send_gxid(conn, auxXid))
+			{
+				/*
+				 * Prepared transaction is left on the node, but we can not
+				 * do anything with that except warn the user.
+				 */
+				ereport(WARNING,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("failed to send xid to "
+								"the node %u", conn->nodeoid)));
+			}
 			if (pgxc_node_send_query(conn, abort_cmd))
 			{
 				/*
@@ -3076,7 +3091,7 @@ prepare_err:
 				 */
 				ereport(WARNING,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("failed to send PREPARE TRANSACTION command to "
+						 errmsg("failed to send ABORT PREPARED command to "
 								"the node %u", conn->nodeoid)));
 			}
 			else
@@ -3097,7 +3112,18 @@ prepare_err:
 			Assert(conn->sock != NO_SOCKET);
 			Assert(conn->transaction_status = 'I');
 			Assert(conn->state = DN_CONNECTION_STATE_IDLE);
-			/* Send down prepare command */
+			/* Send down abort prepared command */
+			if (pgxc_node_send_gxid(conn, auxXid))
+			{
+				/*
+				 * Prepared transaction is left on the node, but we can not
+				 * do anything with that except warn the user.
+				 */
+				ereport(WARNING,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("failed to send xid to "
+								"the node %u", conn->nodeoid)));
+			}
 			if (pgxc_node_send_query(conn, abort_cmd))
 			{
 				/*
@@ -3106,8 +3132,8 @@ prepare_err:
 				 */
 				ereport(WARNING,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("failed to send PREPARE TRANSACTION command to "
-							"the node %u", conn->nodeoid)));
+						 errmsg("failed to send ABORT PREPARED command to "
+								"the node %u", conn->nodeoid)));
 			}
 			else
 			{
@@ -6635,7 +6661,7 @@ PrePrepare_Remote(char *prepareGID, bool localNode, bool implicit)
 	 * If no need to commit on local node go ahead and commit prepared
 	 * transaction right away.
 	 */
-	if (implicit && !localNode)
+	if (implicit && !localNode && nodestring)
 	{
 		pgxc_node_remote_finish(prepareGID, true, nodestring,
 								GetAuxilliaryTransactionId(),
