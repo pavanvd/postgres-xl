@@ -1085,13 +1085,11 @@ vacuum_rel(Oid relid, VacuumStmt *vacstmt, bool do_toast, bool for_wraparound)
 
 #ifdef XCP
 	/*
-	 * If we are on coordinator and target relation is distributed read
-	 * statistics from the data node instead of vacuuming local relation.
+	 * If we are on coordinator and target relation is distributed, read
+	 * the statistics from the data node instead of vacuuming local relation.
 	 */
 	if (IS_PGXC_COORDINATOR && onerel->rd_locator_info)
 	{
-		/* always skip TOAST distributed relation on coordinator */
-		toast_relid = InvalidOid;
 		vacuum_rel_coordinator(onerel);
 	}
 	else
@@ -1273,11 +1271,11 @@ make_relation_tle(Oid reloid, const char *relname, const char *column)
 
 /*
  * Get relation statistics from remote data nodes
- * Returns true if statistics is found on any nodes
+ * Returns number of nodes that returned correct statistics.
  */
-static bool
+static int
 get_remote_relstat(char *nspname, char *relname, bool replicated,
-				   int32 *num_pages, float4 *num_tuples)
+				   int32 *pages, float4 *tuples, TransactionId *frozenXid)
 {
 	StringInfoData query;
 	EState 	   *estate;
@@ -1286,12 +1284,14 @@ get_remote_relstat(char *nspname, char *relname, bool replicated,
 	RemoteQueryState *node;
 	TupleTableSlot *result;
 	int			validpages,
-				validtuples;
+				validtuples,
+				validfrozenxids;
 
 	/* Make up query string */
 	initStringInfo(&query);
 	appendStringInfo(&query, "SELECT c.relpages, "
-									"c.reltuples "
+									"c.reltuples, "
+									"c.relfrozenxid "
 							 "FROM pg_class c JOIN pg_namespace n "
 							 "ON c.relnamespace = n.oid "
 							 "WHERE n.nspname = '%s' "
@@ -1316,6 +1316,10 @@ get_remote_relstat(char *nspname, char *relname, bool replicated,
 										 make_relation_tle(RelationRelationId,
 														   "pg_class",
 														   "reltuples"));
+	step->scan.plan.targetlist = lappend(step->scan.plan.targetlist,
+										 make_relation_tle(RelationRelationId,
+														   "pg_class",
+														   "relfrozenxid"));
 
 	/* Execute query on the data nodes */
 	estate = CreateExecutorState();
@@ -1327,10 +1331,12 @@ get_remote_relstat(char *nspname, char *relname, bool replicated,
 	node = ExecInitRemoteQuery(step, estate, 0);
 	MemoryContextSwitchTo(oldcontext);
 	/* get ready to combine results */
-	*num_pages = 0;
-	*num_tuples = 0.0;
+	*pages = 0;
+	*tuples = 0.0;
+	*frozenXid = InvalidTransactionId;
 	validpages = 0;
 	validtuples = 0;
+	validfrozenxids = 0;
 	result = ExecRemoteQuery(node);
 	while (result != NULL && !TupIsNull(result))
 	{
@@ -1341,13 +1347,31 @@ get_remote_relstat(char *nspname, char *relname, bool replicated,
 		if (!isnull)
 		{
 			validpages++;
-			*num_pages += DatumGetInt32(value);
+			*pages += DatumGetInt32(value);
 		}
 		value = slot_getattr(result, 2, &isnull); /* reltuples */
 		if (!isnull)
 		{
 			validtuples++;
-			*num_tuples += DatumGetFloat4(value);
+			*tuples += DatumGetFloat4(value);
+		}
+		value = slot_getattr(result, 3, &isnull); /* relfrozenxid */
+		if (!isnull)
+		{
+			/*
+			 * relfrozenxid on coordinator should be the lowest one from the
+			 * datanodes.
+			 */
+			TransactionId xid = DatumGetTransactionId(value);
+			if (TransactionIdIsValid(xid))
+			{
+				validfrozenxids++;
+				if (!TransactionIdIsValid(*frozenXid) ||
+						TransactionIdPrecedes(xid, *frozenXid))
+				{
+					*frozenXid = xid;
+				}
+			}
 		}
 		/* fetch next */
 		result = ExecRemoteQuery(node);
@@ -1362,13 +1386,28 @@ get_remote_relstat(char *nspname, char *relname, bool replicated,
 		 * Average is good enough approximation in this case.
 		 */
 		if (validpages > 0)
-			*num_pages /= validpages;
+			*pages /= validpages;
 
 		if (validtuples > 0)
-			*num_tuples /= validtuples;
+			*tuples /= validtuples;
 	}
 
-	return validpages > 0 || validtuples > 0;
+	if (validfrozenxids < validpages || validfrozenxids < validtuples)
+	{
+		/*
+		 * If some node returned invalid value for frozenxid we can not set
+		 * it on coordinator. There are other cases when returned value of
+		 * frozenXid should be ignored, these cases are checked by caller.
+		 * Basically, to be sure, there should be one value from each node,
+		 * where the table is partitioned.
+		 */
+		*frozenXid = InvalidTransactionId;
+		return Max(validpages, validtuples);
+	}
+	else
+	{
+		return validfrozenxids;
+	}
 }
 
 
@@ -1385,8 +1424,10 @@ vacuum_rel_coordinator(Relation onerel)
 	/* fields to combine relation statistics */
 	int32		num_pages;
 	float4		num_tuples;
+	TransactionId min_frozenxid;
 	bool		hasindex;
 	bool 		replicated;
+	int 		rel_nodes;
 
 	/* Get the relation identifier */
 	relname = RelationGetRelationName(onerel);
@@ -1395,12 +1436,17 @@ vacuum_rel_coordinator(Relation onerel)
 	elog(LOG, "Getting relation statistics for %s.%s", nspname, relname);
 
 	replicated = IsLocatorReplicated(RelationGetLocatorType(onerel));
-	/* Update local statistics */
-	if (get_remote_relstat(nspname, relname, replicated,
-						   &num_pages, &num_tuples))
+	/*
+	 * Get stats from the remote nodes. Function returns the number of nodes
+	 * returning correct stats.
+	 */
+	rel_nodes = get_remote_relstat(nspname, relname, replicated,
+								   &num_pages, &num_tuples, &min_frozenxid);
+	if (rel_nodes > 0)
 	{
 		int			nindexes;
 		Relation   *Irel;
+		int 		nodes = list_length(RelationGetLocInfo(onerel)->nodeList);
 
 		vac_open_indexes(onerel, ShareUpdateExclusiveLock, &nindexes, &Irel);
 		hasindex = (nindexes > 0);
@@ -1414,21 +1460,32 @@ vacuum_rel_coordinator(Relation onerel)
 			{
 				int32	idx_pages;
 				float4	idx_tuples;
+				TransactionId idx_frozenxid;
+				int idx_nodes;
 
 				/* Get the index identifier */
 				relname = RelationGetRelationName(Irel[i]);
 				nspname = get_namespace_name(RelationGetNamespace(Irel[i]));
 				/* Index is replicated if parent relation is replicated */
-				if (get_remote_relstat(nspname, relname, replicated,
-									   &idx_pages, &idx_tuples))
+				idx_nodes = get_remote_relstat(nspname, relname, replicated,
+										&idx_pages, &idx_tuples, &idx_frozenxid);
+				if (idx_nodes > 0)
 				{
+					/*
+					 * Do not update the frozenxid if information was not from
+					 * all the expected nodes.
+					 */
+					if (idx_nodes < nodes)
+					{
+						idx_frozenxid = InvalidTransactionId;
+					}
 					/* save changes */
 					vac_update_relstats(Irel[i],
 										(BlockNumber) idx_pages,
 										(double) idx_tuples,
 										0,
 										false,
-										InvalidTransactionId);
+										idx_frozenxid);
 				}
 			}
 		}
@@ -1436,13 +1493,22 @@ vacuum_rel_coordinator(Relation onerel)
 		/* Done with indexes */
 		vac_close_indexes(nindexes, Irel, NoLock);
 
+		/*
+		 * Do not update the frozenxid if information was not from all
+		 * the expected nodes.
+		 */
+		if (rel_nodes < nodes)
+		{
+			min_frozenxid = InvalidTransactionId;
+		}
+
 		/* save changes */
 		vac_update_relstats(onerel,
 							(BlockNumber) num_pages,
 							(double) num_tuples,
 							visibilitymap_count(onerel),
 							hasindex,
-							InvalidTransactionId);
+							min_frozenxid);
 	}
 }
 #endif
