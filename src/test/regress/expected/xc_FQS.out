@@ -324,11 +324,11 @@ explain (verbose on, nodes off, costs off) select val, val2 from tab1_rr where v
                Filter: (tab1_rr.val = 7)
 (8 rows)
 
-select distinct val2 from tab1_rr where val = 7;
+select distinct val2 from tab1_rr where val = 7 order by val2;
  val2 
 ------
-    8
     2
+    8
 (2 rows)
 
 explain (verbose on, nodes off, costs off) select distinct val2 from tab1_rr where val = 7;
