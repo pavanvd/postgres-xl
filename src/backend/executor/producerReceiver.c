@@ -160,7 +160,16 @@ producerDestroyReceiver(DestReceiver *self)
 			myState->tstores = NULL;
 		}
 		else
+		{
 			pg_usleep(10000l);
+			/*
+			 * Do not wait for consumers that was not even connected after 10
+			 * seconds after start waiting for their disconnection.
+			 * That should help to break the loop which would otherwise endless.
+			 * The error will be emitted later in SharedQueueUnBind
+			 */
+			SharedQueueResetNotConnected(myState->squeue);
+		}
 	}
 
 	/* wait while consumer are finishing and release shared resources */

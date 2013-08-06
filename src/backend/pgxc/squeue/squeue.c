@@ -1000,6 +1000,44 @@ SharedQueueReset(SharedQueue squeue, int consumerIdx)
 }
 
 
+/*
+ * Assume that not yet connected consumers won't connect and reset them.
+ * That should allow to Finish/UnBind the queue gracefully and prevent
+ * producer hanging.
+ */
+int
+SharedQueueResetNotConnected(SharedQueue squeue)
+{
+	SQueueSync *sqsync = squeue->sq_sync;
+	int result = 0;
+	int i;
+
+	/* check queue states */
+	for (i = 0; i < squeue->sq_nconsumers; i++)
+	{
+		ConsState *cstate = &squeue->sq_consumers[i];
+		LWLockAcquire(sqsync->sqs_consumer_sync[i].cs_lwlock, LW_EXCLUSIVE);
+
+		if (cstate->cs_pid == 0 &&
+				cstate->cs_status != CONSUMER_EOF &&
+				cstate->cs_status != CONSUMER_DONE)
+		{
+			result++;
+			elog(LOG, "Consumer %d of producer %s is cancelled", i, squeue->sq_key);
+			cstate->cs_status = CONSUMER_ERROR;
+			/* discard tuples which may already be in the queue */
+			cstate->cs_ntuples = 0;
+			/* keep consistent with cs_ntuples*/
+			cstate->cs_qreadpos = cstate->cs_qwritepos = 0;
+
+			/* wake up consumer if it is sleeping */
+			SetLatch(&sqsync->sqs_consumer_sync[i].cs_latch);
+		}
+		LWLockRelease(sqsync->sqs_consumer_sync[i].cs_lwlock);
+	}
+	elog(LOG, "Reset producer %s", squeue->sq_key);
+}
+
 
 /*
  * Determine if producer can safely pause work.
@@ -1143,6 +1181,7 @@ void
 SharedQueueUnBind(SharedQueue squeue)
 {
 	SQueueSync *sqsync = squeue->sq_sync;
+	int			wait_result = 0;
 
 	/* loop while there are active consumers */
 	for (;;)
@@ -1178,7 +1217,11 @@ SharedQueueUnBind(SharedQueue squeue)
 			break;
 		elog(LOG, "Wait while %d squeue readers finishing", c_count);
 		/* wait for a notification */
-		WaitLatch(&sqsync->sqs_producer_latch, WL_LATCH_SET | WL_POSTMASTER_DEATH, -1);
+		wait_result = WaitLatch(&sqsync->sqs_producer_latch,
+								WL_LATCH_SET | WL_POSTMASTER_DEATH | WL_TIMEOUT,
+								10000L);
+		if (wait_result & WL_TIMEOUT)
+			break;
 		/* got notification, continue loop */
 	}
 #ifdef SQUEUE_STAT
@@ -1197,6 +1240,8 @@ SharedQueueUnBind(SharedQueue squeue)
 
 	LWLockRelease(SQueuesLock);
 	elog(LOG, "Finalized squeue");
+	if (wait_result & WL_TIMEOUT)
+		elog(FATAL, "Timeout while waiting for Consumers finishing");
 }
 
 
