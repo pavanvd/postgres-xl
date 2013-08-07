@@ -60,8 +60,8 @@ typedef union GTM_ResultData
 												 * SEQUENCE_GET_NEXT */
 	struct
 	{
-		int				seq_count;
-		GTM_SeqInfo			**seq;
+		int						seq_count;
+		GTM_SeqInfo			   *seq;
 	} grd_seq_list;								/* SEQUENCE_GET_LIST */
 
 	struct
@@ -163,7 +163,7 @@ int end_replication_initial_sync(GTM_Conn *);
 size_t get_node_list(GTM_Conn *, GTM_PGXCNodeInfo *, size_t);
 GlobalTransactionId get_next_gxid(GTM_Conn *);
 uint32 get_txn_gxid_list(GTM_Conn *, GTM_Transactions *);
-size_t get_sequence_list(GTM_Conn *, GTM_SeqInfo **, size_t);
+size_t get_sequence_list(GTM_Conn *, GTM_SeqInfo **);
 
 /*
  * Transaction Management API
