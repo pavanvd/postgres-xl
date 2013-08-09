@@ -510,8 +510,9 @@ GetNextValGTM(char *seqname)
 #ifdef XCP
 	char   *coordName = IS_PGXC_COORDINATOR ? PGXCNodeName : MyCoordName;
 	int		coordPid = IS_PGXC_COORDINATOR ? MyProcPid : MyCoordPid;
-	int		status;
 #endif
+	int	status = GTM_RESULT_OK;
+
 	CheckConnection();
 	seqkey.gsk_keylen = strlen(seqname) + 1;
 	seqkey.gsk_key = seqname;
