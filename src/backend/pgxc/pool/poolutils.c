@@ -29,6 +29,9 @@
 #include "catalog/pgxc_node.h"
 #include "commands/dbcommands.h"
 #include "commands/prepare.h"
+#ifdef XCP
+#include "storage/ipc.h"
+#endif
 #include "storage/procarray.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -403,6 +406,20 @@ DropDBCleanConnection(char *dbname)
 void
 HandlePoolerReload(void)
 {
+#ifdef XCP
+	if (proc_exit_inprogress)
+		return;
+
+	/* Request query cancel, when convenient */
+	InterruptPending = true;
+	QueryCancelPending = true;
+
+	/* Disconnect from the pooler to get new connection infos next time */
+	PoolManagerDisconnect();
+
+	/* Prevent using of cached connections to remote nodes */
+	RequestInvalidateRemoteHandles();
+#else
 	MemoryContext old_context;
 
 	/* A Datanode has no pooler active, so do not bother about that */
@@ -441,4 +458,5 @@ HandlePoolerReload(void)
 	CurrentResourceOwner = NULL;
 
 	MemoryContextSwitchTo(old_context);
+#endif
 }

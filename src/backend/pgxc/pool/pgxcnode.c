@@ -81,6 +81,8 @@ int 		NumCoords;
 
 
 #ifdef XCP
+volatile bool HandlesInvalidatePending = false;
+
 /*
  * Session and transaction parameters need to to be set on newly connected
  * remote nodes.
@@ -95,6 +97,9 @@ typedef struct
 	NameData name;
 	NameData value;
 } ParamEntry;
+
+
+static bool DoInvalidateRemoteHandles(void);
 #endif
 
 
@@ -411,6 +416,9 @@ pgxc_node_all_free(void)
 
 	co_handles = NULL;
 	dn_handles = NULL;
+#ifdef XCP
+	HandlesInvalidatePending = false;
+#endif
 }
 
 /*
@@ -845,6 +853,14 @@ release_handles(void)
 	bool		destroy = false;
 #endif
 	int			i;
+
+#ifdef XCP
+	if (HandlesInvalidatePending)
+	{
+		DoInvalidateRemoteHandles();
+		return;
+	}
+#endif
 
 	if (datanode_count == 0 && coord_count == 0)
 		return;
@@ -2014,6 +2030,12 @@ get_any_handle(List *datanodelist)
 	/* sanity check */
 	Assert(list_length(datanodelist) > 0);
 
+	if (HandlesInvalidatePending)
+		if (DoInvalidateRemoteHandles())
+			ereport(ERROR,
+					(errcode(ERRCODE_QUERY_CANCELED),
+					 errmsg("canceling transaction due to cluster configuration reset by administrator command")));
+
 	/* loop through local datanode handles */
 	for (i = 0, node = load_balancer; i < NumDataNodes; i++, node++)
 	{
@@ -2106,6 +2128,14 @@ get_handles(List *datanodelist, List *coordlist, bool is_coord_only_query)
 
 	/* index of the result array */
 	int			i = 0;
+
+#ifdef XCP
+	if (HandlesInvalidatePending)
+		if (DoInvalidateRemoteHandles())
+			ereport(ERROR,
+					(errcode(ERRCODE_QUERY_CANCELED),
+					 errmsg("canceling transaction due to cluster configuration reset by administrator command")));
+#endif
 
 	result = (PGXCNodeAllHandles *) palloc(sizeof(PGXCNodeAllHandles));
 	if (!result)
@@ -2846,5 +2876,46 @@ pgxc_node_set_query(PGXCNodeHandle *handle, const char *set_query)
 			break;
 		}
 	}
+}
+
+
+void
+RequestInvalidateRemoteHandles(void)
+{
+	HandlesInvalidatePending = true;
+}
+
+
+/*
+ * For all handles, mark as they are not in use and discard pending input/output
+ */
+static bool
+DoInvalidateRemoteHandles(void)
+{
+	int 			i;
+	PGXCNodeHandle *handle;
+	bool			result = false;
+
+	HandlesInvalidatePending = false;
+
+	for (i = 0; i < NumCoords; i++)
+	{
+		handle = &co_handles[i];
+		if (handle->sock != NO_SOCKET)
+			result = true;
+		handle->sock = NO_SOCKET;
+		handle->inStart = handle->inEnd = handle->inCursor = 0;
+		handle->outEnd = 0;
+	}
+	for (i = 0; i < NumDataNodes; i++)
+	{
+		handle = &dn_handles[i];
+		if (handle->sock != NO_SOCKET)
+			result = true;
+		handle->sock = NO_SOCKET;
+		handle->inStart = handle->inEnd = handle->inCursor = 0;
+		handle->outEnd = 0;
+	}
+	return result;
 }
 #endif

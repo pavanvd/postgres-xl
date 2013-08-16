@@ -1940,7 +1940,9 @@ PoolManagerReleaseConnections(bool force)
 	int n32;
 	int msglen = 8;
 
-	Assert(poolHandle);
+	/* If disconnected from pooler all the connections already released */
+	if (!poolHandle)
+		return;
 
 	/* Message type */
 	pool_putbytes(&poolHandle->port, &msgtype, 1);

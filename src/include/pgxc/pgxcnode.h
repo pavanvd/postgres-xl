@@ -234,6 +234,7 @@ extern void PGXCNodeResetParams(bool only_local);
 extern char *PGXCNodeGetSessionParamStr(void);
 extern char *PGXCNodeGetTransactionParamStr(void);
 extern void pgxc_node_set_query(PGXCNodeHandle *handle, const char *set_query);
+extern void RequestInvalidateRemoteHandles(void);
 #endif
 
 #endif
