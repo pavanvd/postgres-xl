@@ -298,6 +298,7 @@ extern void InitializeSessionUserIdStandalone(void);
 extern void SetSessionAuthorization(Oid userid, bool is_superuser);
 #ifdef XCP
 extern void SetGlobalSession(Oid coordid, int coordpid);
+extern char *GetClusterUserName(void);
 #endif
 extern Oid	GetCurrentRoleId(void);
 extern void SetCurrentRoleId(Oid roleid, bool is_superuser);

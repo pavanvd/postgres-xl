@@ -180,16 +180,12 @@ extern void PoolManagerDisconnect(void);
 
 #ifndef XCP
 extern char *session_options(void);
-#endif
 
 /*
  * Called from Session process after fork(). Associate handle with session
  * for subsequent calls. Associate session with specified database and
  * initialize respective connection pool
  */
-#ifdef XCP
-extern void PoolManagerConnect(const char *database, const char *user_name);
-#else
 extern void PoolManagerConnect(PoolHandle *handle,
 	                           const char *database, const char *user_name,
 	                           char *pgoptions);

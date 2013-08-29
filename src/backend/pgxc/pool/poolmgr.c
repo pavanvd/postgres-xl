@@ -185,6 +185,7 @@ static char *build_node_conn_str(Oid node, DatabasePool *dbPool);
 static void pooler_die(SIGNAL_ARGS);
 static void pooler_quickdie(SIGNAL_ARGS);
 #ifdef XCP
+static void PoolManagerConnect(const char *database, const char *user_name);
 static void pooler_sighup(SIGNAL_ARGS);
 static bool shrink_pool(DatabasePool *pool);
 static void pools_maintenance(void);
@@ -590,7 +591,7 @@ char *session_options(void)
  * Invoked from Session process
  */
 #ifdef XCP
-void
+static void
 PoolManagerConnect(const char *database, const char *user_name)
 {
 	int 	n32;
@@ -727,8 +728,7 @@ PoolManagerReconnect(void)
 	if (poolHandle)
 		PoolManagerDisconnect();
 
-	PoolManagerConnect(get_database_name(MyDatabaseId),
-					   GetUserNameFromId(GetUserId()));
+	PoolManagerConnect(get_database_name(MyDatabaseId), GetClusterUserName());
 #else
 	PoolHandle *handle;
 
@@ -871,7 +871,7 @@ PoolManagerLock(bool is_lock)
 #ifdef XCP
 	if (poolHandle == NULL)
 		PoolManagerConnect(get_database_name(MyDatabaseId),
-						   GetUserNameFromId(GetUserId()));
+						   GetClusterUserName());
 #else
 	Assert(poolHandle);
 #endif
@@ -1037,7 +1037,7 @@ PoolManagerGetConnections(List *datanodelist, List *coordlist)
 #ifdef XCP
 	if (poolHandle == NULL)
 		PoolManagerConnect(get_database_name(MyDatabaseId),
-						   GetUserNameFromId(GetUserId()));
+						   GetClusterUserName());
 #else
 	Assert(poolHandle);
 #endif
@@ -1107,7 +1107,7 @@ PoolManagerAbortTransactions(char *dbname, char *username, int **proc_pids)
 	 */
 	if (poolHandle == NULL)
 		PoolManagerConnect(get_database_name(MyDatabaseId),
-						   GetUserNameFromId(GetUserId()));
+						   GetClusterUserName());
 #else
 	Assert(poolHandle);
 #endif
@@ -1166,7 +1166,7 @@ PoolManagerCleanConnection(List *datanodelist, List *coordlist, char *dbname, ch
 	 */
 	if (poolHandle == NULL)
 		PoolManagerConnect(get_database_name(MyDatabaseId),
-						   GetUserNameFromId(GetUserId()));
+						   GetClusterUserName());
 #endif
 
 	nodes[0] = htonl(list_length(datanodelist));
@@ -1240,7 +1240,7 @@ PoolManagerCheckConnectionInfo(void)
 	 */
 	if (poolHandle == NULL)
 		PoolManagerConnect(get_database_name(MyDatabaseId),
-						   GetUserNameFromId(GetUserId()));
+						   GetClusterUserName());
 #else
 	Assert(poolHandle);
 #endif

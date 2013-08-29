@@ -646,6 +646,17 @@ retry:
 		 */
 	}
 }
+
+
+/*
+ * Returns the name of the role that should be used to access other cluster
+ * nodes.
+ */
+char *
+GetClusterUserName(void)
+{
+	return GetUserNameFromId(AuthenticatedUserId);
+}
 #endif
 
 
