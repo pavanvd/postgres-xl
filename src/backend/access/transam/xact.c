@@ -2586,9 +2586,11 @@ AtEOXact_GlobalTxn(bool commit)
 #ifdef XCP
 	/*
 	 * If GTM is connected the current gxid is acquired from GTM directly.
-	 * So directly report transaction end.
+	 * So directly report transaction end. However this applies only if
+	 * the connection is directly from a client.
 	 */
-	else if (IsGTMConnected())
+	else if (IsGTMConnected() &&
+				!IsConnFromCoord() && !IsConnFromDatanode())
 	{
 		if (commit)
 			CommitTranGTM(s->topGlobalTransansactionId);
