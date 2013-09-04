@@ -35,6 +35,8 @@
 
 
 static int failover_oneCoordinator(int coordIdx);
+static int configure_datanodes(char **nodeList);
+static cmd_t *prepare_configureDataNode(char *nodeName);
 
 static char date[MAXTOKEN+1];
 
@@ -364,7 +366,8 @@ int init_coordinator_slave(char **nodeList)
  */
 int configure_nodes_all(void)
 {
-	return configure_nodes(aval(VAR_coordNames));
+	configure_nodes(aval(VAR_coordNames));
+	return configure_datanodes(aval(VAR_datanodeNames));
 }
 
 int configure_nodes(char **nodeList)
@@ -380,6 +383,29 @@ int configure_nodes(char **nodeList)
 	for (ii = 0; actualNodeList[ii]; ii++)
 	{
 		if ((cmd = prepare_configureNode(actualNodeList[ii])))
+			addCmd(cmdList, cmd);
+	}
+	rc = doCmdList(cmdList);
+	cleanCmdList(cmdList);
+	CleanArray(actualNodeList);
+	elog(INFO, "Done.\n");
+	return(rc);
+}
+
+static int configure_datanodes(char **nodeList)
+{
+	char **actualNodeList;
+	int ii;
+	cmdList_t *cmdList;
+	cmd_t *cmd;
+	int rc;
+
+	actualNodeList = makeActualNodeList(nodeList);
+	cmdList = initCmdList();
+	cmdList = initCmdList();
+	for (ii = 0; actualNodeList[ii]; ii++)
+	{
+		if ((cmd = prepare_configureDataNode(actualNodeList[ii])))
 			addCmd(cmdList, cmd);
 	}
 	rc = doCmdList(cmdList);
@@ -488,6 +514,157 @@ cmd_t *prepare_configureNode(char *nodeName)
 	fclose(f);
 	return(cmd);
 }	
+
+static cmd_t *prepare_configureDataNode(char *nodeName)
+{
+	cmd_t *cmd;
+	int ii;
+	int jj;
+	int idx;
+	FILE *f;
+	bool is_preferred;
+
+	if ((idx = datanodeIdx(nodeName)) < 0)
+	{
+		elog(ERROR, "ERROR: %s is not a datanode.\n", nodeName);
+		return NULL;
+	}
+	if (is_none(aval(VAR_datanodeMasterServers)[idx]))
+		return NULL;
+	cmd = initCmd(NULL);
+	/* We use one of the coordinators to send queries to datanodes */
+	snprintf(newCommand(cmd), MAXLINE,
+			 "psql -p %d -h %s -a %s %s",
+			 atoi(aval(VAR_coordPorts)[0]),
+			 aval(VAR_coordMasterServers)[0],
+			 sval(VAR_defaultDatabase),
+			 sval(VAR_pgxcOwner));
+	if ((f = prepareLocalStdin(newFilename(cmd->localStdin), MAXPATH, NULL)) == NULL)
+	{
+		cleanCmd(cmd);
+		return NULL;
+	}
+	/* Setup coordinators */
+	for (ii = 0; aval(VAR_coordNames)[ii]; ii++)
+	{
+		int targetIdx;
+		if (is_none(aval(VAR_coordNames)[ii]))
+			continue;
+		if ((targetIdx = coordIdx(aval(VAR_coordNames)[ii])) < 0)
+		{
+			elog(ERROR, "ERROR: internal error.  Could not get coordinator idex for %s\n", aval(VAR_coordNames)[ii]);
+			continue;
+		}
+		if (!is_none(aval(VAR_coordMasterServers)[ii]))
+		{
+			/* Register outside coordinator */
+			fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''coordinator'', HOST=''%s'', PORT=%d)';\n",
+					aval(VAR_datanodeNames)[idx],
+					aval(VAR_coordNames)[ii],
+					aval(VAR_coordMasterServers)[ii],
+					atoi(aval(VAR_coordPorts)[ii]));
+		}
+	}
+	/* Setup datanodes */
+	for (ii = 0; aval(VAR_datanodeNames)[ii]; ii++)
+	{
+		int dnIdx;
+
+		if ((dnIdx = datanodeIdx(aval(VAR_datanodeNames)[ii])) < 0)
+		{
+			elog(ERROR, "ERROR: inernal error. Could not get datanode index for %s.\n", aval(VAR_datanodeNames)[ii]);
+			fclose(f);
+			cleanCmd(cmd);
+			return NULL;
+		}
+		if (is_none(aval(VAR_datanodeNames)[ii]) || is_none(aval(VAR_datanodeMasterServers)[dnIdx]))
+			continue;
+
+		// See if this data node is on the same host as a coordinator
+		is_preferred = false;
+		for (jj = 0; aval(VAR_coordNames)[jj]; jj++)
+		{
+			if (strcmp(aval(VAR_coordMasterServers)[jj], aval(VAR_datanodeMasterServers)[dnIdx]) == 0)
+			{
+				is_preferred = true;
+				break;
+			}
+		}
+
+		if (sval(VAR_primaryDatanode) && (strcmp(sval(VAR_primaryDatanode), aval(VAR_datanodeNames)[dnIdx]) == 0))
+		{
+			if (idx != dnIdx)
+			{
+				/* Primary Node */
+				if (is_preferred)
+{
+					/* Primay and preferred node */
+					fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PRIMARY, PREFERRED)';\n",
+							aval(VAR_datanodeNames)[idx],
+							aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
+							atoi(aval(VAR_datanodePorts)[dnIdx]));
+}
+				else
+					/* Primary but not prefereed node */
+					fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PRIMARY)';\n",
+							aval(VAR_datanodeNames)[idx],
+							aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
+							atoi(aval(VAR_datanodePorts)[dnIdx]));
+			}
+			else
+				/* Primary Node */
+				if (is_preferred)
+					/* Primay and preferred node */
+					fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PRIMARY, PREFERRED)';\n",
+							aval(VAR_datanodeNames)[idx],
+							aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
+							atoi(aval(VAR_datanodePorts)[dnIdx]));
+				else
+					/* Primary but not prefereed node */
+					fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PRIMARY)';\n",
+							aval(VAR_datanodeNames)[idx],
+							aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
+							atoi(aval(VAR_datanodePorts)[dnIdx]));
+		}
+		else
+		{
+			if (idx != dnIdx)
+			{
+				/* Non-primary node */
+				if (is_preferred)
+					/* Preferred node */
+					fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PREFERRED)';\n",
+							aval(VAR_datanodeNames)[idx],
+							aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
+							atoi(aval(VAR_datanodePorts)[dnIdx]));
+				else
+					/* non-Preferred node */
+					fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d)';\n",
+							aval(VAR_datanodeNames)[idx],
+							aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
+							atoi(aval(VAR_datanodePorts)[dnIdx]));
+			}
+			else
+			{
+				/* Non-primary node */
+				if (is_preferred)
+					/* Preferred node */
+					fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PREFERRED)';\n",
+							aval(VAR_datanodeNames)[idx],
+							aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
+							atoi(aval(VAR_datanodePorts)[dnIdx]));
+				else
+					/* non-Preferred node */
+					fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d)';\n",
+							aval(VAR_datanodeNames)[idx],
+							aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
+							atoi(aval(VAR_datanodePorts)[dnIdx]));
+			}
+		}
+	}
+	fclose(f);
+	return(cmd);
+}
 
 
 /*
@@ -917,7 +1094,7 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler, char *di
 	start_coordinator_master(nodelist);
 	CleanArray(nodelist);
 
-	/* Issue CREATE NODE */
+	/* Issue CREATE NODE on coordinators */
 	for (ii = 0; aval(VAR_coordNames)[ii]; ii++)
 	{
 		if (!is_none(aval(VAR_coordNames)[ii]) && strcmp(aval(VAR_coordNames)[ii], name) != 0)
@@ -928,6 +1105,21 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler, char *di
 				continue;
 			}
 			fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d);\n", name, host, port);
+			fprintf(f, "\\q\n");
+			fclose(f);
+		}
+	}
+	/* Issue CREATE NODE on datanodes */
+	for (ii = 0; aval(VAR_datanodeNames)[ii]; ii++)
+	{
+		if (!is_none(aval(VAR_datanodeNames)[ii]))
+		{
+			if ((f = pgxc_popen_wRaw("psql -h %s -p %d %s", aval(VAR_coordMasterServers)[0], atoi(aval(VAR_coordPorts)[0]), sval(VAR_defaultDatabase))) == NULL)
+			{
+				elog(ERROR, "ERROR: cannot connect to the coordinator master %s.\n", aval(VAR_coordNames)[ii]);
+				continue;
+			}
+			fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE = ''coordinator'', host=''%s'', PORT=%d)';\n", aval(VAR_datanodeNames)[ii], name, host, port);
 			fprintf(f, "\\q\n");
 			fclose(f);
 		}
@@ -1213,6 +1405,30 @@ int remove_coordinatorMaster(char *name, int clean_opt)
 				continue;
 			}
 			fprintf(f, "DROP NODE %s;\n", name);
+			fprintf(f, "\\q");
+			fclose(f);
+		}
+	}
+	/* Issue "drop node" at all the datanodes */
+	for (ii = 0; aval(VAR_datanodeNames)[ii]; ii++)
+	{
+		if (doesExist(VAR_datanodeNames, ii) && !is_none(aval(VAR_datanodeNames)[ii]))
+		{
+			int coord_idx;
+
+			if (idx == 0)
+				coord_idx = 1;
+			else
+				coord_idx  = 0;
+
+			f = pgxc_popen_wRaw("psql -p %d -h %s %s", atoi(aval(VAR_coordPorts)[coord_idx]), aval(VAR_coordMasterServers)[coord_idx], sval(VAR_defaultDatabase));
+			if (f == NULL)
+			{
+				elog(ERROR, "ERROR: cannot begin psql for the coordinator master %s\n", aval(VAR_coordNames)[coord_idx]);
+				continue;
+			}
+			fprintf(f, "EXECUTE DIRECT ON (%s) 'DROP NODE %s';\n",
+					aval(VAR_datanodeNames)[ii], name);
 			fprintf(f, "\\q");
 			fclose(f);
 		}

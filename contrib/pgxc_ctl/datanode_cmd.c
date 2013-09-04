@@ -994,7 +994,7 @@ int add_datanodeMaster(char *name, char *host, int port, char *dir)
 	start_datanode_master(nodelist);
 	CleanArray(nodelist);
 
-	/* Issue CREATE NODE */
+	/* Issue CREATE NODE  on coordinators */
 	for (ii = 0; aval(VAR_coordNames)[ii]; ii++)
 	{
 		if (!is_none(aval(VAR_coordNames)[ii]))
@@ -1005,6 +1005,25 @@ int add_datanodeMaster(char *name, char *host, int port, char *dir)
 				continue;
 			}
 			fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d);\n", name, host, port);
+			fprintf(f, "\\q\n");
+			fclose(f);
+		}
+	}
+
+	/* Issue CREATE NODE  on datanodes */
+	for (ii = 0; aval(VAR_datanodeNames)[ii]; ii++)
+	{
+		if (!is_none(aval(VAR_datanodeNames)[ii]))
+		{
+			if ((f = pgxc_popen_wRaw("psql -h %s -p %s %s", aval(VAR_coordMasterServers)[0], aval(VAR_coordPorts)[0], sval(VAR_defaultDatabase))) == NULL)
+			{
+				elog(ERROR, "ERROR: cannot connect to the coordinator %s.\n", aval(VAR_coordNames)[0]);
+				continue;
+			}
+			if (strcmp(aval(VAR_datanodeNames)[ii], name) != 0)
+				fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE = ''datanode'', host=''%s'', PORT=%d)';\n", aval(VAR_datanodeNames)[ii], name, host, port);
+			else
+				fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE = ''datanode'', host=''%s'', PORT=%d)';\n", aval(VAR_datanodeNames)[ii], name, host, port);
 			fprintf(f, "\\q\n");
 			fclose(f);
 		}
@@ -1295,6 +1314,22 @@ int remove_datanodeMaster(char *name, int clean_opt)
 			}
 			fprintf(f, "DROP NODE %s;\n", name);
 			fprintf(f, "\\q");
+			fclose(f);
+		}
+	}
+	/* Issue DROP NODE  on datanodes */
+	for (ii = 0; aval(VAR_datanodeNames)[ii]; ii++)
+	{
+		if (!is_none(aval(VAR_datanodeNames)[ii]) &&
+			strcmp(aval(VAR_datanodeNames)[ii], name) != 0)
+		{
+			if ((f = pgxc_popen_wRaw("psql -h %s -p %s %s", aval(VAR_coordMasterServers)[0], aval(VAR_coordPorts)[0], sval(VAR_defaultDatabase))) == NULL)
+			{
+				elog(ERROR, "ERROR: cannot connect to the coordinator %s.\n", aval(VAR_coordNames)[0]);
+				continue;
+			}
+			fprintf(f, "EXECUTE DIRECT ON (%s) 'DROP NODE %s';\n", aval(VAR_datanodeNames)[ii], name);
+			fprintf(f, "\\q\n");
 			fclose(f);
 		}
 	}

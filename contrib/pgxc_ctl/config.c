@@ -292,6 +292,8 @@ void makeServerList(void)
  */
 int is_none(char *s)
 {
+	if (s == NULL)
+		return TRUE;
 	if (strcmp(s, "none") == 0)
 		return TRUE;
 	if (strcmp(s, "N/A") == 0)
