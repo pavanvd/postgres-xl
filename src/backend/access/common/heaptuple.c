@@ -63,7 +63,9 @@
 #include "access/sysattr.h"
 #include "access/tuptoaster.h"
 #include "executor/tuptable.h"
-
+#ifdef XCP
+#include "utils/memutils.h"
+#endif
 
 /* Does att's datatype allow packing into the 1-byte-header varlena format? */
 #define ATT_IS_PACKABLE(att) \
@@ -1192,6 +1194,30 @@ slot_deform_datarow(TupleTableSlot *slot)
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("Tuple does not match the descriptor")));
 
+#ifdef XCP
+	if (slot->tts_attinmeta == NULL)
+	{
+		/*
+		 * Ensure info about input functions is available as long as slot lives
+		 */
+		oldcontext = MemoryContextSwitchTo(slot->tts_mcxt);
+		slot->tts_attinmeta = TupleDescGetAttInMetadata(slot->tts_tupleDescriptor);
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	/*
+	 * Store values to separate context to easily free them when base datarow is
+	 * freed
+	 */
+	if (slot->tts_drowcxt == NULL)
+	{
+		slot->tts_drowcxt = AllocSetContextCreate(slot->tts_mcxt,
+												  "Datarow",
+												  ALLOCSET_DEFAULT_MINSIZE,
+												  ALLOCSET_DEFAULT_INITSIZE,
+												  ALLOCSET_DEFAULT_MAXSIZE);
+	}
+#else
 	/*
 	 * Ensure info about input functions is available as long as slot lives
 	 * as well as deformed values
@@ -1200,13 +1226,12 @@ slot_deform_datarow(TupleTableSlot *slot)
 
 	if (slot->tts_attinmeta == NULL)
 		slot->tts_attinmeta = TupleDescGetAttInMetadata(slot->tts_tupleDescriptor);
+#endif
 
 	buffer = makeStringInfo();
 	for (i = 0; i < attnum; i++)
 	{
-#ifndef XCP
 		Form_pg_attribute attr = slot->tts_tupleDescriptor->attrs[i];
-#endif
 		int len;
 
 		/* get size */
@@ -1232,6 +1257,48 @@ slot_deform_datarow(TupleTableSlot *slot)
 			slot->tts_isnull[i] = false;
 
 			resetStringInfo(buffer);
+
+#ifdef XCP
+			/*
+			 * The input function was executed in caller's memory context,
+			 * because it may be allocating working memory, and caller may
+			 * want to clean it up.
+			 * However returned Datums need to be in the special context, so
+			 * if attribute is pass-by-reference, copy it.
+			 */
+			if (!attr->attbyval)
+			{
+				Pointer		val = DatumGetPointer(slot->tts_values[i]);
+				Size		data_length;
+				void	   *data;
+
+				if (attr->attlen == -1)
+				{
+					/* varlena */
+					if (VARATT_IS_EXTERNAL(val))
+						/* no alignment, since it's short by definition */
+						data_length = VARSIZE_EXTERNAL(val);
+					else if (VARATT_IS_SHORT(val))
+						/* no alignment for short varlenas */
+						data_length = VARSIZE_SHORT(val);
+					else
+						data_length = VARSIZE(val);
+				}
+				else if (attr->attlen == -2)
+				{
+					/* cstring */
+					data_length = strlen(val) + 1;
+				}
+				else
+				{
+					/* fixed-length pass-by-reference */
+					data_length = attr->attlen;
+				}
+				data = MemoryContextAlloc(slot->tts_drowcxt, data_length);
+				memcpy(data, val, data_length);
+				slot->tts_values[i] = (Datum) data;
+			}
+#endif
 		}
 	}
 	pfree(buffer->data);
@@ -1239,7 +1306,9 @@ slot_deform_datarow(TupleTableSlot *slot)
 
 	slot->tts_nvalid = attnum;
 
+#ifndef XCP
 	MemoryContextSwitchTo(oldcontext);
+#endif
 }
 #endif
 

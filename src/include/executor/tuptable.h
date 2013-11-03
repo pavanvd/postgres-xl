@@ -119,7 +119,8 @@ typedef struct TupleTableSlot
 	HeapTuple	tts_tuple;		/* physical tuple, or NULL if virtual */
 #ifdef PGXC
 #ifdef XCP
-	RemoteDataRow tts_datarow; /* Tuple data in DataRow format */
+	RemoteDataRow tts_datarow; 	/* Tuple data in DataRow format */
+	MemoryContext tts_drowcxt; 	/* Context to store deformed */
 #else
 	/*
 	 * PGXC extension to support tuples sent from remote Datanode.

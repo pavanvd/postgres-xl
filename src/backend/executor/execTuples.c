@@ -128,6 +128,7 @@ MakeTupleTableSlot(void)
 	slot->tts_shouldFreeRow = false;
 #ifdef XCP
 	slot->tts_datarow = NULL;
+	slot->tts_drowcxt = NULL;
 #else
 	slot->tts_dataRow = NULL;
 	slot->tts_dataLen = -1;
@@ -367,7 +368,11 @@ ExecStoreTuple(HeapTuple tuple,
 #ifdef PGXC
 #ifdef XCP
 	if (slot->tts_shouldFreeRow)
+	{
 		pfree(slot->tts_datarow);
+		if (slot->tts_drowcxt)
+			MemoryContextReset(slot->tts_drowcxt);
+	}
 #else
 	if (slot->tts_shouldFreeRow)
 		pfree(slot->tts_dataRow);
@@ -445,7 +450,11 @@ ExecStoreMinimalTuple(MinimalTuple mtup,
 #ifdef PGXC
 #ifdef XCP
 	if (slot->tts_shouldFreeRow)
+	{
 		pfree(slot->tts_datarow);
+		if (slot->tts_drowcxt)
+			MemoryContextReset(slot->tts_drowcxt);
+	}
 #else
 	if (slot->tts_shouldFreeRow)
 		pfree(slot->tts_dataRow);
@@ -1541,7 +1550,11 @@ ExecStoreDataRowTuple(RemoteDataRow datarow,
 	if (slot->tts_shouldFreeMin)
 		heap_free_minimal_tuple(slot->tts_mintuple);
 	if (slot->tts_shouldFreeRow)
+	{
 		pfree(slot->tts_datarow);
+		if (slot->tts_drowcxt)
+			MemoryContextReset(slot->tts_drowcxt);
+	}
 
 	/*
 	 * Drop the pin on the referenced buffer, if there is one.
