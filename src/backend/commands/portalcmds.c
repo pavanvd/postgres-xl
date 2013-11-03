@@ -285,8 +285,12 @@ PortalCleanup(Portal portal)
 					removeProducingPortal(portal);
 					/* If cleanup fails below prevent double cleanup */
 					portal->queryDesc = NULL;
-					/* Inform consumers about failed producer */
-					SharedQueueReset(queryDesc->squeue, -1);
+					/*
+					 * Inform consumers about failed producer if they are
+					 * still waiting
+					 */
+					if (queryDesc->squeue)
+						SharedQueueReset(queryDesc->squeue, -1);
 				}
 				/* executor may be finished already, if so estate will be null */
 				if (queryDesc->estate)
@@ -312,7 +316,8 @@ PortalCleanup(Portal portal)
 							 * here while UnBind is waiting for finishing
 							 * consumers.
 							 */
-							SharedQueueUnBind(queryDesc->squeue);
+							if (queryDesc->squeue)
+								SharedQueueUnBind(queryDesc->squeue);
 							FreeQueryDesc(queryDesc);
 						}
 					}
