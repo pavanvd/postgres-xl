@@ -2209,7 +2209,8 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
 			case 'C':			/* CommandComplete */
 				HandleCommandComplete(combiner, msg, msg_len, conn);
 				conn->combiner = NULL;
-				conn->state = DN_CONNECTION_STATE_IDLE;
+				if (conn->state == DN_CONNECTION_STATE_QUERY)
+					conn->state = DN_CONNECTION_STATE_IDLE;
 				return RESPONSE_COMPLETE;
 			case 'T':			/* RowDescription */
 #ifdef DN_CONNECTION_DEBUG
@@ -8468,6 +8469,15 @@ static int encode_parameters(int nparams, RemoteParam *remoteparams,
 	StringInfoData	buf;
 	uint16 			n16;
 	int 			i;
+	ExprContext	   *econtext;
+	MemoryContext 	oldcontext;
+
+	if (planstate->ps_ExprContext == NULL)
+		ExecAssignExprContext(estate, planstate);
+
+	econtext = planstate->ps_ExprContext;
+	oldcontext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+	MemoryContextReset(econtext->ecxt_per_tuple_memory);
 
 	initStringInfo(&buf);
 
@@ -8492,9 +8502,6 @@ static int encode_parameters(int nparams, RemoteParam *remoteparams,
 			param = &(estate->es_param_exec_vals[rparam->paramid]);
 			if (param->execPlan)
 			{
-				if (planstate->ps_ExprContext == NULL)
-					ExecAssignExprContext(estate, planstate);
-
 				/* Parameter not evaluated yet, so go do it */
 				ExecSetParamPlan((SubPlanState *) param->execPlan,
 								 planstate->ps_ExprContext);
@@ -8508,7 +8515,7 @@ static int encode_parameters(int nparams, RemoteParam *remoteparams,
 	/* Take data from the buffer */
 	*result = palloc(buf.len);
 	memcpy(*result, buf.data, buf.len);
-	pfree(buf.data);
+	MemoryContextSwitchTo(oldcontext);
 	return buf.len;
 }
 
@@ -8949,7 +8956,7 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 		 * state will be changed back to IDLE and conn->coordinator will be
 		 * cleared.
 		 */
-		conn->state = DN_CONNECTION_STATE_QUERY;
+		conn->state = DN_CONNECTION_STATE_CLOSE;
 	}
 
 	while (combiner->conn_count > 0)
@@ -8973,6 +8980,20 @@ ExecEndRemoteSubplan(RemoteSubplanState *node)
 				if (--combiner->conn_count > i)
 					combiner->connections[i] =
 							combiner->connections[combiner->conn_count];
+			}
+			else if (res == RESPONSE_DATAROW)
+			{
+				/*
+				 * If we are finishing slowly running remote subplan while it
+				 * is still working (because of Limit, for example) it may
+				 * produce one or more tuples between connection cleanup and
+				 * handling Close command. One tuple does not cause any problem,
+				 * but if it will not be read the next tuple will trigger
+				 * assertion failure. So if we got a tuple, just read and
+				 * discard it here.
+				 */
+				pfree(combiner->currentRow);
+				combiner->currentRow = NULL;
 			}
 			/* Ignore other possible responses */
 		}

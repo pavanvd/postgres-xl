@@ -33,6 +33,7 @@ typedef enum
 {
 	DN_CONNECTION_STATE_IDLE,			/* idle, ready for query */
 	DN_CONNECTION_STATE_QUERY,			/* query is sent, response expected */
+	DN_CONNECTION_STATE_CLOSE,			/* close is sent, confirmation expected */
 	DN_CONNECTION_STATE_ERROR_FATAL,	/* fatal error */
 	DN_CONNECTION_STATE_COPY_IN,
 	DN_CONNECTION_STATE_COPY_OUT
