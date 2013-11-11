@@ -982,6 +982,9 @@ int add_datanodeMaster(char *name, char *host, int port, char *dir)
 	/* Start the new datanode */
 	doImmediate(host, NULL, "pg_ctl start -Z restoremode -D %s -o -i", dir);
 
+	/* Allow the new datanode to start up by sleeping for a couple of seconds */
+	pg_usleep(2000000L);
+
 	/* Restore the backup */
 	doImmediateRaw("psql -h %s -p %d -d %s -f %s", host, port, sval(VAR_defaultDatabase), pgdumpall_out);
 	doImmediateRaw("rm -f %s", pgdumpall_out);
