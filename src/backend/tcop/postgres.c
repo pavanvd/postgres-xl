@@ -4233,6 +4233,13 @@ PostgresMain(int argc, char *argv[],
 		PgStartTime = GetCurrentTimestamp();
 
 #ifdef PGXC
+	/*
+	 * Initialize key pair to be used as object id while using advisory lock
+	 * for backup
+	 */
+	xc_lockForBackupKey1 = Int32GetDatum(XC_LOCK_FOR_BACKUP_KEY_1);
+	xc_lockForBackupKey1 = Int32GetDatum(XC_LOCK_FOR_BACKUP_KEY_2);
+
 #ifdef XCP
 	if (IsUnderPostmaster)
 	{
