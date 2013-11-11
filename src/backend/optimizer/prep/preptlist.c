@@ -131,7 +131,7 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 						{
 							List 	   *nodeList = NIL;
 							Bitmapset  *tmpset = bms_copy(distribution->nodes);
-							Bitmapset  *restrict = NULL;
+							Bitmapset  *restrictinfo = NULL;
 							Locator    *locator;
 							int		   *nodenums;
 							int 		i, count;
@@ -152,8 +152,8 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 											  constExpr->constisnull, NULL);
 
 							for (i = 0; i < count; i++)
-								restrict = bms_add_member(restrict, nodenums[i]);
-							distribution->restrictNodes = restrict;
+								restrictinfo = bms_add_member(restrictinfo, nodenums[i]);
+							distribution->restrictNodes = restrictinfo;
 							list_free(nodeList);
 							freeLocator(locator);
 						}

@@ -832,7 +832,7 @@ restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
 	{
 		List 	   *nodeList = NIL;
 		Bitmapset  *tmpset = bms_copy(distribution->nodes);
-		Bitmapset  *restrict = NULL;
+		Bitmapset  *restrictinfo = NULL;
 		Locator    *locator;
 		int		   *nodenums;
 		int 		i, count;
@@ -853,12 +853,12 @@ restrict_distribution(PlannerInfo *root, RestrictInfo *ri,
 						  constExpr->constisnull, NULL);
 
 		for (i = 0; i < count; i++)
-			restrict = bms_add_member(restrict, nodenums[i]);
+			restrictinfo = bms_add_member(restrictinfo, nodenums[i]);
 		if (distribution->restrictNodes)
 			distribution->restrictNodes = bms_intersect(distribution->restrictNodes,
-														restrict);
+														restrictinfo);
 		else
-			distribution->restrictNodes = restrict;
+			distribution->restrictNodes = restrictinfo;
 		list_free(nodeList);
 		freeLocator(locator);
 	}
