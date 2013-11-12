@@ -844,6 +844,7 @@ static void do_add_command(char *line)
 	char *pooler;
 	char *dir;
 	char *archDir;
+	char *dnode;
 
 	if (!GetToken())
 	{
@@ -941,7 +942,8 @@ static void do_add_command(char *line)
 			GetAndSet(host, "ERROR: please specify the host for the datanode masetr\n");
 			GetAndSet(port, "ERROR: please specify the port number for the datanode master\n");
 			GetAndSet(dir, "ERROR: please specify the working director for the datanode master\n");
-			add_datanodeMaster(name, host, atoi(port), dir);
+			GetAndSet(dnode, "ERROR: please specify name of existing datanode of which this will be a copy of. Specify 'none' for a bare datanode\n");
+			add_datanodeMaster(name, host, atoi(port), dir, dnode);
 			freeAndReset(name);
 			freeAndReset(host);
 			freeAndReset(port);

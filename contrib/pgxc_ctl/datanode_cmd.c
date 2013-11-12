@@ -820,7 +820,7 @@ static int failover_oneDatanode(int datanodeIdx)
  * Add command
  *
  *-----------------------------------------------------------------------*/
-int add_datanodeMaster(char *name, char *host, int port, char *dir)
+int add_datanodeMaster(char *name, char *host, int port, char *dir, char *restore_dname)
 {
 	FILE *f, *lockf;
 	int size, idx;
@@ -830,8 +830,9 @@ int add_datanodeMaster(char *name, char *host, int port, char *dir)
 	char *gtmPort;
 	char pgdumpall_out[MAXPATH+1];
 	char **nodelist = NULL;
-	int ii, jj;
+	int ii, jj, restore_dnode_idx;
 	char **confFiles = NULL;
+	char *only_globals = "-g";
 
 	/* Check if all the coordinators are running */
 	if (!check_AllDatanodeRunning())
@@ -965,8 +966,31 @@ int add_datanodeMaster(char *name, char *host, int port, char *dir)
 		fclose(f);
 	}
 
+	restore_dnode_idx = -1;
+	for (ii = 0; aval(VAR_datanodeNames)[ii]; ii++)
+	{
+		if (!is_none(aval(VAR_datanodeNames)[ii]))
+		{
+			if (strcmp(aval(VAR_datanodeNames)[ii], restore_dname) == 0)
+				restore_dnode_idx = ii;
+		}
+	}
+	if (strcmp("none", restore_dname) != 0 && restore_dnode_idx == -1)
+	{
+		elog(ERROR, "ERROR: improper datanode specified to restore from, %s\n", restore_dname);
+		return 1;
+	}
+
+	if (restore_dnode_idx == -1)
+	{
+		restore_dnode_idx = 0;
+	}
+	else
+		only_globals= " ";
+
+
 	/* Lock ddl */
-	if ((lockf = pgxc_popen_wRaw("psql -h %s -p %d %s", aval(VAR_datanodeMasterServers)[0], atoi(aval(VAR_datanodePorts)[0]), sval(VAR_defaultDatabase))) == NULL)
+	if ((lockf = pgxc_popen_wRaw("psql -h %s -p %d %s", aval(VAR_datanodeMasterServers)[restore_dnode_idx], atoi(aval(VAR_datanodePorts)[restore_dnode_idx]), sval(VAR_defaultDatabase))) == NULL)
 	{
 		elog(ERROR, "ERROR: could not open psql command, %s\n", strerror(errno));
 		return 1;
@@ -976,8 +1000,11 @@ int add_datanodeMaster(char *name, char *host, int port, char *dir)
 
 	/* pg_dumpall */
 	createLocalFileName(GENERAL, pgdumpall_out, MAXPATH);
-	doImmediateRaw("pg_dumpall -p %s -h %s -s --include-nodes --dump-nodes --file=%s",
-				   aval(VAR_datanodePorts)[0], aval(VAR_datanodeMasterServers)[0], pgdumpall_out);
+	doImmediateRaw("pg_dumpall -p %s -h %s -s --include-nodes --dump-nodes %s >%s",
+				   aval(VAR_datanodePorts)[restore_dnode_idx],
+				   aval(VAR_datanodeMasterServers)[restore_dnode_idx],
+				   only_globals,
+				   pgdumpall_out);
 
 	/* Start the new datanode */
 	doImmediate(host, NULL, "pg_ctl start -Z restoremode -D %s -o -i", dir);
