@@ -237,8 +237,8 @@ GetNewTransactionId(bool isSubXact)
 				elog(ERROR, "Coordinator has not provided xid for the command");
 			}
 			/* Fallback to default, needed for initdb */
-			elog(LOG, "Falling back to local Xid. Was = %d, now is = %d",
-					next_xid, ShmemVariableCache->nextXid);
+			elog(LOG, "Falling back to local Xid. Was = %d, now is = %d. autovacLaunch = %d",
+				next_xid, ShmemVariableCache->nextXid, IsAutoVacuumLauncherProcess());
 			xid = ShmemVariableCache->nextXid;
 		}
 	}

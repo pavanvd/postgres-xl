@@ -2707,10 +2707,6 @@ GetPGXCSnapshotData(Snapshot snapshot)
 		if (GetSnapshotDataDataNode(snapshot))
 			return true;
 		/* else fallthrough */
-		else
-			elog(LOG, "Will fall back to local snapshot for XID = %d, source = %d, gxmin = %d, autovac launch = %d, autovac = %d", 
-					   GetCurrentTransactionId(), snapshot_source, gxmin, 
-						IsAutoVacuumLauncherProcess(), IsAutoVacuumWorkerProcess());
 	}
 	else if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && IsNormalProcessingMode())
 	{
@@ -2737,7 +2733,7 @@ GetPGXCSnapshotData(Snapshot snapshot)
 		IsNormalProcessingMode() &&
 		!IsAutoVacuumLauncherProcess())
 	{
-		elog(ERROR, "Do not have a GTM snapshot available");
+		elog(WARNING, "Do not have a GTM snapshot available");
 	}
 
 	return false;
