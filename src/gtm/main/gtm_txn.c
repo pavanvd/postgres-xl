@@ -568,7 +568,7 @@ GTM_GetGlobalTransactionIdMulti(GTM_TransactionHandle handle[], int txn_count)
 		gtm_txninfo = GTM_HandleToTransactionInfo(handle[ii]);
 		Assert(gtm_txninfo);
 
-		elog(LOG, "Assigning new transaction ID = %d", xid);
+		elog(INFO, "Assigning new transaction ID = %d", xid);
 		gtm_txninfo->gti_gxid = xid;
 	}
 
