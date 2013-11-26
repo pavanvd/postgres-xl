@@ -2708,12 +2708,31 @@ GetPGXCSnapshotData(Snapshot snapshot)
 			return true;
 		/* else fallthrough */
 		else
-			elog(LOG, "Will fall back to local snapshot for XID = %d, source = %d, gxmin = %d, autovac launch = %d, autovac = %d", 
+#ifdef XCP
+		{
+			if (IsAutoVacuumLauncherProcess() || !IsNormalProcessingMode())
+			{
+#endif
+				elog(LOG, "Will fall back to local snapshot for XID = %d, source = %d, gxmin = %d, autovac launch = %d, autovac = %d", 
 					   GetCurrentTransactionId(), snapshot_source, gxmin, 
 						IsAutoVacuumLauncherProcess(), IsAutoVacuumWorkerProcess());
+#ifdef XCP
+			}
+			else
+			{
+				elog(ERROR, "GTM error, no fallback, could not obtain snapshot. Current XID = %d, Autovac = %d", GetCurrentTransactionId(), IsAutoVacuumWorkerProcess());
+			}
+		}
+#endif
 	}
 	else if (IS_PGXC_COORDINATOR && !IsConnFromCoord() && IsNormalProcessingMode())
 	{
+#ifdef XCP
+		/* 
+		 * GetSnapshotDataCoordinator will always fail if there is a GTM error.
+		 * There is no need for special checking		
+		 */ 		
+#endif
 		/* Snapshot has ever been received from remote Coordinator */
 		if (GetSnapshotDataCoordinator(snapshot))
 			return true;
@@ -2770,7 +2789,11 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 		if (!gtm_snapshot)
 			ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
-				errmsg("GTM error, could not obtain snapshot")));
+#ifdef XCP
+				errmsg("GTM error, could not obtain snapshot. Current XID = %d, Autovac = %d", GetCurrentTransactionId(), IsAutoVacuumWorkerProcess())));
+#else
+				errmsg("GTM error, could not obtain snapshot.");
+#endif
 		else {
 			if (gxip)
 				free(gxip);
