@@ -1798,6 +1798,7 @@ ProcessResponse(GTMProxy_ThreadInfo *thrinfo, GTMProxy_CommandInfo *cmdinfo,
 				pq_beginmessage(&buf, 'S');
 				pq_sendint(&buf, TXN_COMMIT_RESULT, 4);
 				pq_sendbytes(&buf, (char *)&cmdinfo->ci_data.cd_rc.gxid, sizeof (GlobalTransactionId));
+				pq_sendint(&buf, STATUS_OK, sizeof (int));
 				pq_endmessage(cmdinfo->ci_conn->con_port, &buf);
 				pq_flush(cmdinfo->ci_conn->con_port);
 			}
@@ -1832,6 +1833,7 @@ ProcessResponse(GTMProxy_ThreadInfo *thrinfo, GTMProxy_CommandInfo *cmdinfo,
 				pq_beginmessage(&buf, 'S');
 				pq_sendint(&buf, TXN_ROLLBACK_RESULT, 4);
 				pq_sendbytes(&buf, (char *)&cmdinfo->ci_data.cd_rc.gxid, sizeof (GlobalTransactionId));
+				pq_sendint(&buf, STATUS_OK, sizeof (int));
 				pq_endmessage(cmdinfo->ci_conn->con_port, &buf);
 				pq_flush(cmdinfo->ci_conn->con_port);
 			}
