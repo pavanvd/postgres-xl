@@ -1322,14 +1322,21 @@ GetSnapshotData(Snapshot snapshot)
 	 */
 	if (GetPGXCSnapshotData(snapshot))
 		return snapshot;
+#ifdef XCP
+	/*
+	 * Making falling back stricter
+	 */
+	if (!snapshot && !RecoveryInProgress() && IsPostmasterEnvironment && 
+				IsNormalProcessingMode() && !IsAutoVacuumLauncherProcess())
+		elog(ERROR, "Was unable to obtain a snapshot from GTM.");
+#else
+#endif
 #endif
 
 	/*
 	 * Fallback to standard routine, calculate snapshot from local proc arrey
 	 * if no master connection
 	 */
-
-
 	Assert(snapshot != NULL);
 
 	/*
