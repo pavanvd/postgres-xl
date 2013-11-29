@@ -2602,7 +2602,12 @@ AtEOXact_GlobalTxn(bool commit)
 	else if (IS_PGXC_DATANODE || IsConnFromCoord())
 	{
 		/* If we are autovacuum, commit on GTM */
+#ifdef XCP
+		if ((IsAutoVacuumWorkerProcess() || GetForceXidFromGTM() || IsAutoVacuumLauncherProcess())
+#else
 		if ((IsAutoVacuumWorkerProcess() || GetForceXidFromGTM())
+#endif
+
 				&& IsGTMConnected())
 		{
 			if (commit)

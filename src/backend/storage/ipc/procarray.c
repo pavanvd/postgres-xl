@@ -2763,7 +2763,11 @@ GetPGXCSnapshotData(Snapshot snapshot)
 		IsNormalProcessingMode() &&
 		!IsAutoVacuumLauncherProcess())
 	{
+#ifdef XCP
 		elog(ERROR, "Do not have a GTM snapshot available");
+#else
+		elog(WARNING, "Do not have a GTM snapshot available");
+#endif
 	}
 
 	return false;
@@ -2787,7 +2791,11 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 		return GetSnapshotDataCoordinator(snapshot);
 
 	/* Have a look at cases where Datanode is accessed by cluster internally */
+#ifdef XCP
+	if (IsAutoVacuumWorkerProcess() || GetForceXidFromGTM() || IsAutoVacuumLauncherProcess())
+#else
 	if (IsAutoVacuumWorkerProcess() || GetForceXidFromGTM())
+#endif
 	{
 		GTM_Snapshot gtm_snapshot;
 		bool canbe_grouped = (!FirstSnapshotSet) || (!IsolationUsesXactSnapshot());

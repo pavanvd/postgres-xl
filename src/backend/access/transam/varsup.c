@@ -191,7 +191,11 @@ GetNewTransactionId(bool isSubXact)
 	}
 	else if(IS_PGXC_DATANODE || IsConnFromCoord())
  	{
+#ifdef XCP
+		if (IsAutoVacuumWorkerProcess() || IsAutoVacuumLauncherProcess())
+#else
 		if (IsAutoVacuumWorkerProcess())
+#endif
 		{
 			/*
 			 * For an autovacuum worker process, get transaction ID directly from GTM.
