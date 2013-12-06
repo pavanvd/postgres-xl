@@ -2717,7 +2717,7 @@ GetPGXCSnapshotData(Snapshot snapshot)
 		else
 #ifdef XCP
 		{
-			if (IsAutoVacuumLauncherProcess() || !IsNormalProcessingMode())
+			if (IsAutoVacuumLauncherProcess() || !IsNormalProcessingMode() || !IsPostmasterEnvironment)
 			{
 #endif
 				elog(LOG, "Will fall back to local snapshot for XID = %d, source = %d, gxmin = %d, autovac launch = %d, autovac = %d", 
