@@ -2720,9 +2720,10 @@ GetPGXCSnapshotData(Snapshot snapshot)
 			if (IsAutoVacuumLauncherProcess() || !IsNormalProcessingMode() || !IsPostmasterEnvironment)
 			{
 #endif
-				elog(LOG, "Will fall back to local snapshot for XID = %d, source = %d, gxmin = %d, autovac launch = %d, autovac = %d", 
+				elog(LOG, "Will fall back to local snapshot for XID = %d, source = %d, gxmin = %d, autovac launch = %d, autovac = %d, normProcMode = %d, postEnv = %d", 
 					   GetCurrentTransactionId(), snapshot_source, gxmin, 
-						IsAutoVacuumLauncherProcess(), IsAutoVacuumWorkerProcess());
+						IsAutoVacuumLauncherProcess(), IsAutoVacuumWorkerProcess(),
+						IsNormalProcessingMode(), IsPostmasterEnvironment);
 #ifdef XCP
 			}
 			else
