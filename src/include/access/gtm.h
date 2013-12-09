@@ -16,6 +16,10 @@
 extern char *GtmHost;
 extern int GtmPort;
 
+#ifdef XCP
+extern bool IsXidFromGTM;
+#endif
+
 extern bool IsGTMConnected(void);
 extern void InitGTM(void);
 extern void CloseGTM(void);

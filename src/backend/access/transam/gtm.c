@@ -32,6 +32,10 @@
 /* Configuration variables */
 char *GtmHost = "localhost";
 int GtmPort = 6666;
+#ifdef XCP
+bool IsXidFromGTM = false;
+#endif
+
 extern bool FirstSnapshotSet;
 
 static GTM_Conn *conn;
@@ -148,6 +152,10 @@ BeginTranGTM(GTM_Timestamp *timestamp)
 		if (conn)
 			xid = begin_transaction(conn, GTM_ISOLATION_RC, timestamp);
 	}
+#ifdef XCP
+	if (xid)
+		IsXidFromGTM = true;
+#endif
 	return xid;
 }
 

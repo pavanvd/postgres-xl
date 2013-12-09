@@ -2709,7 +2709,14 @@ GetPGXCSnapshotData(Snapshot snapshot)
 	 * GTM not to include this transaction ID in snapshot.
 	 * A vacuum worker starts as a normal transaction would.
 	 */
+#ifdef XCP
+	/* If we got the transaction id from GTM, we should get the snapshot 
+	 * from there, too
+	 */
+	if (IS_PGXC_DATANODE || IsConnFromCoord() || IsAutoVacuumWorkerProcess() || IsXidFromGTM)
+#else
 	if (IS_PGXC_DATANODE || IsConnFromCoord() || IsAutoVacuumWorkerProcess())
+#endif
 	{
 		if (GetSnapshotDataDataNode(snapshot))
 			return true;
@@ -2783,7 +2790,11 @@ GetPGXCSnapshotData(Snapshot snapshot)
 static bool
 GetSnapshotDataDataNode(Snapshot snapshot)
 {
+#ifdef XCP
+	Assert(IS_PGXC_DATANODE || IsConnFromCoord() || IsAutoVacuumWorkerProcess() || IsXidFromGTM);
+#else
 	Assert(IS_PGXC_DATANODE || IsConnFromCoord() || IsAutoVacuumWorkerProcess());
+#endif
 
 	/*
 	 * Fallback to general case if Datanode is accessed directly by an application
@@ -2793,7 +2804,7 @@ GetSnapshotDataDataNode(Snapshot snapshot)
 
 	/* Have a look at cases where Datanode is accessed by cluster internally */
 #ifdef XCP
-	if (IsAutoVacuumWorkerProcess() || GetForceXidFromGTM() || IsAutoVacuumLauncherProcess())
+	if (IsAutoVacuumWorkerProcess() || GetForceXidFromGTM() || IsAutoVacuumLauncherProcess() || IsXidFromGTM)
 #else
 	if (IsAutoVacuumWorkerProcess() || GetForceXidFromGTM())
 #endif

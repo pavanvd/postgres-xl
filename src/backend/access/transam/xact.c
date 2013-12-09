@@ -2589,25 +2589,25 @@ AtEOXact_GlobalTxn(bool commit)
 	 * So directly report transaction end. However this applies only if
 	 * the connection is directly from a client.
 	 */
-	else if (IsGTMConnected() &&
-				!IsConnFromCoord() && !IsConnFromDatanode())
+	else if (IsXidFromGTM)
 	{
+		IsXidFromGTM = false;
 		if (commit)
 			CommitTranGTM(s->topGlobalTransansactionId);
 		else
 			RollbackTranGTM(s->topGlobalTransansactionId);
-		CloseGTM();
+		
+		if (IsGTMConnected() &&
+				!IsConnFromCoord() && !IsConnFromDatanode())
+		{
+			CloseGTM();
+		}
 	}
 #else
 	else if (IS_PGXC_DATANODE || IsConnFromCoord())
 	{
 		/* If we are autovacuum, commit on GTM */
-#ifdef XCP
-		if ((IsAutoVacuumWorkerProcess() || GetForceXidFromGTM() || IsAutoVacuumLauncherProcess())
-#else
 		if ((IsAutoVacuumWorkerProcess() || GetForceXidFromGTM())
-#endif
-
 				&& IsGTMConnected())
 		{
 			if (commit)

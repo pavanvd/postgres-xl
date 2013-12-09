@@ -120,6 +120,10 @@ GetNewTransactionId(bool isSubXact)
 #ifdef PGXC
 	bool increment_xid = true;
 	*timestamp_received = false;
+#ifdef XCP
+	/* Will be set if we obtain from GTM */
+	IsXidFromGTM = false;
+#endif
 #endif /* PGXC */
 	/*
 	 * During bootstrap initialization, we return the special bootstrap
@@ -192,7 +196,7 @@ GetNewTransactionId(bool isSubXact)
 	else if(IS_PGXC_DATANODE || IsConnFromCoord())
  	{
 #ifdef XCP
-		if (IsAutoVacuumWorkerProcess() || IsAutoVacuumLauncherProcess())
+		if (IsAutoVacuumWorkerProcess() || IsAutoVacuumLauncherProcess() || (IS_PGXC_DATANODE && IsInitProcessingMode()))
 #else
 		if (IsAutoVacuumWorkerProcess())
 #endif
