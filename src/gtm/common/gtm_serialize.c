@@ -823,25 +823,39 @@ gtm_deserialize_pgxcnodeinfo(GTM_PGXCNodeInfo *data, const char *buf, size_t buf
 	size_t len = 0;
 	uint32 len_wk;
 
+	elog(DEBUG1, "buflen = %d", buflen);
+
 	/* GTM_PGXCNodeInfo.type */
+	if (len + sizeof(GTM_PGXCNodeType) > buflen)
+	{
+		elog(FATAL, "Buffer length error in deserialization of node info. buflen = %d", buflen);
+	}
 	memcpy(&(data->type), buf + len, sizeof(GTM_PGXCNodeType));
 	len += sizeof(GTM_PGXCNodeType);
 
 	/* GTM_PGXCNodeInfo.nodename*/
 	memcpy(&len_wk, buf + len, sizeof(uint32));
 	len += sizeof(uint32);
+
 	if (len_wk == 0)
 	{
 		data->nodename = NULL;
 	}
 	else
 	{
+		if (len + len_wk > buflen)
+		{
+			elog(FATAL, "Buffer length error in deserialization of node name");
+		}
+
 		/* PGXCTODO: free memory */
 		data->nodename = (char *)genAlloc(len_wk + 1);
 		memcpy(data->nodename, buf + len, (size_t)len_wk);
 		data->nodename[len_wk] = 0;	/* null_terminate */
 		len += len_wk;
 	}
+	elog(DEBUG1, "Deserializing node name = %s",data->nodename);
+
 
 	/* GTM_PGXCNodeInfo.proxyname*/
 	memcpy(&len_wk, buf + len, sizeof(uint32));
@@ -852,16 +866,27 @@ gtm_deserialize_pgxcnodeinfo(GTM_PGXCNodeInfo *data, const char *buf, size_t buf
 	}
 	else
 	{
+		if (len + len_wk > buflen)
+		{
+			elog(FATAL, "Buffer length error in deserialization of node info after proxy name");
+		}
 		/* PGXCTODO: free memory */
 		data->proxyname = (char *)genAlloc(len_wk + 1);
 		memcpy(data->proxyname, buf + len, (size_t)len_wk);
 		data->proxyname[len_wk] = 0;	/* null_terminate */
 		len += len_wk;
 	}
+	elog(DEBUG1, "Proxy name = %s",data->nodename);
+
 
 	/* GTM_PGXCNodeInfo.port */
+	if (len + sizeof(GTM_PGXCNodePort) > buflen)
+	{
+		elog(FATAL, "Buffer length error in deserialization of node port");
+	}
 	memcpy(&(data->port), buf + len, sizeof(GTM_PGXCNodePort));
 	len += sizeof(GTM_PGXCNodePort);
+	elog(DEBUG1, "Port = %d",data->port);
 
 	/* GTM_PGXCNodeInfo.ipaddress */
 	memcpy(&len_wk, buf + len, sizeof(uint32));
@@ -872,11 +897,17 @@ gtm_deserialize_pgxcnodeinfo(GTM_PGXCNodeInfo *data, const char *buf, size_t buf
 	}
 	else
 	{
+		if (len + len_wk > buflen)
+		{
+			elog(FATAL, "Buffer length error in deserialization of ipaddress");
+		}
 		data->ipaddress = (char *)genAlloc(len_wk + 1);
 		memcpy(data->ipaddress, buf + len, (size_t)len_wk);
 		data->ipaddress[len_wk] = 0;	/* null_terminate */
 		len += len_wk;
 	}
+	elog(DEBUG1, "IPaddress = %s",data->ipaddress);
+
 
 	/* GTM_PGXCNodeInfo.datafolder */
 	memcpy(&len_wk, buf + len, sizeof(uint32));
@@ -887,29 +918,47 @@ gtm_deserialize_pgxcnodeinfo(GTM_PGXCNodeInfo *data, const char *buf, size_t buf
 	}
 	else
 	{
+		if (len + len_wk > buflen)
+		{
+			elog(FATAL, "Buffer length error in deserialization of node info after data folder");
+		}
 		data->datafolder = (char *)genAlloc(len_wk + 1);
 		memcpy(data->datafolder, buf + len, (size_t)len_wk);
 		data->datafolder[len_wk] = 0;	/* null_terminate */
 		len += len_wk;
 	}
+	elog(DEBUG1, "Data folder = %s",data->datafolder);
+
 
 	/* GTM_PGXCNodeInfo.status */
+	if (len + sizeof(GTM_PGXCNodeStatus) > buflen)
+	{
+		elog(FATAL, "Buffer length error in deserialization of node info after status");
+	}
 	memcpy(&(data->status), buf + len, sizeof(GTM_PGXCNodeStatus));
 	len += sizeof(GTM_PGXCNodeStatus);
+	elog(DEBUG1, "Status = %du",data->status);
+
 
 #ifdef XCP
 	/* GTM_PGXCNodeInfo.sessions */
 	memcpy(&len_wk, buf + len, sizeof(uint32));
 	len += sizeof(uint32);
 	data->max_sessions = len_wk;
+	elog(DEBUG1, "Max sessions = %d",data->max_sessions);
 	if (len_wk > 0)
 		data->sessions = (GTM_PGXCSession *)
 				genAlloc(len_wk * sizeof(GTM_PGXCSession));
 	memcpy(&len_wk, buf + len, sizeof(uint32));
 	len += sizeof(uint32);
 	data->num_sessions = len_wk;
+	elog(DEBUG1, "Num sessions = %d",data->num_sessions);
 	if (len_wk > 0)
 	{
+		if (len + (data->num_sessions * sizeof(GTM_PGXCSession)) > buflen)
+		{
+			elog(FATAL, "Buffer length error in deserialization of session info");
+		}
 		memcpy(data->sessions, buf + len, len_wk * sizeof(GTM_PGXCSession));
 		len += len_wk * sizeof(GTM_PGXCSession);
 	}

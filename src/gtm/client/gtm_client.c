@@ -24,6 +24,7 @@
 
 #include <time.h>
 
+#include "gtm/elog.h"
 #include "gtm/gtm_c.h"
 
 #include "gtm/gtm_ip.h"
@@ -238,6 +239,11 @@ get_node_list(GTM_Conn *conn, GTM_PGXCNodeInfo *data, size_t maxlen)
 	num_node = res->gr_resdata.grd_node_list.num_node;
 
 	fprintf(stderr, "get_node_list: num_node=%ld\n", num_node);
+	if (num_node > maxlen)
+	{
+		elog(LOG, "NUmber of nodes %zu greater than maximum", num_node);
+		goto receive_failed;
+	}
 
 	for (i = 0; i < num_node; i++)
 	{

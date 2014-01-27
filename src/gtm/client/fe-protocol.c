@@ -18,6 +18,7 @@
 #include <ctype.h>
 #include <fcntl.h>
 
+#include "gtm/elog.h"
 #include "gtm/libpq-fe.h"
 #include "gtm/libpq-int.h"
 #include "gtm/gtm_seq.h"
@@ -347,6 +348,7 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 		return result->gr_status;
 	}
 
+	elog(DEBUG3, "gtmpqParseSuccess result type = %d", result->gr_type);
 	result->gr_status = GTM_RESULT_OK;
 
 	switch (result->gr_type)
@@ -740,7 +742,7 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 			for (i = 0 ; i < result->gr_resdata.grd_node_list.num_node; i++)
 			{
 				int size;
-				char buf[1024];
+				char buf[8092];
 				GTM_PGXCNodeInfo *data = (GTM_PGXCNodeInfo *)malloc(sizeof(GTM_PGXCNodeInfo));
 
 				if (gtmpqGetInt(&size, sizeof(int32), conn))
@@ -748,12 +750,19 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 					result->gr_status = GTM_RESULT_ERROR;
 					break;
 				}
+				elog(DEBUG3, "node list size = %d", size);
+				if (size > 8092)
+				{
+					result->gr_status = GTM_RESULT_ERROR;
+					elog (FATAL, "buffer size not large enough for node list data");
+				}
 
 				if (gtmpqGetnchar((char *)&buf, size, conn))
 				{
 					result->gr_status = GTM_RESULT_ERROR;
 					break;
 				}
+				elog(DEBUG3, "gtm_deserialize_pgxcnodeinfo");
 				gtm_deserialize_pgxcnodeinfo(data, buf, size);
 
 				result->gr_resdata.grd_node_list.nodeinfo[i] = data;
@@ -769,6 +778,7 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
 			result->gr_status = GTM_RESULT_ERROR;
 			break;
 	}
+	elog(DEBUG3, "gr_status = %d", result->gr_status);
 
 	return (result->gr_status);
 }
