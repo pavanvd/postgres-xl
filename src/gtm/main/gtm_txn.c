@@ -1265,6 +1265,11 @@ GTM_BkupBeginTransactionGetGXIDMulti(char *coord_name,
 	int ii;
 	MemoryContext oldContext;
 
+#ifdef XCP
+	bool save_control = false;
+	GlobalTransactionId xid;
+#endif
+
 	oldContext = MemoryContextSwitchTo(TopMostMemoryContext);
 	GTM_RWLockAcquire(&GTMTransactions.gt_TransArrayLock, GTM_LOCKMODE_WRITE);
 
@@ -1290,10 +1295,29 @@ GTM_BkupBeginTransactionGetGXIDMulti(char *coord_name,
 		if (!GlobalTransactionIdIsValid(GTMTransactions.gt_nextXid))	/* Handle wrap around too */
 			GTMTransactions.gt_nextXid = FirstNormalGlobalTransactionId;
 		GTMTransactions.gt_open_transactions = gtm_lappend(GTMTransactions.gt_open_transactions, gtm_txninfo);
+		xid = GTMTransactions.gt_nextXid;
 	}
 
 
+#ifdef XCP
+	/* Periodically write the xid and sequence info out to the control file.
+	 * Try and handle wrapping, too.
+	 */
+	if (xid - ControlXid > CONTROL_INTERVAL || xid < ControlXid)
+	{
+		save_control = true;
+		ControlXid = xid;
+	}
+#endif
+
 	GTM_RWLockRelease(&GTMTransactions.gt_TransArrayLock);
+
+#ifdef XCP
+	/* save control info when not holding the XidGenLock */
+	if (save_control)
+		SaveControlInfo();
+#endif
+
 	MemoryContextSwitchTo(oldContext);
 }
 
