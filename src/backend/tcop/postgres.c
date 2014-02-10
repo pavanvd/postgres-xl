@@ -3019,6 +3019,14 @@ die(SIGNAL_ARGS)
 		}
 	}
 
+#ifdef XCP
+	/* release cluster lock if holding it */
+	if (cluster_ex_lock_held)
+	{
+		ReleaseClusterLock(true);
+	}
+#endif
+
 	/* If we're still here, waken anything waiting on the process latch */
 	if (MyProc)
 		SetLatch(&MyProc->procLatch);

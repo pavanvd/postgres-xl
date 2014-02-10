@@ -62,6 +62,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #ifdef XCP
+#include "pgxc/pause.h"
 #include "storage/procarray.h"
 #endif
 
@@ -2031,6 +2032,13 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
 
 	if (!agent->dn_connections && !agent->coord_connections)
 		return;
+#ifdef XCP
+	if (!force_destroy && cluster_ex_lock_held)
+	{
+		elog(LOG, "Not releasing connection with cluster lock");
+		return;
+	}
+#endif
 
 #ifndef XCP
 	/*

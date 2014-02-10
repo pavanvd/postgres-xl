@@ -1665,7 +1665,13 @@ PortalRunUtility(Portal portal, Node *utilityStmt, bool isTopLevel,
 		  IsA(utilityStmt, NotifyStmt) ||
 		  IsA(utilityStmt, UnlistenStmt) ||
 #ifdef PGXC
+#ifdef XCP
+		  IsA(utilityStmt, PauseClusterStmt) ||
+		  IsA(utilityStmt, BarrierStmt) ||
 		  (IsA(utilityStmt, CheckPointStmt) && IS_PGXC_DATANODE)))
+#else
+		  (IsA(utilityStmt, CheckPointStmt) && IS_PGXC_DATANODE)))
+#endif
 #else
 		  IsA(utilityStmt, CheckPointStmt)))
 #endif

@@ -370,6 +370,11 @@ AcquireClusterLock(bool exclusive)
 {
 	volatile ClusterLockInfo *clinfo = ClustLinfo;
 
+	if (exclusive && cluster_ex_lock_held)
+	{
+		return;
+	}
+
 	/*
 	 * In the normal case, none of the backends will ask for exclusive lock, so
 	 * they will just update the cl_process_count value and exit immediately
@@ -380,6 +385,7 @@ AcquireClusterLock(bool exclusive)
 		bool wait = false;
 
 		SpinLockAcquire(&clinfo->cl_mutex);
+
 		if (!exclusive)
 		{
 			if (clinfo->cl_holder_pid == 0)
@@ -401,7 +407,7 @@ AcquireClusterLock(bool exclusive)
 			 * There should be no other process
 			 * holding the lock including ourself
 			 */
-			if (clinfo->cl_process_count !=0)
+			if (clinfo->cl_process_count  > 0)
 				wait = true;
 			else
 				clinfo->cl_holder_pid = MyProcPid;
@@ -466,7 +472,8 @@ ReleaseClusterLock(bool exclusive)
 		 * Decrement our count. If a PAUSE is waiting inside AcquireClusterLock
 		 * elsewhere, it will wake out of sleep and do the needful
 		 */
-		clinfo->cl_process_count--;
+		if (clinfo->cl_process_count > 0);
+			clinfo->cl_process_count--;
 	}
 	SpinLockRelease(&clinfo->cl_mutex);
 }

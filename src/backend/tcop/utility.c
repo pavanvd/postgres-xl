@@ -3820,6 +3820,9 @@ IsStmtAllowedInLockedMode(Node *parsetree, const char *queryString)
 		case T_ReindexStmt:
 		case T_RemoteQuery:
 		case T_CleanConnStmt:
+#ifdef XCP
+		case T_PauseClusterStmt:
+#endif
 			return ALLOW;
 
 		default:

@@ -52,6 +52,7 @@
 #ifdef XCP
 #include "miscadmin.h"
 #include "storage/ipc.h"
+#include "pgxc/pause.h"
 #include "utils/snapmgr.h"
 #endif
 
@@ -858,6 +859,12 @@ release_handles(void)
 	if (HandlesInvalidatePending)
 	{
 		DoInvalidateRemoteHandles();
+		return;
+	}
+
+	/* don't free connection if holding a cluster lock */
+	if (cluster_ex_lock_held)
+	{
 		return;
 	}
 #endif
