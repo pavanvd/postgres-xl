@@ -2275,7 +2275,6 @@ finalize_plan(PlannerInfo *root, Plan *plan, Bitmapset *valid_params,
 
 #ifdef XCP
 		case T_RemoteSubplan:
-			//XCPTODO
 			break;
 #endif
 

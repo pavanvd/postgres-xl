@@ -2096,7 +2096,7 @@ hba_getauthmethod(hbaPort *port)
 #ifdef XCP
 /*
  * NB the only way to free allocated lines is to reset or delete current memory
- * context, so caller is responcible for setting it up properly to avoid leak.
+ * context, so caller is responsible for setting it up properly to avoid leak.
  * However, if function fails it would release working memory.
  * Basically the function does the same as load_hba(), but it does not set
  * the static variables.

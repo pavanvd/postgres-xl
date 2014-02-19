@@ -272,13 +272,19 @@ GetRealCmin(CommandId combocid)
 {
 #ifdef XCP
 	/*
-	 * Ugly workaround against assertion failure (or segmentation fault if
+	 * Workaround against assertion failure (or segmentation fault if
 	 * assertions is disabled) in a secondary datanode session when trying
 	 * to check visibility of a tuple with ComboCID.
 	 * ComboCID is only valid in a session that did the update, that is the
-	 * primary session. Until we come up with a solution, how to share ComboCIDs
+	 * primary session. 
+	 * Ideally we should have a solution, how to share ComboCIDs
 	 * between session just make tuples with ComboCIDs invisible to secondary
-	 * processes.
+	 * processes. Until then, we will have visibility issues in rare cases, 
+	 * if in the same transaction:
+	 *  1. Tuples inserted
+	 *  2. Cursor is opened
+	 *  3. Tuples inserted in step 1 are deleted
+	 * 
 	 */
 	if (combocid >= usedComboCids)
 		return FirstCommandId - 1;

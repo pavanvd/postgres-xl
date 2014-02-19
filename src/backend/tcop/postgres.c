@@ -1065,7 +1065,7 @@ exec_simple_query(const char *query_string)
 			list_length(parsetree_list) > 1)
 	{
 		/*
-		 * There is a bug in PostgresXC, if one query contains multiple utility
+		 * There is a bug in old code, if one query contains multiple utility
 		 * statements, entire query may be sent multiple times to the Datanodes
 		 * for execution. That is becoming a severe problem, if query contains
 		 * COMMIT or ROLLBACK. After executed for the first time the transaction

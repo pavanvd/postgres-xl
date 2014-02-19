@@ -24,7 +24,7 @@
 /*
  * Distribution
  *
- * Distribution is a attribute of distributed plan node. It describes on which
+ * Distribution is an attribute of distributed plan node. It describes on which
  * node execution results can be found.
  */
 typedef struct Distribution

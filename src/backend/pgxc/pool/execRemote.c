@@ -58,7 +58,6 @@
 /* Enforce the use of two-phase commit when temporary objects are used */
 bool EnforceTwoPhaseCommit = true;
 /*
- * In XC it is in seconds, in StormDB in milliseconds
  * We do not want it too long, when query is terminating abnormally we just
  * want to read in already available data, if datanode connection will reach a
  * consistent state after that, we will go normal clean up procedure: send down
@@ -1007,7 +1006,7 @@ HandleError(RemoteQueryState *combiner, char *msg_body, size_t len)
 	 */
 #ifdef XCP
 	/*
-	 * The producer error may me hiding primary error, so if previously received
+	 * The producer error may be hiding primary error, so if previously received
 	 * error is a producer error allow it to be overwritten.
 	 */
 	if (combiner->errorMessage == NULL ||
@@ -7231,7 +7230,7 @@ pgxc_node_remote_finish(char *prepareGID, bool commit,
 #ifdef XCP
 /*****************************************************************************
  *
- * Simplified versions of PGXC's ExecInitRemoteQuery, ExecRemoteQuery and
+ * Simplified versions of ExecInitRemoteQuery, ExecRemoteQuery and
  * ExecEndRemoteQuery: in XCP they are only used to execute simple queries.
  *
  *****************************************************************************/
