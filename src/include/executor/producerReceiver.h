@@ -4,7 +4,7 @@
  *	  prototypes for producerReceiver.c
  *
  *
- * Copyright (c) 2011, StormDB
+ * Copyright (c) 2012-2014, TransLattice, Inc.
  *
  * src/include/executor/producerReceiver.h
  *

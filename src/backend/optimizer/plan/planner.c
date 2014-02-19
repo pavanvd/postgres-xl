@@ -1771,7 +1771,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			result_plan->targetlist = (List *) copyObject(window_tlist);
 #ifdef XCP
 			/*
-			 * StormDB can not guarantee correct result of windowing function
+			 * We can not guarantee correct result of windowing function
 			 * if aggregation is pushed down to Datanodes. So if current plan
 			 * produces a distributed result set we should bring it to
 			 * coordinator.
@@ -1827,7 +1827,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 					}
 #ifdef XCP
 					/*
-					 * In StormDB Sort may be pushed down to the Datanodes,
+					 * In our code, Sort may be pushed down to the Datanodes,
 					 * and therefore we may get the sort_plan is not really a
 					 * Sort node. In this case we should get sort columns from
 					 * the top RemoteSubplan

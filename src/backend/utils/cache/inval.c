@@ -836,11 +836,11 @@ AtEOXact_Inval(bool isCommit)
 {
 #ifdef XCP
 	/*
-	 * StormDB distributed session may run on multiple backends, and we need
-	 * to broadcast invalidation messages so they reach other backends even
-	 * in case of rollback. If the session runs on single backend the
-	 * invalidation messages may be still applied locally. So the criteria may
-	 * be more complex.
+	 * In our code, the distributed session may run on multiple backends, 
+	 * and we need to broadcast invalidation messages so they reach other 
+	 * backends even * in case of rollback. If the session runs on single 
+	 * backend the invalidation messages may be still applied locally. 
+	 * So the criteria may be more complex.
 	 */
 	if (isCommit || IS_PGXC_DATANODE)
 #else

@@ -3429,7 +3429,7 @@ static struct config_string ConfigureNamesString[] =
 #ifdef XCP
 	{
 		{"parentnode", PGC_BACKEND, CONN_AUTH,
-			gettext_noop("Sets the name of StormDB parent data node"),
+			gettext_noop("Sets the name of the parent data node"),
 			NULL
 		},
 		&parentPGXCNode,

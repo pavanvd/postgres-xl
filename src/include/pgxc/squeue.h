@@ -5,7 +5,7 @@
  *	  Definitions for the shared queue handling
  *
  *
- * Copyright (c) 2011 StormDB
+ * Copyright (c) 2012-2014, TransLattice, Inc.
  *
  * IDENTIFICATION
  *	  $$

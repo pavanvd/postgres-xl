@@ -5,7 +5,7 @@
  *	  multiple customers via a SharedQueue.
  *
  *
- * Copyright (c) 2011, StormDB
+ * Copyright (c) 2012-2014, TransLattice, Inc.
  *
  * IDENTIFICATION
  *	  src/backend/executor/producerReceiver.c

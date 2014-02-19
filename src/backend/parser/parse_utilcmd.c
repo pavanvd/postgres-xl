@@ -3329,7 +3329,8 @@ checkLocalFKConstraints(CreateStmtContext *cxt)
 		/*
 		 * If constraint references to the table itself, it is safe
 		 * Check if relation name is the same
-		 * StormDB: NO! It is only safe if table is replicated!
+		 * XCTODO: NO! It is only safe if table is replicated
+		 * or distributed on primary key
 		 */
 		if (constraint->pktable &&
 			strcmp(constraint->pktable->relname,cxt->relation->relname) == 0)

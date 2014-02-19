@@ -9,7 +9,7 @@
  *    The producer is usually a consumer at the same time, it sends back tuples
  * to the parent node without putting it to the queue.
  *
- * Copyright (c) 2011 StormDB
+ * Copyright (c) 2012-2014, TransLattice, Inc.
  *
  * IDENTIFICATION
  *	  $$

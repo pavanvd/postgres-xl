@@ -1085,8 +1085,8 @@ exec_simple_query(const char *query_string)
 			if (IsTransactionExitStmt(parsetree))
 				ereport(ERROR,
 						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
-						 errmsg("StormDB does not allow COMMIT or ROLLBACK "
-								"in multi-statement queries")));
+						 errmsg("COMMIT or ROLLBACK "
+								"in multi-statement queries not allowed")));
 		}
 	}
 #endif
