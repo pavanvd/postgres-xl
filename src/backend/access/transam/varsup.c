@@ -3,6 +3,7 @@
  * varsup.c
  *	  postgres OID & XID variables support routines
  *
+ * Portions Copyright (c) 2012-2014, TransLattice, Inc.
  * Copyright (c) 2000-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
  *

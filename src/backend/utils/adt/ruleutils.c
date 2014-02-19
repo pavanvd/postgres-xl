@@ -4,6 +4,7 @@
  *	  Functions to convert stored expressions/querytrees back to
  *	  source text
  *
+ * Portions Copyright (c) 2012-2014, TransLattice, Inc.
  * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *

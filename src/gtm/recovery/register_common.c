@@ -3,6 +3,7 @@
  * register.c
  *  PGXC Node Register on GTM and GTM Proxy, node registering functions
  *
+ * Portions Copyright (c) 2012-2014, TransLattice, Inc.
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group

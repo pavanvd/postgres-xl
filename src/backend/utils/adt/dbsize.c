@@ -2,6 +2,7 @@
  * dbsize.c
  *		Database object size functions, and related inquiries
  *
+ * Portions Copyright (c) 2012-2014, TransLattice, Inc.
  * Copyright (c) 2002-2012, PostgreSQL Global Development Group
  *
  * IDENTIFICATION

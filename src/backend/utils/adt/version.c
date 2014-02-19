@@ -3,6 +3,7 @@
  * version.c
  *	 Returns the PostgreSQL version string
  *
+ * Portions Copyright (c) 2012-2014, TransLattice, Inc.
  * Copyright (c) 1998-2012, PostgreSQL Global Development Group
  *
  * IDENTIFICATION

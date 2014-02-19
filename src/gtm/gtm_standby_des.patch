@@ -1,0 +1,269 @@
+diff --git a/src/backend/commands/.vacuum.c.swp b/src/backend/commands/.vacuum.c.swp
+deleted file mode 100644
+index 3f9b8b4..0000000
+Binary files a/src/backend/commands/.vacuum.c.swp and /dev/null differ
+diff --git a/src/gtm/client/fe-protocol.c b/src/gtm/client/fe-protocol.c
+index c75514e..28de6a4 100644
+--- a/src/gtm/client/fe-protocol.c
++++ b/src/gtm/client/fe-protocol.c
+@@ -18,6 +18,7 @@
+ #include <ctype.h>
+ #include <fcntl.h>
+ 
++#include "gtm/elog.h"
+ #include "gtm/libpq-fe.h"
+ #include "gtm/libpq-int.h"
+ #include "gtm/gtm_seq.h"
+@@ -347,6 +348,7 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
+ 		return result->gr_status;
+ 	}
+ 
++	elog(DEBUG3, "gtmpqParseSuccess result type = %d", result->gr_type);
+ 	result->gr_status = GTM_RESULT_OK;
+ 
+ 	switch (result->gr_type)
+@@ -740,7 +742,7 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
+ 			for (i = 0 ; i < result->gr_resdata.grd_node_list.num_node; i++)
+ 			{
+ 				int size;
+-				char buf[1024];
++				char buf[8092];
+ 				GTM_PGXCNodeInfo *data = (GTM_PGXCNodeInfo *)malloc(sizeof(GTM_PGXCNodeInfo));
+ 
+ 				if (gtmpqGetInt(&size, sizeof(int32), conn))
+@@ -748,12 +750,19 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
+ 					result->gr_status = GTM_RESULT_ERROR;
+ 					break;
+ 				}
++				elog(DEBUG3, "node list size = %d", size);
++				if (size > 8092)
++				{
++					result->gr_status = GTM_RESULT_ERROR;
++					elog (FATAL, "buffer size not large enough for node list data");
++				}
+ 
+ 				if (gtmpqGetnchar((char *)&buf, size, conn))
+ 				{
+ 					result->gr_status = GTM_RESULT_ERROR;
+ 					break;
+ 				}
++				elog(DEBUG3, "gtm_deserialize_pgxcnodeinfo");
+ 				gtm_deserialize_pgxcnodeinfo(data, buf, size);
+ 
+ 				result->gr_resdata.grd_node_list.nodeinfo[i] = data;
+@@ -769,6 +778,7 @@ gtmpqParseSuccess(GTM_Conn *conn, GTM_Result *result)
+ 			result->gr_status = GTM_RESULT_ERROR;
+ 			break;
+ 	}
++	elog(DEBUG3, "gr_status = %d", result->gr_status);
+ 
+ 	return (result->gr_status);
+ }
+diff --git a/src/gtm/client/gtm_client.c b/src/gtm/client/gtm_client.c
+index 100d698..1df6160 100644
+--- a/src/gtm/client/gtm_client.c
++++ b/src/gtm/client/gtm_client.c
+@@ -24,6 +24,7 @@
+ 
+ #include <time.h>
+ 
++#include "gtm/elog.h"
+ #include "gtm/gtm_c.h"
+ 
+ #include "gtm/gtm_ip.h"
+@@ -238,6 +239,11 @@ get_node_list(GTM_Conn *conn, GTM_PGXCNodeInfo *data, size_t maxlen)
+ 	num_node = res->gr_resdata.grd_node_list.num_node;
+ 
+ 	fprintf(stderr, "get_node_list: num_node=%ld\n", num_node);
++	if (num_node > maxlen)
++	{
++		elog(LOG, "NUmber of nodes %zu greater than maximum", num_node);
++		goto receive_failed;
++	}
+ 
+ 	for (i = 0; i < num_node; i++)
+ 	{
+diff --git a/src/gtm/common/gtm_serialize.c b/src/gtm/common/gtm_serialize.c
+index bb59d93..cf744a3 100644
+--- a/src/gtm/common/gtm_serialize.c
++++ b/src/gtm/common/gtm_serialize.c
+@@ -823,25 +823,39 @@ gtm_deserialize_pgxcnodeinfo(GTM_PGXCNodeInfo *data, const char *buf, size_t buf
+ 	size_t len = 0;
+ 	uint32 len_wk;
+ 
++	elog(DEBUG1, "buflen = %d", buflen);
++
+ 	/* GTM_PGXCNodeInfo.type */
++	if (len + sizeof(GTM_PGXCNodeType) > buflen)
++	{
++		elog(FATAL, "Buffer length error in deserialization of node info. buflen = %d", buflen);
++	}
+ 	memcpy(&(data->type), buf + len, sizeof(GTM_PGXCNodeType));
+ 	len += sizeof(GTM_PGXCNodeType);
+ 
+ 	/* GTM_PGXCNodeInfo.nodename*/
+ 	memcpy(&len_wk, buf + len, sizeof(uint32));
+ 	len += sizeof(uint32);
++
+ 	if (len_wk == 0)
+ 	{
+ 		data->nodename = NULL;
+ 	}
+ 	else
+ 	{
++		if (len + len_wk > buflen)
++		{
++			elog(FATAL, "Buffer length error in deserialization of node name");
++		}
++
+ 		/* PGXCTODO: free memory */
+ 		data->nodename = (char *)genAlloc(len_wk + 1);
+ 		memcpy(data->nodename, buf + len, (size_t)len_wk);
+ 		data->nodename[len_wk] = 0;	/* null_terminate */
+ 		len += len_wk;
+ 	}
++	elog(DEBUG1, "Deserializing node name = %s",data->nodename);
++
+ 
+ 	/* GTM_PGXCNodeInfo.proxyname*/
+ 	memcpy(&len_wk, buf + len, sizeof(uint32));
+@@ -852,16 +866,27 @@ gtm_deserialize_pgxcnodeinfo(GTM_PGXCNodeInfo *data, const char *buf, size_t buf
+ 	}
+ 	else
+ 	{
++		if (len + len_wk > buflen)
++		{
++			elog(FATAL, "Buffer length error in deserialization of node info after proxy name");
++		}
+ 		/* PGXCTODO: free memory */
+ 		data->proxyname = (char *)genAlloc(len_wk + 1);
+ 		memcpy(data->proxyname, buf + len, (size_t)len_wk);
+ 		data->proxyname[len_wk] = 0;	/* null_terminate */
+ 		len += len_wk;
+ 	}
++	elog(DEBUG1, "Proxy name = %s",data->nodename);
++
+ 
+ 	/* GTM_PGXCNodeInfo.port */
++	if (len + sizeof(GTM_PGXCNodePort) > buflen)
++	{
++		elog(FATAL, "Buffer length error in deserialization of node port");
++	}
+ 	memcpy(&(data->port), buf + len, sizeof(GTM_PGXCNodePort));
+ 	len += sizeof(GTM_PGXCNodePort);
++	elog(DEBUG1, "Port = %d",data->port);
+ 
+ 	/* GTM_PGXCNodeInfo.ipaddress */
+ 	memcpy(&len_wk, buf + len, sizeof(uint32));
+@@ -872,11 +897,17 @@ gtm_deserialize_pgxcnodeinfo(GTM_PGXCNodeInfo *data, const char *buf, size_t buf
+ 	}
+ 	else
+ 	{
++		if (len + len_wk > buflen)
++		{
++			elog(FATAL, "Buffer length error in deserialization of ipaddress");
++		}
+ 		data->ipaddress = (char *)genAlloc(len_wk + 1);
+ 		memcpy(data->ipaddress, buf + len, (size_t)len_wk);
+ 		data->ipaddress[len_wk] = 0;	/* null_terminate */
+ 		len += len_wk;
+ 	}
++	elog(DEBUG1, "IPaddress = %s",data->ipaddress);
++
+ 
+ 	/* GTM_PGXCNodeInfo.datafolder */
+ 	memcpy(&len_wk, buf + len, sizeof(uint32));
+@@ -887,29 +918,47 @@ gtm_deserialize_pgxcnodeinfo(GTM_PGXCNodeInfo *data, const char *buf, size_t buf
+ 	}
+ 	else
+ 	{
++		if (len + len_wk > buflen)
++		{
++			elog(FATAL, "Buffer length error in deserialization of node info after data folder");
++		}
+ 		data->datafolder = (char *)genAlloc(len_wk + 1);
+ 		memcpy(data->datafolder, buf + len, (size_t)len_wk);
+ 		data->datafolder[len_wk] = 0;	/* null_terminate */
+ 		len += len_wk;
+ 	}
++	elog(DEBUG1, "Data folder = %s",data->datafolder);
++
+ 
+ 	/* GTM_PGXCNodeInfo.status */
++	if (len + sizeof(GTM_PGXCNodeStatus) > buflen)
++	{
++		elog(FATAL, "Buffer length error in deserialization of node info after status");
++	}
+ 	memcpy(&(data->status), buf + len, sizeof(GTM_PGXCNodeStatus));
+ 	len += sizeof(GTM_PGXCNodeStatus);
++	elog(DEBUG1, "Status = %du",data->status);
++
+ 
+ #ifdef XCP
+ 	/* GTM_PGXCNodeInfo.sessions */
+ 	memcpy(&len_wk, buf + len, sizeof(uint32));
+ 	len += sizeof(uint32);
+ 	data->max_sessions = len_wk;
++	elog(DEBUG1, "Max sessions = %d",data->max_sessions);
+ 	if (len_wk > 0)
+ 		data->sessions = (GTM_PGXCSession *)
+ 				genAlloc(len_wk * sizeof(GTM_PGXCSession));
+ 	memcpy(&len_wk, buf + len, sizeof(uint32));
+ 	len += sizeof(uint32);
+ 	data->num_sessions = len_wk;
++	elog(DEBUG1, "Num sessions = %d",data->num_sessions);
+ 	if (len_wk > 0)
+ 	{
++		if (len + (data->num_sessions * sizeof(GTM_PGXCSession)) > buflen)
++		{
++			elog(FATAL, "Buffer length error in deserialization of session info");
++		}
+ 		memcpy(data->sessions, buf + len, len_wk * sizeof(GTM_PGXCSession));
+ 		len += len_wk * sizeof(GTM_PGXCSession);
+ 	}
+diff --git a/src/gtm/main/gtm_txn.c b/src/gtm/main/gtm_txn.c
+index eeef880..44520ee 100644
+--- a/src/gtm/main/gtm_txn.c
++++ b/src/gtm/main/gtm_txn.c
+@@ -1265,6 +1265,11 @@ GTM_BkupBeginTransactionGetGXIDMulti(char *coord_name,
+ 	int ii;
+ 	MemoryContext oldContext;
+ 
++#ifdef XCP
++	bool save_control = false;
++	GlobalTransactionId xid;
++#endif
++
+ 	oldContext = MemoryContextSwitchTo(TopMostMemoryContext);
+ 	GTM_RWLockAcquire(&GTMTransactions.gt_TransArrayLock, GTM_LOCKMODE_WRITE);
+ 
+@@ -1290,10 +1295,29 @@ GTM_BkupBeginTransactionGetGXIDMulti(char *coord_name,
+ 		if (!GlobalTransactionIdIsValid(GTMTransactions.gt_nextXid))	/* Handle wrap around too */
+ 			GTMTransactions.gt_nextXid = FirstNormalGlobalTransactionId;
+ 		GTMTransactions.gt_open_transactions = gtm_lappend(GTMTransactions.gt_open_transactions, gtm_txninfo);
++		xid = GTMTransactions.gt_nextXid;
+ 	}
+ 
+ 
++#ifdef XCP
++	/* Periodically write the xid and sequence info out to the control file.
++	 * Try and handle wrapping, too.
++	 */
++	if (xid - ControlXid > CONTROL_INTERVAL || xid < ControlXid)
++	{
++		save_control = true;
++		ControlXid = xid;
++	}
++#endif
++
+ 	GTM_RWLockRelease(&GTMTransactions.gt_TransArrayLock);
++
++#ifdef XCP
++	/* save control info when not holding the XidGenLock */
++	if (save_control)
++		SaveControlInfo();
++#endif
++
+ 	MemoryContextSwitchTo(oldContext);
+ }
+ 
