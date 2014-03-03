@@ -76,6 +76,9 @@ PostgreSQL documentation
      </group>
    </arg>
    <arg>-o <replaceable>options</replaceable></arg>
+<!## XC>
+   <arg>-Z <replaceable>nodeopt</replaceable></arg>
+<!## end>
   </cmdsynopsis>
 
   <cmdsynopsis>
@@ -342,9 +345,10 @@ PostgreSQL documentation
 
 <!## XC>
      <varlistentry>
-      <term><option>-Z<replaceable class="parameter">nodeopt</replaceable></option></term>
+      <term><option>-Z <replaceable class="parameter">nodeopt</replaceable></option></term>
       <listitem>
        <para>
+<<<<<<< HEAD
         Specifies to run node as a Coordinator, as a Datanode or in restore mode.
         <replaceable>nodeopt</replaceable> can be respectively
         <literal>coordinator</literal>,  <literal>datanode</literal> or
@@ -353,6 +357,11 @@ PostgreSQL documentation
        <para>
         With restore mode, you can import Postgres-XC's catalog data from other coordinator
         or datanode
+=======
+        Specifies to run node as a Coordinator or as a Datanode.
+        <replaceable>nodeopt</replaceable> can be respectively
+        <literal>coordinator</literal> or <literal>datanode</literal>.
+>>>>>>> 99c47f0... Fix for documentation of pg_ctl with -Z option
        </para>
       </listitem>
      </varlistentry>
