@@ -2183,6 +2183,9 @@ CommitTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
 	TransactionId latestXid;
+#ifdef PGXC
+	bool		isImplicit = !(s->blockState == TBLOCK_PREPARE);
+#endif
 
 	ShowTransactionState("CommitTransaction");
 
@@ -2236,7 +2239,7 @@ CommitTransaction(void)
 		 */
 		if (IsOnCommitActions() || ExecIsTempObjectIncluded())
 		{
-			if (!EnforceTwoPhaseCommit)
+			if (!EnforceTwoPhaseCommit || isImplicit)
 				ExecSetTempObjectIncluded();
 			else
 				ereport(ERROR,
@@ -2815,7 +2818,11 @@ PrepareTransaction(void)
 	 * cases, such as a temp table created and dropped all within the
 	 * transaction.  That seems to require much more bookkeeping though.
 	 */
+#ifdef PGXC
+	if (MyXactAccessedTempRel && !isImplicit)
+#else
 	if (MyXactAccessedTempRel)
+#endif
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot PREPARE a transaction that has operated on temporary tables")));
