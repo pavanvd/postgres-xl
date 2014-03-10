@@ -142,6 +142,9 @@ char *pgxc_ctl_bash_script[] = {
 "	echo primaryDatanode $primaryDatanode",
 "	print_array datanodeNames",
 "	print_array datanodePorts",
+#ifdef XCP
+"	print_array datanodePoolerPorts",
+#endif
 "	print_array datanodePgHbaEntries",
 "	",
 "	# Datanodes masters",
@@ -577,6 +580,9 @@ char *pgxc_ctl_conf_prototype[] = {
 "primaryDatanode=datanode1				# Primary Node.",
 "datanodeNames=(datanode1 datanode2 datanode3 datanode4)",
 "datanodePorts=(20008 20009 20008 20009)	# Master and slave use the same port!",
+#ifdef XCP
+"datanodePoolerPorts=(20012 20013 20012 20013)	# Master and slave use the same port!",
+#endif
 "datanodePgHbaEntries=(192.168.1.0/24)	# Assumes that all the coordinator (master/slave) accepts",
 "										# the same connection",
 "										# This list sets up pg_hba.conf for $pgxcOwner user.",

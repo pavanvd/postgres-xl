@@ -941,12 +941,22 @@ static void do_add_command(char *line)
 			GetAndSet(name, "ERROR: please specify the name of the datanode master\n");
 			GetAndSet(host, "ERROR: please specify the host for the datanode masetr\n");
 			GetAndSet(port, "ERROR: please specify the port number for the datanode master\n");
+#ifdef XCP
+			GetAndSet(pooler, "ERROR: please specify the pooler port number for the datanode master.\n");
+#endif
 			GetAndSet(dir, "ERROR: please specify the working director for the datanode master\n");
 			GetAndSet(dnode, "ERROR: please specify name of existing datanode of which this will be a copy of. Specify 'none' for a bare datanode\n");
+#ifdef XCP
+			add_datanodeMaster(name, host, atoi(port), atoi(pooler), dir, dnode);
+#else
 			add_datanodeMaster(name, host, atoi(port), dir, dnode);
+#endif
 			freeAndReset(name);
 			freeAndReset(host);
 			freeAndReset(port);
+#ifdef XCP
+			freeAndReset(pooler);
+#endif
 			freeAndReset(dir);
 		}
 		else

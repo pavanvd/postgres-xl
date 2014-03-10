@@ -197,6 +197,7 @@ datanodeArchLogDir=$HOME/pgxc/nodes/datanode_archlog
 primaryDatanode=datanode1				# Primary Node.
 datanodeNames=(datanode1 datanode2 datanode3 datanode4)
 datanodePorts=(20008 20009 20008 20009)	# Master and slave use the same port!
+datanodePoolerPorts=(20011 20012 20011 20012)	# Master and slave use the same port!
 datanodePgHbaEntries=(192.168.1.0/24)	# Assumes that all the coordinator (master/slave) accepts
 										# the same connection
 										# This list sets up pg_hba.conf for $pgxcOwner user.
@@ -435,6 +436,7 @@ datanodeArchLogDir=$HOME/pgxc/nodes/datanode_archlog
 primaryDatanode=N/A						# Primary Node.
 datanodeNames=(datanode1 datanode2 datanode3 datanode4)
 datanodePorts=(20008 20009 20008 20009)	# Master and slave use the same port!
+datanodePoolerPorts=(20011 20012 20011 20012)	# Master and slave use the same port!
 datanodePgHbaEntries=(192.168.1.0/24)	# Assumes that all the coordinator (master/slave) accepts
 										# the same connection
 										# This list sets up pg_hba.conf for $pgxcOwner user.
@@ -1056,6 +1058,11 @@ function verifyResource
 		echo ERROR: Invalid entry numbers in datanode configuration.
 		return 1
 	fi
+    #if XCP
+	if [ $i -ne ${#datanodePoolerPorts[@]} -o $i -ne ${#datanodeSpecificExtraConfig[@]} -o $i -ne ${#datanodeSpecificExtraPgHba[@]} ]; then
+		echo ERROR: Invalid entry numbers in datanode pooler port configuration.
+		return 1
+	fi
 	if [ $i -ne ${#datanodeMasterServers[@]} -o $i -ne ${#datanodeMasterDirs[@]} ]; then
 		echo ERROR: Invalid entry numbers in datanode configuration.
 		return 1
@@ -1193,11 +1200,13 @@ function verifyNode
 	for ((i=0; i<${#datanodeMasterServers[$i]}; i++)); do
 		if [ $1 == ${datanodeMasterServers[$i]} ]; then
 			Ports=( ${Ports[@]} ${datanodePorts[$i]} )
+			PoolerPorts=( ${PoolerPorts[@]} ${datanodePoolerPorts[$i]} ) #XCP
 			Dirs=( ${Dirs[@]} ${datanodeMasterDirs[$i]} )
 		fi
 		if [ $1 == ${datanodeSlaveServers[$i]} ]; then
 			Ports=( ${Ports[@]} ${datanodePorts[$i]} )
-			Ports=( ${Ports[@]} ${datanodeSlaveDirs[$i]} )
+			PoolerPorts=( ${PoolerPorts[@]} ${datanodePoolerPorts[$i]} ) #XCP
+			Dirs=( ${Ports[@]} ${datanodeSlaveDirs[$i]} ) #mds
 		fi
 	done
 	for ((i=0; i<${#Ports[@]}; i++)); do
@@ -1286,6 +1295,7 @@ function print_config
 			if [ ${allServers[$ii]} == ${datanodeMasterServers[$jj]} ]; then
 				echo "Datanode Master"
 				echo "    " Nodename: "'"${datanodeNames[$jj]}"'", port: ${datanodePorts[$jj]}
+				#mdsecho "    " Pooler Ports: ${datanodePoolerPorts[$jj]}
 				echo "    " MaxWalSenders: ${datanodeMaxWalSenders[$jj]}, Dir: "'"${datanodeMasterDirs[$jj]}
 				echo "    " ExtraConfig: "'"datanodeExtraConfig"'", Specific Extra Config: \
 					"'"${datanodeSpecificExtraConfig[$jj]}"'"
@@ -1300,6 +1310,7 @@ function print_config
 				if [ ${allServers[$ii]} == ${datanodeSlaveServers[$jj]} ]; then
 					echo "Datanode Slave"
 					echo "    " Nodename: "'"${datanodeNames[$jj]}"'", port: ${datanodePorts[$jj]}
+					#mdsecho "    " Pooler Ports: ${datanodePoolerPorts[$jj]}
 					echo "    " MaxWalSenders: ${datanodeMaxWalSenders[$jj]}, Dir: "'"${datanodeSlaveDirs[$jj]}
 					echo "    " ExtraConfig: "'"datanodeExtraConfig"'", Specific Extra Config: \
 						"'"${datanodeSpecificExtraConfig[$jj]}"'"
@@ -1536,11 +1547,11 @@ function pgxc_ctl_show_component
 	for ((i=0; i<${#datanodeNames[@]}; i++)); do
 		if [ "${datanodeNames[$i]}" == "$1" ]; then
 			echo "$1:" Datanode
-			echo "     " Datanode Master, port=${datanodePorts[$i]}, host=${datanodeMasterServers[$i]}, dir=${datanodeMasterDirs[$i]}
+			echo "     " Datanode Master, port=${datanodePorts[$i]}, pooler_port=${datanodePoolerPorts[$]}, host=${datanodeMasterServers[$i]}, dir=${datanodeMasterDirs[$i]}
 			if [ "${datanodeSlaveServers[$i]}" == "none" ] || [ "${datanodeSlaveServers[$i]}" == "N/A" ]; then
 				echo "     " Datanode Slave, not configured
 			else
-				echo "     " Datanode Slave, port=${datanodePorts[$i]}, host=${datanodeSlaveServers[$i]}, dir=${datanodeSlaveDirs[$i]}
+				echo "     " Datanode Slave, port=${datanodePorts[$i]}, pooler_port=${datanodePoolerPorts[$]}, host=${datanodeSlaveServers[$i]}, dir=${datanodeSlaveDirs[$i]}
 			fi
 			return
 		fi
@@ -1687,7 +1698,7 @@ function monitor_components
 				else
 					echo -n Datanode slave "("${datanodeNames[$i]}")": not running. "   "
 				fi
-				echo host: ${datanodeSlaveServers[$i]}, port: ${datanodePorts[$i]}, dir: ${datanodeSlaveDirs[$i]}
+				echo host: ${datanodeSlaveServers[$i]}, port: ${datanodePorts[$i]}, pooler_port=${datanodePoolerPorts[$]}, dir: ${datanodeSlaveDirs[$i]}
 			fi
 		done
 	fi
@@ -1925,6 +1936,7 @@ function pgxc_clean_node
 					if [ "${datanodeMasterServers[$i]}" != "none" ] && [ "${datanodeMasterServers[$i]}" != "N/A" ]; then
 						doit pgxc_clean_dir ${datanodeMasterServers[$i]} ${datanodeMasterDirs[$i]}
 						doit pgxc_clean_socket ${datanodeMasterServers[$i]} ${datanodePorts[$i]}
+						doit pgxc_clean_socket ${datanodeMasterServers[$i]} ${datanodePoolerPorts[$i]}
 					else
 						eecho Datanode master $1 is not configured.
 					fi
@@ -1933,6 +1945,7 @@ function pgxc_clean_node
 					if [ "${datanodeSlaveServers[$i]}" != "none" ] && [ "${datanodeSlaveServers[$i]}" != "N/A" ]; then
 						doit pgxc_clean_dir ${datanodeSlaveServers[$i]} ${datanodeSlaveDirs[$i]}
 						doit pgxc_clean_socket ${datanodeSlaveServers[$i]} ${datanodePorts[$i]}
+						doit pgxc_clean_socket ${datanodeSlaveServers[$i]} ${datanodePoolerPorts[$i]}
 					else
 						eecho Datanode slave $1 is not configured.
 					fi
@@ -1941,12 +1954,14 @@ function pgxc_clean_node
 					if [ "${datanodeMasterServers[$i]}" != "none" ] && [ "${datanodeMasterServers[$i]}" != "N/A" ]; then
 						doit pgxc_clean_dir ${datanodeMasterServers[$i]} ${datanodeMasterDirs[$i]}
 						doit pgxc_clean_socket ${datanodeMasterServers[$i]} ${datanodePorts[$i]}
+						doit pgxc_clean_socket ${datanodeMasterServers[$i]} ${datanodePoolerPorts[$i]}
 					else
 						eecho Datanode master $1 is not configured.
 					fi
 					if [ "${datanodeSlaveServers[$i]}" != "none" ] && [ "${datanodeSlaveServers[$i]}" != "N/A" ]; then
 						doit pgxc_clean_dir ${datanodeSlaveServers[$i]} ${datanodeSlaveDirs[$i]}
 						doit pgxc_clean_socket ${datanodeSlaveServers[$i]} ${datanodePorts[$i]}
+						doit pgxc_clean_socket ${datanodeSlaveServers[$i]} ${datanodePoolerPorts[$i]}
 					else
 						eecho Datanode slave $1 is not configured.
 					fi
@@ -3659,6 +3674,7 @@ logging_collector = on
 log_directory = 'pg_log'
 listen_addresses = '*'
 port = ${datanodePorts[$i]}
+pooler_port = ${datanodePoolerPorts[$i]}
 max_connections = 100
 gtm_host = '$targetGTMhost'
 gtm_port = $targetGTMport
@@ -3830,6 +3846,7 @@ function pgxc_kill_datanode_master
 					doit kill_all_child_parent ${datanodeMasterServers[$i]} $postmaster_pid
 				fi
 				doit pgxc_clean_socket ${datanodeMasterServers[$i]} ${datanodePorts[$i]}
+				doit pgxc_clean_socket ${datanodeMasterServers[$i]} ${datanodePoolerPorts[$i]}
 			else
 				eecho ERROR: could not find specified coordinator master, $1
 			fi
@@ -3921,6 +3938,7 @@ EOF
 # Added to startup the slave, $dtetime
 hot_standby = on
 port = ${datanodePorts[$i]}
+pooler_port = ${datanodePoolerPorts[$i]}
 EOF
 			if [ $start_master == y ]; then
 				vecho Stopping the datanode master.
@@ -4123,6 +4141,7 @@ function pgxc_kill_datanode_slave
 					doit kill_all_child_parent ${datanodeSlaveServers[$i]} $postmaster_pid
 				fi
 				doit pgxc_clean_socket ${datanodeSlaveServers[$i]} ${datanodePorts[$i]}
+				doit pgxc_clean_socket ${datanodeSlaveServers[$i]} ${datanodePoolerPorts[$i]}
 			else
 				eecho ERROR: specified coordinator master does not exist, $1
 			fi
