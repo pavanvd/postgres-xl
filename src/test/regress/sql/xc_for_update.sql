@@ -2,8 +2,6 @@
 -- XC_FOR_UPDATE
 --
 
-set enable_fast_query_shipping=true;
-
 -- create some tables
 create table t1(val int, val2 int);
 create table t2(val int, val2 int);
@@ -616,8 +614,6 @@ commit prepared 'pt_1';
 -- repeat all tests with FQS disabled
 -- **********************************
 
-set enable_fast_query_shipping=false;
-
 -- ****  
 
 begin;
@@ -850,8 +846,6 @@ select is_prepared_on_node('pt_1', 1); -- true
 commit prepared 'pt_1';
 
 -- ****  
-
-set enable_fast_query_shipping=true;
 
 -- ****  
 

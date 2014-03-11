@@ -235,7 +235,7 @@ Check constraints:
     "con1foo" CHECK (a > 0)
 Inherits: constraint_rename_test
 
-ALTER TABLE constraint_rename_test ADD CONSTRAINT con2 CHECK NO INHERIT (b > 0);
+ALTER TABLE constraint_rename_test ADD CONSTRAINT con2 CHECK (b > 0) NO INHERIT;
 ALTER TABLE ONLY constraint_rename_test RENAME CONSTRAINT con2 TO con2foo; -- ok
 ALTER TABLE constraint_rename_test RENAME CONSTRAINT con2foo TO con2bar; -- ok
 \d constraint_rename_test
@@ -247,7 +247,7 @@ Table "public.constraint_rename_test"
  c      | integer | 
 Check constraints:
     "con1foo" CHECK (a > 0)
-    "con2bar" CHECK NO INHERIT (b > 0)
+    "con2bar" CHECK (b > 0) NO INHERIT
 Number of child tables: 1 (Use \d+ to list them.)
 
 \d constraint_rename_test2
@@ -276,7 +276,7 @@ Indexes:
     "con3foo" PRIMARY KEY, btree (a)
 Check constraints:
     "con1foo" CHECK (a > 0)
-    "con2bar" CHECK NO INHERIT (b > 0)
+    "con2bar" CHECK (b > 0) NO INHERIT
 Number of child tables: 1 (Use \d+ to list them.)
 
 \d constraint_rename_test2
@@ -627,7 +627,7 @@ drop table atacc1;
 create table atacc1 (test int);
 create table atacc2 (test2 int) inherits (atacc1);
 -- ok:
-alter table atacc1 add constraint foo check no inherit (test>0);
+alter table atacc1 add constraint foo check (test>0) no inherit;
 -- check constraint is not there on child
 insert into atacc2 (test) values (-3);
 -- check constraint is there on parent
@@ -636,7 +636,7 @@ ERROR:  new row for relation "atacc1" violates check constraint "foo"
 DETAIL:  Failing row contains (-3).
 insert into atacc1 (test) values (3);
 -- fail, violating row:
-alter table atacc2 add constraint foo check no inherit (test>0);
+alter table atacc2 add constraint foo check (test>0) no inherit;
 ERROR:  check constraint "foo" is violated by some row
 drop table atacc2;
 drop table atacc1;
@@ -678,7 +678,7 @@ drop table atacc1;
 create table atacc1 ( test int ) distribute by roundrobin;
 -- add a unique constraint (fails)
 alter table atacc1 add constraint atacc_test1 unique (test1);
-ERROR:  Cannot locally enforce a unique index on round robin distributed table.
+ERROR:  column "test1" named in key does not exist
 drop table atacc1;
 -- something a little more complicated
 create table atacc1 ( test int, test2 int);
@@ -1789,6 +1789,28 @@ where oid = 'test_storage'::regclass;
  t
 (1 row)
 
+-- ALTER TYPE with a check constraint and a child table (bug before Nov 2012)
+CREATE TABLE test_inh_check (a float check (a > 10.2));
+CREATE TABLE test_inh_check_child() INHERITS(test_inh_check);
+ALTER TABLE test_inh_check ALTER COLUMN a TYPE numeric;
+\d test_inh_check
+Table "public.test_inh_check"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | numeric | 
+Check constraints:
+    "test_inh_check_a_check" CHECK (a::double precision > 10.2::double precision)
+Number of child tables: 1 (Use \d+ to list them.)
+
+\d test_inh_check_child
+Table "public.test_inh_check_child"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | numeric | 
+Check constraints:
+    "test_inh_check_a_check" CHECK (a::double precision > 10.2::double precision)
+Inherits: test_inh_check
+
 --
 -- lock levels
 --
@@ -1811,10 +1833,10 @@ select case when c.relname like 'pg_toast%' then 'pg_toast' else c.relname end, 
 from pg_locks l join pg_class c on l.relation = c.oid
 where virtualtransaction = (
         select virtualtransaction
-        from pg_catalog.pg_locks
+        from pg_locks
         where transactionid = txid_current()::integer)
 and locktype = 'relation'
-and relnamespace not in (select oid from pg_namespace where nspname = 'pg_catalog' or nspname = 'storm_catalog')
+and relnamespace != (select oid from pg_namespace where nspname = 'pg_catalog')
 and c.relname != 'my_locks'
 group by c.relname;
 create table alterlock (f1 int primary key, f2 text);
@@ -2281,7 +2303,7 @@ CREATE TABLE tt8(a int);
 CREATE SCHEMA alter2;
 ALTER TABLE IF EXISTS tt8 ADD COLUMN f int;
 ALTER TABLE IF EXISTS tt8 ADD CONSTRAINT xxx PRIMARY KEY(f);
-ERROR:  Unique index of partitioned table must contain the hash/modulo distribution column.
+ERROR:  Cannot create index whose evaluation cannot be enforced to remote nodes
 ALTER TABLE IF EXISTS tt8 ADD CHECK (f BETWEEN 0 AND 10);
 ALTER TABLE IF EXISTS tt8 ALTER COLUMN f SET DEFAULT 0;
 ALTER TABLE IF EXISTS tt8 RENAME COLUMN f TO f1;

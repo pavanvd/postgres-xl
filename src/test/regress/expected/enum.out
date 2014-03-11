@@ -176,7 +176,7 @@ ORDER BY enumsortorder;
 --
 -- Basic table creation, row selection
 --
-CREATE TABLE enumtest (col rainbow) distribute by replication;
+CREATE TABLE enumtest (col rainbow);
 INSERT INTO enumtest values ('red'), ('orange'), ('yellow'), ('green');
 COPY enumtest FROM stdin;
 SELECT * FROM enumtest ORDER BY col;
@@ -288,6 +288,7 @@ SET enable_bitmapscan = off;
 -- Btree index / opclass with the various operators
 --
 CREATE UNIQUE INDEX enumtest_btree ON enumtest USING btree (col);
+ERROR:  Cannot locally enforce a unique index on round robin distributed table.
 SELECT * FROM enumtest WHERE col = 'orange';
   col   
 --------
@@ -357,6 +358,7 @@ SELECT max(col) FROM enumtest WHERE col < 'green';
 (1 row)
 
 DROP INDEX enumtest_btree;
+ERROR:  index "enumtest_btree" does not exist
 --
 -- Hash index / opclass with the = operator
 --

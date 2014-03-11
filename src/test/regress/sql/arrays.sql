@@ -102,6 +102,7 @@ SELECT a,b,c FROM arrtest ORDER BY a, b, c;
 --
 -- test array extension
 --
+
 CREATE TEMP TABLE arrtest1 (i int[], t text[]);
 insert into arrtest1 values(array[1,2,null,4], array['one','two',null,'four']);
 select * from arrtest1;

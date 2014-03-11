@@ -137,6 +137,7 @@ SELECT * FROM fast_emp4000
 SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
 
 SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
+
 SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
     ORDER BY (poly_center(f1))[0];
 
@@ -224,7 +225,7 @@ SET enable_seqscan = OFF;
 SET enable_indexscan = ON;
 SET enable_bitmapscan = OFF;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM fast_emp4000
     WHERE home_base @ '(200,200),(2000,1000)'::box
     ORDER BY (home_base[0])[0];
@@ -232,203 +233,203 @@ SELECT * FROM fast_emp4000
     WHERE home_base @ '(200,200),(2000,1000)'::box
     ORDER BY (home_base[0])[0];
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
 SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
 SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
     ORDER BY (poly_center(f1))[0];
 SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
     ORDER BY (poly_center(f1))[0];
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
     ORDER BY area(f1);
 SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
     ORDER BY area(f1);
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,0)'::polygon;
 SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,0)'::polygon;
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500>'::circle;
 SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500>'::circle;
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100)';
 SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100)';
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> f1;
 SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> f1;
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0,100),(100,100),(50,50),(100,0),(0,0)';
 SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0,100),(100,100),(50,50),(100,0),(0,0)';
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),50>';
 SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),50>';
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
 SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
 SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
 SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
 SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
 SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM point_tbl ORDER BY f1 <-> '0,1';
 SELECT * FROM point_tbl ORDER BY f1 <-> '0,1';
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM point_tbl WHERE f1 IS NULL;
 SELECT * FROM point_tbl WHERE f1 IS NULL;
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM point_tbl WHERE f1 IS NOT NULL ORDER BY f1 <-> '0,1';
 SELECT * FROM point_tbl WHERE f1 IS NOT NULL ORDER BY f1 <-> '0,1';
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p IS NULL;
 SELECT count(*) FROM quad_point_tbl WHERE p IS NULL;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p IS NOT NULL;
 SELECT count(*) FROM quad_point_tbl WHERE p IS NOT NULL;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl;
 SELECT count(*) FROM quad_point_tbl;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 SELECT count(*) FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 SELECT count(*) FROM quad_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p << '(5000, 4000)';
 SELECT count(*) FROM quad_point_tbl WHERE p << '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p >> '(5000, 4000)';
 SELECT count(*) FROM quad_point_tbl WHERE p >> '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p <^ '(5000, 4000)';
 SELECT count(*) FROM quad_point_tbl WHERE p <^ '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
 SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
 SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 SELECT count(*) FROM kd_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p << '(5000, 4000)';
 SELECT count(*) FROM kd_point_tbl WHERE p << '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p >> '(5000, 4000)';
 SELECT count(*) FROM kd_point_tbl WHERE p >> '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p <^ '(5000, 4000)';
 SELECT count(*) FROM kd_point_tbl WHERE p <^ '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
 SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
 SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdef';
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdef';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcde';
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcde';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdefF';
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdefF';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t <    'Aztec                         Ct  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t <    'Aztec                         Ct  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<~  'Aztec                         Ct  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<~  'Aztec                         Ct  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t <=   'Aztec                         Ct  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t <=   'Aztec                         Ct  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<=~ 'Aztec                         Ct  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<=~ 'Aztec                         Ct  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Aztec                         Ct  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Aztec                         Ct  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Worth                         St  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Worth                         St  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t >=   'Worth                         St  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t >=   'Worth                         St  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>=~ 'Worth                         St  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>=~ 'Worth                         St  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t >    'Worth                         St  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t >    'Worth                         St  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>~  'Worth                         St  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>~  'Worth                         St  ';
 
@@ -437,127 +438,127 @@ SET enable_seqscan = OFF;
 SET enable_indexscan = OFF;
 SET enable_bitmapscan = ON;
 
-EXPLAIN (COSTS OFF, NODES OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p IS NULL;
 SELECT count(*) FROM quad_point_tbl WHERE p IS NULL;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p IS NOT NULL;
 SELECT count(*) FROM quad_point_tbl WHERE p IS NOT NULL;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl;
 SELECT count(*) FROM quad_point_tbl;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 SELECT count(*) FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 SELECT count(*) FROM quad_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p << '(5000, 4000)';
 SELECT count(*) FROM quad_point_tbl WHERE p << '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p >> '(5000, 4000)';
 SELECT count(*) FROM quad_point_tbl WHERE p >> '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p <^ '(5000, 4000)';
 SELECT count(*) FROM quad_point_tbl WHERE p <^ '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
 SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
 SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 SELECT count(*) FROM kd_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p << '(5000, 4000)';
 SELECT count(*) FROM kd_point_tbl WHERE p << '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p >> '(5000, 4000)';
 SELECT count(*) FROM kd_point_tbl WHERE p >> '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p <^ '(5000, 4000)';
 SELECT count(*) FROM kd_point_tbl WHERE p <^ '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
 SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
 SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdef';
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdef';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcde';
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcde';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdefF';
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdefF';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t <    'Aztec                         Ct  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t <    'Aztec                         Ct  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<~  'Aztec                         Ct  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<~  'Aztec                         Ct  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t <=   'Aztec                         Ct  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t <=   'Aztec                         Ct  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<=~ 'Aztec                         Ct  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<=~ 'Aztec                         Ct  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Aztec                         Ct  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Aztec                         Ct  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Worth                         St  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Worth                         St  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t >=   'Worth                         St  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t >=   'Worth                         St  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>=~ 'Worth                         St  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>=~ 'Worth                         St  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t >    'Worth                         St  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t >    'Worth                         St  ';
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>~  'Worth                         St  ';
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>~  'Worth                         St  ';
 
@@ -577,7 +578,7 @@ SET enable_bitmapscan = ON;
 
 CREATE INDEX intarrayidx ON array_index_op_test USING gin (i);
 
-explain (nodes off, costs off)
+explain (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
 
 SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
@@ -599,7 +600,7 @@ SELECT * FROM array_op_test WHERE i <@ '{NULL}' ORDER BY seqno;
 
 CREATE INDEX textarrayidx ON array_index_op_test USING gin (t);
 
-explain (nodes off, costs off)
+explain (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908}' ORDER BY seqno;
 
 SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908}' ORDER BY seqno;
@@ -652,7 +653,10 @@ CREATE INDEX hash_f8_index ON hash_f8_heap USING hash (random float8_ops);
 --
 -- Test functional index
 --
-CREATE TABLE func_index_heap (f1 text, f2 text);
+-- PGXC: Here replication is used to ensure correct index creation
+-- when a non-shippable expression is used.
+-- PGXCTODO: this should be removed once global constraints are supported
+CREATE TABLE func_index_heap (f1 text, f2 text) DISTRIBUTE BY REPLICATION;
 CREATE UNIQUE INDEX func_index_index on func_index_heap (textcat(f1,f2));
 
 INSERT INTO func_index_heap VALUES('ABC','DEF');
@@ -668,7 +672,10 @@ INSERT INTO func_index_heap VALUES('QWERTY');
 -- Same test, expressional index
 --
 DROP TABLE func_index_heap;
-CREATE TABLE func_index_heap (f1 text, f2 text);
+-- PGXC: Here replication is used to ensure correct index creation
+-- when a non-shippable expression is used.
+-- PGXCTODO: this should be removed once global constraints are supported
+CREATE TABLE func_index_heap (f1 text, f2 text) DISTRIBUTE BY REPLICATION;
 CREATE UNIQUE INDEX func_index_index on func_index_heap ((f1 || f2) text_ops);
 
 INSERT INTO func_index_heap VALUES('ABC','DEF');
@@ -791,6 +798,8 @@ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
+SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
+SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
 
 DROP INDEX onek_nulltest;
 
@@ -800,6 +809,8 @@ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
+SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
+SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
 
 DROP INDEX onek_nulltest;
 
@@ -809,6 +820,8 @@ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
+SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
+SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
 
 DROP INDEX onek_nulltest;
 
@@ -818,6 +831,8 @@ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL;
 SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique2 IS NOT NULL;
+SELECT count(*) FROM onek_with_null WHERE unique1 IS NOT NULL AND unique1 > 500;
+SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
 
 DROP INDEX onek_nulltest;
 
@@ -853,13 +868,13 @@ DROP TABLE onek_with_null;
 -- Check bitmap index path planning
 --
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM tenk1
   WHERE thousand = 42 AND (tenthous = 1 OR tenthous = 3 OR tenthous = 42);
 SELECT * FROM tenk1
   WHERE thousand = 42 AND (tenthous = 1 OR tenthous = 3 OR tenthous = 42);
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM tenk1
   WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
 SELECT count(*) FROM tenk1
@@ -874,8 +889,32 @@ CREATE TABLE dupindexcols AS
 CREATE INDEX dupindexcols_i ON dupindexcols (f1, id, f1 text_pattern_ops);
 ANALYZE dupindexcols;
 
-EXPLAIN (NODES OFF, COSTS OFF)
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
   SELECT count(*) FROM dupindexcols
     WHERE f1 > 'WA' and id < 1000 and f1 ~<~ 'YX';
 SELECT count(*) FROM dupindexcols
   WHERE f1 > 'WA' and id < 1000 and f1 ~<~ 'YX';
+
+--
+-- Check ordering of =ANY indexqual results (bug in 9.2.0)
+--
+
+vacuum analyze tenk1;		-- ensure we get consistent plans here
+
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
+SELECT unique1 FROM tenk1
+WHERE unique1 IN (1,42,7)
+ORDER BY unique1;
+
+SELECT unique1 FROM tenk1
+WHERE unique1 IN (1,42,7)
+ORDER BY unique1;
+
+EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
+SELECT thousand, tenthous FROM tenk1
+WHERE thousand < 2 AND tenthous IN (1001,3000)
+ORDER BY thousand;
+
+SELECT thousand, tenthous FROM tenk1
+WHERE thousand < 2 AND tenthous IN (1001,3000)
+ORDER BY thousand;

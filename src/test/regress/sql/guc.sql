@@ -147,6 +147,7 @@ SELECT '2006-08-13 12:34:56'::timestamptz;
 --
 -- Test DISCARD TEMP
 --
+
 CREATE TEMP TABLE reset_test ( data text ) ON COMMIT DELETE ROWS;
 SELECT relname FROM pg_class WHERE relname = 'reset_test';
 DISCARD TEMP;

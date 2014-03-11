@@ -768,7 +768,7 @@ drop table cchild;
 --
 -- Check that ruleutils are working
 --
-SELECT viewname, definition FROM pg_views WHERE schemaname <> 'information_schema' AND schemaname <> 'storm_catalog' ORDER BY viewname;
+SELECT viewname, definition FROM pg_views WHERE schemaname <> 'information_schema' ORDER BY viewname;
 
 SELECT tablename, rulename, definition FROM pg_rules
 	ORDER BY tablename, rulename;
@@ -860,6 +860,21 @@ drop rule "_RETURN" on fooview;
 drop view fooview;
 
 --
+-- test conversion of table to view (needed to load some pg_dump files)
+--
+
+create table fooview (x int, y text);
+select xmin, * from fooview;
+
+create rule "_RETURN" as on select to fooview do instead
+  select 1 as x, 'aaa'::text as y;
+
+select * from fooview;
+select xmin, * from fooview;  -- fail, views don't have such a column
+
+drop view fooview;
+
+--
 -- check for planner problems with complex inherited UPDATES
 --
 
@@ -895,6 +910,7 @@ reset client_min_messages;
 -- check corner case where an entirely-dummy subplan is created by
 -- constraint exclusion
 --
+
 create temp table t1 (a integer primary key) distribute by replication;
 
 create temp table t1_1 (check (a >= 0 and a < 10)) inherits (t1) distribute by replication;

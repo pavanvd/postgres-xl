@@ -565,9 +565,8 @@ prepare foo(bool) as
   select count(*) from tenk1 a left join tenk1 b
     on (a.unique2 = b.unique1 and exists
         (select 1 from tenk1 c where c.thousand = b.unique2 and $1));
--- PGXCTODO: execution takes a long time
--- execute foo(true);
--- execute foo(false);
+execute foo(true);
+execute foo(false);
 
 --
 -- test for sane behavior with noncanonical merge clauses, per bug #4926
@@ -791,6 +790,38 @@ select b.unique1 from
   join int4_tbl i1 on b.thousand = f1
   right join int4_tbl i2 on i2.f1 = b.tenthous
   order by 1;
+
+--
+-- test handling of potential equivalence clauses above outer joins
+--
+
+explain (num_nodes off, nodes off, costs off)
+select q1, unique2, thousand, hundred
+  from int8_tbl a left join tenk1 b on q1 = unique2
+  where coalesce(thousand,123) = q1 and q1 = coalesce(hundred,123);
+
+select q1, unique2, thousand, hundred
+  from int8_tbl a left join tenk1 b on q1 = unique2
+  where coalesce(thousand,123) = q1 and q1 = coalesce(hundred,123);
+
+explain (num_nodes off, nodes off, costs off)
+select f1, unique2, case when unique2 is null then f1 else 0 end
+  from int4_tbl a left join tenk1 b on f1 = unique2
+  where (case when unique2 is null then f1 else 0 end) = 0;
+
+select f1, unique2, case when unique2 is null then f1 else 0 end
+  from int4_tbl a left join tenk1 b on f1 = unique2
+  where (case when unique2 is null then f1 else 0 end) = 0;
+
+--
+-- test ability to push constants through outer join clauses
+--
+
+explain (num_nodes off, nodes off, costs off)
+  select * from int4_tbl a left join tenk1 b on f1 = unique2 where f1 = 0;
+
+explain (num_nodes off, nodes off, costs off)
+  select * from tenk1 a full join tenk1 b using(unique2) where unique2 = 42;
 
 --
 -- test join removal

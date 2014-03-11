@@ -728,6 +728,7 @@ DROP TABLE pktable, fktable;
 
 -- test notice about expensive referential integrity checks,
 -- where the index cannot be used because of type incompatibilities.
+
 CREATE TEMP TABLE pktable (
         id1     INT4 PRIMARY KEY,
         id2     VARCHAR(4) UNIQUE,

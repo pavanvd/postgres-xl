@@ -55,6 +55,7 @@ ERROR:  PGXC Node dummy_node: object not defined
 -- Additinal checks on type and properties
 CREATE NODE dummy_node WITH (TYPE = 'datanode');
 ALTER NODE dummy_node WITH (TYPE = 'coordinator');
+ERROR:  PGXC node dummy_node: cannot alter Datanode to Coordinator
 DROP NODE dummy_node;
 CREATE NODE dummy_node WITH (TYPE = 'coordinator');
 ALTER NODE dummy_node WITH (PREFERRED);
@@ -62,4 +63,5 @@ ERROR:  PGXC node dummy_node: cannot be a preferred node, it has to be a Datanod
 ALTER NODE dummy_node WITH (PRIMARY);
 ERROR:  PGXC node dummy_node: cannot be a primary node, it has to be a Datanode
 ALTER NODE dummy_node WITH (TYPE = 'datanode');
+ERROR:  PGXC node dummy_node: cannot alter Coordinator to Datanode
 DROP NODE dummy_node;

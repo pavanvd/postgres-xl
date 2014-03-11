@@ -1739,11 +1739,9 @@ begin
 	return x;
 end$$ language plpgsql;
 
--- PGXCTODO: This is failing due to issue 3522907, complicated SELECT queries in plpgsql functions
 select trap_matching_test(50);
 select trap_matching_test(0);
 select trap_matching_test(100000);
--- PGXCTODO: This is failing due to issue 3522907, complicated SELECT queries in plpgsql functions
 select trap_matching_test(1);
 
 create temp table foo (f1 int);
@@ -2850,7 +2848,7 @@ create temp table forc_test as
 
 create or replace function forc01() returns void as $$
 declare
-  c cursor for select * from forc_test;
+  c cursor for select * from forc_test order by 1;
 begin
   for r in c loop
     raise notice '%, %', r.i, r.j;
@@ -2869,7 +2867,7 @@ declare
   c refcursor := 'fooled_ya';
   r record;
 begin
-  open c for select * from forc_test;
+  open c for select * from forc_test order by 1;
   loop
     fetch c into r;
     exit when not found;
@@ -3428,6 +3426,19 @@ rollback;
 
 drop function error2(p_name_table text);
 drop function error1(text);
+
+-- Test for consistent reporting of error context
+
+create function fail() returns int language plpgsql as $$
+begin
+  return 1/0;
+end
+$$;
+
+select fail();
+select fail();
+
+drop function fail();
 
 -- Test handling of string literals.
 

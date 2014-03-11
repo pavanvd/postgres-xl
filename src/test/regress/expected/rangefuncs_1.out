@@ -1,18 +1,21 @@
 SELECT name, setting FROM pg_settings WHERE name LIKE 'enable%' ORDER BY name;
-         name         | setting 
-----------------------+---------
- enable_bitmapscan    | on
- enable_hashagg       | on
- enable_hashjoin      | on
- enable_indexonlyscan | on
- enable_indexscan     | on
- enable_material      | on
- enable_mergejoin     | on
- enable_nestloop      | on
- enable_seqscan       | on
- enable_sort          | on
- enable_tidscan       | on
-(11 rows)
+            name            | setting 
+----------------------------+---------
+ enable_bitmapscan          | on
+ enable_hashagg             | on
+ enable_hashjoin            | on
+ enable_indexonlyscan       | on
+ enable_indexscan           | on
+ enable_material            | on
+ enable_mergejoin           | on
+ enable_nestloop            | on
+ enable_remotegroup         | on
+ enable_remotejoin          | on
+ enable_remotesort          | on
+ enable_seqscan             | on
+ enable_sort                | on
+ enable_tidscan             | on
+(16 rows)
 
 CREATE TABLE foo2(fooid int, f2 int);
 INSERT INTO foo2 VALUES(1, 11);
@@ -682,9 +685,11 @@ begin
 end $$ language plpgsql;
 create trigger tnoticetrigger after insert on tt for each row
 execute procedure noticetrigger();
-ERROR:  Postgres-XC does not support TRIGGER yet
-DETAIL:  The feature is not currently supported
 select insert_tt2('foolme','barme') limit 1;
+NOTICE:  noticetrigger 11 foolme
+CONTEXT:  SQL function "insert_tt2" statement 1
+NOTICE:  noticetrigger 12 barme
+CONTEXT:  SQL function "insert_tt2" statement 1
  insert_tt2 
 ------------
          11
@@ -712,6 +717,10 @@ create temp table tt_log(f1 int, data text);
 create rule insert_tt_rule as on insert to tt do also
   insert into tt_log values(new.*);
 select insert_tt2('foollog','barlog') limit 1;
+NOTICE:  noticetrigger 13 foollog
+CONTEXT:  SQL function "insert_tt2" statement 1
+NOTICE:  noticetrigger 14 barlog
+CONTEXT:  SQL function "insert_tt2" statement 1
  insert_tt2 
 ------------
          13

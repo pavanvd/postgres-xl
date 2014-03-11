@@ -191,7 +191,6 @@ COMMIT;
 SELECT * FROM clustertest ORDER BY 1;
 
 -- check that temp tables can be clustered
--- Enforce use of COMMIT instead of 2PC for temporary objects
 RESET SESSION AUTHORIZATION;
 SET SESSION AUTHORIZATION clstr_user;
 
