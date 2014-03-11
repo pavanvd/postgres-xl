@@ -894,11 +894,6 @@ AlterOptRoleElem:
 				{
 					$$ = makeDefElem("rolemembers", (Node *)$2);
 				}
-		/*	PostgresXC defines REPLICATION keyword */
-			| REPLICATION
-				{
-					$$ = makeDefElem("isreplication", (Node *)makeInteger(TRUE));
-				}
 			| IDENT
 				{
 					/*
