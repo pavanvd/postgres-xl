@@ -1,45 +1,8 @@
 -- This file contains tests for Fast Query Shipping (FQS) for queries involving
 -- a single table
 
--- A function to create table on specified nodes 
-create or replace function cr_table(tab_schema varchar, nodenums int[], distribution varchar) returns void language plpgsql as $$
-declare
-	cr_command	varchar;
-	nodes		varchar[];
-	nodename	varchar;
-	nodenames_query varchar;
-	nodenames 	varchar;
-	node 		int;
-	sep			varchar;
-	tmp_node	int;
-	num_nodes	int;
-begin
-	nodenames_query := 'SELECT node_name FROM pgxc_node WHERE node_type = ''D'''; 
-	cr_command := 'CREATE TABLE ' || tab_schema || ' DISTRIBUTE BY ' || distribution || ' TO NODE ';
-	for nodename in execute nodenames_query loop
-		nodes := array_append(nodes, nodename);
-	end loop;
-	nodenames := '';
-	sep := '';
-	num_nodes := array_length(nodes, 1);
-	foreach node in array nodenums loop
-		tmp_node := node;
-		if (tmp_node < 1 or tmp_node > num_nodes) then
-			tmp_node := tmp_node % num_nodes;
-			if (tmp_node < 1) then
-				tmp_node := num_nodes; 
-			end if;
-		end if;
-		nodenames := nodenames || sep || nodes[tmp_node];
-		sep := ', ';
-	end loop;
-	cr_command := cr_command || nodenames;
-	execute cr_command;
-end;
-$$;
-
--- Testset 1 for distributed table (by round robin)
-select cr_table('tab1_rr(val int, val2 int)', '{1, 2, 3}'::int[], 'round robin');
+-- Testset 1 for distributed table (by roundrobin)
+select create_table_nodes('tab1_rr(val int, val2 int)', '{1, 2, 3}'::int[], 'roundrobin', NULL);
 insert into tab1_rr values (1, 2);
 insert into tab1_rr values (2, 4);
 insert into tab1_rr values (5, 3);
@@ -75,7 +38,7 @@ explain (verbose on, nodes off, costs off) select val, val2 from tab1_rr where v
 select sum(val) from tab1_rr where val2 = 2 group by val2 having sum(val) > 1;
 explain (verbose on, nodes off, costs off) select sum(val) from tab1_rr where val2 = 2 group by val2 having sum(val) > 1;
 
--- tests for node reduction by application of quals, for round robin node
+-- tests for node reduction by application of quals, for roundrobin node
 -- reduction is not applicable. Having query not FQSed because of existence of ORDER BY,
 -- implies that nodes did not get reduced.
 select * from tab1_rr where val = 7;
