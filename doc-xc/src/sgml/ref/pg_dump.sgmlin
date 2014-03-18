@@ -861,7 +861,7 @@ PostgreSQL documentation
       <term><option>--include-nodes</></term>
       <listitem>
        <para>
-        &xconly;
+        &xlonly;
         Include <command>TO NODE</> clause in the <command>CREATE TABLE</>
         command when producing the dump. When used while taking the dump
         from a datanode, the option does nothing.

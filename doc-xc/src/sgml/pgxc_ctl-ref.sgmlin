@@ -14,17 +14,16 @@ PostgreSQL documentation
  <sect2>
   <title>Description</title>
 
-&xconly;
+&xlonly;
 
     <para>
-     <application>pgxc_ctl</application> takes care of configuration,
-     initialization, start, stop, monitor and failover of postgres-xc
+     Manual configuration of the individual components of a Postgres-XL cluster 
+     can be cumbersome and error prone.
+     <application>pgxc_ctl</application> simplifies this by allowing for the configuration,
+     initialization, starting, stoping, monitoring and failover of Postgres-XL
      components.  
-     Manual configuration of postgres-xc cluster is a
-     great and painful work.  
-     You should plan your postgres-xc configuration carefully.  
-     This document describes how to use
-     <application>pgxc_ctl</application> to help these tiring work.
+     This section describes how to use
+     <application>pgxc_ctl</application>. 
     </para>
  </sect2>
 
@@ -32,30 +31,30 @@ PostgreSQL documentation
   <title>Building and installing pgxc_ctl</title>
 
   <para>
-   You should build pgxc_ctl using your Postgres-XC build environment.
-   <application>pgxc_ctl</application> source code comes with postgres-xc source code tarball.
-   Latest version of the source code will be available at its home repository,
+   You should build pgxc_ctl using your Postgres-XL build environment.
+   <application>pgxc_ctl</application> source code comes with Postgres-XL source code tarball.
+   The latest version of the source code will be available at its home repository,
 <programlisting>
-https://github.com/koichi-szk/PGXC-Tools/tree/master/pgxc_ctl
+http://  pgxc_ctl
 </programlisting>
    If you would like to use the latest version from pgxc_ctl home repository,
-   get the set of the source code tarball and expand it at contrib
-   directory of your Postgres-XC build environment.  
-   If you are using pgxc_ctl in postgres-xc tarball, you don't have to do this.
+   get the source code tarball and expand it in the source's contrib
+   directory of your Postgres-XL build environment.  
+   If you are using pgxc_ctl in Postgres-XL tarball, you don't have to do this.
   </para>
 
   <para>
-   Before building pgxc_ctl, you should build postgres-xc binary, like
+   Before building pgxc_ctl, you should build Postgres-XL binary, like
 <programlisting>
-$ cd <replaceable>your postgres-xc build directory</replaceable>
+$ cd <replaceable>your Postgres-XL build directory</replaceable>
 $ ./configure <replaceable>your configuration option</replaceable>
 $ make
 </programlisting>
 
-   Please note that you dont'have to install
-   <application>postgres-xc</application> binary to build
+   Please note that you dont'have to install the
+   <application>Postgres-XL</application> binary to build
    <application>pgxc_ctl</application>.  
-   Also please note that <application>postgres-xc</application> top
+   Also please note that <application>Postgres-XL</application> top
    level make and make install command does not take care of pgxc_ctl.
    You should build and install the separately.
   </para>
@@ -67,15 +66,15 @@ $ cd contrib/pgxc_ctl
 $ make
 $ make install
 </programlisting>
-   <application>pgxc_ctl</application> binary will be installed at the
-   same directory as <application>postgres-xc</application> binaries. 
+   The <application>pgxc_ctl</application> binary will be installed in the
+   same directory as <application>Postgres-XL</application> binaries. 
   </para>
 
   <para>
-   <application>Postgres-XC</application> consists of many components
+   <application>Postgres-XL</application> consists of many components
    (or called "nodes") running in various physical or virtual
    machines.
-   Because pgxc_ctl relies on ssh connection between the machines where
+   Because pgxc_ctl relies on ssh connections between the machines where
    <application>pgxc_ctl</application> and other nodes are running,
    you should setup ssh-agent authentication to avoid typing password
    each time pgcx_ctl issues ssh.
@@ -90,12 +89,12 @@ $ make install
    <application>pgxc_ctl</application> uses its own work directory,
    where it stores configuration files and logs, as well as other
    resources. 
-   Default value is <literal>$HOME/pgxc_ctl</literal> and you can
-   specify this by <literal>--home</literal> option.
+   The default value is <literal>$HOME/pgxc_ctl</literal> and you can
+   specify this by the <literal>--home</literal> option.
   </para>
 
   <para>
-   <application>pgxc_ctl</application> home directory may be referred
+   The <application>pgxc_ctl</application> home directory may be referred
    to as <literal>$PGXC_CTL_HOME</literal> through this manual.
   </para>
 
@@ -105,7 +104,7 @@ $ make install
    it is invoked for the first time. 
    Please note that you need appropriate privilege to create
    <literal>$PGXC_CTL_HOME</literal>. 
-   YOu can create this manually, of course.
+   You can create this manually, of course.
 
    For details, please refer to later sections.
   </para>
@@ -119,16 +118,15 @@ $ make install
    pgxc_ctl uses configuration file.  
    The default name and the location is
    <literal>$PGXC_CTL_HOME/pgxc_ctl.conf</literal>. 
-   When you change postgres-xc cluster configuration using pgxc_ctl
+   When you change Postgres-XL cluster configuration using pgxc_ctl
    commands, this file will bel updated.
    Depending upon your configuration,
-   <application>pgxc_ctl</application> will backs up this file to 
-   the other file according to your configuration.
+   <application>pgxc_ctl</application> will back up this file
+   according to your configuration.
   </para>
 
   <para>
-   It could be painful to write the configuration file from the scratch.
-   <application>pgxc_ctl</application> provides prepare command to
+   <application>pgxc_ctl</application> provides the command "prepare" to
    setup the prototype of this file. 
    For details, please refer to command syntax of
    <application>pgxc_ctl</application>.
@@ -150,19 +148,19 @@ $ make install
   </para>
 
   <para>
-   Format of this file will be given in the later section.
+   The format of this file will be described in a later section.
   </para>
 
  </sect2>
 
  <sect2>
-  <title>Running  pgxc_ctl for the first time</title>
+  <title>Running pgxc_ctl for the first time</title>
 
   <para>
-   Unless you build $PGXC_CTL_HOME and configuration file from the
+   Unless you build $PGXC_CTL_HOME and the configuration file from the
    scratch, you should run pgxc_ctl to build your $PGXC_CTL_HOME and
    get a prototype of configuration file.
-   From your bash prompt, simply type
+   From your shell prompt, simply type
    <application>pgxc_ctl</application>.
    You will have the following prompt:
 <programlisting>
@@ -175,20 +173,20 @@ PGXC$
 
   <para>
    Try to type <literal>pwd</literal>.
-   You will get what is your <literal>$PGXC_CTL_HOME</literal> is.
+   You will see what your <literal>$PGXC_CTL_HOME</literal> is.
 <programlisting>
 $ pgxc_ctl
 PGXC$ pwd
-/home/koichi/pgxc_ctl
+/home/postgres-xl/pgxc_ctl
 PGXC$
 </programlisting>
    If you specify <option>--home</option> option with another
    directory, <application>pgxc_ctl</application> will start at this
    directory, after building it if needed.
 <programlisting>
-$ pgxc_ctl --home /home/koichi/my_pgxc_ctl
+$ pgxc_ctl --home /home/postgres-xl/my_pgxc_ctl
 PGXC$ pwd
-/home/koichi/my_pgxc_ctl
+/home/postgres-xl/my_pgxc_ctl
 PGXC$
 </programlisting>
    You can specify your pgxc_ctl_home as environment variable
@@ -198,7 +196,7 @@ PGXC$
   </para>
 
   <para>
-   Command line option has the highest priority, then the environment,
+   The command line option has the highest priority, then the environment,
    <literal>$HOME/.pgxc_ctl</literal> and
    <literal>/etc/pgxc_ctl</literal>. 
   </para>
@@ -218,7 +216,7 @@ or
 PGXC$ prepare config my_pgxc.conf
 PGXC$
 </programlisting>
-   Detailed syntax of the command will be given in later section.
+   A more detailed syntax of the command will be described in a later section.
   </para>
 
  </sect2>
@@ -228,18 +226,18 @@ PGXC$
 
   <para>
    Please take a look at the template of the configuration file you
-   created as in the previous section.
+   created in the previous section.
    This file is actually a bash script file to setup various bash
    script variables which are passed to pgxc_ctl next time you run
    it.
   </para>
 
   <para>
-   <application>Postgres-xc</application> configuration needs to
+   The <application>Postgres-XL</application> configuration needs to
    specify same or similar values to each node configuration, for
    example, work directory, port, etc.
-   To avoid trivial error, you can specify such same value as your
-   favorite variables and refer to them in each variable setups.
+   To avoid trivial errors, you can specify the same value as defaults
+   for variables and refer to them later in each variable setups.
   </para>
 
   <para>
@@ -266,7 +264,7 @@ gtmProxyServers=(node06 node07 node08 node09)       # Specify none if you dont' 
 gtmProxyPorts=(20001 20001 20001 20001)             # Not used if it is not configured.
 gtmProxyDirs=($gtmProxyDir $gtmProxyDir $gtmProxyDir $gtmProxyDir)	# Not used if it is not configured.
 </programlisting>
-   This is a section to specify gtm proxy setups.
+   This section specifies the gtm proxy configuration.
    We have four <literal>gtm proxies</literal> in each of the server.
    They share working directory path and is specified as a shortcut
    which is referred to later.
@@ -582,13 +580,13 @@ $
 
 
  <sect2>
-  <title>Postgres-XC basics and its resources</title>
+  <title>Postgres-XL basics and its resources</title>
 
   <sect3 id="R2-APP-PGXC-CTL-configuration">
-   <title>Postgres-XC components</title>
+   <title>Postgres-XL components</title>
 
    <para>
-    Postgres-xc consists of the following components.  Each component may
+    Postgres-XL consists of the following components.  Each component may
     be called <option>node</option>, which may not necessarily refer
     to physical or virtual server because you can configure more
     than one node to one physical/virtual server.  
@@ -726,7 +724,7 @@ $
 
    <para>
     Please note that the last two are not required by
-    <application>postgres-xc</application> but requirement of
+    <application>Postgres-XL</application> but requirement of
     <application>pgxc_ctl</application>.
    </para>
 
@@ -734,14 +732,14 @@ $
     GTM, coordinators and datanodes can configure their slave.
     <application>Pgxc_ctl</application> does not support cascaded
     slave or more than one slave for coordinator and datanode.
-    It is not a restriction of <application>postgres-XC</application>,
+    It is not a restriction of <application>postgres-XL</application>,
     it is a restriction of <application>pgxc_ctl</application>.
    </para>
 
    <para>
     At present, coordinator and datanode slaves are connected using
     synchronous replication in pgxc_ctl.  
-    This is not a <application>Posgres-XC</application> restriction
+    This is not a <application>Posgres-XL</application> restriction
     either.
     In the future, asynchronous, cascaded and multiple slaves may be
     supported.
@@ -755,7 +753,7 @@ $
 
   <para>
    As described in the previous section, you can configure your
-   <application>postgres-xc</application> cluster by editing
+   <application>Postgres-XL</application> cluster by editing
    <filename>pgxc_ctl.conf</filename> or other configuration files
    manually.
    But editing the file from the scratch can be a mess.
@@ -772,7 +770,7 @@ PGXC$
    You have your <filename>pgxc_ctl.conf</filename> file at
    <filename>$HOME/pgxc_ctl</filename>.
    You can edit it to configure your
-   <application>postgres-xc</application> cluster.
+   <application>Postgres-XL</application> cluster.
    When it messes up, you can again create the template with
    <command>prepare config</command> command.
    If you want to use other file name, specify the names
@@ -784,7 +782,7 @@ PGXC$ prepare config my_config.conf
   </para>
   <para>
    Then you can edit this file to configure you
-   <application>postgres-XC</application> cluster. 
+   <application>postgres-XL</application> cluster. 
    This file is actually a bash script file defining many variables
    to define the cluster configuration.
    With template values and comments, it will be easy to understand
@@ -850,7 +848,7 @@ PGXC$ prepare config my_config.conf
      <term><option>pgxcInstallDir</option></term>
      <listitem>
       <para>
-         <application>Postgres-XC</application> should at least be
+         <application>Postgres-XL</application> should at least be
         installed in the server you are running
         <application>pgxc_ctl</application>.
         This variable specifies this installation directory, as you
@@ -868,7 +866,7 @@ PGXC$ prepare config my_config.conf
       <listitem>
        <para>
         Name of the database user who owns whole
-        <application>Postgres-XC</application> database.
+        <application>Postgres-XL</application> database.
         This can be different from $pgxcUser.
         In the present version, we assume these two should be the same
         though.
@@ -881,7 +879,7 @@ PGXC$ prepare config my_config.conf
       <listitem>
        <para>
         Name of the operating system user you are logging in as
-        postgres-xc owner.   At present, this should be the same as
+        Postgres-XL owner.   At present, this should be the same as
         <literal>$pgxcOwner</literal>.
        </para>
       </listitem>
@@ -1037,9 +1035,9 @@ PGXC$ prepare config my_config.conf
       <listitem>
        <para>
         This specifies if you configure any GTM proxy in your
-        <application>postgres-xc</application> cluster.
+        <application>Postgres-XL</application> cluster.
         Specify the value <literal>y</literal> if you configure gtm
-        proxy in your <application>postgres-xc</application> cluster.
+        proxy in your <application>Postgres-XL</application> cluster.
         Otherwise specify <literal>n</literal>.
         If you specify <literal>n</literal>, all the other parameters
         for gtm_proxy will be ignored.
@@ -1570,7 +1568,7 @@ PGXC$ prepare config my_config.conf
     <term><literal>add datanode slave <replaceable class="parameter">name</replaceable> <replaceable class="parameter">host</replaceable> <replaceable class="parameter">dir</replaceable> <replaceable class="parameter">archDir</replaceable></literal></term>
     <listitem>
      <para>
-      Add the specified node to your postgres-xc cluster.
+      Add the specified node to your Postgres-XL cluster.
       Each node need host name and its work directory.  gtm slave,
       gtm_proxy, coordinator master and datanode master need its own port
       to listen to.  Coordinator needs its pooler port to pool
@@ -1614,7 +1612,7 @@ PGXC$ prepare config my_config.conf
     <term><literal>deploy [ all | <replaceable class="parameter">host ...</replaceable> ]</literal></term>
     <listitem>
      <para>
-      Deploys postgres-xc binaries and other installation material to
+      Deploys Postgres-XL binaries and other installation material to
       specified hosts.  If "all" is specified, they will be deployed to
       all the hosts found in the configuration file.  If list of the host
       is specifies, deployment will be done to all the specified hosts,

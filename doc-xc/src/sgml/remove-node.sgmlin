@@ -7,7 +7,12 @@
   <primary>Remove an existing node</primary>
  </indexterm>
 
+<!## XC>
 &xconly;
+<!## end>
+<!## XL>
+&xlonly;
+<!## end>
 
  <para>
   This chapter outlines steps to remove an existing coordinator or a datanode from a running cluster.
@@ -24,7 +29,7 @@
   </indexterm>
 
   <para>
-    Assume a two coordinator cluster, COORD_1 and COORD_2. Suppose we want to remove COORD_2 for any reason. Following steps should be performed to remove an existing coordinator from a running cluster:
+    Assume a two coordinator cluster, COORD_1 and COORD_2. Suppose we want to remove COORD_2 for any reason. The following steps should be performed to remove an existing coordinator from a running cluster:
   </para>
 
   <para>

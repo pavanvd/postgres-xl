@@ -13,6 +13,13 @@
 <!entity common		SYSTEM "common.sgml">
 <!entity xc-constraint SYSTEM "xc-constraint.sgml">
 <!## end>
+<!## XL>
+<!entity pgnotice   SYSTEM "pgnotice.sgml">
+<!entity xlonly		SYSTEM "xlonly.sgml">
+<!entity pgonly     SYSTEM "pgonly.sgml">
+<!entity common		SYSTEM "common.sgml">
+<!entity xc-constraint SYSTEM "xc-constraint.sgml">
+<!## end>
 
 <!-- tutorial -->
 <!ENTITY advanced   SYSTEM "advanced.sgml">
@@ -146,6 +153,12 @@
 <!ENTITY pgxcddl         SYSTEM "pgxcddl.sgml">
 <!ENTITY pgxcmonitor	 SYSTEM "pgxcmonitor.sgml">
 <!## end>
+<!## XL>
+<!ENTITY pgxcclean       SYSTEM "pgxcclean.sgml">
+<!ENTITY pgxcctl         SYSTEM "pgxc_ctl-ref.sgml">
+<!ENTITY pgxcddl         SYSTEM "pgxcddl.sgml">
+<!ENTITY pgxcmonitor	 SYSTEM "pgxcmonitor.sgml">
+<!## end>
 <!ENTITY seg             SYSTEM "seg.sgml">
 <!ENTITY contrib-spi     SYSTEM "contrib-spi.sgml">
 <!ENTITY sepgsql         SYSTEM "sepgsql.sgml">
@@ -170,6 +183,9 @@
 <!ENTITY release    SYSTEM "release.sgml">
 <!## XC>
 <!ENTITY release-xc-1.0 SYSTEM "release-xc-1.0.sgml">
+<!## end>
+<!## XL>
+<!ENTITY release-xl-9.2 SYSTEM "release-xl-9.2.sgml">
 <!## end>
 <!## PG>
 <!ENTITY release-9.1    SYSTEM "release-9.1.sgml">

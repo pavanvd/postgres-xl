@@ -13,6 +13,12 @@
    The trigger will be supported in the future.  The document will be supported then.
   </para>
 <!## end>
+<!## XL>
+&xlonly;
+  <para>
+   Triggers are not currently supported, but will be in the future. 
+  </para>
+<!## end>
 
 <!## PG>
   <para>
@@ -43,6 +49,12 @@
 &xconly;
   <para>
    The trigger will be supported in the future.  The document will be supported then.
+  </para>
+<!## end>
+<!## XL>
+&xlonly;
+  <para>
+   Triggers are not currently supported, but will be in the future. 
   </para>
 <!## end>
 <!## PG>
@@ -303,6 +315,12 @@
    The trigger will be supported in the future.  The document will be supported then.
   </para>
 <!## end>
+<!## XL>
+&xlonly;
+  <para>
+   Triggers are not currently supported, but will be in the future. 
+  </para>
+<!## end>
 
 <!## PG>
 
@@ -392,6 +410,12 @@
 &xconly;
   <para>
    The trigger will be supported in the future.  The document will be supported then.
+  </para>
+<!## end>
+<!## XL>
+&xlonly;
+  <para>
+   Triggers are not currently supported, but will be in the future. 
   </para>
 <!## end>
 
@@ -682,6 +706,12 @@ typedef struct Trigger
 &xconly;
   <para>
    The trigger will be supported in the future.  The document will be supported then.
+  </para>
+<!## end>
+<!## XL>
+&xlonly;
+  <para>
+   Triggers are not currently supported, but will be in the future. 
   </para>
 <!## end>
 

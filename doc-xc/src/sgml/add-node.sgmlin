@@ -7,10 +7,11 @@
   <primary>Add a new node</primary>
  </indexterm>
 
-&xconly;
+&xlonly;
 
  <para>
-  This chapter outlines steps to add a new coordinator or a datanode to a running cluster.
+  This chapter outlines steps to add a new Coordinator or a Datanode to a running cluster.
+  Note that an easier way to do this is to make use of the pgxc_ctl utility.
  </para>
 
   <para>
@@ -25,7 +26,7 @@
   </indexterm>
 
   <para>
-    Following steps should be performed to add a new coordinator to a running cluster:
+    The following steps should be performed to add a new coordinator to a running cluster:
   </para>
 
   <para>

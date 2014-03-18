@@ -35,6 +35,13 @@ ALTER TRIGGER <replaceable class="PARAMETER">name</replaceable> ON <replaceable 
    in <productname>Postgres-XC</> yet.
   </para>
 <!## end>
+<!## XL>
+&xlonly;
+  <para>
+   The <command>ALTER TRIGGER</> statement is not yet supported
+   in <productname>Postgres-XL</>.
+  </para>
+<!## end>
 
 <!## PG>
 

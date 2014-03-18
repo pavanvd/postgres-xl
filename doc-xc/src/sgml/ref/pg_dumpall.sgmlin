@@ -393,9 +393,9 @@ PostgreSQL documentation
       <term><option>--dump-nodes</></term>
       <listitem>
        <para>
-        &xconly;
+        &xlonly;
         Output commands to create nodes and node groups. This option may be used
-		 while adding a new coordinator to an existing <productname>Postgres-XC</> cluster.
+		 while adding a new coordinator to an existing <productname>Postgres-XL</> cluster.
        </para>
       </listitem>
      </varlistentry>

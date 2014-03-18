@@ -131,6 +131,12 @@ CREATE EXTENSION <replaceable>module_name</> FROM unpackaged;
  &pgxcddl;
  &pgxcmonitor;
 <!## end>
+<!## XL>
+ &pgxcclean;
+ &pgxcctl;
+ &pgxcddl;
+ &pgxcmonitor;
+<!## end>
  &seg;
  &sepgsql;
  &contrib-spi;
