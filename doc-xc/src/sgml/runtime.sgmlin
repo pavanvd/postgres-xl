@@ -62,6 +62,16 @@
    <see>database cluster</see>
   </indexterm>
 
+<!## XL>
+  <para>
+   The steps to configure a <productname>Postgres-XL</productname> 
+   cluster can be cumbersome. It is highly recommended that you make use 
+   of a utility called <xref linkend="pgxc-ctl"> to make this task easier,
+   and you can skip a lot of the content in this chapter. 
+   That said, you may read on to understand how to manually configure
+   the cluster, which essentially describes the steps that <xref linkend="pgxc-ctl"> does.
+  </para>
+<!## end>
   <para>
    Before you can do anything, you must initialize a database storage
    area on disk. We call this a <firstterm>database cluster</firstterm>.
