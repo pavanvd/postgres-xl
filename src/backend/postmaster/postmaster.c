@@ -821,7 +821,11 @@ PostmasterMain(int argc, char *argv[])
 #ifdef PGXC
 	if (!IS_PGXC_COORDINATOR && !IS_PGXC_DATANODE)
 	{
+#ifdef XCP
+		write_stderr("%s: Postgres-XL: must start as either a Coordinator (--coordinator) or Data Node (--datanode)\n",
+#else
 		write_stderr("%s: Postgres-XC: must start as either a Coordinator (--coordinator) or Data Node (--datanode)\n",
+#endif
 					 progname);
 		ExitPostmaster(1);
 	}

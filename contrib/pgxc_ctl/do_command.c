@@ -115,12 +115,20 @@ static void do_deploy(char *line)
 	}
 	if (TestToken("all"))
 	{
+#ifdef XCP
+		elog(NOTICE, "Deploying Postgres-XL components to all the target servers.\n");
+#else
 		elog(NOTICE, "Deploying Postgres-XC materials to all the target servers.\n");
+#endif
 		deploy_xc(aval(VAR_allServers));
 	}
 	else
 	{
+#ifdef XCP
+		elog(NOTICE, "Deploying Postgres-XL components.\n");
+#else
 		elog(NOTICE, "Deploying Postgres-XC materials.\n");
+#endif
 		/*
 		 * Please note that the following code does not check if the specified nost
 		 * appears in the configuration file.
@@ -1441,6 +1449,22 @@ static void show_config_servers(char **hostList)
  */
 static void show_basicConfig(void)
 {
+#ifdef XCP
+	elog(NOTICE, "========= Postgres-XL configuration Common Info ========================\n");
+	elog(NOTICE, "=== Overall ===\n");
+	elog(NOTICE, "Postgres-XL owner: %s\n", sval(VAR_pgxcOwner));
+	elog(NOTICE, "Postgres-XL user: %s\n", sval(VAR_pgxcUser));
+	elog(NOTICE, "Postgres-XL install directory: %s\n", sval(VAR_pgxcInstallDir));
+	elog(NOTICE, "pgxc_ctl home: %s\n", pgxc_ctl_home);
+	elog(NOTICE, "pgxc_ctl configuration file: %s\n", pgxc_ctl_config_path);
+	elog(NOTICE, "pgxc_ctl tmpDir: %s\n", sval(VAR_tmpDir));
+	elog(NOTICE, "pgxc_ctl localTempDir: %s\n", sval(VAR_localTmpDir));
+	elog(NOTICE, "pgxc_ctl log file: %s\n", logFileName);
+	elog(NOTICE, "pgxc_ctl configBackup: %s\n", isVarYes(VAR_configBackup) ? "y" : "n");
+	elog(NOTICE, "pgxc_ctl configBackupHost: %s\n", isVarYes(VAR_configBackup) ? sval(VAR_configBackupHost) : "none");
+	elog(NOTICE, "pgxc_ctl configBackupFile: %s\n", isVarYes(VAR_configBackup) ? sval(VAR_configBackupFile) : "none");
+	elog(NOTICE, "========= Postgres-XL configuration End Common Info ===================\n");
+#else
 	elog(NOTICE, "========= Postgres-XC configuration Common Info ========================\n");
 	elog(NOTICE, "=== Overall ===\n");
 	elog(NOTICE, "Postgres-XC owner: %s\n", sval(VAR_pgxcOwner));
@@ -1455,6 +1479,7 @@ static void show_basicConfig(void)
 	elog(NOTICE, "pgxc_ctl configBackupHost: %s\n", isVarYes(VAR_configBackup) ? sval(VAR_configBackupHost) : "none");
 	elog(NOTICE, "pgxc_ctl configBackupFile: %s\n", isVarYes(VAR_configBackup) ? sval(VAR_configBackupFile) : "none");
 	elog(NOTICE, "========= Postgres-XC configuration End Common Info ===================\n");
+#endif
 }
 
 

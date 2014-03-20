@@ -3923,7 +3923,12 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 	{
 		ereport(FATAL,
 				(errcode(ERRCODE_SYNTAX_ERROR),
+#ifdef XCP
+			 errmsg("Postgres-XL: must start as either a Coordinator (--coordinator) or Datanode (-datanode)\n")));
+#else
 			 errmsg("Postgres-XC: must start as either a Coordinator (--coordinator) or Datanode (-datanode)\n")));
+#endif
+
 	}
 	if (!IsPostmasterEnvironment)
 	{

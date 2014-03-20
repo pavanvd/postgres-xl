@@ -17,7 +17,7 @@
 # to want to use.
 html:
 
-subdir = doc/src/sgml
+subdir = doc-xc/src/sgml
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
@@ -78,6 +78,12 @@ endif
 # in particular < and & that haven't been made into entities.  It's far too
 # noisy to turn on by default, unfortunately.
 override SPFLAGS += -wall -wno-unused-param -wno-empty -wfully-tagged
+
+##
+## SGML files
+##
+
+sgml-files: $(ALLSGMLIN:%sgmlin=%sgml)
 
 ##
 ## Man pages

@@ -67,7 +67,11 @@ char pgxc_ctl_config_path[MAXPATH+1];
 char progname[MAXPATH+1];
 char *myName;
 char *defaultDatabase;
+#ifdef XCP
+#define versionString "V9.2 for Postgres-XL 9.2"
+#else
 #define versionString "V1.0 for Postgres-XC 1.1"
+#endif
 
 FILE *inF;
 FILE *outF;

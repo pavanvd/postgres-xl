@@ -851,7 +851,11 @@ standard_ProcessUtility(Node *parsetree,
 #ifdef PGXC
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+#ifdef XCP
+					 errmsg("Postgres-XL does not support FOREIGN DATA WRAPPER yet"),
+#else
 					 errmsg("Postgres-XC does not support FOREIGN DATA WRAPPER yet"),
+#endif
 					 errdetail("The feature is not currently supported")));
 #endif
 			CreateForeignDataWrapper((CreateFdwStmt *) parsetree);
@@ -865,7 +869,11 @@ standard_ProcessUtility(Node *parsetree,
 #ifdef PGXC
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+#ifdef XCP
+					 errmsg("Postgres-XL does not support SERVER yet"),
+#else
 					 errmsg("Postgres-XC does not support SERVER yet"),
+#endif
 					 errdetail("The feature is not currently supported")));
 #endif
 			CreateForeignServer((CreateForeignServerStmt *) parsetree);
@@ -879,7 +887,11 @@ standard_ProcessUtility(Node *parsetree,
 #ifdef PGXC
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+#ifdef XCP
+					 errmsg("Postgres-XL does not support USER MAPPING yet"),
+#else
 					 errmsg("Postgres-XC does not support USER MAPPING yet"),
+#endif
 					 errdetail("The feature is not currently supported")));
 #endif
 			CreateUserMapping((CreateUserMappingStmt *) parsetree);
@@ -1795,7 +1807,11 @@ standard_ProcessUtility(Node *parsetree,
 			/* Postgres-XC does not support yet triggers */
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+#ifdef XCP
+					 errmsg("Postgres-XL does not support TRIGGER yet"),
+#else
 					 errmsg("Postgres-XC does not support TRIGGER yet"),
+#endif
 					 errdetail("The feature is not currently supported")));
 
 			if (IS_PGXC_COORDINATOR)

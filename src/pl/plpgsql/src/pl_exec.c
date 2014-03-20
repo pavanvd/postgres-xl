@@ -3055,7 +3055,11 @@ exec_stmt_execsql(PLpgSQL_execstate *estate,
 						q->commandType == CMD_DELETE)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+#ifdef XCP
+								 errmsg("Postgres-XL does not support DML queries in PL/pgSQL")));
+#else
 								 errmsg("Postgres-XC does not support DML queries in PL/pgSQL")));
+#endif
 #endif
 				}
 			}

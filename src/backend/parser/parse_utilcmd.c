@@ -844,7 +844,11 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 	if (relation->rd_rel->relkind == RELKIND_VIEW)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+#ifdef XCP
+				 errmsg("Postgres-XL does not support VIEW in LIKE clauses"),
+#else
 				 errmsg("Postgres-XC does not support VIEW in LIKE clauses"),
+#endif
 				 errdetail("The feature is not currently supported")));
 #endif
 

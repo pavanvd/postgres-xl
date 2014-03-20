@@ -1792,7 +1792,11 @@ do_help(void)
 	printf(_("  -w                     wait until operation completes\n"));
 	printf(_("  -W                     do not wait until operation completes\n"));
 #ifdef PGXC
+#ifdef XCP
+	printf(_("  -Z NODE-TYPE           can be \"coordinator\" or \"datanode\" (Postgres-XL)\n"));
+#else
 	printf(_("  -Z NODE-TYPE           can be \"coordinator\" or \"datanode\" (Postgres-XC)\n"));
+#endif
 #endif
 	printf(_("  --help                 show this help, then exit\n"));
 	printf(_("  --version              output version information, then exit\n"));

@@ -1030,7 +1030,11 @@ pgxc_merge_exec_nodes(ExecNodes *en1, ExecNodes *en2, bool merge_dist_equijoin,
 
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+#ifdef XCP
+			 errmsg("Postgres-XL does not support this distribution type yet"),
+#else
 			 errmsg("Postgres-XC does not support this distribution type yet"),
+#endif
 			 errdetail("The feature is not currently supported")));
 
 	/* Keep compiler happy */
