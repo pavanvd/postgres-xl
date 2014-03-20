@@ -74,10 +74,10 @@
   <para>
    Postgres-XL builds off another project called Postgres-XC.
    The original overall architecture and design of <productname>Postgres-XC</> is by Koichi Suzuki, Mason Sharp, 
-   Pavan Deolasee, Andrei Martsinchyk and Michael Paquier. Koichi Suzuki is the original project lead.
+   Pavan Deolasee, Andrei Martsinchyk and Michael Paquier. Koichi Suzuki is the original project lead. More recent long time contributors include Ashutosh Bapat, Abbas Butt, and Amit Khandekar.
   </para>
   <para>
-   Postgres-XL modifies the architecture to more tightly bond the components together and add massively parallel processing with direct Datanode to Datanode communication for fast performance. In addition, a plan is determined one time, serialized and sent down to the Datanodes instead of sending down SQL statements and reparsing.  Also, there have been some changes made to support multi-tenancy, locking down access to pg_catalog tables and providing better pooler management. The architectural changes were done primarily by Andrei Martsinchyk, Mason Sharp, and Nikhil Sontakke.
+   Postgres-XL modifies the architecture to more tightly bond the components together and add massively parallel processing with direct Datanode to Datanode communication for fast performance. In addition, a plan is determined one time, serialized and sent down to the Datanodes instead of sending down SQL statements and reparsing.  Also, there have been some changes made to support multi-tenancy, locking down access to pg_catalog tables and providing better pooler management. The key architects and developers are Andrei Martsinchyk, Mason Sharp, Nikhil Sontakke, and Jim Mlodgenski, with Mason Sharp the project lead.
   </para>
 
   </sect2>
@@ -337,7 +337,7 @@
      <listitem>
       <para>
        <link linkend="SQL-CREATENODEGROUP"><command>CREATE NODE GROUP</></link>,
-       <link linkend="SQL-DROPNODEGROUP"><command>DROP NODE GROUP</></link> (Michael Paquier, Abbas Butt)
+       <link linkend="SQL-DROPNODEGROUP"><command>DROP NODE GROUP</></link>
       </para>
       <para>
        <command>CREATE NODE GROUP</> and <command>DROP NODE GROUP</> manage the node groups that
@@ -347,7 +347,7 @@
 
      <listitem>
       <para>
-       <link linkend="SQL-CREATEBARRIER"><command>CREATE BARRIER</></link> (Pavan Deolasee)
+       <link linkend="SQL-CREATEBARRIER"><command>CREATE BARRIER</></link>
       </para>
       <para>
        When specified with an ID, this command allows to register in all of the nodes of the cluster
@@ -362,7 +362,7 @@
 
      <listitem>
       <para>
-       <link linkend="SQL-CLEANCONNECTION"><command>CLEAN CONNECTION</></link> (Michael Paquier)
+       <link linkend="SQL-CLEANCONNECTION"><command>CLEAN CONNECTION</></link> 
       </para>
       <para>
        <command>CLEAN CONNECTION</command> is a connection pooling utility able to drop connections on chosen node(s)
@@ -372,7 +372,7 @@
 
      <listitem>
       <para>
-       <function>pgxc_pool_check()</>, <function>pgxc_pool_reload()</> (Michael Paquier, Abbas Butt)
+       <function>pgxc_pool_check()</>, <function>pgxc_pool_reload()</>
       </para>
       <para>
        Those system functions can be used to check or update the data cached in pooler with
@@ -384,7 +384,7 @@
 
      <listitem>
       <para>
-       <link linkend="SQL-EXECUTEDIRECT"><command>EXECUTE DIRECT</></link> (Andrei Martsinchyk, Michael Paquier)
+       <link linkend="SQL-EXECUTEDIRECT"><command>EXECUTE DIRECT</></link>
       </para>
       <para>
        <command>EXECUTE DIRECT</> can be used to launch a query directly to a given node. Only a single node

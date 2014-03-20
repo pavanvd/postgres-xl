@@ -12730,7 +12730,7 @@ postgres=# SELECT * FROM unnest2(ARRAY[[1,2],[3,4]]);
       <row>
        <entry><literal><function>pgxc_version()</function></literal></entry>
        <entry><type>text</type></entry>
-       <entry><productname>Postgres-XL</> version information</entry>
+       <entry><productname>Postgres-XL Cluster</> version information</entry>
       </row>
 <!## end>
      </tbody>

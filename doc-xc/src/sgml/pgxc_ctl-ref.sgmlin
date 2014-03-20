@@ -17,9 +17,9 @@ PostgreSQL documentation
 &xlonly;
 
     <para>
-     Manual configuration of the individual components of a Postgres-XL cluster 
+     The manual configuration of the individual components of a Postgres-XL cluster 
      can be cumbersome and error prone.
-     <application>pgxc_ctl</application> simplifies this by allowing for the configuration,
+     The Postgres-XL Cluster Control utility, <application>pgxc_ctl</application>, simplifies this by allowing for the configuration,
      initialization, starting, stoping, monitoring and failover of Postgres-XL
      components.  
      This section describes how to use
