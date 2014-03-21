@@ -59,6 +59,7 @@ DROP TABLE rel_rr;
 
 -- UPDATE cases for replicated table
 -- Plain case, change it completely
+-- Updates on replicated tables with volatile functions does not work in postgres-xl 
 CREATE TABLE rel_rep (a int, b timestamp DEFAULT NULL, c boolean DEFAULT NULL) DISTRIBUTE BY REPLICATION;
 CREATE SEQUENCE seqtest3 START 1;
 INSERT INTO rel_rep VALUES (1),(2),(3),(4),(5);
@@ -75,6 +76,7 @@ UPDATE rel_rep SET b = now(), c = true WHERE a < func_immutable(4);
 SELECT a FROM rel_rep WHERE c = true ORDER BY 1;
 UPDATE rel_rep SET c = false;
 -- Coordinator quals
+SELECT nextval('seqtest3');
 UPDATE rel_rep SET b = now(), c = true WHERE a < currval('seqtest3') - 3 AND b < now();
 SELECT a FROM rel_rep  WHERE c = true ORDER BY 1;
 DROP SEQUENCE seqtest3;

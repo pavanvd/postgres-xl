@@ -54,7 +54,6 @@ explain (costs off, verbose on, nodes off) select sum(val) over w, array_agg(val
 select * from xc_sort1_rep join xc_sort2_hash using (val2) order by xc_sort1_rep.val, xc_sort2_hash.val, xc_sort2_hash.val2; 
 explain (costs off, verbose on, nodes off) select * from xc_sort1_rep join xc_sort2_hash using (val2) order by xc_sort1_rep.val, xc_sort2_hash.val, xc_sort2_hash.val2; 
 -- Test 3 the GUC
-set enable_remotesort to off;
 select * from xc_sort1_hash order by val, val2; 
 explain (costs off, verbose on, nodes off) select * from xc_sort1_hash order by val, val2;  
 
@@ -63,4 +62,3 @@ drop table xc_sort2_hash;
 drop table xc_sort1_rep;
 drop table xc_sort2_rep;
 
-reset enable_remotesort;

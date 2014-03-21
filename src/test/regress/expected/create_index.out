@@ -374,12 +374,14 @@ EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM fast_emp4000
     WHERE home_base @ '(200,200),(2000,1000)'::box
     ORDER BY (home_base[0])[0];
-                         QUERY PLAN                          
--------------------------------------------------------------
- Sort
-   Sort Key: ((fast_emp4000.home_base[0])[0])
-   ->  Data Node Scan on fast_emp4000 "_REMOTE_TABLE_QUERY_"
-(3 rows)
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Sort
+         Sort Key: ((home_base[0])[0])
+         ->  Index Scan using grect2ind on fast_emp4000
+               Index Cond: (home_base @ '(2000,1000),(200,200)'::box)
+(5 rows)
 
 SELECT * FROM fast_emp4000
     WHERE home_base @ '(200,200),(2000,1000)'::box
@@ -392,11 +394,14 @@ SELECT * FROM fast_emp4000
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
-                    QUERY PLAN                    
---------------------------------------------------
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Scan using grect2ind on fast_emp4000
+                     Index Cond: (home_base && '(1000,1000),(0,0)'::box)
+(5 rows)
 
 SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
  count 
@@ -406,11 +411,14 @@ SELECT count(*) FROM fast_emp4000 WHERE home_base && '(1000,1000,0,0)'::box;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
-                    QUERY PLAN                    
---------------------------------------------------
+                          QUERY PLAN                          
+--------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Scan using grect2ind on fast_emp4000
+                     Index Cond: (home_base IS NULL)
+(5 rows)
 
 SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
  count 
@@ -421,12 +429,14 @@ SELECT count(*) FROM fast_emp4000 WHERE home_base IS NULL;
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
     ORDER BY (poly_center(f1))[0];
-                         QUERY PLAN                         
-------------------------------------------------------------
- Sort
-   Sort Key: ((poly_center(polygon_tbl.f1))[0])
-   ->  Data Node Scan on polygon_tbl "_REMOTE_TABLE_QUERY_"
-(3 rows)
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Sort
+         Sort Key: ((poly_center(f1))[0])
+         ->  Index Scan using gpolygonind on polygon_tbl
+               Index Cond: (f1 ~ '((1,1),(2,2),(2,1))'::polygon)
+(5 rows)
 
 SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
     ORDER BY (poly_center(f1))[0];
@@ -438,12 +448,14 @@ SELECT * FROM polygon_tbl WHERE f1 ~ '((1,1),(2,2),(2,1))'::polygon
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
     ORDER BY area(f1);
-                   QUERY PLAN                    
--------------------------------------------------
- Sort
-   Sort Key: (area(circle_tbl.f1))
-   ->  Data Node Scan on "__REMOTE_SORT_QUERY__"
-(3 rows)
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Sort
+         Sort Key: (area(f1))
+         ->  Index Scan using gcircleind on circle_tbl
+               Index Cond: (f1 && '<(1,-2),1>'::circle)
+(5 rows)
 
 SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
     ORDER BY area(f1);
@@ -457,11 +469,14 @@ SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,0)'::polygon;
-                    QUERY PLAN                    
---------------------------------------------------
+                               QUERY PLAN                               
+------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Scan using ggpolygonind on gpolygon_tbl
+                     Index Cond: (f1 && '((1000,1000),(0,0))'::polygon)
+(5 rows)
 
 SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,0)'::polygon;
  count 
@@ -471,11 +486,14 @@ SELECT count(*) FROM gpolygon_tbl WHERE f1 && '(1000,1000,0,0)'::polygon;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500>'::circle;
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Scan using ggcircleind on gcircle_tbl
+                     Index Cond: (f1 && '<(500,500),500>'::circle)
+(5 rows)
 
 SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500>'::circle;
  count 
@@ -485,10 +503,13 @@ SELECT count(*) FROM gcircle_tbl WHERE f1 && '<(500,500),500>'::circle;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100)';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Aggregate
+         ->  Index Scan using gpointind on point_tbl
+               Index Cond: (f1 <@ '(100,100),(0,0)'::box)
+(4 rows)
 
 SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100)';
  count 
@@ -498,10 +519,13 @@ SELECT count(*) FROM point_tbl WHERE f1 <@ box '(0,0,100,100)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> f1;
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Aggregate
+         ->  Index Scan using gpointind on point_tbl
+               Index Cond: ('(100,100),(0,0)'::box @> f1)
+(4 rows)
 
 SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> f1;
  count 
@@ -511,10 +535,13 @@ SELECT count(*) FROM point_tbl WHERE box '(0,0,100,100)' @> f1;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0,100),(100,100),(50,50),(100,0),(0,0)';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Aggregate
+         ->  Index Scan using gpointind on point_tbl
+               Index Cond: (f1 <@ '((0,0),(0,100),(100,100),(50,50),(100,0),(0,0))'::polygon)
+(4 rows)
 
 SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0,100),(100,100),(50,50),(100,0),(0,0)';
  count 
@@ -524,10 +551,13 @@ SELECT count(*) FROM point_tbl WHERE f1 <@ polygon '(0,0),(0,100),(100,100),(50,
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),50>';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Aggregate
+         ->  Index Scan using gpointind on point_tbl
+               Index Cond: (f1 <@ '<(50,50),50>'::circle)
+(4 rows)
 
 SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),50>';
  count 
@@ -537,10 +567,13 @@ SELECT count(*) FROM point_tbl WHERE f1 <@ circle '<(50,50),50>';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Aggregate
+         ->  Index Scan using gpointind on point_tbl p
+               Index Cond: (f1 << '(0,0)'::point)
+(4 rows)
 
 SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
  count 
@@ -550,10 +583,13 @@ SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Aggregate
+         ->  Index Scan using gpointind on point_tbl p
+               Index Cond: (f1 >> '(0,0)'::point)
+(4 rows)
 
 SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
  count 
@@ -563,10 +599,13 @@ SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Aggregate
+         ->  Index Scan using gpointind on point_tbl p
+               Index Cond: (f1 <^ '(0,0)'::point)
+(4 rows)
 
 SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
  count 
@@ -576,10 +615,13 @@ SELECT count(*) FROM point_tbl p WHERE p.f1 <^ '(0.0, 0.0)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Aggregate
+         ->  Index Scan using gpointind on point_tbl p
+               Index Cond: (f1 >^ '(0,0)'::point)
+(4 rows)
 
 SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
  count 
@@ -589,10 +631,13 @@ SELECT count(*) FROM point_tbl p WHERE p.f1 >^ '(0.0, 0.0)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Aggregate
+         ->  Index Scan using gpointind on point_tbl p
+               Index Cond: (f1 ~= '(-5,-12)'::point)
+(4 rows)
 
 SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
  count 
@@ -602,10 +647,12 @@ SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM point_tbl ORDER BY f1 <-> '0,1';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                  QUERY PLAN                   
+-----------------------------------------------
+ Remote Subquery Scan on all
+   ->  Index Scan using gpointind on point_tbl
+         Order By: (f1 <-> '(0,1)'::point)
+(3 rows)
 
 SELECT * FROM point_tbl ORDER BY f1 <-> '0,1';
      f1     
@@ -621,10 +668,12 @@ SELECT * FROM point_tbl ORDER BY f1 <-> '0,1';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM point_tbl WHERE f1 IS NULL;
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                  QUERY PLAN                   
+-----------------------------------------------
+ Remote Subquery Scan on all
+   ->  Index Scan using gpointind on point_tbl
+         Index Cond: (f1 IS NULL)
+(3 rows)
 
 SELECT * FROM point_tbl WHERE f1 IS NULL;
  f1 
@@ -634,10 +683,13 @@ SELECT * FROM point_tbl WHERE f1 IS NULL;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM point_tbl WHERE f1 IS NOT NULL ORDER BY f1 <-> '0,1';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                  QUERY PLAN                   
+-----------------------------------------------
+ Remote Subquery Scan on all
+   ->  Index Scan using gpointind on point_tbl
+         Index Cond: (f1 IS NOT NULL)
+         Order By: (f1 <-> '(0,1)'::point)
+(4 rows)
 
 SELECT * FROM point_tbl WHERE f1 IS NOT NULL ORDER BY f1 <-> '0,1';
      f1     
@@ -652,10 +704,13 @@ SELECT * FROM point_tbl WHERE f1 IS NOT NULL ORDER BY f1 <-> '0,1';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                      QUERY PLAN                      
+------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Index Scan using gpointind on point_tbl
+         Index Cond: (f1 <@ '(10,10),(-10,-10)'::box)
+         Order By: (f1 <-> '(0,1)'::point)
+(4 rows)
 
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
    f1    
@@ -668,11 +723,14 @@ SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p IS NULL;
-                    QUERY PLAN                    
---------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_quad_ind on quad_point_tbl
+                     Index Cond: (p IS NULL)
+(5 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p IS NULL;
  count 
@@ -682,11 +740,14 @@ SELECT count(*) FROM quad_point_tbl WHERE p IS NULL;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p IS NOT NULL;
-                    QUERY PLAN                    
---------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_quad_ind on quad_point_tbl
+                     Index Cond: (p IS NOT NULL)
+(5 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p IS NOT NULL;
  count 
@@ -696,11 +757,13 @@ SELECT count(*) FROM quad_point_tbl WHERE p IS NOT NULL;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl;
-                    QUERY PLAN                    
---------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_quad_ind on quad_point_tbl
+(4 rows)
 
 SELECT count(*) FROM quad_point_tbl;
  count 
@@ -710,11 +773,14 @@ SELECT count(*) FROM quad_point_tbl;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_quad_ind on quad_point_tbl
+                     Index Cond: (p <@ '(1000,1000),(200,200)'::box)
+(5 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
  count 
@@ -724,11 +790,14 @@ SELECT count(*) FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE box '(200,200,1000,1000)' @> p;
-                    QUERY PLAN                    
---------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_quad_ind on quad_point_tbl
+                     Index Cond: (p <@ '(1000,1000),(200,200)'::box)
+(5 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE box '(200,200,1000,1000)' @> p;
  count 
@@ -738,11 +807,14 @@ SELECT count(*) FROM quad_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p << '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_quad_ind on quad_point_tbl
+                     Index Cond: (p << '(5000,4000)'::point)
+(5 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p << '(5000, 4000)';
  count 
@@ -752,11 +824,14 @@ SELECT count(*) FROM quad_point_tbl WHERE p << '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p >> '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_quad_ind on quad_point_tbl
+                     Index Cond: (p >> '(5000,4000)'::point)
+(5 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p >> '(5000, 4000)';
  count 
@@ -766,11 +841,14 @@ SELECT count(*) FROM quad_point_tbl WHERE p >> '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p <^ '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_quad_ind on quad_point_tbl
+                     Index Cond: (p <^ '(5000,4000)'::point)
+(5 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p <^ '(5000, 4000)';
  count 
@@ -780,11 +858,14 @@ SELECT count(*) FROM quad_point_tbl WHERE p <^ '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_quad_ind on quad_point_tbl
+                     Index Cond: (p >^ '(5000,4000)'::point)
+(5 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
  count 
@@ -794,11 +875,14 @@ SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
-                    QUERY PLAN                    
---------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_quad_ind on quad_point_tbl
+                     Index Cond: (p ~= '(4585,365)'::point)
+(5 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
  count 
@@ -808,11 +892,14 @@ SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                             QUERY PLAN                              
+---------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_kd_ind on kd_point_tbl
+                     Index Cond: (p <@ '(1000,1000),(200,200)'::box)
+(5 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
  count 
@@ -822,11 +909,14 @@ SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE box '(200,200,1000,1000)' @> p;
-                    QUERY PLAN                    
---------------------------------------------------
+                             QUERY PLAN                              
+---------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_kd_ind on kd_point_tbl
+                     Index Cond: (p <@ '(1000,1000),(200,200)'::box)
+(5 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE box '(200,200,1000,1000)' @> p;
  count 
@@ -836,11 +926,14 @@ SELECT count(*) FROM kd_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p << '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_kd_ind on kd_point_tbl
+                     Index Cond: (p << '(5000,4000)'::point)
+(5 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p << '(5000, 4000)';
  count 
@@ -850,11 +943,14 @@ SELECT count(*) FROM kd_point_tbl WHERE p << '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p >> '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_kd_ind on kd_point_tbl
+                     Index Cond: (p >> '(5000,4000)'::point)
+(5 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p >> '(5000, 4000)';
  count 
@@ -864,11 +960,14 @@ SELECT count(*) FROM kd_point_tbl WHERE p >> '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p <^ '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_kd_ind on kd_point_tbl
+                     Index Cond: (p <^ '(5000,4000)'::point)
+(5 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p <^ '(5000, 4000)';
  count 
@@ -878,11 +977,14 @@ SELECT count(*) FROM kd_point_tbl WHERE p <^ '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_kd_ind on kd_point_tbl
+                     Index Cond: (p >^ '(5000,4000)'::point)
+(5 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
  count 
@@ -892,11 +994,14 @@ SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_kd_ind on kd_point_tbl
+                     Index Cond: (p ~= '(4585,365)'::point)
+(5 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
  count 
@@ -906,10 +1011,14 @@ SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdef';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Aggregate
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t = 'P0123456789abcdef'::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdef';
  count 
@@ -919,10 +1028,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdef';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcde';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Aggregate
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t = 'P0123456789abcde'::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcde';
  count 
@@ -932,10 +1045,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcde';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdefF';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Aggregate
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t = 'P0123456789abcdefF'::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdefF';
  count 
@@ -945,11 +1062,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdefF';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t <    'Aztec                         Ct  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                    QUERY PLAN                                    
+----------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t < 'Aztec                         Ct  '::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t <    'Aztec                         Ct  ';
  count 
@@ -959,11 +1079,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t <    'Aztec                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<~  'Aztec                         Ct  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t ~<~ 'Aztec                         Ct  '::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<~  'Aztec                         Ct  ';
  count 
@@ -973,11 +1096,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t ~<~  'Aztec                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t <=   'Aztec                         Ct  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t <= 'Aztec                         Ct  '::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t <=   'Aztec                         Ct  ';
  count 
@@ -987,11 +1113,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t <=   'Aztec                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<=~ 'Aztec                         Ct  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t ~<=~ 'Aztec                         Ct  '::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<=~ 'Aztec                         Ct  ';
  count 
@@ -1001,10 +1130,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t ~<=~ 'Aztec                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Aztec                         Ct  ';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                                    QUERY PLAN                                    
+----------------------------------------------------------------------------------
+ Aggregate
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t = 'Aztec                         Ct  '::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Aztec                         Ct  ';
  count 
@@ -1014,10 +1147,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t =    'Aztec                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Worth                         St  ';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                                    QUERY PLAN                                    
+----------------------------------------------------------------------------------
+ Aggregate
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t = 'Worth                         St  '::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Worth                         St  ';
  count 
@@ -1027,11 +1164,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t =    'Worth                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t >=   'Worth                         St  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t >= 'Worth                         St  '::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t >=   'Worth                         St  ';
  count 
@@ -1041,11 +1181,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t >=   'Worth                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>=~ 'Worth                         St  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t ~>=~ 'Worth                         St  '::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>=~ 'Worth                         St  ';
  count 
@@ -1055,11 +1198,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t ~>=~ 'Worth                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t >    'Worth                         St  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                    QUERY PLAN                                    
+----------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t > 'Worth                         St  '::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t >    'Worth                         St  ';
  count 
@@ -1069,11 +1215,14 @@ SELECT count(*) FROM suffix_text_tbl WHERE t >    'Worth                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>~  'Worth                         St  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Only Scan using sp_suff_ind on suffix_text_tbl
+                     Index Cond: (t ~>~ 'Worth                         St  '::text)
+(5 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>~  'Worth                         St  ';
  count 
@@ -1087,10 +1236,16 @@ SET enable_indexscan = OFF;
 SET enable_bitmapscan = ON;
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Sort
+         Sort Key: ((f1 <-> '(0,1)'::point))
+         ->  Bitmap Heap Scan on point_tbl
+               Recheck Cond: (f1 <@ '(10,10),(-10,-10)'::box)
+               ->  Bitmap Index Scan on gpointind
+                     Index Cond: (f1 <@ '(10,10),(-10,-10)'::box)
+(7 rows)
 
 SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
    f1    
@@ -1103,11 +1258,16 @@ SELECT * FROM point_tbl WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p IS NULL;
-                    QUERY PLAN                    
---------------------------------------------------
+                        QUERY PLAN                        
+----------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on quad_point_tbl
+                     Recheck Cond: (p IS NULL)
+                     ->  Bitmap Index Scan on sp_quad_ind
+                           Index Cond: (p IS NULL)
+(7 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p IS NULL;
  count 
@@ -1117,11 +1277,16 @@ SELECT count(*) FROM quad_point_tbl WHERE p IS NULL;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p IS NOT NULL;
-                    QUERY PLAN                    
---------------------------------------------------
+                        QUERY PLAN                        
+----------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on quad_point_tbl
+                     Recheck Cond: (p IS NOT NULL)
+                     ->  Bitmap Index Scan on sp_quad_ind
+                           Index Cond: (p IS NOT NULL)
+(7 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p IS NOT NULL;
  count 
@@ -1131,11 +1296,14 @@ SELECT count(*) FROM quad_point_tbl WHERE p IS NOT NULL;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl;
-                    QUERY PLAN                    
---------------------------------------------------
+                        QUERY PLAN                        
+----------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on quad_point_tbl
+                     ->  Bitmap Index Scan on sp_quad_ind
+(5 rows)
 
 SELECT count(*) FROM quad_point_tbl;
  count 
@@ -1145,11 +1313,16 @@ SELECT count(*) FROM quad_point_tbl;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on quad_point_tbl
+                     Recheck Cond: (p <@ '(1000,1000),(200,200)'::box)
+                     ->  Bitmap Index Scan on sp_quad_ind
+                           Index Cond: (p <@ '(1000,1000),(200,200)'::box)
+(7 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
  count 
@@ -1159,11 +1332,16 @@ SELECT count(*) FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE box '(200,200,1000,1000)' @> p;
-                    QUERY PLAN                    
---------------------------------------------------
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on quad_point_tbl
+                     Recheck Cond: ('(1000,1000),(200,200)'::box @> p)
+                     ->  Bitmap Index Scan on sp_quad_ind
+                           Index Cond: ('(1000,1000),(200,200)'::box @> p)
+(7 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE box '(200,200,1000,1000)' @> p;
  count 
@@ -1173,11 +1351,16 @@ SELECT count(*) FROM quad_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p << '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on quad_point_tbl
+                     Recheck Cond: (p << '(5000,4000)'::point)
+                     ->  Bitmap Index Scan on sp_quad_ind
+                           Index Cond: (p << '(5000,4000)'::point)
+(7 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p << '(5000, 4000)';
  count 
@@ -1187,11 +1370,16 @@ SELECT count(*) FROM quad_point_tbl WHERE p << '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p >> '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on quad_point_tbl
+                     Recheck Cond: (p >> '(5000,4000)'::point)
+                     ->  Bitmap Index Scan on sp_quad_ind
+                           Index Cond: (p >> '(5000,4000)'::point)
+(7 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p >> '(5000, 4000)';
  count 
@@ -1201,11 +1389,16 @@ SELECT count(*) FROM quad_point_tbl WHERE p >> '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p <^ '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on quad_point_tbl
+                     Recheck Cond: (p <^ '(5000,4000)'::point)
+                     ->  Bitmap Index Scan on sp_quad_ind
+                           Index Cond: (p <^ '(5000,4000)'::point)
+(7 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p <^ '(5000, 4000)';
  count 
@@ -1215,11 +1408,16 @@ SELECT count(*) FROM quad_point_tbl WHERE p <^ '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on quad_point_tbl
+                     Recheck Cond: (p >^ '(5000,4000)'::point)
+                     ->  Bitmap Index Scan on sp_quad_ind
+                           Index Cond: (p >^ '(5000,4000)'::point)
+(7 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
  count 
@@ -1229,11 +1427,16 @@ SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on quad_point_tbl
+                     Recheck Cond: (p ~= '(4585,365)'::point)
+                     ->  Bitmap Index Scan on sp_quad_ind
+                           Index Cond: (p ~= '(4585,365)'::point)
+(7 rows)
 
 SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
  count 
@@ -1243,11 +1446,16 @@ SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on kd_point_tbl
+                     Recheck Cond: (p <@ '(1000,1000),(200,200)'::box)
+                     ->  Bitmap Index Scan on sp_kd_ind
+                           Index Cond: (p <@ '(1000,1000),(200,200)'::box)
+(7 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
  count 
@@ -1257,11 +1465,16 @@ SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE box '(200,200,1000,1000)' @> p;
-                    QUERY PLAN                    
---------------------------------------------------
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on kd_point_tbl
+                     Recheck Cond: ('(1000,1000),(200,200)'::box @> p)
+                     ->  Bitmap Index Scan on sp_kd_ind
+                           Index Cond: ('(1000,1000),(200,200)'::box @> p)
+(7 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE box '(200,200,1000,1000)' @> p;
  count 
@@ -1271,11 +1484,16 @@ SELECT count(*) FROM kd_point_tbl WHERE box '(200,200,1000,1000)' @> p;
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p << '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on kd_point_tbl
+                     Recheck Cond: (p << '(5000,4000)'::point)
+                     ->  Bitmap Index Scan on sp_kd_ind
+                           Index Cond: (p << '(5000,4000)'::point)
+(7 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p << '(5000, 4000)';
  count 
@@ -1285,11 +1503,16 @@ SELECT count(*) FROM kd_point_tbl WHERE p << '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p >> '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on kd_point_tbl
+                     Recheck Cond: (p >> '(5000,4000)'::point)
+                     ->  Bitmap Index Scan on sp_kd_ind
+                           Index Cond: (p >> '(5000,4000)'::point)
+(7 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p >> '(5000, 4000)';
  count 
@@ -1299,11 +1522,16 @@ SELECT count(*) FROM kd_point_tbl WHERE p >> '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p <^ '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on kd_point_tbl
+                     Recheck Cond: (p <^ '(5000,4000)'::point)
+                     ->  Bitmap Index Scan on sp_kd_ind
+                           Index Cond: (p <^ '(5000,4000)'::point)
+(7 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p <^ '(5000, 4000)';
  count 
@@ -1313,11 +1541,16 @@ SELECT count(*) FROM kd_point_tbl WHERE p <^ '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                             
+-------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on kd_point_tbl
+                     Recheck Cond: (p >^ '(5000,4000)'::point)
+                     ->  Bitmap Index Scan on sp_kd_ind
+                           Index Cond: (p >^ '(5000,4000)'::point)
+(7 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
  count 
@@ -1327,11 +1560,16 @@ SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on kd_point_tbl
+                     Recheck Cond: (p ~= '(4585,365)'::point)
+                     ->  Bitmap Index Scan on sp_kd_ind
+                           Index Cond: (p ~= '(4585,365)'::point)
+(7 rows)
 
 SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
  count 
@@ -1341,10 +1579,16 @@ SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdef';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ Aggregate
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t = 'P0123456789abcdef'::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t = 'P0123456789abcdef'::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdef';
  count 
@@ -1354,10 +1598,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdef';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcde';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ Aggregate
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t = 'P0123456789abcde'::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t = 'P0123456789abcde'::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcde';
  count 
@@ -1367,10 +1617,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcde';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdefF';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Aggregate
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t = 'P0123456789abcdefF'::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t = 'P0123456789abcdefF'::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdefF';
  count 
@@ -1380,11 +1636,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t = 'P0123456789abcdefF';
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t <    'Aztec                         Ct  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                       QUERY PLAN                                       
+----------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t < 'Aztec                         Ct  '::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t < 'Aztec                         Ct  '::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t <    'Aztec                         Ct  ';
  count 
@@ -1394,11 +1655,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t <    'Aztec                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<~  'Aztec                         Ct  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t ~<~ 'Aztec                         Ct  '::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t ~<~ 'Aztec                         Ct  '::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<~  'Aztec                         Ct  ';
  count 
@@ -1408,11 +1674,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t ~<~  'Aztec                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t <=   'Aztec                         Ct  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                       QUERY PLAN                                        
+-----------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t <= 'Aztec                         Ct  '::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t <= 'Aztec                         Ct  '::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t <=   'Aztec                         Ct  ';
  count 
@@ -1422,11 +1693,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t <=   'Aztec                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<=~ 'Aztec                         Ct  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                        QUERY PLAN                                         
+-------------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t ~<=~ 'Aztec                         Ct  '::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t ~<=~ 'Aztec                         Ct  '::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t ~<=~ 'Aztec                         Ct  ';
  count 
@@ -1436,10 +1712,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t ~<=~ 'Aztec                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Aztec                         Ct  ';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                                       QUERY PLAN                                       
+----------------------------------------------------------------------------------------
+ Aggregate
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t = 'Aztec                         Ct  '::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t = 'Aztec                         Ct  '::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Aztec                         Ct  ';
  count 
@@ -1449,10 +1731,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t =    'Aztec                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Worth                         St  ';
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                                       QUERY PLAN                                       
+----------------------------------------------------------------------------------------
+ Aggregate
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t = 'Worth                         St  '::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t = 'Worth                         St  '::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t =    'Worth                         St  ';
  count 
@@ -1462,11 +1750,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t =    'Worth                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t >=   'Worth                         St  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                       QUERY PLAN                                        
+-----------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t >= 'Worth                         St  '::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t >= 'Worth                         St  '::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t >=   'Worth                         St  ';
  count 
@@ -1476,11 +1769,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t >=   'Worth                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>=~ 'Worth                         St  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                        QUERY PLAN                                         
+-------------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t ~>=~ 'Worth                         St  '::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t ~>=~ 'Worth                         St  '::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>=~ 'Worth                         St  ';
  count 
@@ -1490,11 +1788,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t ~>=~ 'Worth                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t >    'Worth                         St  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                       QUERY PLAN                                       
+----------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t > 'Worth                         St  '::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t > 'Worth                         St  '::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t >    'Worth                         St  ';
  count 
@@ -1504,11 +1807,16 @@ SELECT count(*) FROM suffix_text_tbl WHERE t >    'Worth                        
 
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>~  'Worth                         St  ';
-                    QUERY PLAN                    
---------------------------------------------------
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on suffix_text_tbl
+                     Recheck Cond: (t ~>~ 'Worth                         St  '::text)
+                     ->  Bitmap Index Scan on sp_suff_ind
+                           Index Cond: (t ~>~ 'Worth                         St  '::text)
+(7 rows)
 
 SELECT count(*) FROM suffix_text_tbl WHERE t ~>~  'Worth                         St  ';
  count 
@@ -1530,12 +1838,16 @@ SET enable_bitmapscan = ON;
 CREATE INDEX intarrayidx ON array_index_op_test USING gin (i);
 explain (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
-                   QUERY PLAN                    
--------------------------------------------------
- Sort
-   Sort Key: array_index_op_test.seqno
-   ->  Data Node Scan on "__REMOTE_SORT_QUERY__"
-(3 rows)
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Sort
+         Sort Key: seqno
+         ->  Bitmap Heap Scan on array_index_op_test
+               Recheck Cond: (i @> '{32}'::integer[])
+               ->  Bitmap Index Scan on intarrayidx
+                     Index Cond: (i @> '{32}'::integer[])
+(7 rows)
 
 SELECT * FROM array_index_op_test WHERE i @> '{32}' ORDER BY seqno;
  seqno |                i                |                                                                 t                                                                  
@@ -1773,12 +2085,16 @@ SELECT * FROM array_op_test WHERE i <@ '{NULL}' ORDER BY seqno;
 CREATE INDEX textarrayidx ON array_index_op_test USING gin (t);
 explain (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908}' ORDER BY seqno;
-                   QUERY PLAN                    
--------------------------------------------------
- Sort
-   Sort Key: array_index_op_test.seqno
-   ->  Data Node Scan on "__REMOTE_SORT_QUERY__"
-(3 rows)
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Sort
+         Sort Key: seqno
+         ->  Bitmap Heap Scan on array_index_op_test
+               Recheck Cond: (t @> '{AAAAAAAA72908}'::text[])
+               ->  Bitmap Index Scan on textarrayidx
+                     Index Cond: (t @> '{AAAAAAAA72908}'::text[])
+(7 rows)
 
 SELECT * FROM array_index_op_test WHERE t @> '{AAAAAAAA72908}' ORDER BY seqno;
  seqno |           i           |                                                                     t                                                                      
@@ -2162,7 +2478,7 @@ Indexes:
 DROP INDEX CONCURRENTLY "concur_index2";				-- works
 ERROR:  index "concur_index2" does not exist
 DROP INDEX CONCURRENTLY IF EXISTS "concur_index2";		-- notice
-NOTICE:  index "concur_index2" does not exist, skipping
+ERROR:  index "concur_index2" does not exist
 -- failures
 DROP INDEX CONCURRENTLY "concur_index2", "concur_index3";
 ERROR:  index "concur_index2" does not exist
@@ -2390,7 +2706,7 @@ SELECT count(*) FROM onek_with_null WHERE unique1 IS NULL AND unique1 > 500;
 DROP INDEX onek_nulltest;
 -- Check initial-positioning logic too
 CREATE UNIQUE INDEX onek_nulltest ON onek_with_null (unique2);
-ERROR:  Cannot create index whose evaluation cannot be enforced to remote nodes
+ERROR:  Unique index of partitioned table must contain the hash/modulo distribution column.
 SET enable_seqscan = OFF;
 SET enable_indexscan = ON;
 SET enable_bitmapscan = OFF;
@@ -2452,10 +2768,13 @@ DROP TABLE onek_with_null;
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT * FROM tenk1
   WHERE thousand = 42 AND (tenthous = 1 OR tenthous = 3 OR tenthous = 42);
-                QUERY PLAN                
-------------------------------------------
- Data Node Scan on "__REMOTE_FQS_QUERY__"
-(1 row)
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Index Scan using tenk1_thous_tenthous on tenk1
+         Index Cond: (thousand = 42)
+         Filter: ((tenthous = 1) OR (tenthous = 3) OR (tenthous = 42))
+(4 rows)
 
 SELECT * FROM tenk1
   WHERE thousand = 42 AND (tenthous = 1 OR tenthous = 3 OR tenthous = 42);
@@ -2467,11 +2786,15 @@ SELECT * FROM tenk1
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT count(*) FROM tenk1
   WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
-                    QUERY PLAN                    
---------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Index Scan using tenk1_hundred on tenk1
+                     Index Cond: (hundred = 42)
+                     Filter: ((thousand = 42) OR (thousand = 99))
+(6 rows)
 
 SELECT count(*) FROM tenk1
   WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
@@ -2490,11 +2813,16 @@ ANALYZE dupindexcols;
 EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
   SELECT count(*) FROM dupindexcols
     WHERE f1 > 'WA' and id < 1000 and f1 ~<~ 'YX';
-                    QUERY PLAN                    
---------------------------------------------------
+                                            QUERY PLAN                                             
+---------------------------------------------------------------------------------------------------
  Aggregate
-   ->  Data Node Scan on "__REMOTE_GROUP_QUERY__"
-(2 rows)
+   ->  Remote Subquery Scan on all
+         ->  Aggregate
+               ->  Bitmap Heap Scan on dupindexcols
+                     Recheck Cond: ((f1 > 'WA'::text) AND (id < 1000) AND (f1 ~<~ 'YX'::text))
+                     ->  Bitmap Index Scan on dupindexcols_i
+                           Index Cond: ((f1 > 'WA'::text) AND (id < 1000) AND (f1 ~<~ 'YX'::text))
+(7 rows)
 
 SELECT count(*) FROM dupindexcols
   WHERE f1 > 'WA' and id < 1000 and f1 ~<~ 'YX';
@@ -2511,12 +2839,16 @@ EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT unique1 FROM tenk1
 WHERE unique1 IN (1,42,7)
 ORDER BY unique1;
-                   QUERY PLAN                    
--------------------------------------------------
- Sort
-   Sort Key: tenk1.unique1
-   ->  Data Node Scan on "__REMOTE_SORT_QUERY__"
-(3 rows)
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Sort
+         Sort Key: unique1
+         ->  Bitmap Heap Scan on tenk1
+               Recheck Cond: (unique1 = ANY ('{1,42,7}'::integer[]))
+               ->  Bitmap Index Scan on tenk1_unique1
+                     Index Cond: (unique1 = ANY ('{1,42,7}'::integer[]))
+(7 rows)
 
 SELECT unique1 FROM tenk1
 WHERE unique1 IN (1,42,7)
@@ -2532,11 +2864,11 @@ EXPLAIN (NUM_NODES OFF, NODES OFF, COSTS OFF)
 SELECT thousand, tenthous FROM tenk1
 WHERE thousand < 2 AND tenthous IN (1001,3000)
 ORDER BY thousand;
-                   QUERY PLAN                    
--------------------------------------------------
- Sort
-   Sort Key: tenk1.thousand
-   ->  Data Node Scan on "__REMOTE_SORT_QUERY__"
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Remote Subquery Scan on all
+   ->  Index Only Scan using tenk1_thous_tenthous on tenk1
+         Index Cond: ((thousand < 2) AND (tenthous = ANY ('{1001,3000}'::integer[])))
 (3 rows)
 
 SELECT thousand, tenthous FROM tenk1

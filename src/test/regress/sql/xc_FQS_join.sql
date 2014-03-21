@@ -208,7 +208,6 @@ select * from single_node_rep_tab natural full outer join single_node_mod_tab or
 -- We need to just make sure that FQS is not kicking in. But the JOINs can still
 -- be reduced by JOIN reduction optimization. Turn this optimization off so as
 -- to generate plans independent of number of nodes in the cluster.
-set enable_remotejoin to false;
 explain (costs off, verbose on, nodes off) update tab1_mod set val2 = 1000 from tab2_mod 
 		where tab1_mod.val = tab2_mod.val and tab1_mod. val2 = tab2_mod.val2;
 explain (costs off, verbose on, nodes off) delete from tab1_mod using tab2_mod
@@ -217,7 +216,6 @@ explain (costs off, verbose on, nodes off) update tab1_rep set val2 = 1000 from 
 		where tab1_rep.val = tab2_rep.val and tab1_rep.val2 = tab2_rep.val2;
 explain (costs off, verbose on, nodes off) delete from tab1_rep using tab2_rep 
 		where tab1_rep.val = tab2_rep.val and tab1_rep.val2 = tab2_rep.val2;
-reset enable_remotejoin;
 
 drop table tab1_rep;
 drop table tab2_rep;

@@ -586,8 +586,8 @@ SELECT '' AS to_char_13, to_char(q2, 'L9999999999999999.000')  FROM INT8_TBL ORD
             |  -4567890123456789.000
             |                123.000
             |                456.000
-            | $ 4567890123456789.000
-            | $ 4567890123456789.000
+            |   4567890123456789.000
+            |   4567890123456789.000
 (5 rows)
 
 SELECT '' AS to_char_14, to_char(q2, 'FM9999999999999999.999') FROM INT8_TBL ORDER BY q2;
@@ -802,3 +802,42 @@ SELECT * FROM generate_series('+4567890123456789'::int8, '+4567890123456799'::in
  4567890123456799
 (6 rows)
 
+-- corner case
+SELECT (-1::int8<<63)::text;
+         text         
+----------------------
+ -9223372036854775808
+(1 row)
+
+SELECT ((-1::int8<<63)+1)::text;
+         text         
+----------------------
+ -9223372036854775807
+(1 row)
+
+-- check sane handling of INT64_MIN overflow cases
+SELECT (-9223372036854775808)::int8 * (-1)::int8;
+ERROR:  floating-point exception
+DETAIL:  An invalid floating-point operation was signaled. This probably means an out-of-range result or an invalid operation, such as division by zero.
+SELECT (-9223372036854775808)::int8 / (-1)::int8;
+ERROR:  floating-point exception
+DETAIL:  An invalid floating-point operation was signaled. This probably means an out-of-range result or an invalid operation, such as division by zero.
+SELECT (-9223372036854775808)::int8 % (-1)::int8;
+ERROR:  floating-point exception
+DETAIL:  An invalid floating-point operation was signaled. This probably means an out-of-range result or an invalid operation, such as division by zero.
+SELECT (-9223372036854775808)::int8 * (-1)::int4;
+ERROR:  bigint out of range
+SELECT (-9223372036854775808)::int8 / (-1)::int4;
+ERROR:  floating-point exception
+DETAIL:  An invalid floating-point operation was signaled. This probably means an out-of-range result or an invalid operation, such as division by zero.
+SELECT (-9223372036854775808)::int8 % (-1)::int4;
+ERROR:  floating-point exception
+DETAIL:  An invalid floating-point operation was signaled. This probably means an out-of-range result or an invalid operation, such as division by zero.
+SELECT (-9223372036854775808)::int8 * (-1)::int2;
+ERROR:  bigint out of range
+SELECT (-9223372036854775808)::int8 / (-1)::int2;
+ERROR:  floating-point exception
+DETAIL:  An invalid floating-point operation was signaled. This probably means an out-of-range result or an invalid operation, such as division by zero.
+SELECT (-9223372036854775808)::int8 % (-1)::int2;
+ERROR:  floating-point exception
+DETAIL:  An invalid floating-point operation was signaled. This probably means an out-of-range result or an invalid operation, such as division by zero.

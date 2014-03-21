@@ -344,9 +344,11 @@ SELECT ((-1::int4<<31)+1)::text;
 
 -- check sane handling of INT_MIN overflow cases
 SELECT (-2147483648)::int4 * (-1)::int4;
-ERROR:  integer out of range
+ERROR:  floating-point exception
+DETAIL:  An invalid floating-point operation was signaled. This probably means an out-of-range result or an invalid operation, such as division by zero.
 SELECT (-2147483648)::int4 / (-1)::int4;
-ERROR:  integer out of range
+ERROR:  floating-point exception
+DETAIL:  An invalid floating-point operation was signaled. This probably means an out-of-range result or an invalid operation, such as division by zero.
 SELECT (-2147483648)::int4 % (-1)::int4;
  ?column? 
 ----------
@@ -356,7 +358,8 @@ SELECT (-2147483648)::int4 % (-1)::int4;
 SELECT (-2147483648)::int4 * (-1)::int2;
 ERROR:  integer out of range
 SELECT (-2147483648)::int4 / (-1)::int2;
-ERROR:  integer out of range
+ERROR:  floating-point exception
+DETAIL:  An invalid floating-point operation was signaled. This probably means an out-of-range result or an invalid operation, such as division by zero.
 SELECT (-2147483648)::int4 % (-1)::int2;
  ?column? 
 ----------
