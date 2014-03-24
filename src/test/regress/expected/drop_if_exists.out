@@ -174,10 +174,11 @@ DROP TRIGGER test_trigger_exists ON no_such_table;
 ERROR:  relation "no_such_table" does not exist
 DROP TRIGGER IF EXISTS test_trigger_exists ON no_such_table;
 ERROR:  relation "no_such_table" does not exist
-CREATE TRIGGER test_trigger_exists
-    BEFORE UPDATE ON test_exists
-    FOR EACH ROW EXECUTE PROCEDURE suppress_redundant_updates_trigger();
-DROP TRIGGER test_trigger_exists ON test_exists;
+-- triggers not supported in XL as yet
+--CREATE TRIGGER test_trigger_exists
+--    BEFORE UPDATE ON test_exists
+--   FOR EACH ROW EXECUTE PROCEDURE suppress_redundant_updates_trigger();
+--DROP TRIGGER test_trigger_exists ON test_exists;
 -- rule
 DROP RULE test_rule_exists ON test_exists;
 ERROR:  rule "test_rule_exists" for relation "test_exists" does not exist

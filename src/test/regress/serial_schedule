@@ -117,7 +117,7 @@ test: plancache
 test: limit
 # XL: ignore for now
 #test: plpgsql
-test: copy2
+#test: copy2
 test: temp
 test: domain
 test: rangefuncs

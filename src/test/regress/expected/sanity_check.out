@@ -64,9 +64,7 @@ SELECT relname, relhasindex
  interval_tbl            | f
  iportaltest             | f
  kd_point_tbl            | t
- log_table               | f
  lseg_tbl                | f
- main_table              | f
  money_data              | f
  num_data                | f
  num_exp_add             | t
@@ -167,7 +165,7 @@ SELECT relname, relhasindex
  timetz_tbl              | f
  tinterval_tbl           | f
  varchar_tbl             | f
-(156 rows)
+(154 rows)
 
 --
 -- another sanity check: every system catalog that has OIDs should have

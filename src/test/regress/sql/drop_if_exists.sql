@@ -182,10 +182,11 @@ DROP TRIGGER IF EXISTS test_trigger_exists ON test_exists;
 DROP TRIGGER test_trigger_exists ON no_such_table;
 DROP TRIGGER IF EXISTS test_trigger_exists ON no_such_table;
 
-CREATE TRIGGER test_trigger_exists
-    BEFORE UPDATE ON test_exists
-    FOR EACH ROW EXECUTE PROCEDURE suppress_redundant_updates_trigger();
-DROP TRIGGER test_trigger_exists ON test_exists;
+-- triggers not supported in XL as yet
+--CREATE TRIGGER test_trigger_exists
+--    BEFORE UPDATE ON test_exists
+--   FOR EACH ROW EXECUTE PROCEDURE suppress_redundant_updates_trigger();
+--DROP TRIGGER test_trigger_exists ON test_exists;
 
 -- rule
 DROP RULE test_rule_exists ON test_exists;

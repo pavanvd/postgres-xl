@@ -67,6 +67,7 @@ CLUSTER vaccluster;
 VACUUM FULL pg_am;
 VACUUM FULL pg_class;
 VACUUM FULL pg_database;
+WARNING:  skipping "pg_database" --- cannot vacuum non-tables or special system tables
 VACUUM FULL vaccluster;
 VACUUM FULL vactst;
 DROP TABLE vaccluster;

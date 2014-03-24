@@ -355,20 +355,20 @@ SELECT to_tsvector('SKIES My booKs');
 SELECT plainto_tsquery('SKIES My booKs');
 SELECT to_tsquery('SKIES & My | booKs');
 
---trigger
-CREATE TRIGGER tsvectorupdate
-BEFORE UPDATE OR INSERT ON test_tsvector
-FOR EACH ROW EXECUTE PROCEDURE tsvector_update_trigger(a, 'pg_catalog.english', t);
+--triggers do not work in XL for now
+--CREATE TRIGGER tsvectorupdate
+--BEFORE UPDATE OR INSERT ON test_tsvector
+--FOR EACH ROW EXECUTE PROCEDURE tsvector_update_trigger(a, 'pg_catalog.english', t);
 
-SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
-INSERT INTO test_tsvector (t) VALUES ('345 qwerty');
-SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
-UPDATE test_tsvector SET t = null WHERE t = '345 qwerty';
-SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
+--SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
+--INSERT INTO test_tsvector (t) VALUES ('345 qwerty');
+--SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
+--UPDATE test_tsvector SET t = null WHERE t = '345 qwerty';
+--SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
 
-INSERT INTO test_tsvector (t) VALUES ('345 qwerty');
+--INSERT INTO test_tsvector (t) VALUES ('345 qwerty');
 
-SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
+--SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
 
 -- test finding items in GIN's pending list
 create temp table pendtest (ts tsvector);

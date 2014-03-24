@@ -867,7 +867,11 @@ SELECT has_foreign_data_wrapper_privilege(
 
 SELECT has_foreign_data_wrapper_privilege(
     (SELECT oid FROM pg_roles WHERE rolname='regress_test_role'), 'foo', 'USAGE');
-ERROR:  foreign-data wrapper "foo" does not exist
+ has_foreign_data_wrapper_privilege 
+------------------------------------
+ 
+(1 row)
+
 SELECT has_foreign_data_wrapper_privilege('foo', 'USAGE');
 ERROR:  foreign-data wrapper "foo" does not exist
 GRANT USAGE ON FOREIGN DATA WRAPPER foo TO regress_test_role;
@@ -901,7 +905,11 @@ SELECT has_server_privilege(
 
 SELECT has_server_privilege(
     (SELECT oid FROM pg_roles WHERE rolname='regress_test_role'), 's8', 'USAGE');
-ERROR:  server "s8" does not exist
+ has_server_privilege 
+----------------------
+ 
+(1 row)
+
 SELECT has_server_privilege('s8', 'USAGE');
 ERROR:  server "s8" does not exist
 GRANT USAGE ON FOREIGN SERVER s8 TO regress_test_role;
