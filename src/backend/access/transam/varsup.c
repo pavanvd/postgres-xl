@@ -201,7 +201,11 @@ GetNewTransactionId(bool isSubXact)
 	else if(IS_PGXC_DATANODE || IsConnFromCoord())
  	{
 #ifdef XCP
-		if (IsAutoVacuumWorkerProcess() || IsAutoVacuumLauncherProcess() || (IS_PGXC_DATANODE && IsInitProcessingMode()))
+		/*
+ 		 * (IS_PGXC_DATANODE && IsInitProcessingMode() && IsPostmasterEnvironment)
+		 * handles new connections, ensures XID is consumed then, but not during initdb
+		 */
+		if (IsAutoVacuumWorkerProcess() || IsAutoVacuumLauncherProcess() || (IS_PGXC_DATANODE && IsInitProcessingMode() && IsPostmasterEnvironment))
 #else
 		if (IsAutoVacuumWorkerProcess())
 #endif
