@@ -914,7 +914,6 @@ freeGTM_Conn(GTM_Conn *conn)
 					free(conn->result->gr_resdata.grd_seqkey.gsk_key);
 				break;
 
-			case SEQUENCE_GET_CURRENT_RESULT:
 			case SEQUENCE_GET_NEXT_RESULT:
 			case SEQUENCE_GET_LAST_RESULT:
 				if (conn->result->gr_resdata.grd_seq.seqkey.gsk_key)
