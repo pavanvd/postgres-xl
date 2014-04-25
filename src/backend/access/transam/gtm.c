@@ -191,16 +191,13 @@ BeginTranAutovacuumGTM(void)
 int
 CommitTranGTM(GlobalTransactionId gxid)
 {
-	int ret;
+	int ret = -1;
 
 	if (!GlobalTransactionIdIsValid(gxid))
 		return 0;
 	CheckConnection();
-#ifdef XCP
-	ret = -1;
 	if (conn)
-#endif
-	ret = commit_transaction(conn, gxid);
+		ret = commit_transaction(conn, gxid);
 
 	/*
 	 * If something went wrong (timeout), try and reset GTM connection.
@@ -232,16 +229,13 @@ CommitTranGTM(GlobalTransactionId gxid)
 int
 CommitPreparedTranGTM(GlobalTransactionId gxid, GlobalTransactionId prepared_gxid)
 {
-	int ret = 0;
+	int ret = -1;
 
 	if (!GlobalTransactionIdIsValid(gxid) || !GlobalTransactionIdIsValid(prepared_gxid))
 		return ret;
 	CheckConnection();
-#ifdef XCP
-	ret = -1;
 	if (conn)
-#endif
-	ret = commit_prepared_transaction(conn, gxid, prepared_gxid);
+		ret = commit_prepared_transaction(conn, gxid, prepared_gxid);
 
 	/*
 	 * If something went wrong (timeout), try and reset GTM connection.
@@ -298,17 +292,15 @@ StartPreparedTranGTM(GlobalTransactionId gxid,
 					 char *gid,
 					 char *nodestring)
 {
-	int ret = 0;
+	int ret = -1;
 
 	if (!GlobalTransactionIdIsValid(gxid))
 		return 0;
 	CheckConnection();
 
-#ifdef XCP
 	ret = -1;
 	if (conn)
-#endif
-	ret = start_prepared_transaction(conn, gxid, gid, nodestring);
+		ret = start_prepared_transaction(conn, gxid, gid, nodestring);
 
 	/*
 	 * If something went wrong (timeout), try and reset GTM connection.
@@ -331,16 +323,13 @@ StartPreparedTranGTM(GlobalTransactionId gxid,
 int
 PrepareTranGTM(GlobalTransactionId gxid)
 {
-	int ret;
+	int ret = -1;
 
 	if (!GlobalTransactionIdIsValid(gxid))
 		return 0;
 	CheckConnection();
-#ifdef XCP
-	ret = -1;
 	if (conn)
-#endif
-	ret = prepare_transaction(conn, gxid);
+		ret = prepare_transaction(conn, gxid);
 
 	/*
 	 * If something went wrong (timeout), try and reset GTM connection.
@@ -367,14 +356,11 @@ GetGIDDataGTM(char *gid,
 			  GlobalTransactionId *prepared_gxid,
 			  char **nodestring)
 {
-	int ret = 0;
+	int ret = -1;
 
 	CheckConnection();
-#ifdef XCP
-	ret = -1;
 	if (conn)
-#endif
-	ret = get_gid_data(conn, GTM_ISOLATION_RC, gid, gxid,
+		ret = get_gid_data(conn, GTM_ISOLATION_RC, gid, gxid,
 					   prepared_gxid, nodestring);
 
 	/*
