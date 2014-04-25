@@ -466,7 +466,6 @@ PoolManagerCloseHandle(PoolHandle *handle)
 {
 	close(Socket(handle->port));
 	free(handle);
-	handle = NULL;
 }
 #endif
 
@@ -1020,10 +1019,7 @@ PoolManagerDisconnect(void)
 	pool_putmessage(&poolHandle->port, 'd', NULL, 0);
 	pool_flush(&poolHandle->port);
 
-	close(Socket(poolHandle->port));
-#ifdef XCP
-	free(poolHandle);
-#endif
+	PoolManagerCloseHandle(poolHandle);
 	poolHandle = NULL;
 }
 
