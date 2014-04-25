@@ -1532,8 +1532,7 @@ standard_ProcessUtility(Node *parsetree,
 							false,		/* is_alter_table */
 							true,		/* check_rights */
 							false,		/* skip_build */
-							false,		/* quiet */
-							stmt->concurrent);	/* concurrent */
+							false);		/* quiet */
 #ifdef PGXC
 				if (IS_PGXC_COORDINATOR && !stmt->isconstraint && !IsConnFromCoord())
 					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote,

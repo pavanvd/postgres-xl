@@ -400,13 +400,8 @@ msgstr "  --maintenance-db=DBNAME      alternative Wartungsdatenbank\n"
 
 #: createdb.c:272
 #, c-format
-msgid ""
-"\n"
-"By default, a database with the same name as the current user is created.\n"
+msgid "  --maintenance-db=DBNAME      alternate maintenance database\n"
 msgstr ""
-"\n"
-"Wenn nichts anderes angegeben ist, dann wird eine Datenbank mit dem Namen\n"
-"des aktuellen Benutzers erzeugt.\n"
 
 #: createlang.c:149 droplang.c:148
 msgid "Name"

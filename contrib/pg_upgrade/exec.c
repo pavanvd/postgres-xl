@@ -44,6 +44,7 @@ exec_prog(const char *log_file, const char *opt_log_file,
 {
 	int			result;
 	int			written;
+	bool		retval;
 #define MAXCMDLEN (2 * MAXPGPATH)
 	char		cmd[MAXCMDLEN];
 	mode_t		old_umask = 0;
@@ -104,6 +105,14 @@ exec_prog(const char *log_file, const char *opt_log_file,
 
 	if (result != 0)
 	{
+		char opt_string[MAXPGPATH];
+
+		/* Create string for optional second log file */
+		if (opt_log_file)
+			snprintf(opt_string, sizeof(opt_string), " or \"%s\"", opt_log_file);
+		else
+			opt_string[0] = '\0';
+
 		report_status(PG_REPORT, "*failure*");
 		fflush(stdout);
 		pg_log(PG_VERBOSE, "There were problems executing \"%s\"\n", cmd);
@@ -118,9 +127,9 @@ exec_prog(const char *log_file, const char *opt_log_file,
 				   "the probable cause of the failure.\n",
 				   log_file);
 		pg_log(throw_error ? PG_FATAL : PG_REPORT,
-			   "Consult the last few lines of \"%s\" for\n"
+			   "Consult the last few lines of \"%s\"%s for\n"
 			   "the probable cause of the failure.\n",
-			   log_file);
+			   log_file, opt_string);
 		retval = 1;
 	}
 	else

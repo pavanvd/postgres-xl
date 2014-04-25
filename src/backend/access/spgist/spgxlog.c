@@ -15,8 +15,9 @@
 #include "postgres.h"
 
 #include "access/spgist_private.h"
+#include "access/transam.h"
 #include "access/xlogutils.h"
-#include "storage/bufmgr.h"
+#include "storage/standby.h"
 #include "utils/memutils.h"
 
 
@@ -954,10 +955,33 @@ spg_redo(XLogRecPtr lsn, XLogRecord *record)
 	MemoryContext oldCxt;
 
 	/*
-	 * SP-GiST indexes do not require any conflict processing. NB: If we ever
-	 * implement a similar optimization as we have in b-tree, and remove
-	 * killed tuples outside VACUUM, we'll need to handle that here.
+	 * If we have any conflict processing to do, it must happen before we
+	 * update the page.
 	 */
+	if (InHotStandby)
+	{
+		switch (info)
+		{
+			case XLOG_SPGIST_VACUUM_REDIRECT:
+				{
+					spgxlogVacuumRedirect *xldata =
+					(spgxlogVacuumRedirect *) XLogRecGetData(record);
+
+					/*
+					 * If any redirection tuples are being removed, make sure
+					 * there are no live Hot Standby transactions that might
+					 * need to see them.
+					 */
+					if (TransactionIdIsValid(xldata->newestRedirectXid))
+						ResolveRecoveryConflictWithSnapshot(xldata->newestRedirectXid,
+															xldata->node);
+					break;
+				}
+			default:
+				break;
+		}
+	}
+
 	RestoreBkpBlocks(lsn, record, false);
 
 	oldCxt = MemoryContextSwitchTo(opCtx);
@@ -1060,8 +1084,9 @@ spg_desc(StringInfo buf, uint8 xl_info, char *rec)
 			break;
 		case XLOG_SPGIST_VACUUM_REDIRECT:
 			out_target(buf, ((spgxlogVacuumRedirect *) rec)->node);
-			appendStringInfo(buf, "vacuum redirect tuples on page %u",
-							 ((spgxlogVacuumRedirect *) rec)->blkno);
+			appendStringInfo(buf, "vacuum redirect tuples on page %u, newest XID %u",
+							 ((spgxlogVacuumRedirect *) rec)->blkno,
+						 ((spgxlogVacuumRedirect *) rec)->newestRedirectXid);
 			break;
 		default:
 			appendStringInfo(buf, "unknown spgist op code %u", info);

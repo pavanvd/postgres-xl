@@ -217,6 +217,9 @@ static void dumpACL(Archive *fout, CatalogId objCatId, DumpId objDumpId,
 		const char *acls);
 
 static void getDependencies(Archive *fout);
+static void BuildArchiveDependencies(Archive *fout);
+static void findDumpableDependencies(ArchiveHandle *AH, DumpableObject *dobj,
+						 DumpId **dependencies, int *nDeps, int *allocDeps);
 
 static DumpableObject *createBoundaryObjects(void);
 static void addBoundaryDependencies(DumpableObject **dobjs, int numObjs,
@@ -777,6 +780,14 @@ main(int argc, char **argv)
 	ropt->suppressDumpWarnings = true;	/* We've already shown them */
 
 	SetArchiveRestoreOptions(fout, ropt);
+
+	/*
+	 * The archive's TOC entries are now marked as to which ones will
+	 * actually be output, so we can set up their dependency lists properly.
+	 * This isn't necessary for plain-text output, though.
+	 */
+	if (!plainText)
+		BuildArchiveDependencies(fout);
 
 	/*
 	 * And finally we can do the actual output.
@@ -1590,12 +1601,17 @@ dumpTableData(Archive *fout, TableDataInfo *tdinfo)
 		copyStmt = NULL;
 	}
 
+	/*
+	 * Note: although the TableDataInfo is a full DumpableObject, we treat its
+	 * dependency on its table as "special" and pass it to ArchiveEntry now.
+	 * See comments for BuildArchiveDependencies.
+	 */
 	ArchiveEntry(fout, tdinfo->dobj.catId, tdinfo->dobj.dumpId,
 				 tbinfo->dobj.name, tbinfo->dobj.namespace->dobj.name,
 				 NULL, tbinfo->rolname,
 				 false, "TABLE DATA", SECTION_DATA,
 				 "", "", copyStmt,
-				 tdinfo->dobj.dependencies, tdinfo->dobj.nDeps,
+				 &(tbinfo->dobj.dumpId), 1,
 				 dumpFn, tdinfo);
 
 	destroyPQExpBuffer(copyBuf);
@@ -2296,7 +2312,7 @@ dumpBlob(Archive *fout, BlobInfo *binfo)
 				 binfo->rolname, false,
 				 "BLOB", SECTION_PRE_DATA,
 				 cquery->data, dquery->data, NULL,
-				 binfo->dobj.dependencies, binfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* set up tag for comment and/or ACL */
@@ -7261,7 +7277,7 @@ dumpDumpableObject(Archive *fout, DumpableObject *dobj)
 						 dobj->name, NULL, NULL, "",
 						 false, "BLOBS", SECTION_DATA,
 						 "", "", NULL,
-						 dobj->dependencies, dobj->nDeps,
+						 NULL, 0,
 						 dumpBlobs, NULL);
 			break;
 		case DO_PRE_DATA_BOUNDARY:
@@ -7312,7 +7328,7 @@ dumpNamespace(Archive *fout, NamespaceInfo *nspinfo)
 				 nspinfo->rolname,
 				 false, "SCHEMA", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 nspinfo->dobj.dependencies, nspinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Schema Comments and Security Labels */
@@ -7440,7 +7456,7 @@ dumpExtension(Archive *fout, ExtensionInfo *extinfo)
 				 "",
 				 false, "EXTENSION", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 extinfo->dobj.dependencies, extinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Extension Comments and Security Labels */
@@ -7588,7 +7604,7 @@ dumpEnumType(Archive *fout, TypeInfo *tyinfo)
 				 tyinfo->rolname, false,
 				 "TYPE", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 tyinfo->dobj.dependencies, tyinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Type Comments and Security Labels */
@@ -7713,7 +7729,7 @@ dumpRangeType(Archive *fout, TypeInfo *tyinfo)
 				 tyinfo->rolname, false,
 				 "TYPE", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 tyinfo->dobj.dependencies, tyinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Type Comments and Security Labels */
@@ -8095,7 +8111,7 @@ dumpBaseType(Archive *fout, TypeInfo *tyinfo)
 				 tyinfo->rolname, false,
 				 "TYPE", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 tyinfo->dobj.dependencies, tyinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Type Comments and Security Labels */
@@ -8250,7 +8266,7 @@ dumpDomain(Archive *fout, TypeInfo *tyinfo)
 				 tyinfo->rolname, false,
 				 "DOMAIN", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 tyinfo->dobj.dependencies, tyinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Domain Comments and Security Labels */
@@ -8457,7 +8473,7 @@ dumpCompositeType(Archive *fout, TypeInfo *tyinfo)
 				 tyinfo->rolname, false,
 				 "TYPE", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 tyinfo->dobj.dependencies, tyinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 
@@ -8629,7 +8645,7 @@ dumpShellType(Archive *fout, ShellTypeInfo *stinfo)
 				 stinfo->baseType->rolname, false,
 				 "SHELL TYPE", SECTION_PRE_DATA,
 				 q->data, "", NULL,
-				 stinfo->dobj.dependencies, stinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	destroyPQExpBuffer(q);
@@ -8803,7 +8819,7 @@ dumpProcLang(Archive *fout, ProcLangInfo *plang)
 				 lanschema, NULL, plang->lanowner,
 				 false, "PROCEDURAL LANGUAGE", SECTION_PRE_DATA,
 				 defqry->data, delqry->data, NULL,
-				 plang->dobj.dependencies, plang->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Proc Lang Comments and Security Labels */
@@ -9390,7 +9406,7 @@ dumpFunc(Archive *fout, FuncInfo *finfo)
 				 finfo->rolname, false,
 				 "FUNCTION", SECTION_PRE_DATA,
 				 q->data, delqry->data, NULL,
-				 finfo->dobj.dependencies, finfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Function Comments and Security Labels */
@@ -9560,7 +9576,7 @@ dumpCast(Archive *fout, CastInfo *cast)
 				 "pg_catalog", NULL, "",
 				 false, "CAST", SECTION_PRE_DATA,
 				 defqry->data, delqry->data, NULL,
-				 cast->dobj.dependencies, cast->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Cast Comments */
@@ -9794,7 +9810,7 @@ dumpOpr(Archive *fout, OprInfo *oprinfo)
 				 oprinfo->rolname,
 				 false, "OPERATOR", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 oprinfo->dobj.dependencies, oprinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Operator Comments */
@@ -10301,7 +10317,7 @@ dumpOpclass(Archive *fout, OpclassInfo *opcinfo)
 				 opcinfo->rolname,
 				 false, "OPERATOR CLASS", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 opcinfo->dobj.dependencies, opcinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Operator Class Comments */
@@ -10614,7 +10630,7 @@ dumpOpfamily(Archive *fout, OpfamilyInfo *opfinfo)
 				 opfinfo->rolname,
 				 false, "OPERATOR FAMILY", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 opfinfo->dobj.dependencies, opfinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Operator Family Comments */
@@ -10703,7 +10719,7 @@ dumpCollation(Archive *fout, CollInfo *collinfo)
 				 collinfo->rolname,
 				 false, "COLLATION", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 collinfo->dobj.dependencies, collinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Collation Comments */
@@ -10802,7 +10818,7 @@ dumpConversion(Archive *fout, ConvInfo *convinfo)
 				 convinfo->rolname,
 				 false, "CONVERSION", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 convinfo->dobj.dependencies, convinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Conversion Comments */
@@ -11039,7 +11055,7 @@ dumpAgg(Archive *fout, AggInfo *agginfo)
 				 agginfo->aggfn.rolname,
 				 false, "AGGREGATE", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 agginfo->aggfn.dobj.dependencies, agginfo->aggfn.dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Aggregate Comments */
@@ -11137,7 +11153,7 @@ dumpTSParser(Archive *fout, TSParserInfo *prsinfo)
 				 "",
 				 false, "TEXT SEARCH PARSER", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 prsinfo->dobj.dependencies, prsinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Parser Comments */
@@ -11224,7 +11240,7 @@ dumpTSDictionary(Archive *fout, TSDictInfo *dictinfo)
 				 dictinfo->rolname,
 				 false, "TEXT SEARCH DICTIONARY", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 dictinfo->dobj.dependencies, dictinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Dictionary Comments */
@@ -11290,7 +11306,7 @@ dumpTSTemplate(Archive *fout, TSTemplateInfo *tmplinfo)
 				 "",
 				 false, "TEXT SEARCH TEMPLATE", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 tmplinfo->dobj.dependencies, tmplinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Template Comments */
@@ -11418,7 +11434,7 @@ dumpTSConfig(Archive *fout, TSConfigInfo *cfginfo)
 				 cfginfo->rolname,
 				 false, "TEXT SEARCH CONFIGURATION", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 cfginfo->dobj.dependencies, cfginfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump Configuration Comments */
@@ -11492,7 +11508,7 @@ dumpForeignDataWrapper(Archive *fout, FdwInfo *fdwinfo)
 				 fdwinfo->rolname,
 				 false, "FOREIGN DATA WRAPPER", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 fdwinfo->dobj.dependencies, fdwinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Handle the ACL */
@@ -11584,7 +11600,7 @@ dumpForeignServer(Archive *fout, ForeignServerInfo *srvinfo)
 				 srvinfo->rolname,
 				 false, "SERVER", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 srvinfo->dobj.dependencies, srvinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Handle the ACL */
@@ -11768,7 +11784,7 @@ dumpDefaultACL(Archive *fout, DefaultACLInfo *daclinfo)
 				 daclinfo->defaclrole,
 				 false, "DEFAULT ACL", SECTION_POST_DATA,
 				 q->data, "", NULL,
-				 daclinfo->dobj.dependencies, daclinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	destroyPQExpBuffer(tag);
@@ -12802,7 +12818,7 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 			   (strcmp(reltypename, "TABLE") == 0) ? tbinfo->hasoids : false,
 				 reltypename, SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 tbinfo->dobj.dependencies, tbinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 
@@ -12874,7 +12890,7 @@ dumpAttrDef(Archive *fout, AttrDefInfo *adinfo)
 				 tbinfo->rolname,
 				 false, "DEFAULT", SECTION_PRE_DATA,
 				 q->data, delq->data, NULL,
-				 adinfo->dobj.dependencies, adinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	destroyPQExpBuffer(q);
@@ -12980,7 +12996,7 @@ dumpIndex(Archive *fout, IndxInfo *indxinfo)
 					 tbinfo->rolname, false,
 					 "INDEX", SECTION_POST_DATA,
 					 q->data, delq->data, NULL,
-					 indxinfo->dobj.dependencies, indxinfo->dobj.nDeps,
+					 NULL, 0,
 					 NULL, NULL);
 	}
 
@@ -13101,7 +13117,7 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 					 tbinfo->rolname, false,
 					 "CONSTRAINT", SECTION_POST_DATA,
 					 q->data, delq->data, NULL,
-					 coninfo->dobj.dependencies, coninfo->dobj.nDeps,
+					 NULL, 0,
 					 NULL, NULL);
 	}
 	else if (coninfo->contype == 'f')
@@ -13134,7 +13150,7 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 					 tbinfo->rolname, false,
 					 "FK CONSTRAINT", SECTION_POST_DATA,
 					 q->data, delq->data, NULL,
-					 coninfo->dobj.dependencies, coninfo->dobj.nDeps,
+					 NULL, 0,
 					 NULL, NULL);
 	}
 	else if (coninfo->contype == 'c' && tbinfo)
@@ -13169,7 +13185,7 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 						 tbinfo->rolname, false,
 						 "CHECK CONSTRAINT", SECTION_POST_DATA,
 						 q->data, delq->data, NULL,
-						 coninfo->dobj.dependencies, coninfo->dobj.nDeps,
+						 NULL, 0,
 						 NULL, NULL);
 		}
 	}
@@ -13205,7 +13221,7 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 						 tyinfo->rolname, false,
 						 "CHECK CONSTRAINT", SECTION_POST_DATA,
 						 q->data, delq->data, NULL,
-						 coninfo->dobj.dependencies, coninfo->dobj.nDeps,
+						 NULL, 0,
 						 NULL, NULL);
 		}
 	}
@@ -13467,7 +13483,7 @@ dumpSequence(Archive *fout, TableInfo *tbinfo)
 					 tbinfo->rolname,
 					 false, "SEQUENCE", SECTION_PRE_DATA,
 					 query->data, delqry->data, NULL,
-					 tbinfo->dobj.dependencies, tbinfo->dobj.nDeps,
+					 NULL, 0,
 					 NULL, NULL);
 
 		/*
@@ -13761,7 +13777,7 @@ dumpTrigger(Archive *fout, TriggerInfo *tginfo)
 				 tbinfo->rolname, false,
 				 "TRIGGER", SECTION_POST_DATA,
 				 query->data, delqry->data, NULL,
-				 tginfo->dobj.dependencies, tginfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	dumpComment(fout, labelq->data,
@@ -13882,7 +13898,7 @@ dumpRule(Archive *fout, RuleInfo *rinfo)
 				 tbinfo->rolname, false,
 				 "RULE", SECTION_POST_DATA,
 				 cmd->data, delcmd->data, NULL,
-				 rinfo->dobj.dependencies, rinfo->dobj.nDeps,
+				 NULL, 0,
 				 NULL, NULL);
 
 	/* Dump rule comments */
@@ -14290,6 +14306,124 @@ addBoundaryDependencies(DumpableObject **dobjs, int numObjs,
 				/* must come after the pre-data boundary */
 				addObjectDependency(dobj, preDataBound->dumpId);
 				break;
+		}
+	}
+}
+
+
+/*
+ * BuildArchiveDependencies - create dependency data for archive TOC entries
+ *
+ * The raw dependency data obtained by getDependencies() is not terribly
+ * useful in an archive dump, because in many cases there are dependency
+ * chains linking through objects that don't appear explicitly in the dump.
+ * For example, a view will depend on its _RETURN rule while the _RETURN rule
+ * will depend on other objects --- but the rule will not appear as a separate
+ * object in the dump.  We need to adjust the view's dependencies to include
+ * whatever the rule depends on that is included in the dump.
+ *
+ * Just to make things more complicated, there are also "special" dependencies
+ * such as the dependency of a TABLE DATA item on its TABLE, which we must
+ * not rearrange because pg_restore knows that TABLE DATA only depends on
+ * its table.  In these cases we must leave the dependencies strictly as-is
+ * even if they refer to not-to-be-dumped objects.
+ *
+ * To handle this, the convention is that "special" dependencies are created
+ * during ArchiveEntry calls, and an archive TOC item that has any such
+ * entries will not be touched here.  Otherwise, we recursively search the
+ * DumpableObject data structures to build the correct dependencies for each
+ * archive TOC item.
+ */
+static void
+BuildArchiveDependencies(Archive *fout)
+{
+	ArchiveHandle *AH = (ArchiveHandle *) fout;
+	TocEntry   *te;
+
+	/* Scan all TOC entries in the archive */
+	for (te = AH->toc->next; te != AH->toc; te = te->next)
+	{
+		DumpableObject *dobj;
+		DumpId	   *dependencies;
+		int			nDeps;
+		int			allocDeps;
+
+		/* No need to process entries that will not be dumped */
+		if (te->reqs == 0)
+			continue;
+		/* Ignore entries that already have "special" dependencies */
+		if (te->nDeps > 0)
+			continue;
+		/* Otherwise, look up the item's original DumpableObject, if any */
+		dobj = findObjectByDumpId(te->dumpId);
+		if (dobj == NULL)
+			continue;
+		/* No work if it has no dependencies */
+		if (dobj->nDeps <= 0)
+			continue;
+		/* Set up work array */
+		allocDeps = 64;
+		dependencies = (DumpId *) pg_malloc(allocDeps * sizeof(DumpId));
+		nDeps = 0;
+		/* Recursively find all dumpable dependencies */
+		findDumpableDependencies(AH, dobj,
+								 &dependencies, &nDeps, &allocDeps);
+		/* And save 'em ... */
+		if (nDeps > 0)
+		{
+			dependencies = (DumpId *) pg_realloc(dependencies,
+												 nDeps * sizeof(DumpId));
+			te->dependencies = dependencies;
+			te->nDeps = nDeps;
+		}
+		else
+			free(dependencies);
+	}
+}
+
+/* Recursive search subroutine for BuildArchiveDependencies */
+static void
+findDumpableDependencies(ArchiveHandle *AH, DumpableObject *dobj,
+						 DumpId **dependencies, int *nDeps, int *allocDeps)
+{
+	int			i;
+
+	/*
+	 * Ignore section boundary objects: if we search through them, we'll
+	 * report lots of bogus dependencies.
+	 */
+	if (dobj->objType == DO_PRE_DATA_BOUNDARY ||
+		dobj->objType == DO_POST_DATA_BOUNDARY)
+		return;
+
+	for (i = 0; i < dobj->nDeps; i++)
+	{
+		DumpId		depid = dobj->dependencies[i];
+
+		if (TocIDRequired(AH, depid) != 0)
+		{
+			/* Object will be dumped, so just reference it as a dependency */
+			if (*nDeps >= *allocDeps)
+			{
+				*allocDeps *= 2;
+				*dependencies = (DumpId *) pg_realloc(*dependencies,
+											  *allocDeps * sizeof(DumpId));
+			}
+			(*dependencies)[*nDeps] = depid;
+			(*nDeps)++;
+		}
+		else
+		{
+			/*
+			 * Object will not be dumped, so recursively consider its deps.
+			 * We rely on the assumption that sortDumpableObjects already
+			 * broke any dependency loops, else we might recurse infinitely.
+			 */
+			DumpableObject *otherdobj = findObjectByDumpId(depid);
+
+			if (otherdobj)
+				findDumpableDependencies(AH, otherdobj,
+										 dependencies, nDeps, allocDeps);
 		}
 	}
 }

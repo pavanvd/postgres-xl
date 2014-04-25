@@ -1132,7 +1132,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 				initStringInfo(&logbuf);
 				DescribeLockTag(&locktagbuf, &lock->tag);
 				appendStringInfo(&logbuf,
-					  _("Process %d waits for %s on %s."),
+					  _("Process %d waits for %s on %s"),
 						 MyProcPid,
 						 GetLockmodeName(lock->tag.locktag_lockmethodid,
 										 lockmode),
@@ -1141,11 +1141,13 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 				/* release lock as quickly as possible */
 				LWLockRelease(ProcArrayLock);
 
-				elog(DEBUG2, "sending cancel to blocking autovacuum PID %d",
-					 pid);
+				ereport(LOG,
+						(errmsg("sending cancel to blocking autovacuum PID %d",
+							pid),
+						 errdetail_log("%s", logbuf.data)));
 
-				/* don't hold the lock across the kill() syscall */
-				LWLockRelease(ProcArrayLock);
+				pfree(logbuf.data);
+				pfree(locktagbuf.data);
 
 				/* send the autovacuum worker Back to Old Kent Road */
 				if (kill(pid, SIGINT) < 0)

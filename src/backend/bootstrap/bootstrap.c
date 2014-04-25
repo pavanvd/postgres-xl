@@ -74,6 +74,8 @@ static void cleanup(void);
  * ----------------
  */
 
+AuxProcType	MyAuxProcType = NotAnAuxProcess;	/* declared in miscadmin.h */
+
 Relation	boot_reldesc;		/* current relation descriptor */
 
 Form_pg_attribute attrtypes[MAXATTR];	/* points to attribute info */
@@ -198,7 +200,6 @@ AuxiliaryProcessMain(int argc, char *argv[])
 {
 	char	   *progname = argv[0];
 	int			flag;
-	AuxProcType auxType = CheckerProcess;
 	char	   *userDoption = NULL;
 
 	/*
@@ -239,6 +240,9 @@ AuxiliaryProcessMain(int argc, char *argv[])
 		argc--;
 	}
 
+	/* If no -x argument, we are a CheckerProcess */
+	MyAuxProcType = CheckerProcess;
+
 	while ((flag = getopt(argc, argv, "B:c:d:D:Fr:x:-:")) != -1)
 	{
 		switch (flag)
@@ -269,7 +273,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 				strlcpy(OutputFileName, optarg, MAXPGPATH);
 				break;
 			case 'x':
-				auxType = atoi(optarg);
+				MyAuxProcType = atoi(optarg);
 				break;
 			case 'c':
 			case '-':
@@ -319,7 +323,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	{
 		const char *statmsg;
 
-		switch (auxType)
+		switch (MyAuxProcType)
 		{
 #ifdef PGXC /* PGXC_COORD */
 			case PoolerProcess:
@@ -381,7 +385,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	{
 #ifdef PGXC
 		/* Initialize pooler flag before creating PGPROC structure */
-		if (auxType == PoolerProcess)
+		if (MyAuxProcType == PoolerProcess)
 				PGXCPoolerProcessIam();			
 #endif
 
@@ -396,15 +400,15 @@ AuxiliaryProcessMain(int argc, char *argv[])
 		/*
 		 * Assign the ProcSignalSlot for an auxiliary process.	Since it
 		 * doesn't have a BackendId, the slot is statically allocated based on
-		 * the auxiliary process type (auxType).  Backends use slots indexed
-		 * in the range from 1 to MaxBackends (inclusive), so we use
+		 * the auxiliary process type (MyAuxProcType).  Backends use slots
+		 * indexed in the range from 1 to MaxBackends (inclusive), so we use
 		 * MaxBackends + AuxProcType + 1 as the index of the slot for an
 		 * auxiliary process.
 		 *
 		 * This will need rethinking if we ever want more than one of a
 		 * particular auxiliary process type.
 		 */
-		ProcSignalInit(MaxBackends + auxType + 1);
+		ProcSignalInit(MaxBackends + MyAuxProcType + 1);
 
 		/* finish setting up bufmgr.c */
 		InitBufferPoolBackend();
@@ -418,7 +422,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	 */
 	SetProcessingMode(NormalProcessing);
 
-	switch (auxType)
+	switch (MyAuxProcType)
 	{
 #ifdef PGXC /* PGXC_COORD */
 		case PoolerProcess:
@@ -465,7 +469,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 			proc_exit(1);		/* should never return */
 
 		default:
-			elog(PANIC, "unrecognized process type: %d", auxType);
+			elog(PANIC, "unrecognized process type: %d", (int) MyAuxProcType);
 			proc_exit(1);
 	}
 }

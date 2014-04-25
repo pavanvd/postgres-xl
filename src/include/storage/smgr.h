@@ -75,10 +75,10 @@ typedef SMgrRelationData *SMgrRelation;
 
 #ifdef XCP
 #define SmgrIsTemp(smgr) \
-	(!OidIsValid(MyCoordId) && (smgr)->smgr_rnode.backend != InvalidBackendId)
+	(!OidIsValid(MyCoordId) && RelFileNodeBackendIsTemp((smgr)->smgr_rnode))
 #else
 #define SmgrIsTemp(smgr) \
-	((smgr)->smgr_rnode.backend != InvalidBackendId)
+	RelFileNodeBackendIsTemp((smgr)->smgr_rnode)
 #endif
 
 extern void smgrinit(void);
@@ -134,10 +134,9 @@ extern void mdsync(void);
 extern void mdpostckpt(void);
 
 extern void SetForwardFsyncRequests(void);
-extern void RememberFsyncRequest(RelFileNodeBackend rnode, ForkNumber forknum,
+extern void RememberFsyncRequest(RelFileNode rnode, ForkNumber forknum,
 					 BlockNumber segno);
-extern void ForgetRelationFsyncRequests(RelFileNodeBackend rnode,
-							ForkNumber forknum);
+extern void ForgetRelationFsyncRequests(RelFileNode rnode, ForkNumber forknum);
 extern void ForgetDatabaseFsyncRequests(Oid dbid);
 
 /* smgrtype.c */

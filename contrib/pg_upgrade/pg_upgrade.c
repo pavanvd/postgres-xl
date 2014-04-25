@@ -144,8 +144,9 @@ main(int argc, char **argv)
 	 * because there is no need to have the schema load use new oids.
 	 */
 	prep_status("Setting next OID for new cluster");
-	exec_prog(UTILITY_LOG_FILE, NULL, true,
-			  "\"%s/pg_resetxlog\" -o %u \"%s\"",
+	exec_prog(true, true, UTILITY_LOG_FILE, NULL,
+			  SYSTEMQUOTE "\"%s/pg_resetxlog\" -o %u \"%s\" >> \"%s\" 2>&1"
+			  SYSTEMQUOTE,
 			  new_cluster.bindir, old_cluster.controldata.chkpnt_nxtoid,
 			  new_cluster.pgdata);
 	check_ok();
@@ -214,10 +215,11 @@ prepare_new_cluster(void)
 	 * --analyze so autovacuum doesn't update statistics later
 	 */
 	prep_status("Analyzing all rows in the new cluster");
-	exec_prog(UTILITY_LOG_FILE, NULL, true,
-			  "\"%s/vacuumdb\" %s --all --analyze %s",
-			  new_cluster.bindir, cluster_conn_opts(&new_cluster),
-			  log_opts.verbose ? "--verbose" : "");
+	exec_prog(true, true, UTILITY_LOG_FILE, NULL,
+			  SYSTEMQUOTE "\"%s/vacuumdb\" --port %d --username \"%s\" "
+			  "--all --analyze %s >> \"%s\" 2>&1" SYSTEMQUOTE,
+			  new_cluster.bindir, new_cluster.port, os_info.user,
+			  log_opts.verbose ? "--verbose" : "", UTILITY_LOG_FILE);
 	check_ok();
 
 	/*
@@ -227,10 +229,11 @@ prepare_new_cluster(void)
 	 * later.
 	 */
 	prep_status("Freezing all rows on the new cluster");
-	exec_prog(UTILITY_LOG_FILE, NULL, true,
-			  "\"%s/vacuumdb\" %s --all --freeze %s",
-			  new_cluster.bindir, cluster_conn_opts(&new_cluster),
-			  log_opts.verbose ? "--verbose" : "");
+	exec_prog(true, true, UTILITY_LOG_FILE, NULL,
+			  SYSTEMQUOTE "\"%s/vacuumdb\" --port %d --username \"%s\" "
+			  "--all --freeze %s >> \"%s\" 2>&1" SYSTEMQUOTE,
+			  new_cluster.bindir, new_cluster.port, os_info.user,
+			  log_opts.verbose ? "--verbose" : "", UTILITY_LOG_FILE);
 	check_ok();
 
 	get_pg_database_relfilenode(&new_cluster);
@@ -264,10 +267,14 @@ prepare_new_databases(void)
 	 * support functions in template1 but pg_dumpall creates database using
 	 * the template0 template.
 	 */
-	exec_prog(RESTORE_LOG_FILE, NULL, true,
-			  "\"%s/psql\" " EXEC_PSQL_ARGS " %s -f \"%s\"",
-			  new_cluster.bindir, cluster_conn_opts(&new_cluster),
-			  GLOBALS_DUMP_FILE);
+	exec_prog(true, true, RESTORE_LOG_FILE, NULL,
+			  SYSTEMQUOTE "\"%s/psql\" --echo-queries "
+			  "--set ON_ERROR_STOP=on "
+	/* --no-psqlrc prevents AUTOCOMMIT=off */
+			  "--no-psqlrc --port %d --username \"%s\" "
+			  "-f \"%s\" --dbname template1 >> \"%s\" 2>&1" SYSTEMQUOTE,
+			  new_cluster.bindir, new_cluster.port, os_info.user,
+			  GLOBALS_DUMP_FILE, RESTORE_LOG_FILE);
 	check_ok();
 
 	/* we load this to get a current list of databases */
@@ -293,10 +300,13 @@ create_new_objects(void)
 	check_ok();
 
 	prep_status("Restoring database schema to new cluster");
-	exec_prog(RESTORE_LOG_FILE, NULL, true,
-			  "\"%s/psql\" " EXEC_PSQL_ARGS " %s -f \"%s\"",
-			  new_cluster.bindir, cluster_conn_opts(&new_cluster),
-			  DB_DUMP_FILE);
+	exec_prog(true, true, RESTORE_LOG_FILE, NULL,
+			  SYSTEMQUOTE "\"%s/psql\" --echo-queries "
+			  "--set ON_ERROR_STOP=on "
+			  "--no-psqlrc --port %d --username \"%s\" "
+			  "-f \"%s\" --dbname template1 >> \"%s\" 2>&1" SYSTEMQUOTE,
+			  new_cluster.bindir, new_cluster.port, os_info.user,
+			  DB_DUMP_FILE, RESTORE_LOG_FILE);
 	check_ok();
 
 	/* regenerate now that we have objects in the databases */
@@ -345,16 +355,20 @@ copy_clog_xlog_xid(void)
 
 	/* set the next transaction id of the new cluster */
 	prep_status("Setting next transaction ID for new cluster");
-	exec_prog(UTILITY_LOG_FILE, NULL, true,
-			  "\"%s/pg_resetxlog\" -f -x %u \"%s\"",
-			  new_cluster.bindir, old_cluster.controldata.chkpnt_nxtxid,
-			  new_cluster.pgdata);
+	exec_prog(true, true, UTILITY_LOG_FILE, NULL,
+			  SYSTEMQUOTE
+			  "\"%s/pg_resetxlog\" -f -x %u \"%s\" >> \"%s\" 2>&1"
+			  SYSTEMQUOTE, new_cluster.bindir,
+			  old_cluster.controldata.chkpnt_nxtxid,
+			  new_cluster.pgdata, UTILITY_LOG_FILE);
 	check_ok();
 
 	/* now reset the wal archives in the new cluster */
 	prep_status("Resetting WAL archives");
-	exec_prog(UTILITY_LOG_FILE, NULL, true,
-			  "\"%s/pg_resetxlog\" -l %u,%u,%u \"%s\"", new_cluster.bindir,
+	exec_prog(true, true, UTILITY_LOG_FILE, NULL,
+			  SYSTEMQUOTE
+			  "\"%s/pg_resetxlog\" -l %u,%u,%u \"%s\" >> \"%s\" 2>&1"
+			  SYSTEMQUOTE, new_cluster.bindir,
 			  old_cluster.controldata.chkpnt_tli,
 			  old_cluster.controldata.logid,
 			  old_cluster.controldata.nxtlogseg,

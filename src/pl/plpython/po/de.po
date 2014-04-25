@@ -400,16 +400,6 @@ msgstr "Um einen NULL-Wert in einer Spalte zurückzugeben, muss der Wert None mi
 msgid "length of returned sequence did not match number of columns in row"
 msgstr "Länge der zurückgegebenen Sequenz hat nicht mit der Anzahl der Spalten in der Zeile übereingestimmt"
 
-#: plpy_typeio.c:1043
-#, c-format
-msgid "attribute \"%s\" does not exist in Python object"
-msgstr "Attribut »%s« existiert nicht in Python-Objekt"
-
-#: plpy_typeio.c:1044
-#, c-format
-msgid "To return null in a column, let the returned object have an attribute named after column with value None."
-msgstr "Um einen NULL-Wert in einer Spalte zurückzugeben, muss das zurückzugebende Objekt ein nach der Spalte benanntes Attribut mit dem Wert None haben."
-
 #: plpy_util.c:70
 #, c-format
 msgid "could not convert Python Unicode object to bytes"

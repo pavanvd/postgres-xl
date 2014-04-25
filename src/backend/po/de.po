@@ -5539,6 +5539,317 @@ msgstr "Tabelle »%s.%s« wurde neu indiziert"
 #: commands/opclasscmds.c:1768 commands/opclasscmds.c:2002
 #: commands/opclasscmds.c:2013
 #, c-format
+msgid "Use ALTER AGGREGATE to rename aggregate functions."
+msgstr "Verwenden Sie ALTER AGGREGATE, um Aggregatfunktionen umzubenennen."
+
+#: commands/functioncmds.c:1141
+#, c-format
+msgid "Use ALTER AGGREGATE to change owner of aggregate functions."
+msgstr "Verwenden Sie ALTER AGGREGATE, um den Eigentümer einer Aggregatfunktion zu ändern."
+
+#: commands/functioncmds.c:1491
+#, c-format
+msgid "source data type %s is a pseudo-type"
+msgstr "Quelldatentyp %s ist ein Pseudotyp"
+
+#: commands/functioncmds.c:1497
+#, c-format
+msgid "target data type %s is a pseudo-type"
+msgstr "Zieldatentyp %s ist ein Pseudotyp"
+
+#: commands/functioncmds.c:1521
+#, c-format
+msgid "cast will be ignored because the source data type is a domain"
+msgstr "Typumwandlung wird ignoriert werden, weil der Quelldatentyp eine Domäne ist"
+
+#: commands/functioncmds.c:1526
+#, c-format
+msgid "cast will be ignored because the target data type is a domain"
+msgstr "Typumwandlung wird ignoriert werden, weil der Zieldatentyp eine Domäne ist"
+
+#: commands/functioncmds.c:1553
+#, c-format
+msgid "cast function must take one to three arguments"
+msgstr "Typumwandlungsfunktion muss ein bis drei Argumente haben"
+
+#: commands/functioncmds.c:1557
+#, c-format
+msgid "argument of cast function must match or be binary-coercible from source data type"
+msgstr "Argument der Typumwandlungsfunktion muss mit Quelldatentyp übereinstimmen oder in ihn binär-umwandelbar sein"
+
+#: commands/functioncmds.c:1561
+#, c-format
+msgid "second argument of cast function must be type integer"
+msgstr "zweites Argument der Typumwandlungsfunktion muss Typ integer haben"
+
+#: commands/functioncmds.c:1565
+#, c-format
+msgid "third argument of cast function must be type boolean"
+msgstr "drittes Argument der Typumwandlungsfunktion muss Typ boolean haben"
+
+#: commands/functioncmds.c:1569
+#, c-format
+msgid "return data type of cast function must match or be binary-coercible to target data type"
+msgstr "Rückgabetyp der Typumwandlungsfunktion muss mit Zieldatentyp übereinstimmen oder in ihn binär-umwandelbar sein"
+
+#: commands/functioncmds.c:1580
+#, c-format
+msgid "cast function must not be volatile"
+msgstr "Typumwandlungsfunktion darf nicht VOLATILE sein"
+
+#: commands/functioncmds.c:1585
+#, c-format
+msgid "cast function must not be an aggregate function"
+msgstr "Typumwandlungsfunktion darf keine Aggregatfunktion sein"
+
+#: commands/functioncmds.c:1589
+#, c-format
+msgid "cast function must not be a window function"
+msgstr "Typumwandlungsfunktion darf keine Fensterfunktion sein"
+
+#: commands/functioncmds.c:1593
+#, c-format
+msgid "cast function must not return a set"
+msgstr "Typumwandlungsfunktion darf keine Ergebnismenge zurückgeben"
+
+#: commands/functioncmds.c:1619
+#, c-format
+msgid "must be superuser to create a cast WITHOUT FUNCTION"
+msgstr "nur Superuser können Typumwandlungen mit WITHOUT FUNCTION erzeugen"
+
+#: commands/functioncmds.c:1634
+#, c-format
+msgid "source and target data types are not physically compatible"
+msgstr "Quelldatentyp und Zieldatentyp sind nicht physikalisch kompatibel"
+
+#: commands/functioncmds.c:1649
+#, c-format
+msgid "composite data types are not binary-compatible"
+msgstr "zusammengesetzte Datentypen sind nicht binärkompatibel"
+
+#: commands/functioncmds.c:1655
+#, c-format
+msgid "enum data types are not binary-compatible"
+msgstr "Enum-Datentypen sind nicht binärkompatibel"
+
+#: commands/functioncmds.c:1661
+#, c-format
+msgid "array data types are not binary-compatible"
+msgstr "Array-Datentypen sind nicht binärkompatibel"
+
+#: commands/functioncmds.c:1678
+#, c-format
+msgid "domain data types must not be marked binary-compatible"
+msgstr "Domänendatentypen dürfen nicht als binärkompatibel markiert werden"
+
+#: commands/functioncmds.c:1688
+#, c-format
+msgid "source data type and target data type are the same"
+msgstr "Quelldatentyp und Zieldatentyp sind der selbe"
+
+#: commands/functioncmds.c:1721
+#, c-format
+msgid "cast from type %s to type %s already exists"
+msgstr "Typumwandlung von Typ %s in Typ %s existiert bereits"
+
+#: commands/functioncmds.c:1795
+#, c-format
+msgid "cast from type %s to type %s does not exist"
+msgstr "Typumwandlung von Typ %s in Typ %s existiert nicht"
+
+#: commands/functioncmds.c:1883
+#, c-format
+msgid "function \"%s\" already exists in schema \"%s\""
+msgstr "Funktion »%s« existiert bereits in Schema »%s«"
+
+#: commands/functioncmds.c:1956
+#, c-format
+msgid "no inline code specified"
+msgstr "kein Inline-Code angegeben"
+
+#: commands/functioncmds.c:2001
+#, c-format
+msgid "language \"%s\" does not support inline code execution"
+msgstr "Sprache »%s« unterstützt das Ausführen von Inline-Code nicht"
+
+#: commands/indexcmds.c:158 commands/indexcmds.c:477
+#: commands/opclasscmds.c:369 commands/opclasscmds.c:788
+#: commands/opclasscmds.c:2121
+#, c-format
+msgid "access method \"%s\" does not exist"
+msgstr "Zugriffsmethode »%s« existiert nicht"
+
+#: commands/indexcmds.c:334
+#, c-format
+msgid "must specify at least one column"
+msgstr "mindestens eine Spalte muss angegeben werden"
+
+#: commands/indexcmds.c:338
+#, c-format
+msgid "cannot use more than %d columns in an index"
+msgstr "Index kann nicht mehr als %d Spalten enthalten"
+
+#: commands/indexcmds.c:366
+#, c-format
+msgid "cannot create index on foreign table \"%s\""
+msgstr "kann keinen Index für Fremdtabelle »%s« erzeugen"
+
+#: commands/indexcmds.c:381
+#, c-format
+msgid "cannot create indexes on temporary tables of other sessions"
+msgstr "kann keine Indexe für temporäre Tabellen anderer Sitzungen erzeugen"
+
+#: commands/indexcmds.c:436 commands/tablecmds.c:507 commands/tablecmds.c:8652
+#, c-format
+msgid "only shared relations can be placed in pg_global tablespace"
+msgstr "nur geteilte Relationen können in den Tablespace »pg_global« gelegt werden"
+
+#: commands/indexcmds.c:469
+#, c-format
+msgid "substituting access method \"gist\" for obsolete method \"rtree\""
+msgstr "ersetze Zugriffsmethode »gist« für obsolete Methode »rtree«"
+
+#: commands/indexcmds.c:486
+#, c-format
+msgid "access method \"%s\" does not support unique indexes"
+msgstr "Zugriffsmethode »%s« unterstützt keine Unique Indexe"
+
+#: commands/indexcmds.c:491
+#, c-format
+msgid "access method \"%s\" does not support multicolumn indexes"
+msgstr "Zugriffsmethode »%s« unterstützt keine mehrspaltigen Indexe"
+
+#: commands/indexcmds.c:496
+#, c-format
+msgid "access method \"%s\" does not support exclusion constraints"
+msgstr "Zugriffsmethode »%s« unterstützt keine Exclusion-Constraints"
+
+#: commands/indexcmds.c:575
+#, c-format
+msgid "%s %s will create implicit index \"%s\" for table \"%s\""
+msgstr "%s %s erstellt implizit einen Index »%s« für Tabelle »%s«"
+
+#: commands/indexcmds.c:952
+#, c-format
+msgid "cannot use subquery in index predicate"
+msgstr "Unteranfragen können nicht im Indexprädikat verwendet werden"
+
+#: commands/indexcmds.c:956
+#, c-format
+msgid "cannot use aggregate in index predicate"
+msgstr "Aggregatfunktionen können nicht im Indexprädikat verwendet werden"
+
+#: commands/indexcmds.c:965
+#, c-format
+msgid "functions in index predicate must be marked IMMUTABLE"
+msgstr "Funktionen im Indexprädikat müssen als IMMUTABLE markiert sein"
+
+#: commands/indexcmds.c:1031 parser/parse_utilcmd.c:1767
+#, c-format
+msgid "column \"%s\" named in key does not exist"
+msgstr "Spalte »%s«, die im Schlüssel verwendet wird, existiert nicht"
+
+#: commands/indexcmds.c:1084
+#, c-format
+msgid "cannot use subquery in index expression"
+msgstr "Unteranfragen können nicht in Indexausdrücken verwendet werden"
+
+#: commands/indexcmds.c:1088
+#, c-format
+msgid "cannot use aggregate function in index expression"
+msgstr "Aggregatfunktionen können nicht in Indexausdrücken verwendet werden"
+
+#: commands/indexcmds.c:1099
+#, c-format
+msgid "functions in index expression must be marked IMMUTABLE"
+msgstr "Funktionen im Indexausdruck müssen als IMMUTABLE markiert sein"
+
+#: commands/indexcmds.c:1122
+#, c-format
+msgid "could not determine which collation to use for index expression"
+msgstr "konnte die für den Indexausdruck zu verwendende Sortierfolge nicht bestimmen"
+
+#: commands/indexcmds.c:1130 commands/typecmds.c:776 parser/parse_expr.c:2156
+#: parser/parse_type.c:498 parser/parse_utilcmd.c:2627 utils/adt/misc.c:525
+#, c-format
+msgid "collations are not supported by type %s"
+msgstr "Sortierfolgen werden von Typ %s nicht unterstützt"
+
+#: commands/indexcmds.c:1168
+#, c-format
+msgid "operator %s is not commutative"
+msgstr "Operator %s ist nicht kommutativ"
+
+#: commands/indexcmds.c:1170
+#, c-format
+msgid "Only commutative operators can be used in exclusion constraints."
+msgstr "In Exclusion-Constraints können nur kommutative Operatoren verwendet werden."
+
+#: commands/indexcmds.c:1196
+#, c-format
+msgid "operator %s is not a member of operator family \"%s\""
+msgstr "Operator %s ist kein Mitglied der Operatorfamilie »%s«"
+
+#: commands/indexcmds.c:1199
+#, c-format
+msgid "The exclusion operator must be related to the index operator class for the constraint."
+msgstr "Der Exklusionsoperator muss in Beziehung zur Indexoperatorklasse des Constraints stehen."
+
+#: commands/indexcmds.c:1234
+#, c-format
+msgid "access method \"%s\" does not support ASC/DESC options"
+msgstr "Zugriffsmethode »%s« unterstützt die Optionen ASC/DESC nicht"
+
+#: commands/indexcmds.c:1239
+#, c-format
+msgid "access method \"%s\" does not support NULLS FIRST/LAST options"
+msgstr "Zugriffsmethode »%s« unterstützt die Optionen NULLS FIRST/LAST nicht"
+
+#: commands/indexcmds.c:1295 commands/typecmds.c:1847
+#, c-format
+msgid "data type %s has no default operator class for access method \"%s\""
+msgstr "Datentyp %s hat keine Standardoperatorklasse für Zugriffsmethode »%s«"
+
+#: commands/indexcmds.c:1297
+#, c-format
+msgid "You must specify an operator class for the index or define a default operator class for the data type."
+msgstr "Sie müssen für den Index eine Operatorklasse angeben oder eine Standardoperatorklasse für den Datentyp definieren."
+
+#: commands/indexcmds.c:1326 commands/indexcmds.c:1334
+#: commands/opclasscmds.c:212
+#, c-format
+msgid "operator class \"%s\" does not exist for access method \"%s\""
+msgstr "Operatorklasse »%s« existiert nicht für Zugriffsmethode »%s«"
+
+#: commands/indexcmds.c:1347 commands/typecmds.c:1835
+#, c-format
+msgid "operator class \"%s\" does not accept data type %s"
+msgstr "Operatorklasse »%s« akzeptiert Datentyp %s nicht"
+
+#: commands/indexcmds.c:1437
+#, c-format
+msgid "there are multiple default operator classes for data type %s"
+msgstr "es gibt mehrere Standardoperatorklassen für Datentyp %s"
+
+#: commands/indexcmds.c:1809
+#, c-format
+msgid "table \"%s\" has no indexes"
+msgstr "Tabelle »%s« hat keine Indexe"
+
+#: commands/indexcmds.c:1837
+#, c-format
+msgid "can only reindex the currently open database"
+msgstr "aktuell geöffnete Datenbank kann nicht reindiziert werden"
+
+#: commands/indexcmds.c:1922
+#, c-format
+msgid "table \"%s.%s\" was reindexed"
+msgstr "Tabelle »%s.%s« wurde neu indiziert"
+
+#: commands/opclasscmds.c:136 commands/opclasscmds.c:1757
+#: commands/opclasscmds.c:1768 commands/opclasscmds.c:2002
+#: commands/opclasscmds.c:2013
+#, c-format
 msgid "operator family \"%s\" does not exist for access method \"%s\""
 msgstr "Operatorfamilie »%s« existiert nicht für Zugriffsmethode »%s«"
 
@@ -5907,7 +6218,7 @@ msgstr "Relation »%s« existiert nicht, wird übersprungen"
 msgid "nextval: reached maximum value of sequence \"%s\" (%s)"
 msgstr "nextval: Maximalwert von Sequenz »%s« erreicht (%s)"
 
-#: commands/sequence.c:657
+#: commands/sequence.c:671
 #, c-format
 msgid "nextval: reached minimum value of sequence \"%s\" (%s)"
 msgstr "nextval: Minimalwert von Sequenz »%s« erreicht (%s)"
@@ -6657,6 +6968,11 @@ msgid "Use ALTER TYPE instead."
 msgstr "Verwenden Sie stattdessen ALTER TYPE."
 
 #: commands/tablecmds.c:8123 commands/tablecmds.c:10316
+#, c-format
+msgid "Use ALTER TYPE instead."
+msgstr "Verwenden Sie stattdessen ALTER TYPE."
+
+#: commands/tablecmds.c:8112 commands/tablecmds.c:10305
 #, c-format
 msgid "\"%s\" is not a table, view, sequence, or foreign table"
 msgstr "»%s« ist keine Tabelle, Sicht, Sequenz oder Fremdtabelle"

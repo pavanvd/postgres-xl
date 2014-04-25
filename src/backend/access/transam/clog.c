@@ -364,7 +364,8 @@ TransactionIdSetStatusBit(TransactionId xid, XidStatus status, XLogRecPtr lsn, i
 			status != TRANSACTION_STATUS_IN_PROGRESS) ||
 		   curval == status))
 	{
-		elog(WARNING, "Unexpected clog condition. curval = %d, status = %d");
+		elog(WARNING, "Unexpected clog condition. curval = %d, status = %d",
+					curval, status);
 	}
 #else
 	Assert(curval == 0 ||

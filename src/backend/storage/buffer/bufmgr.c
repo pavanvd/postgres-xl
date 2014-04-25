@@ -2114,7 +2114,7 @@ DropRelFileNodeAllBuffers(RelFileNodeBackend rnode)
 	int			i;
 
 	/* If it's a local relation, it's localbuf.c's problem. */
-	if (rnode.backend != InvalidBackendId)
+	if (RelFileNodeBackendIsTemp(rnode))
 	{
 		if (rnode.backend == MyBackendId)
 			DropRelFileNodeAllLocalBuffers(rnode.node);

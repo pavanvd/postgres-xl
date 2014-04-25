@@ -341,8 +341,8 @@ extern bool superuser_arg(Oid roleid);	/* given user is superuser */
  * initialization is complete.	Some code behaves differently when executed
  * in this mode to enable system bootstrapping.
  *
- * If a POSTGRES binary is in normal mode, then all code may be executed
- * normally.
+ * If a POSTGRES backend process is in normal mode, then all code may be
+ * executed normally.
  */
 
 typedef enum ProcessingMode
@@ -354,10 +354,11 @@ typedef enum ProcessingMode
 
 extern ProcessingMode Mode;
 
+#define IsBootstrapProcessingMode()	(Mode == BootstrapProcessing)
+#define IsInitProcessingMode()		(Mode == InitProcessing)
+#define IsNormalProcessingMode()	(Mode == NormalProcessing)
 
-#define IsBootstrapProcessingMode() ((bool)(Mode == BootstrapProcessing))
-#define IsInitProcessingMode() ((bool)(Mode == InitProcessing))
-#define IsNormalProcessingMode() ((bool)(Mode == NormalProcessing))
+#define GetProcessingMode() Mode
 
 #define SetProcessingMode(mode) \
 	do { \
@@ -367,7 +368,38 @@ extern ProcessingMode Mode;
 		Mode = (mode); \
 	} while(0)
 
-#define GetProcessingMode() Mode
+
+/*
+ * Auxiliary-process type identifiers.  These used to be in bootstrap.h
+ * but it seems saner to have them here, with the ProcessingMode stuff.
+ * The MyAuxProcType global is defined and set in bootstrap.c.
+ */
+
+typedef enum
+{
+	NotAnAuxProcess = -1,
+	CheckerProcess = 0,
+	BootstrapProcess,
+	StartupProcess,
+	BgWriterProcess,
+	CheckpointerProcess,
+	WalWriterProcess,
+	WalReceiverProcess,
+#ifdef PGXC
+    PoolerProcess,
+#endif
+
+	NUM_AUXPROCTYPES			/* Must be last! */
+} AuxProcType;
+
+extern AuxProcType MyAuxProcType;
+
+#define AmBootstrapProcess()		(MyAuxProcType == BootstrapProcess)
+#define AmStartupProcess()			(MyAuxProcType == StartupProcess)
+#define AmBackgroundWriterProcess()	(MyAuxProcType == BgWriterProcess)
+#define AmCheckpointerProcess()		(MyAuxProcType == CheckpointerProcess)
+#define AmWalWriterProcess()		(MyAuxProcType == WalWriterProcess)
+#define AmWalReceiverProcess()		(MyAuxProcType == WalReceiverProcess)
 
 
 /*****************************************************************************

@@ -527,12 +527,12 @@ DefineIndex(IndexStmt *stmt,
 
 #ifdef PGXC
 	/* Make sure we can locally enforce the index */
-	if (IS_PGXC_COORDINATOR && (primary || unique))
+	if (IS_PGXC_COORDINATOR && (stmt->primary || stmt->unique))
 	{
 		ListCell *elem;
 		bool isSafe = false;
 
-		foreach(elem, attributeList)
+		foreach(elem, stmt->indexParams)
 		{
 			IndexElem  *key = (IndexElem *) lfirst(elem);
 
@@ -560,8 +560,8 @@ DefineIndex(IndexStmt *stmt,
 					(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
 					errmsg("Unique index of partitioned table must contain the hash/modulo distribution column.")));
 				/* create index still, just that it won't be unique */
-				unique = false;
-				isconstraint = false;
+				stmt->unique = false;
+				stmt->isconstraint = false;
 			}
 			else
 				ereport(ERROR,

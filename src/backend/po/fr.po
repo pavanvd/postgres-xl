@@ -1055,6 +1055,12 @@ msgstr "n'a pas pu supprimer le fichier « %s » : %m"
 #: access/transam/xlog.c:3008
 #: replication/walreceiver.c:509
 #, c-format
+msgid "could not remove file \"%s\": %m"
+msgstr "n'a pas pu supprimer le fichier « %s » : %m"
+
+#: access/transam/xlog.c:3008
+#: replication/walreceiver.c:509
+#, c-format
 msgid "could not close log file %u, segment %u: %m"
 msgstr "n'a pas pu fermer le journal de transactions %u, segment %u : %m"
 
@@ -2485,6 +2491,11 @@ msgstr "droit %s invalide pour le tablespace"
 
 #: catalog/aclchk.c:484
 #: catalog/aclchk.c:937
+#, c-format
+msgid "invalid privilege type %s for type"
+msgstr "type de droit %s invalide pour le type"
+
+#: catalog/aclchk.c:488
 #, c-format
 msgid "invalid privilege type %s for type"
 msgstr "type de droit %s invalide pour le type"
@@ -8414,8 +8425,10 @@ msgstr ""
 
 #: commands/typecmds.c:2240
 #, c-format
-msgid "column \"%s\" of table \"%s\" contains null values"
-msgstr "la colonne « %s » de la table « %s » contient des valeurs NULL"
+msgid "You must specify an operator class for the range type or define a default operator class for the subtype."
+msgstr ""
+"Vous devez spécifier une classe d'opérateur pour le type range ou définir une\n"
+"classe d'opérateur par défaut pour le sous-type."
 
 #: commands/typecmds.c:2342
 #: commands/typecmds.c:2516
@@ -8435,17 +8448,15 @@ msgstr "la contrainte « %s » du domaine « %s » n'est pas une contrainte de vérif
 
 #: commands/typecmds.c:2609
 #, c-format
-msgid "column \"%s\" of table \"%s\" contains values that violate the new constraint"
-msgstr ""
-"la colonne « %s » de la table « %s » contient des valeurs violant la\n"
-"nouvelle contrainte"
+msgid "range canonical function %s must return range type"
+msgstr "la fonction canonical %s du range doit renvoyer le type range"
 
 #: commands/typecmds.c:2811
 #: commands/typecmds.c:3206
 #: commands/typecmds.c:3355
 #, c-format
-msgid "%s is not a domain"
-msgstr "%s n'est pas un domaine"
+msgid "range canonical function %s must be immutable"
+msgstr "la fonction canonical %s du range doit être immutable"
 
 #: commands/typecmds.c:2844
 #, c-format
@@ -8457,15 +8468,17 @@ msgstr "la contrainte « %s » du domaine « %s » existe déjà"
 #, c-format
 msgid "cannot use table references in domain check constraint"
 msgstr ""
-"ne peut pas utiliser les références de table dans la contrainte de\n"
-"vérification du domaine"
+"la fonction %s de calcul de différence pour le sous-type d'un intervalle de\n"
+"valeur doit renvoyer le type double precision"
 
 #: commands/typecmds.c:3140
 #: commands/typecmds.c:3218
 #: commands/typecmds.c:3447
 #, c-format
-msgid "%s is a table's row type"
-msgstr "« %s » est du type ligne de table"
+msgid "range subtype diff function %s must be immutable"
+msgstr ""
+"la fonction %s de calcul de différence pour le sous-type d'un intervalle de\n"
+"valeur doit être immutable"
 
 #: commands/typecmds.c:3142
 #: commands/typecmds.c:3220
@@ -11824,8 +11837,8 @@ msgstr "agrégats non autorisés dans une clause GROUP BY"
 #, c-format
 msgid "aggregate functions not allowed in a recursive query's recursive term"
 msgstr ""
-"fonctions d'agrégat non autorisées dans le terme récursif de la requête\n"
-"récursive"
+"l'affectation d'un tableau avec « %s » requiert le type %s mais l'expression est\n"
+"de type %s"
 
 #: parser/parse_agg.c:456
 #, c-format
@@ -11855,20 +11868,18 @@ msgstr "fonctions window non autorisées dans une définition window"
 
 #: parser/parse_agg.c:671
 #, c-format
-msgid "column \"%s.%s\" must appear in the GROUP BY clause or be used in an aggregate function"
-msgstr "la colonne « %s.%s » doit apparaître dans la clause GROUP BY ou doit être utilisé dans une fonction d'agrégat"
+msgid "type modifier is not allowed for type \"%s\""
+msgstr "le modificateur de type n'est pas autorisé pour le type « %s »"
 
 #: parser/parse_agg.c:677
 #, c-format
-msgid "subquery uses ungrouped column \"%s.%s\" from outer query"
-msgstr ""
-"la sous-requête utilise une colonne « %s.%s » non groupée dans la requête\n"
-"externe"
+msgid "type modifiers must be simple constants or identifiers"
+msgstr "les modificateurs de type doivent être des constantes ou des identifiants"
 
 #: parser/parse_clause.c:420
 #, c-format
-msgid "JOIN/ON clause refers to \"%s\", which is not part of JOIN"
-msgstr "la clause JOIN/ON se réfère à « %s », qui ne fait pas partie du JOIN"
+msgid "invalid type name \"%s\""
+msgstr "nom de type « %s » invalide"
 
 #: parser/parse_clause.c:517
 #, c-format
@@ -11895,102 +11906,94 @@ msgstr ""
 #, c-format
 msgid "cannot use window function in function expression in FROM"
 msgstr ""
-"ne peut pas utiliser la fonction window dans l'expression de la fonction\n"
-"du FROM"
+"plusieurs valeurs par défaut sont spécifiées pour la colonne « %s » de la table\n"
+"« %s »"
 
 #: parser/parse_clause.c:870
 #, c-format
-msgid "column name \"%s\" appears more than once in USING clause"
-msgstr "le nom de la colonne « %s » apparaît plus d'une fois dans la clause USING"
+msgid "Index \"%s\" contains a whole-row table reference."
+msgstr "l'index « %s » contient une référence de table de ligne complète"
 
 #: parser/parse_clause.c:885
 #, c-format
-msgid "common column name \"%s\" appears more than once in left table"
-msgstr ""
-"le nom commun de la colonne « %s » apparaît plus d'une fois dans la table de\n"
-"gauche"
+msgid "cannot use an existing index in CREATE TABLE"
+msgstr "ne peut pas utiliser un index existant dans CREATE TABLE"
 
 #: parser/parse_clause.c:894
 #, c-format
-msgid "column \"%s\" specified in USING clause does not exist in left table"
-msgstr ""
-"la colonne « %s » spécifiée dans la clause USING n'existe pas dans la table\n"
-"de gauche"
+msgid "index \"%s\" is already associated with a constraint"
+msgstr "l'index « %s » est déjà associé à une contrainte"
 
 #: parser/parse_clause.c:908
 #, c-format
-msgid "common column name \"%s\" appears more than once in right table"
-msgstr ""
-"le nom commun de la colonne « %s » apparaît plus d'une fois dans la table de\n"
-" droite"
+msgid "index \"%s\" does not belong to table \"%s\""
+msgstr "l'index « %s » n'appartient pas à la table « %s »"
 
 #: parser/parse_clause.c:917
 #, c-format
-msgid "column \"%s\" specified in USING clause does not exist in right table"
-msgstr ""
-"la colonne « %s » spécifiée dans la clause USING n'existe pas dans la table\n"
-"de droite"
+msgid "index \"%s\" is not valid"
+msgstr "l'index « %s » n'est pas valide"
 
 #: parser/parse_clause.c:974
 #, c-format
-msgid "column alias list for \"%s\" has too many entries"
-msgstr "la liste d'alias de colonnes pour « %s » a beaucoup trop d'entrées"
+msgid "index \"%s\" is not ready"
+msgstr "l'index « %s » n'est pas prêt"
 
 #. translator: %s is name of a SQL construct, eg LIMIT
 #: parser/parse_clause.c:1221
 #, c-format
-msgid "argument of %s must not contain variables"
-msgstr "l'argument de « %s » ne doit pas contenir de variables"
+msgid "\"%s\" is not a unique index"
+msgstr "« %s » n'est pas un index unique"
 
 #. translator: %s is name of a SQL construct, eg LIMIT
 #: parser/parse_clause.c:1232
 #, c-format
-msgid "argument of %s must not contain aggregate functions"
-msgstr "l'argument de %s ne doit pas contenir de fonctions d'agrégats"
+msgid "Cannot create a primary key or unique constraint using such an index."
+msgstr "Ne peut pas créer une clé primaire ou une contrainte unique avec cet index."
 
 #. translator: %s is name of a SQL construct, eg LIMIT
 #: parser/parse_clause.c:1243
 #, c-format
-msgid "argument of %s must not contain window functions"
-msgstr "l'argument de %s ne doit pas contenir des fonctions window"
+msgid "index \"%s\" contains expressions"
+msgstr "l'index « %s » contient des expressions"
 
 #. translator: first %s is name of a SQL construct, eg ORDER BY
 #: parser/parse_clause.c:1360
 #, c-format
-msgid "%s \"%s\" is ambiguous"
-msgstr "%s « %s » est ambigu"
+msgid "\"%s\" is a partial index"
+msgstr "« %s » est un index partiel"
 
 #. translator: %s is name of a SQL construct, eg ORDER BY
 #: parser/parse_clause.c:1384
 #, c-format
-msgid "non-integer constant in %s"
-msgstr "constante non entière dans %s"
+msgid "\"%s\" is a deferrable index"
+msgstr "« %s » est un index déferrable"
 
 #. translator: %s is name of a SQL construct, eg ORDER BY
 #: parser/parse_clause.c:1402
 #, c-format
-msgid "%s position %d is not in select list"
-msgstr "%s, à la position %d, n'est pas dans la liste SELECT"
+msgid "Cannot create a non-deferrable constraint using a deferrable index."
+msgstr "Ne peut pas créer une contrainte non-déferrable utilisant un index déferrable."
 
 #: parser/parse_clause.c:1618
 #, c-format
-msgid "window \"%s\" is already defined"
-msgstr "le window « %s » est déjà définie"
+msgid "index \"%s\" does not have default sorting behavior"
+msgstr "l'index « %s » n'a pas de comportement de tri par défaut"
 
 #: parser/parse_clause.c:1672
 #, c-format
-msgid "cannot override PARTITION BY clause of window \"%s\""
-msgstr "n'a pas pu surcharger la clause PARTITION BY de window « %s »"
+msgid "column \"%s\" appears twice in primary key constraint"
+msgstr "la colonne « %s » apparaît deux fois dans la contrainte de la clé primaire"
 
 #: parser/parse_clause.c:1684
 #, c-format
-msgid "cannot override ORDER BY clause of window \"%s\""
-msgstr "n'a pas pu surcharger la clause ORDER BY de window « %s »"
+msgid "column \"%s\" appears twice in unique constraint"
+msgstr "la colonne « %s » apparaît deux fois sur une contrainte unique"
 
 #: parser/parse_clause.c:1706
 #, c-format
-msgid "cannot override frame clause of window \"%s\""
-msgstr "ne peut pas surcharger la frame clause du window « %s »"
+msgid "index expression cannot return a set"
+msgstr "l'expression de l'index ne peut pas renvoyer un ensemble"
 
 #: parser/parse_clause.c:1772
 #, c-format
@@ -12003,8 +12006,8 @@ msgstr ""
 #, c-format
 msgid "for SELECT DISTINCT, ORDER BY expressions must appear in select list"
 msgstr ""
-"pour SELECT DISTINCT, ORDER BY, les expressions doivent apparaître dans la\n"
-"liste SELECT"
+"la condition WHERE d'une règle ne devrait pas contenir de références à d'autres\n"
+"relations"
 
 #: parser/parse_clause.c:1859
 #: parser/parse_clause.c:1891
@@ -12016,15 +12019,15 @@ msgstr ""
 
 #: parser/parse_clause.c:2013
 #, c-format
-msgid "operator %s is not a valid ordering operator"
-msgstr "l'opérateur %s n'est pas un opérateur de tri valide"
+msgid "cannot use window function in rule WHERE condition"
+msgstr "ne peut pas utiliser la fonction window dans la condition d'une règle WHERE"
 
 #: parser/parse_clause.c:2015
 #, c-format
 msgid "Ordering operators must be \"<\" or \">\" members of btree operator families."
 msgstr ""
-"Les opérateurs de tri doivent être les membres « < » ou « > » des familles\n"
-"d'opérateurs btree."
+"les règles avec des conditions WHERE ne peuvent contenir que des actions\n"
+"SELECT, INSERT, UPDATE ou DELETE "
 
 #: parser/parse_coerce.c:932
 #: parser/parse_coerce.c:962
@@ -12034,8 +12037,10 @@ msgstr ""
 #: parser/parse_expr.c:2125
 #: parser/parse_target.c:830
 #, c-format
-msgid "cannot cast type %s to %s"
-msgstr "ne peut pas convertir le type %s en %s"
+msgid "conditional UNION/INTERSECT/EXCEPT statements are not implemented"
+msgstr ""
+"les instructions conditionnelles UNION/INTERSECT/EXCEPT ne sont pas\n"
+"implémentées"
 
 #: parser/parse_coerce.c:965
 #, c-format
@@ -12044,8 +12049,8 @@ msgstr "L'entrée n'a pas assez de colonnes."
 
 #: parser/parse_coerce.c:983
 #, c-format
-msgid "Cannot cast type %s to %s in column %d."
-msgstr "ne peut pas convertir le type %s en %s dans la colonne %d"
+msgid "ON SELECT rule cannot use NEW"
+msgstr "la règle ON SELECT ne peut pas utiliser NEW"
 
 #: parser/parse_coerce.c:998
 #, c-format
@@ -12055,34 +12060,34 @@ msgstr "L'entrée a trop de colonnes."
 #. translator: first %s is name of a SQL construct, eg WHERE
 #: parser/parse_coerce.c:1041
 #, c-format
-msgid "argument of %s must be type boolean, not type %s"
-msgstr "l'argument de %s doit être de type booléen, et non du type %s"
+msgid "ON DELETE rule cannot use NEW"
+msgstr "la règle ON INSERT ne peut pas utiliser NEW"
 
 #. translator: %s is name of a SQL construct, eg WHERE
 #. translator: %s is name of a SQL construct, eg LIMIT
 #: parser/parse_coerce.c:1051
 #: parser/parse_coerce.c:1100
 #, c-format
-msgid "argument of %s must not return a set"
-msgstr "l'argument de %s ne doit pas renvoyer un ensemble"
+msgid "cannot refer to OLD within WITH query"
+msgstr "ne peut référencer OLD dans une requête WITH"
 
 #. translator: first %s is name of a SQL construct, eg LIMIT
 #: parser/parse_coerce.c:1088
 #, c-format
-msgid "argument of %s must be type %s, not type %s"
-msgstr "l'argument de %s doit être de type %s, et non du type %s"
+msgid "cannot refer to NEW within WITH query"
+msgstr "ne peut référencer NEW dans une requête WITH"
 
 #. translator: first %s is name of a SQL construct, eg CASE
 #: parser/parse_coerce.c:1221
 #, c-format
-msgid "%s types %s and %s cannot be matched"
-msgstr "les %s types %s et %s ne peuvent pas correspondre"
+msgid "misplaced DEFERRABLE clause"
+msgstr "clause DEFERRABLE mal placée"
 
 #. translator: first %s is name of a SQL construct, eg CASE
 #: parser/parse_coerce.c:1288
 #, c-format
-msgid "%s could not convert type %s to %s"
-msgstr "%s n'a pas pu convertir le type %s en %s"
+msgid "multiple DEFERRABLE/NOT DEFERRABLE clauses not allowed"
+msgstr "clauses DEFERRABLE/NOT DEFERRABLE multiples non autorisées"
 
 #: parser/parse_coerce.c:1590
 #, c-format
@@ -12103,8 +12108,8 @@ msgstr "les arguments déclarés « anyrange » ne sont pas tous identiques"
 #: parser/parse_coerce.c:1870
 #: parser/parse_coerce.c:1904
 #, c-format
-msgid "argument declared \"anyarray\" is not an array but type %s"
-msgstr "l'argument déclaré « anyarray » n'est pas un tableau mais est du type %s"
+msgid "multiple INITIALLY IMMEDIATE/DEFERRED clauses not allowed"
+msgstr "clauses INITIALLY IMMEDIATE/DEFERRED multiples non autorisées"
 
 #: parser/parse_coerce.c:1675
 #, c-format
@@ -12135,13 +12140,13 @@ msgstr ""
 
 #: parser/parse_coerce.c:1742
 #, c-format
-msgid "type matched to anynonarray is an array type: %s"
-msgstr "le type déclaré anynonarray est un type tableau : %s"
+msgid "poll() failed: %m"
+msgstr "échec de poll() : %m"
 
 #: parser/parse_coerce.c:1752
 #, c-format
-msgid "type matched to anyenum is not an enum type: %s"
-msgstr "le type déclaré anyenum n'est pas un type enum : %s"
+msgid "select() failed: %m"
+msgstr "échec de select() : %m"
 
 #: parser/parse_coerce.c:1792
 #: parser/parse_coerce.c:1822
@@ -12168,40 +12173,47 @@ msgstr "le collationnement ne correspond pas aux collationnements explicites « %
 
 #: parser/parse_cte.c:42
 #, c-format
-msgid "recursive reference to query \"%s\" must not appear within its non-recursive term"
-msgstr ""
-"la référence récursive à la requête « %s » ne doit pas apparaître à\n"
-"l'intérieur de son terme non récursif"
+msgid "could not create semaphores: %m"
+msgstr "n'a pas pu créer des sémaphores : %m"
 
-#: parser/parse_cte.c:44
+#: port/pg_sema.c:112
+#: port/sysv_sema.c:112
 #, c-format
-msgid "recursive reference to query \"%s\" must not appear within a subquery"
-msgstr ""
-"la référence récursive à la requête « %s » ne doit pas apparaître à\n"
-"l'intérieur d'une sous-requête"
+msgid "Failed system call was semget(%lu, %d, 0%o)."
+msgstr "L'appel système qui a échoué était semget(%lu, %d, 0%o)."
 
-#: parser/parse_cte.c:46
+#: port/pg_sema.c:116
+#: port/sysv_sema.c:116
 #, c-format
-msgid "recursive reference to query \"%s\" must not appear within an outer join"
+msgid ""
+"This error does *not* mean that you have run out of disk space.  It occurs when either the system limit for the maximum number of semaphore sets (SEMMNI), or the system wide maximum number of semaphores (SEMMNS), would be exceeded.  You need to raise the respective kernel parameter.  Alternatively, reduce PostgreSQL's consumption of semaphores by reducing its max_connections parameter.\n"
+"The PostgreSQL documentation contains more information about configuring your system for PostgreSQL."
 msgstr ""
-"la référence récursive à la requête « %s » ne doit pas apparaître à\n"
-"l'intérieur d'une jointure externe"
+"Cette erreur ne signifie *pas* que vous manquez d'espace disque. Il arrive\n"
+"que soit la limite système du nombre maximum d'ensembles de sémaphores\n"
+"(SEMMNI) ou le nombre maximum de sémaphores pour le système (SEMMNS) soit\n"
+"dépassée. Vous avez besoin d'augmenter le paramètre noyau respectif.\n"
+"Autrement, réduisez la consommation de sémaphores par PostgreSQL en réduisant\n"
+"son paramètre max_connections.\n"
+"La documentation de PostgreSQL contient plus d'informations sur la\n"
+"configuration de votre système avec PostgreSQL."
 
-#: parser/parse_cte.c:48
+#: port/pg_sema.c:143
+#: port/sysv_sema.c:143
 #, c-format
-msgid "recursive reference to query \"%s\" must not appear within INTERSECT"
+msgid "You possibly need to raise your kernel's SEMVMX value to be at least %d.  Look into the PostgreSQL documentation for details."
 msgstr ""
-"la référence récursive à la requête « %s » ne doit pas apparaître à\n"
-"l'intérieur d'INTERSECT"
+"Vous pouvez avoir besoin d'augmenter la valeur SEMVMX par noyau pour valoir\n"
+"au moins de %d. Regardez dans la documentation de PostgreSQL pour les détails."
 
-#: parser/parse_cte.c:50
+#: port/pg_shmem.c:144
+#: port/sysv_shmem.c:144
 #, c-format
-msgid "recursive reference to query \"%s\" must not appear within EXCEPT"
-msgstr ""
-"la référence récursive à la requête « %s » ne doit pas apparaître à\n"
-"l'intérieur d'EXCEPT"
+msgid "could not create shared memory segment: %m"
+msgstr "n'a pas pu créer le segment de mémoire partagée : %m"
 
-#: parser/parse_cte.c:132
+#: port/pg_shmem.c:145
+#: port/sysv_shmem.c:145
 #, c-format
 msgid "WITH query name \"%s\" specified more than once"
 msgstr "le nom de la requête WITH « %s » est spécifié plus d'une fois"
@@ -12210,12 +12222,22 @@ msgstr "le nom de la requête WITH « %s » est spécifié plus d'une fois"
 #, c-format
 msgid "WITH clause containing a data-modifying statement must be at the top level"
 msgstr ""
-"la clause WITH contenant une instruction de modification de données doit être\n"
-"au plus haut niveau"
+"Cette erreur signifie habituellement que la demande de PostgreSQL pour un\n"
+"segment de mémoire partagée a dépassé le paramètre SHMMAX de votre noyau.\n"
+"Vous pouvez soit réduire la taille de la requête soit reconfigurer le noyau\n"
+"avec un SHMMAX plus important. Pour réduire la taille de la requête\n"
+"(actuellement %lu octets), réduisez l'utilisation de la mémoire partagée par PostgreSQL,par exemple en réduisant shared_buffers ou max_connections\n"
+"Si la taille de la requête est déjà petite, il est possible qu'elle soit\n"
+"moindre que le paramètre SHMMIN de votre noyau, auquel cas, augmentez la\n"
+"taille de la requête ou reconfigurez SHMMIN.\n"
+"La documentation de PostgreSQL contient plus d'informations sur la\n"
+"configuration de la mémoire partagée."
 
 #: parser/parse_cte.c:313
 #, c-format
-msgid "recursive query \"%s\" column %d has type %s in non-recursive term but type %s overall"
+msgid ""
+"This error usually means that PostgreSQL's request for a shared memory segment exceeded available memory or swap space, or exceeded your kernel's SHMALL parameter.  You can either reduce the request size or reconfigure the kernel with larger SHMALL.  To reduce the request size (currently %lu bytes), reduce PostgreSQL's shared memory usage, perhaps by reducing shared_buffers or max_connections.\n"
+"The PostgreSQL documentation contains more information about shared memory configuration."
 msgstr ""
 "dans la requête récursive « %s », la colonne %d a le type %s dans le terme non\n"
 "récursif mais le type global %s"
@@ -12247,8 +12269,8 @@ msgstr "la récursion mutuelle entre des éléments WITH n'est pas implantée"
 
 #: parser/parse_cte.c:651
 #, c-format
-msgid "recursive query \"%s\" must not contain data-modifying statements"
-msgstr "la requête récursive « %s » ne doit pas contenir des instructions de modification de données"
+msgid "could not load dbghelp.dll, cannot write crash dump\n"
+msgstr "n'a pas pu charger dbghelp.dll, ne peut pas écrire le « crashdump »\n"
 
 #: parser/parse_cte.c:659
 #, c-format
@@ -12279,26 +12301,25 @@ msgstr "FOR UPDATE/SHARE dans une requête récursive n'est pas implémenté"
 
 #: parser/parse_cte.c:778
 #, c-format
-msgid "recursive reference to query \"%s\" must not appear more than once"
-msgstr "la référence récursive à la requête « %s » ne doit pas apparaître plus d'une fois"
+msgid "could not open crash dump file \"%s\" for writing: error code %lu\n"
+msgstr "n'a pas pu ouvrir le fichier « crashdump » « %s » en écriture : code d'erreur %lu\n"
 
-#: parser/parse_expr.c:364
-#: parser/parse_expr.c:757
+#: port/win32/crashdump.c:154
 #, c-format
-msgid "column %s.%s does not exist"
-msgstr "la colonne %s.%s n'existe pas"
+msgid "wrote crash dump to file \"%s\"\n"
+msgstr "a écrit le « crash dump » dans le fichier « %s »\n"
 
-#: parser/parse_expr.c:376
+#: port/win32/crashdump.c:156
 #, c-format
-msgid "column \"%s\" not found in data type %s"
-msgstr "colonne « %s » introuvable pour le type de données %s"
+msgid "could not write crash dump to file \"%s\": error code %lu\n"
+msgstr "n'a pas pu écrire le « crashdump » dans le fichier « %s » : code d'erreur %lu\n"
 
-#: parser/parse_expr.c:382
+#: port/win32/security.c:43
 #, c-format
-msgid "could not identify column \"%s\" in record data type"
-msgstr "n'a pas pu identifier la colonne « %s » dans le type de données de l'enregistrement"
+msgid "could not open process token: error code %lu\n"
+msgstr "n'a pas pu ouvrir le jeton du processus : code d'erreur %lu\n"
 
-#: parser/parse_expr.c:388
+#: port/win32/security.c:63
 #, c-format
 msgid "column notation .%s applied to type %s, which is not a composite type"
 msgstr "notation d'attribut .%s appliqué au type %s, qui n'est pas un type composé"
@@ -12314,14 +12335,12 @@ msgstr "l'expansion de ligne via « * » n'est pas supporté ici"
 #: parser/parse_relation.c:558
 #: parser/parse_target.c:1065
 #, c-format
-msgid "column reference \"%s\" is ambiguous"
-msgstr "la référence à la colonne « %s » est ambigu"
+msgid "could not get SID for PowerUsers group: error code %lu\n"
+msgstr ""
+"n'a pas pu obtenir le SID du groupe des utilisateurs avec pouvoir :\n"
+"code d'erreur %lu\n"
 
-#: parser/parse_expr.c:809
-#: parser/parse_param.c:109
-#: parser/parse_param.c:141
-#: parser/parse_param.c:198
-#: parser/parse_param.c:297
+#: port/win32/signal.c:189
 #, c-format
 msgid "there is no parameter $%d"
 msgstr "Il n'existe pas de paramètres $%d"
@@ -12383,13 +12402,13 @@ msgstr "la valeur d'un élément XML sans nom doit être une référence de colonne"
 
 #: parser/parse_expr.c:1848
 #, c-format
-msgid "XML attribute name \"%s\" appears more than once"
-msgstr "le nom de l'attribut XML « %s » apparaît plus d'une fois"
+msgid "could not create semaphore: error code %lu"
+msgstr "n'a pas pu créer la sémaphore : code d'erreur %lu"
 
 #: parser/parse_expr.c:1955
 #, c-format
-msgid "cannot cast XMLSERIALIZE result to %s"
-msgstr "ne peut pas convertir le résultat XMLSERIALIZE en %s"
+msgid "could not lock semaphore: error code %lu"
+msgstr "n'a pas pu verrouiller la sémaphore : code d'erreur %lu"
 
 #: parser/parse_expr.c:2198
 #: parser/parse_expr.c:2398
@@ -12404,10 +12423,8 @@ msgstr "n'a pas pu comparer des lignes de taille zéro"
 
 #: parser/parse_expr.c:2233
 #, c-format
-msgid "row comparison operator must yield type boolean, not type %s"
-msgstr ""
-"l'opérateur de comparaison de ligne doit renvoyer le type booléen, et non le\n"
-"type %s"
+msgid "could not create shared memory segment: error code %lu"
+msgstr "n'a pas pu créer le segment de mémoire partagée : code d'erreur %lu"
 
 #: parser/parse_expr.c:2240
 #, c-format
@@ -12417,8 +12434,8 @@ msgstr "l'opérateur de comparaison de ligne ne doit pas renvoyer un ensemble"
 #: parser/parse_expr.c:2299
 #: parser/parse_expr.c:2344
 #, c-format
-msgid "could not determine interpretation of row comparison operator %s"
-msgstr "n'a pas pu déterminer l'interprétation de l'opérateur de comparaison de ligne %s"
+msgid "pre-existing shared memory block is still in use"
+msgstr "le bloc de mémoire partagé pré-existant est toujours en cours d'utilisation"
 
 #: parser/parse_expr.c:2301
 #, c-format
@@ -12437,7 +12454,7 @@ msgstr "Il existe de nombreus candidats également plausibles."
 msgid "IS DISTINCT FROM requires = operator to yield boolean"
 msgstr "IS DISTINCT FROM requiert l'opérateur = pour comparer des booléens"
 
-#: parser/parse_func.c:147
+#: port/win32_shmem.c:204
 #, c-format
 msgid "argument name \"%s\" used more than once"
 msgstr "nom « %s » de l'argument spécifié plus d'une fois"
@@ -12447,30 +12464,30 @@ msgstr "nom « %s » de l'argument spécifié plus d'une fois"
 msgid "positional argument cannot follow named argument"
 msgstr "l'argument positionné ne doit pas suivre l'argument nommé"
 
-#: parser/parse_func.c:236
+#: port/win32_shmem.c:225
 #, c-format
-msgid "%s(*) specified, but %s is not an aggregate function"
-msgstr "%s(*) spécifié, mais %s n'est pas une fonction d'agrégat"
+msgid "Failed system call was MapViewOfFileEx."
+msgstr "L'appel système qui a échoué était MapViewOfFileEx."
 
-#: parser/parse_func.c:243
+#: postmaster/autovacuum.c:362
 #, c-format
-msgid "DISTINCT specified, but %s is not an aggregate function"
-msgstr "DISTINCT spécifié mais %s n'est pas une fonction d'agrégat"
+msgid "could not fork autovacuum launcher process: %m"
+msgstr "n'a pas pu exécuter le processus autovacuum maître : %m"
 
-#: parser/parse_func.c:249
+#: postmaster/autovacuum.c:407
 #, c-format
-msgid "ORDER BY specified, but %s is not an aggregate function"
-msgstr "ORDER BY spécifié, mais %s n'est pas une fonction d'agrégat"
+msgid "autovacuum launcher started"
+msgstr "lancement du processus autovacuum"
 
-#: parser/parse_func.c:255
+#: postmaster/autovacuum.c:767
 #, c-format
-msgid "OVER specified, but %s is not a window function nor an aggregate function"
-msgstr "OVER spécifié, mais %s n'est pas une fonction window ou une fonction d'agrégat"
+msgid "autovacuum launcher shutting down"
+msgstr "arrêt du processus autovacuum"
 
-#: parser/parse_func.c:277
+#: postmaster/autovacuum.c:1420
 #, c-format
-msgid "function %s is not unique"
-msgstr "la fonction %s n'est pas unique"
+msgid "could not fork autovacuum worker process: %m"
+msgstr "n'a pas pu exécuter le processus autovacuum worker : %m"
 
 #: parser/parse_func.c:280
 #, c-format
@@ -12483,19 +12500,17 @@ msgstr ""
 #, c-format
 msgid "No aggregate function matches the given name and argument types. Perhaps you misplaced ORDER BY; ORDER BY must appear after all regular arguments of the aggregate."
 msgstr ""
-"Aucune fonction d'agrégat ne correspond au nom donné et aux types d'arguments.\n"
-"Peut-être avez-vous mal placé la clause ORDER BY.\n"
-"Cette dernière doit apparaître après tous les arguments standards de l'agrégat."
+"autovacuum : suppression de la table temporaire orpheline « %s.%s » dans la\n"
+"base de données « %s »"
 
 #: parser/parse_func.c:302
 #, c-format
 msgid "No function matches the given name and argument types. You might need to add explicit type casts."
 msgstr ""
-"Aucune fonction ne correspond au nom donné et aux types d'arguments.\n"
-"Vous devez ajouter des conversions explicites de type."
+"autovacuum : a trouvé la table temporaire orpheline « %s.%s » dans la base de\n"
+"données « %s »"
 
-#: parser/parse_func.c:412
-#: parser/parse_func.c:478
+#: postmaster/autovacuum.c:2323
 #, c-format
 msgid "%s(*) must be used to call a parameterless aggregate function"
 msgstr "%s(*) doit être utilisé pour appeler une fonction d'agrégat sans paramètre"
@@ -12537,28 +12552,30 @@ msgstr "les fonctions window ne peuvent pas renvoyer des arguments nommés"
 
 #: parser/parse_func.c:1670
 #, c-format
-msgid "aggregate %s(*) does not exist"
-msgstr "l'agrégat %s(*) n'existe pas"
+msgid "transaction log switch forced (archive_timeout=%d)"
+msgstr "changement forcé du journal de transaction (archive_timeout=%d)"
 
 #: parser/parse_func.c:1675
 #, c-format
-msgid "aggregate %s does not exist"
-msgstr "l'agrégat %s n'existe pas"
+msgid "checkpoint request failed"
+msgstr "échec de la demande de point de vérification"
 
 #: parser/parse_func.c:1694
 #, c-format
-msgid "function %s is not an aggregate"
-msgstr "la fonction %s n'est pas un agrégat"
+msgid "Consult recent messages in the server log for details."
+msgstr ""
+"Consultez les messages récents du serveur dans les journaux applicatifs pour\n"
+"plus de détails."
 
-#: parser/parse_node.c:83
+#: postmaster/checkpointer.c:1286
 #, c-format
-msgid "target lists can have at most %d entries"
-msgstr "les listes cibles peuvent avoir au plus %d colonnes"
+msgid "compacted fsync request queue from %d entries to %d entries"
+msgstr "a compacté la queue de requêtes fsync de %d entrées à %d"
 
-#: parser/parse_node.c:240
+#: postmaster/pgarch.c:164
 #, c-format
-msgid "cannot subscript type %s because it is not an array"
-msgstr "ne peut pas indicer le type %s car il ne s'agit pas d'un tableau"
+msgid "could not fork archiver: %m"
+msgstr "n'a pas pu lancer le processus fils correspondant au processus d'archivage : %m"
 
 #: parser/parse_node.c:342
 #: parser/parse_node.c:369
@@ -12566,10 +12583,10 @@ msgstr "ne peut pas indicer le type %s car il ne s'agit pas d'un tableau"
 msgid "array subscript must have type integer"
 msgstr "l'indice d'un tableau doit être de type entier"
 
-#: parser/parse_node.c:393
+#: postmaster/pgarch.c:503
 #, c-format
-msgid "array assignment requires type %s but expression is of type %s"
-msgstr "l'affectation de tableaux requiert le type %s mais l'expression est de type %s"
+msgid "transaction log file \"%s\" could not be archived: too many failures"
+msgstr "le journal des transactions « %s » n'a pas pu être archivé : trop d'échecs"
 
 #: parser/parse_oper.c:123
 #: parser/parse_oper.c:717
@@ -12577,8 +12594,8 @@ msgstr "l'affectation de tableaux requiert le type %s mais l'expression est de t
 #: utils/adt/regproc.c:484
 #: utils/adt/regproc.c:643
 #, c-format
-msgid "operator does not exist: %s"
-msgstr "l'opérateur n'existe pas : %s"
+msgid "archive command failed with exit code %d"
+msgstr "échec de la commande d'archivage avec un code de retour %d"
 
 #: parser/parse_oper.c:220
 #, c-format
@@ -12590,18 +12607,20 @@ msgstr "Utilisez un opérateur explicite de tri ou modifiez la requête."
 #: utils/adt/arrayfuncs.c:3694
 #: utils/adt/rowtypes.c:1157
 #, c-format
-msgid "could not identify an equality operator for type %s"
-msgstr "n'a pas pu identifier un opérateur d'égalité pour le type %s"
+msgid "archive command was terminated by exception 0x%X"
+msgstr "la commande d'archivage a été terminée par l'exception 0x%X"
 
 #: parser/parse_oper.c:475
 #, c-format
-msgid "operator requires run-time type coercion: %s"
-msgstr "l'opérateur requiert la coercion du type à l'exécution : %s"
+msgid "See C include file \"ntstatus.h\" for a description of the hexadecimal value."
+msgstr ""
+"Voir le fichier d'en-tête C « ntstatus.h » pour une description de la valeur\n"
+"hexadécimale."
 
 #: parser/parse_oper.c:709
 #, c-format
-msgid "operator is not unique: %s"
-msgstr "l'opérateur n'est pas unique : %s"
+msgid "archive command was terminated by signal %d: %s"
+msgstr "la commande d'archivage a été terminée par le signal %d : %s"
 
 #: parser/parse_oper.c:711
 #, c-format
@@ -12620,8 +12639,8 @@ msgstr ""
 #: parser/parse_oper.c:778
 #: parser/parse_oper.c:892
 #, c-format
-msgid "operator is only a shell: %s"
-msgstr "l'opérateur est seulement un shell : %s"
+msgid "archived transaction log file \"%s\""
+msgstr "journal des transactions archivé « %s »"
 
 #: parser/parse_oper.c:880
 #, c-format
@@ -12638,114 +12657,116 @@ msgstr "op ANY/ALL (tableau) requiert un opérateur pour comparer des booléens"
 msgid "op ANY/ALL (array) requires operator not to return a set"
 msgstr "op ANY/ALL (tableau) requiert que l'opérateur ne renvoie pas un ensemble"
 
-#: parser/parse_param.c:215
+#: postmaster/pgstat.c:365
 #, c-format
-msgid "inconsistent types deduced for parameter $%d"
-msgstr "types incohérents déduit pour le paramètre $%d"
+msgid "could not create socket for statistics collector: %m"
+msgstr "n'a pas pu créer la socket pour le récupérateur de statistiques : %m"
 
-#: parser/parse_relation.c:147
+#: postmaster/pgstat.c:377
 #, c-format
-msgid "table reference \"%s\" is ambiguous"
-msgstr "la référence à la table « %s » est ambigu"
+msgid "could not bind socket for statistics collector: %m"
+msgstr "n'a pas pu lier la socket au récupérateur de statistiques : %m"
 
-#: parser/parse_relation.c:183
+#: postmaster/pgstat.c:388
 #, c-format
-msgid "table reference %u is ambiguous"
-msgstr "la référence à la table %u est ambigu"
+msgid "could not get address of socket for statistics collector: %m"
+msgstr "n'a pas pu obtenir l'adresse de la socket du récupérateur de statistiques : %m"
 
 #: parser/parse_relation.c:350
 #, c-format
-msgid "table name \"%s\" specified more than once"
-msgstr "le nom de la table « %s » est spécifié plus d'une fois"
+msgid "could not connect socket for statistics collector: %m"
+msgstr "n'a pas pu connecter la socket au récupérateur de statistiques : %m"
 
 #: parser/parse_relation.c:761
 #: parser/parse_relation.c:1052
 #: parser/parse_relation.c:1439
 #, c-format
-msgid "table \"%s\" has %d columns available but %d columns specified"
-msgstr "la table « %s » a %d colonnes disponibles mais %d colonnes spécifiées"
+msgid "could not send test message on socket for statistics collector: %m"
+msgstr ""
+"n'a pas pu envoyer le message de tests sur la socket du récupérateur de\n"
+"statistiques : %m"
 
 #: parser/parse_relation.c:791
 #, c-format
-msgid "too many column aliases specified for function %s"
-msgstr "trop d'alias de colonnes spécifiées pour la fonction %s"
+msgid "select() failed in statistics collector: %m"
+msgstr "échec du select() dans le récupérateur de statistiques : %m"
 
 #: parser/parse_relation.c:857
 #, c-format
-msgid "There is a WITH item named \"%s\", but it cannot be referenced from this part of the query."
+msgid "test message did not get through on socket for statistics collector"
 msgstr ""
-"Il existe un élément WITH nommé « %s » mais il ne peut pas être\n"
-"référencée de cette partie de la requête."
+"le message de test n'a pas pu arriver sur la socket du récupérateur de\n"
+"statistiques : %m"
 
 #: parser/parse_relation.c:859
 #, c-format
 msgid "Use WITH RECURSIVE, or re-order the WITH items to remove forward references."
 msgstr ""
-"Utilisez WITH RECURSIVE ou ré-ordonnez les éléments WITH pour supprimer\n"
-"les références en avant."
+"n'a pas pu recevoir le message de tests sur la socket du récupérateur de\n"
+"statistiques : %m"
 
 #: parser/parse_relation.c:1132
 #, c-format
 msgid "a column definition list is only allowed for functions returning \"record\""
 msgstr ""
-"une liste de définition de colonnes est uniquement autorisée pour les fonctions\n"
-"renvoyant un « record »"
+"transmission incorrecte du message de tests sur la socket du récupérateur de\n"
+"statistiques"
 
 #: parser/parse_relation.c:1140
 #, c-format
 msgid "a column definition list is required for functions returning \"record\""
 msgstr ""
-"une liste de définition de colonnes est requise pour les fonctions renvoyant\n"
-"un « record »"
+"n'a pas pu initialiser la socket du récupérateur de statistiques dans le mode\n"
+"non bloquant : %m"
 
 #: parser/parse_relation.c:1191
 #, c-format
-msgid "function \"%s\" in FROM has unsupported return type %s"
-msgstr "la fonction « %s » dans la clause FROM a un type de retour %s non supporté"
+msgid "disabling statistics collector for lack of working socket"
+msgstr ""
+"désactivation du récupérateur de statistiques à cause du manque de socket\n"
+"fonctionnel"
 
 #: parser/parse_relation.c:1265
 #, c-format
-msgid "VALUES lists \"%s\" have %d columns available but %d columns specified"
+msgid "could not fork statistics collector: %m"
 msgstr ""
-"les listes « %s » de VALUES ont %d colonnes disponibles mais %d colonnes\n"
-"spécifiées"
+"n'a pas pu lancer le processus fils correspondant au récupérateur de\n"
+"statistiques : %m"
 
 #: parser/parse_relation.c:1321
 #, c-format
-msgid "joins can have at most %d columns"
-msgstr "les jointures peuvent avoir au plus %d colonnes"
+msgid "must be superuser to reset statistics counters"
+msgstr "doit être super-utilisateur pour réinitialiser les compteurs statistiques"
 
 #: parser/parse_relation.c:1412
 #, c-format
-msgid "WITH query \"%s\" does not have a RETURNING clause"
-msgstr "La requête WITH « %s » n'a pas de clause RETURNING"
+msgid "unrecognized reset target: \"%s\""
+msgstr "cible reset non reconnu : « %s »"
 
 #: parser/parse_relation.c:2094
 #, c-format
-msgid "column %d of relation \"%s\" does not exist"
-msgstr "la colonne %d de la relation « %s » n'existe pas"
+msgid "Target must be \"bgwriter\"."
+msgstr "La cible doit être « bgwriter »."
 
 #: parser/parse_relation.c:2478
 #, c-format
-msgid "invalid reference to FROM-clause entry for table \"%s\""
-msgstr "référence invalide d'une entrée de la clause FROM pour la table « %s »"
+msgid "could not read statistics message: %m"
+msgstr "n'a pas pu lire le message des statistiques : %m"
 
 #: parser/parse_relation.c:2481
 #, c-format
-msgid "Perhaps you meant to reference the table alias \"%s\"."
-msgstr "Peut-être que vous souhaitiez référencer l'alias de la table « %s »."
+msgid "could not open temporary statistics file \"%s\": %m"
+msgstr "n'a pas pu ouvrir le fichier temporaire des statistiques « %s » : %m"
 
 #: parser/parse_relation.c:2483
 #, c-format
-msgid "There is an entry for table \"%s\", but it cannot be referenced from this part of the query."
-msgstr ""
-"Il existe une entrée pour la table « %s » mais elle ne peut pas être\n"
-"référencée de cette partie de la requête."
+msgid "could not write temporary statistics file \"%s\": %m"
+msgstr "n'a pas pu écrire le fichier temporaire des statistiques « %s » : %m"
 
 #: parser/parse_relation.c:2489
 #, c-format
-msgid "missing FROM-clause entry for table \"%s\""
-msgstr "entrée manquante de la clause FROM pour la table « %s »"
+msgid "could not close temporary statistics file \"%s\": %m"
+msgstr "n'a pas pu fermer le fichier temporaire des statistiques « %s » : %m"
 
 #: parser/parse_target.c:383
 #: parser/parse_target.c:671
@@ -12765,29 +12786,25 @@ msgstr "ne peut pas initialiser un sous-champ avec DEFAULT"
 
 #: parser/parse_target.c:485
 #, c-format
-msgid "column \"%s\" is of type %s but expression is of type %s"
-msgstr "la colonne « %s » est de type %s mais l'expression est de type %s"
+msgid "could not open statistics file \"%s\": %m"
+msgstr "n'a pas pu ouvrir le fichier de statistiques « %s » : %m"
 
 #: parser/parse_target.c:655
 #, c-format
-msgid "cannot assign to field \"%s\" of column \"%s\" because its type %s is not a composite type"
-msgstr ""
-"ne peut pas l'affecter au champ « %s » de la colonne « %s » parce que son\n"
-"type %s n'est pas un type composé"
+msgid "corrupted statistics file \"%s\""
+msgstr "fichier de statistiques « %s » corrompu"
 
 #: parser/parse_target.c:664
 #, c-format
-msgid "cannot assign to field \"%s\" of column \"%s\" because there is no such column in data type %s"
+msgid "database hash table corrupted during cleanup --- abort"
 msgstr ""
-"ne peut pas l'affecter au champ « %s » de la colonne « %s » parce qu'il n'existe\n"
-"pas une telle colonne dans le type de données %s"
+"corruption de la table hachée de la base de données lors du lancement\n"
+"--- annulation"
 
 #: parser/parse_target.c:731
 #, c-format
-msgid "array assignment to \"%s\" requires type %s but expression is of type %s"
-msgstr ""
-"l'affectation d'un tableau avec « %s » requiert le type %s mais l'expression est\n"
-"de type %s"
+msgid "%s: invalid argument for option -f: \"%s\"\n"
+msgstr "%s : argument invalide pour l'option -f : « %s »\n"
 
 #: parser/parse_target.c:741
 #, c-format
@@ -12799,26 +12816,28 @@ msgstr "le sous-champ « %s » est de type %s mais l'expression est de type %s"
 msgid "SELECT * with no tables specified is not valid"
 msgstr "Un SELECT * sans table spécifiée n'est pas valide"
 
-#: parser/parse_type.c:83
+#: postmaster/postmaster.c:729
 #, c-format
-msgid "improper %%TYPE reference (too few dotted names): %s"
-msgstr "référence %%TYPE invalide (trop peu de points entre les noms) : %s"
+msgid "%s: invalid argument: \"%s\"\n"
+msgstr "%s : argument invalide : « %s »\n"
 
-#: parser/parse_type.c:105
+#: postmaster/postmaster.c:764
 #, c-format
-msgid "improper %%TYPE reference (too many dotted names): %s"
-msgstr "référence %%TYPE invalide (trop de points entre les noms) : %s"
+msgid "%s: superuser_reserved_connections must be less than max_connections\n"
+msgstr "%s : superuser_reserved_connections doit être inférieur à max_connections\n"
 
 #: parser/parse_type.c:133
 #, c-format
-msgid "type reference %s converted to %s"
-msgstr "référence de type %s convertie en %s"
+msgid "%s: max_wal_senders must be less than max_connections\n"
+msgstr "%s : max_wal_senders doit être inférieur à max_connections\n"
 
 #: parser/parse_type.c:208
 #: utils/cache/typcache.c:196
 #, c-format
-msgid "type \"%s\" is only a shell"
-msgstr "le type « %s » est seulement un shell"
+msgid "WAL archival (archive_mode=on) requires wal_level \"archive\" or \"hot_standby\""
+msgstr ""
+"l'archivage des journaux de transactions (archive_mode=on) nécessite que\n"
+"le paramètre wal_level soit initialisé avec « archive » ou « hot_standby »"
 
 #: parser/parse_type.c:293
 #, c-format
@@ -12833,8 +12852,8 @@ msgstr "les modificateurs de type doivent être des constantes ou des identifiant
 #: parser/parse_type.c:647
 #: parser/parse_type.c:746
 #, c-format
-msgid "invalid type name \"%s\""
-msgstr "nom de type « %s » invalide"
+msgid "%s: invalid datetoken tables, please fix\n"
+msgstr "%s : tables datetoken invalide, merci de corriger\n"
 
 #: parser/parse_utilcmd.c:175
 #, c-format
@@ -12846,18 +12865,17 @@ msgstr "la relation « %s » existe déjà, poursuite du traitement"
 msgid "array of serial is not implemented"
 msgstr "le tableau de type serial n'est pas implanté"
 
-#: parser/parse_utilcmd.c:382
+#: postmaster/postmaster.c:891
 #, c-format
-msgid "%s will create implicit sequence \"%s\" for serial column \"%s.%s\""
-msgstr "%s créera des séquences implicites « %s » pour la colonne serial « %s.%s »"
+msgid "could not create listen socket for \"%s\""
+msgstr "n'a pas pu créer le socket d'écoute pour « %s »"
 
-#: parser/parse_utilcmd.c:483
-#: parser/parse_utilcmd.c:495
+#: postmaster/postmaster.c:897
 #, c-format
-msgid "conflicting NULL/NOT NULL declarations for column \"%s\" of table \"%s\""
-msgstr "déclarations NULL/NOT NULL en conflit pour la colonne « %s » de la table « %s »"
+msgid "could not create any TCP/IP sockets"
+msgstr "n'a pas pu créer de socket TCP/IP"
 
-#: parser/parse_utilcmd.c:507
+#: postmaster/postmaster.c:948
 #, c-format
 msgid "multiple default values specified for column \"%s\" of table \"%s\""
 msgstr ""
@@ -12877,23 +12895,23 @@ msgstr "ne peut pas utiliser un index existant dans CREATE TABLE"
 
 #: parser/parse_utilcmd.c:1523
 #, c-format
-msgid "index \"%s\" is already associated with a constraint"
-msgstr "l'index « %s » est déjà associé à une contrainte"
+msgid "no socket created for listening"
+msgstr "pas de socket créé pour l'écoute"
 
 #: parser/parse_utilcmd.c:1531
 #, c-format
-msgid "index \"%s\" does not belong to table \"%s\""
-msgstr "l'index « %s » n'appartient pas à la table « %s »"
+msgid "could not create I/O completion port for child queue"
+msgstr "n'a pas pu créer un port de terminaison I/O pour la queue"
 
 #: parser/parse_utilcmd.c:1538
 #, c-format
-msgid "index \"%s\" is not valid"
-msgstr "l'index « %s » n'est pas valide"
+msgid "%s: could not change permissions of external PID file \"%s\": %s\n"
+msgstr "%s : n'a pas pu modifier les droits du fichier PID externe « %s » : %s\n"
 
 #: parser/parse_utilcmd.c:1544
 #, c-format
-msgid "index \"%s\" is not ready"
-msgstr "l'index « %s » n'est pas prêt"
+msgid "%s: could not write external PID file \"%s\": %s\n"
+msgstr "%s : n'a pas pu écrire le fichier PID externe « %s » : %s\n"
 
 #: parser/parse_utilcmd.c:1550
 #, c-format
@@ -12910,13 +12928,13 @@ msgstr "Ne peut pas créer une clé primaire ou une contrainte unique avec cet ind
 
 #: parser/parse_utilcmd.c:1557
 #, c-format
-msgid "index \"%s\" contains expressions"
-msgstr "l'index « %s » contient des expressions"
+msgid "%s: could not locate matching postgres executable"
+msgstr "%s : n'a pas pu localiser l'exécutable postgres correspondant"
 
 #: parser/parse_utilcmd.c:1564
 #, c-format
-msgid "\"%s\" is a partial index"
-msgstr "« %s » est un index partiel"
+msgid "This may indicate an incomplete PostgreSQL installation, or that the file \"%s\" has been moved away from its proper location."
+msgstr "Ceci peut indiquer une installation PostgreSQL incomplète, ou que le fichier « %s » a été déplacé."
 
 #: parser/parse_utilcmd.c:1576
 #, c-format
@@ -12930,13 +12948,13 @@ msgstr "Ne peut pas créer une contrainte non-déferrable utilisant un index défer
 
 #: parser/parse_utilcmd.c:1634
 #, c-format
-msgid "index \"%s\" does not have default sorting behavior"
-msgstr "l'index « %s » n'a pas de comportement de tri par défaut"
+msgid "could not read permissions of directory \"%s\": %m"
+msgstr "n'a pas pu lire les droits du répertoire « %s » : %m"
 
 #: parser/parse_utilcmd.c:1779
 #, c-format
-msgid "column \"%s\" appears twice in primary key constraint"
-msgstr "la colonne « %s » apparaît deux fois dans la contrainte de la clé primaire"
+msgid "specified data directory \"%s\" is not a directory"
+msgstr "le répertoire des données « %s » n'est pas un répertoire"
 
 #: parser/parse_utilcmd.c:1785
 #, c-format
@@ -12957,8 +12975,8 @@ msgstr "les expressions et prédicats d'index peuvent seulement faire référence à
 #, c-format
 msgid "rule WHERE condition cannot contain references to other relations"
 msgstr ""
-"la condition WHERE d'une règle ne devrait pas contenir de références à d'autres\n"
-"relations"
+"Le serveur doit être en cours d'exécution par l'utilisateur qui possède le\n"
+"répertoire des données."
 
 #: parser/parse_utilcmd.c:2063
 #, c-format
@@ -12974,8 +12992,9 @@ msgstr "ne peut pas utiliser la fonction window dans la condition d'une règle WH
 #, c-format
 msgid "rules with WHERE conditions can only have SELECT, INSERT, UPDATE, or DELETE actions"
 msgstr ""
-"les règles avec des conditions WHERE ne peuvent contenir que des actions\n"
-"SELECT, INSERT, UPDATE ou DELETE "
+"%s : n'a pas pu trouver le système de bases de données\n"
+"S'attendait à le trouver dans le répertoire « %s »,\n"
+"mais n'a pas réussi à ouvrir le fichier « %s »: %s\n"
 
 #: parser/parse_utilcmd.c:2157
 #: parser/parse_utilcmd.c:2256
@@ -13051,13 +13070,13 @@ msgstr "clause INITIALLY IMMEDIATE mal placée"
 
 #: parser/parse_utilcmd.c:2773
 #, c-format
-msgid "CREATE specifies a schema (%s) different from the one being created (%s)"
-msgstr "CREATE spécifie un schéma (%s) différent de celui tout juste créé (%s)"
+msgid "received SIGHUP, reloading configuration files"
+msgstr "a reçu SIGHUP, rechargement des fichiers de configuration"
 
-#: parser/scansup.c:190
+#: postmaster/postmaster.c:2094
 #, c-format
-msgid "identifier \"%s\" will be truncated to \"%s\""
-msgstr "l'identifiant « %s » sera tronqué en « %s »"
+msgid "pg_hba.conf not reloaded"
+msgstr "pg_hba.conf non lu"
 
 #: port/pg_latch.c:296
 #: port/unix_latch.c:296
