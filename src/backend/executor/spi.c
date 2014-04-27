@@ -1650,10 +1650,6 @@ SPI_plan_get_cached_plan(SPIPlanPtr plan)
 
 	Assert(plan->magic == _SPI_PLAN_MAGIC);
 
-	/* Can't support one-shot plans here */
-	if (plan->oneshot)
-		return NULL;
-
 	/* Must have exactly one CachedPlanSource */
 	if (list_length(plan->plancache_list) != 1)
 		return NULL;
