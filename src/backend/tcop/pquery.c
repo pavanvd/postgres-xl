@@ -590,8 +590,8 @@ PortalStart(Portal portal, ParamListInfo params,
 				/* No special ability is needed */
 				eflags = 0;
 				/* Must set snapshot before starting executor. */
-				if (use_active_snapshot)
-					PushActiveSnapshot(GetActiveSnapshot());
+				if (snapshot)
+					PushActiveSnapshot(snapshot);
 				else
 					PushActiveSnapshot(GetTransactionSnapshot());
 
