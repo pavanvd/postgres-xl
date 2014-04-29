@@ -21,6 +21,9 @@ subdir = doc-xc/src/sgml
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
+MAKESGMLDIR = $(top_builddir)/src/pgxc/tools/makesgml
+MAKESGML = $(MAKESGMLDIR)/makesgml
+
 
 all: html man
 
@@ -212,7 +215,8 @@ INC_LIST = -I PG -I EN
 #INC_LIST = -I PGXC -I EN
 
 .sgmlin.sgml:
-	makesgml -i $< -o $@ $(INC_LIST) $(EXC_LIST)
+	$(MAKE) -C $(MAKESGMLDIR)
+	$(MAKESGML) -i $< -o $@ $(INC_LIST) $(EXC_LIST)
 
 
 # This generates an XML version of the flow-object tree.  It's useful
