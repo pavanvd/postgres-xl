@@ -44,7 +44,7 @@ SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER 
 SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
 SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
 SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
+-- In Postgres-XL OIDs are not consistent across the cluster. Hence above
 -- queries do not show any result. Hence in order to ensure data consistency, we
 -- add following SQLs. In case above set of queries start producing valid
 -- results in XC, we should remove the following set
@@ -71,7 +71,7 @@ SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER 
 SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
 SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
 SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
+-- In Postgres-XL OIDs are not consistent across the cluster. Hence above
 -- queries do not show any result. Hence in order to ensure data consistency, we
 -- add following SQLs. In case above set of queries start producing valid
 -- results in XC, we should remove the following set
@@ -94,7 +94,7 @@ SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER 
 SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
 SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
 SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
+-- In Postgres-XL OIDs are not consistent across the cluster. Hence above
 -- queries do not show any result. Hence in order to ensure data consistency, we
 -- add following SQLs. In case above set of queries start producing valid
 -- results in XC, we should remove the following set
@@ -119,7 +119,7 @@ SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER 
 SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
 SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
 SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
+-- In Postgres-XL OIDs are not consistent across the cluster. Hence above
 -- queries do not show any result. Hence in order to ensure data consistency, we
 -- add following SQLs. In case above set of queries start producing valid
 -- results in XC, we should remove the following set
@@ -142,7 +142,7 @@ SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid ORDER 
 SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid ORDER BY relname, b.aa;
 SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid ORDER BY relname, c.aa;
 SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid ORDER BY relname, d.aa;
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
+-- In Postgres-XL OIDs are not consistent across the cluster. Hence above
 -- queries do not show any result. Hence in order to ensure data consistency, we
 -- add following SQLs. In case above set of queries start producing valid
 -- results in XC, we should remove the following set
@@ -182,7 +182,7 @@ update bar set f2 = f2 + 100 where f1 in (select f1 from foo);
 
 SELECT relname, bar.* FROM bar, pg_class where bar.tableoid = pg_class.oid
 order by 1,2;
--- In Postgres-XC OIDs are not consistent across the cluster. Hence above
+-- In Postgres-XL OIDs are not consistent across the cluster. Hence above
 -- queries do not show any result. Hence in order to ensure data consistency, we
 -- add following SQLs. In case above set of queries start producing valid
 -- results in XC, we should remove the following set

@@ -1,7 +1,7 @@
 --
 -- XC_CREATE_FUNCTIONS
 --
--- Create a couple of functions used by Postgres-XC tests
+-- Create a couple of functions used by Postgres-XL tests
 -- A function to create table on specified nodes
 create or replace function create_table_nodes(tab_schema varchar, nodenums int[], distribution varchar, cmd_suffix varchar)
 returns void language plpgsql as $$

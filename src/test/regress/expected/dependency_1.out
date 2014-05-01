@@ -6,7 +6,7 @@ CREATE USER regression_user2;
 CREATE USER regression_user3;
 CREATE GROUP regression_group;
 CREATE TABLE deptest (f1 serial primary key, f2 text);
-ERROR:  Postgres-XC does not support SERIAL yet
+ERROR:  Postgres-XL does not support SERIAL yet
 DETAIL:  The feature is not currently supported
 GRANT SELECT ON TABLE deptest TO GROUP regression_group;
 ERROR:  relation "deptest" does not exist
@@ -68,7 +68,7 @@ NOTICE:  CREATE TABLE / UNIQUE will create implicit index "deptest1_f1_key" for 
 GRANT ALL ON deptest1 TO regression_user1 WITH GRANT OPTION;
 SET SESSION AUTHORIZATION regression_user1;
 CREATE TABLE deptest (a serial primary key, b text);
-ERROR:  Postgres-XC does not support SERIAL yet
+ERROR:  Postgres-XL does not support SERIAL yet
 DETAIL:  The feature is not currently supported
 GRANT ALL ON deptest1 TO regression_user2;
 RESET SESSION AUTHORIZATION;
@@ -96,7 +96,7 @@ DROP OWNED BY regression_user1;
 GRANT ALL ON deptest1 TO regression_user1;
 SET SESSION AUTHORIZATION regression_user1;
 CREATE TABLE deptest (a serial primary key, b text);
-ERROR:  Postgres-XC does not support SERIAL yet
+ERROR:  Postgres-XL does not support SERIAL yet
 DETAIL:  The feature is not currently supported
 CREATE TABLE deptest2 (f1 int);
 -- make a serial column the hard way

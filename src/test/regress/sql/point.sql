@@ -2,7 +2,7 @@
 -- POINT
 --
 
--- Postgres-XC case: point type cannot use ORDER BY so table
+-- Postgres-XL case: point type cannot use ORDER BY so table
 -- is replicated for regression tests whatever the cluster configuration
 CREATE TABLE POINT_TBL(f1 point) DISTRIBUTE BY REPLICATION;
 
@@ -103,4 +103,3 @@ SELECT COUNT(*) FROM point_gist_tbl WHERE f1 ~= '(0.0000018,0.0000018)'::point;
 RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
->>>>>>> 3ea1ab2... Fix gist_box_same and gist_point_consistent to handle fuzziness correctly.

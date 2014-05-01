@@ -445,7 +445,7 @@ FROM bool_test;
 --
 -- Test cases that should be optimized into indexscans instead of
 -- the generic aggregate implementation.
--- In Postgres-XC, plans printed by explain are the ones created on the
+-- In Postgres-XL, plans printed by explain are the ones created on the
 -- coordinator. Coordinator does not generate index scan plans.
 --
 analyze tenk1;		-- ensure we get consistent plans here
@@ -759,35 +759,20 @@ select min(f1), max(f1) from minmaxtest;
 -- DISTINCT doesn't do anything useful here, but it shouldn't fail
 explain (costs off)
   select distinct min(f1), max(f1) from minmaxtest;
-                                        QUERY PLAN                                         
--------------------------------------------------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  HashAggregate
-   InitPlan 1 (returns $0)
-     ->  Limit
-           ->  Merge Append
-                 Sort Key: public.minmaxtest.f1
-                 ->  Index Only Scan using minmaxtesti on minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Only Scan using minmaxtest1i on minmaxtest1 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Only Scan Backward using minmaxtest2i on minmaxtest2 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Only Scan using minmaxtest3i on minmaxtest3 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-   InitPlan 2 (returns $1)
-     ->  Limit
-           ->  Merge Append
-                 Sort Key: public.minmaxtest.f1
-                 ->  Index Only Scan Backward using minmaxtesti on minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Only Scan Backward using minmaxtest1i on minmaxtest1 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Only Scan using minmaxtest2i on minmaxtest2 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-                 ->  Index Only Scan Backward using minmaxtest3i on minmaxtest3 minmaxtest
-                       Index Cond: (f1 IS NOT NULL)
-   ->  Result
-(26 rows)
+   ->  Aggregate
+         ->  Append
+               ->  Remote Subquery Scan on all (datanode_1,datanode_2)
+                     ->  Seq Scan on minmaxtest
+               ->  Remote Subquery Scan on all (datanode_1,datanode_2)
+                     ->  Seq Scan on minmaxtest1 minmaxtest
+               ->  Remote Subquery Scan on all (datanode_1,datanode_2)
+                     ->  Seq Scan on minmaxtest2 minmaxtest
+               ->  Remote Subquery Scan on all (datanode_1,datanode_2)
+                     ->  Seq Scan on minmaxtest3 minmaxtest
+(11 rows)
 
 select distinct min(f1), max(f1) from minmaxtest;
  min | max 

@@ -24,13 +24,13 @@ create trigger check_fkeys_pkey_exist
 	for each row
 	execute procedure
 	check_primary_key ('fkey1', 'fkey2', 'pkeys', 'pkey1', 'pkey2');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 create trigger check_fkeys_pkey2_exist
 	before insert or update on fkeys
 	for each row
 	execute procedure check_primary_key ('fkey3', 'fkeys2', 'pkey23');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 --
 -- For fkeys2:
@@ -41,7 +41,7 @@ create trigger check_fkeys2_pkey_exist
 	for each row
 	execute procedure
 	check_primary_key ('fkey21', 'fkey22', 'pkeys', 'pkey1', 'pkey2');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 -- Test comments
 COMMENT ON TRIGGER check_fkeys2_pkey_bad ON fkeys2 IS 'wrong';
@@ -61,7 +61,7 @@ create trigger check_pkeys_fkey_cascade
 	execute procedure
 	check_foreign_key (2, 'cascade', 'pkey1', 'pkey2',
 	'fkeys', 'fkey1', 'fkey2', 'fkeys2', 'fkey21', 'fkey22');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 --
 -- For fkeys2:
@@ -72,7 +72,7 @@ create trigger check_fkeys2_fkey_restrict
 	before delete or update on fkeys2
 	for each row
 	execute procedure check_foreign_key (1, 'restrict', 'pkey23', 'fkeys', 'fkey3');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 insert into fkeys2 values (10, '1', 1);
 insert into fkeys2 values (30, '3', 2);
@@ -143,14 +143,14 @@ create trigger ttdummy
 	for each row
 	execute procedure
 	ttdummy (price_on, price_off);
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 create trigger ttserial
 	before insert or update on tttest
 	for each row
 	execute procedure
 	autoinc (price_on, ttdummy_seq);
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 insert into tttest values (1, 1, null);
 insert into tttest values (2, 2, null);
@@ -273,11 +273,11 @@ BEGIN
 END;';
 CREATE TRIGGER before_ins_stmt_trig BEFORE INSERT ON main_table
 FOR EACH STATEMENT EXECUTE PROCEDURE trigger_func('before_ins_stmt');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER after_ins_stmt_trig AFTER INSERT ON main_table
 FOR EACH STATEMENT EXECUTE PROCEDURE trigger_func('after_ins_stmt');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 --
 -- if neither 'FOR EACH ROW' nor 'FOR EACH STATEMENT' was specified,
@@ -285,11 +285,11 @@ DETAIL:  The feature is not currently supported
 --
 CREATE TRIGGER after_upd_stmt_trig AFTER UPDATE ON main_table
 EXECUTE PROCEDURE trigger_func('after_upd_stmt');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER after_upd_row_trig AFTER UPDATE ON main_table
 FOR EACH ROW EXECUTE PROCEDURE trigger_func('after_upd_row');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 INSERT INTO main_table DEFAULT VALUES;
 UPDATE main_table SET a = a + 1 WHERE b < 30;
@@ -317,27 +317,27 @@ SELECT * FROM main_table ORDER BY a, b;
 --
 CREATE TRIGGER modified_a BEFORE UPDATE OF a ON main_table
 FOR EACH ROW WHEN (OLD.a <> NEW.a) EXECUTE PROCEDURE trigger_func('modified_a');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER modified_any BEFORE UPDATE OF a ON main_table
 FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*) EXECUTE PROCEDURE trigger_func('modified_any');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER insert_a AFTER INSERT ON main_table
 FOR EACH ROW WHEN (NEW.a = 123) EXECUTE PROCEDURE trigger_func('insert_a');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER delete_a AFTER DELETE ON main_table
 FOR EACH ROW WHEN (OLD.a = 123) EXECUTE PROCEDURE trigger_func('delete_a');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER insert_when BEFORE INSERT ON main_table
 FOR EACH STATEMENT WHEN (true) EXECUTE PROCEDURE trigger_func('insert_when');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER delete_when AFTER DELETE ON main_table
 FOR EACH STATEMENT WHEN (true) EXECUTE PROCEDURE trigger_func('delete_when');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 INSERT INTO main_table (a) VALUES (123), (456);
 COPY main_table FROM stdin;
@@ -389,23 +389,23 @@ DROP TRIGGER after_upd_row_trig ON main_table;
 ERROR:  trigger "after_upd_row_trig" for table "main_table" does not exist
 CREATE TRIGGER before_upd_a_row_trig BEFORE UPDATE OF a ON main_table
 FOR EACH ROW EXECUTE PROCEDURE trigger_func('before_upd_a_row');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER after_upd_b_row_trig AFTER UPDATE OF b ON main_table
 FOR EACH ROW EXECUTE PROCEDURE trigger_func('after_upd_b_row');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER after_upd_a_b_row_trig AFTER UPDATE OF a, b ON main_table
 FOR EACH ROW EXECUTE PROCEDURE trigger_func('after_upd_a_b_row');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER before_upd_a_stmt_trig BEFORE UPDATE OF a ON main_table
 FOR EACH STATEMENT EXECUTE PROCEDURE trigger_func('before_upd_a_stmt');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER after_upd_b_stmt_trig AFTER UPDATE OF b ON main_table
 FOR EACH STATEMENT EXECUTE PROCEDURE trigger_func('after_upd_b_stmt');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgrelid = 'main_table'::regclass AND tgname = 'after_upd_a_b_row_trig';
  pg_get_triggerdef 
@@ -479,19 +479,19 @@ begin
 end;$$ language plpgsql;
 create trigger trigtest_b_row_tg before insert or update or delete on trigtest
 for each row execute procedure trigtest();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 create trigger trigtest_a_row_tg after insert or update or delete on trigtest
 for each row execute procedure trigtest();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 create trigger trigtest_b_stmt_tg before insert or update or delete on trigtest
 for each statement execute procedure trigtest();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 create trigger trigtest_a_stmt_tg after insert or update or delete on trigtest
 for each statement execute procedure trigtest();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 insert into trigtest default values;
 alter table trigtest disable trigger trigtest_b_row_tg;
@@ -590,7 +590,7 @@ $$;
 CREATE TRIGGER show_trigger_data_trig
 BEFORE INSERT OR UPDATE OR DELETE ON trigger_test
 FOR EACH ROW EXECUTE PROCEDURE trigger_data(23,'skidoo');
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 insert into trigger_test values(1,'insert');
 update trigger_test set v = 'update' where i = 1;
@@ -616,7 +616,7 @@ end$$;
 CREATE TRIGGER t
 BEFORE UPDATE ON trigger_test
 FOR EACH ROW EXECUTE PROCEDURE mytrigger();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 INSERT INTO trigger_test VALUES(1, 'foo', 'bar');
 INSERT INTO trigger_test VALUES(2, 'baz', 'quux');
@@ -657,7 +657,7 @@ CREATE TABLE serializable_update_tab (
 );
 CREATE TRIGGER serializable_update_trig BEFORE UPDATE ON serializable_update_tab
 	FOR EACH ROW EXECUTE PROCEDURE serializable_update_trig();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 INSERT INTO serializable_update_tab SELECT a, repeat('xyzxz', 100), 'new'
 	FROM generate_series(1, 50) a;
@@ -687,12 +687,12 @@ INSERT INTO min_updates_test_oids VALUES ('a',1,2),('b','2',null);
 CREATE TRIGGER z_min_update
 BEFORE UPDATE ON min_updates_test
 FOR EACH ROW EXECUTE PROCEDURE suppress_redundant_updates_trigger();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 CREATE TRIGGER z_min_update
 BEFORE UPDATE ON min_updates_test_oids
 FOR EACH ROW EXECUTE PROCEDURE suppress_redundant_updates_trigger();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 \set QUIET false
 UPDATE min_updates_test SET f1 = f1;

@@ -2,7 +2,7 @@
 -- XC_REMOTE
 --
 
--- Test cases for Postgres-XC remote queries
+-- Test cases for Postgres-XL remote queries
 -- Disable fast query shipping, all the queries go through standard planner
 
 -- SET enable_fast_query_shipping TO false;

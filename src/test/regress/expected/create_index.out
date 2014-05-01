@@ -2474,6 +2474,7 @@ DROP INDEX CONCURRENTLY "concur_index2";				-- works
 ERROR:  index "concur_index2" does not exist
 DROP INDEX CONCURRENTLY IF EXISTS "concur_index2";		-- notice
 NOTICE:  index "concur_index2" does not exist, skipping
+ERROR:  DROP INDEX CONCURRENTLY cannot run inside a transaction block
 -- failures
 DROP INDEX CONCURRENTLY "concur_index2", "concur_index3";
 ERROR:  index "concur_index2" does not exist
@@ -2483,7 +2484,8 @@ ERROR:  DROP INDEX CONCURRENTLY cannot run inside a transaction block
 ROLLBACK;
 -- successes
 DROP INDEX CONCURRENTLY IF EXISTS "concur_index3";
-ERROR:  index "concur_index3" does not exist
+NOTICE:  index "concur_index3" does not exist, skipping
+ERROR:  DROP INDEX CONCURRENTLY cannot run inside a transaction block
 DROP INDEX CONCURRENTLY "concur_index4";
 ERROR:  index "concur_index4" does not exist
 DROP INDEX CONCURRENTLY "concur_index5";
@@ -2715,13 +2717,19 @@ DROP TABLE onek_with_null;
 EXPLAIN (NODES OFF, COSTS OFF)
 SELECT * FROM tenk1
   WHERE thousand = 42 AND (tenthous = 1 OR tenthous = 3 OR tenthous = 42);
-                              QUERY PLAN                               
------------------------------------------------------------------------
+                                                                  QUERY PLAN                                                                   
+-----------------------------------------------------------------------------------------------------------------------------------------------
  Remote Subquery Scan on all
-   ->  Index Scan using tenk1_thous_tenthous on tenk1
-         Index Cond: (thousand = 42)
-         Filter: ((tenthous = 1) OR (tenthous = 3) OR (tenthous = 42))
-(4 rows)
+   ->  Bitmap Heap Scan on tenk1
+         Recheck Cond: (((thousand = 42) AND (tenthous = 1)) OR ((thousand = 42) AND (tenthous = 3)) OR ((thousand = 42) AND (tenthous = 42)))
+         ->  BitmapOr
+               ->  Bitmap Index Scan on tenk1_thous_tenthous
+                     Index Cond: ((thousand = 42) AND (tenthous = 1))
+               ->  Bitmap Index Scan on tenk1_thous_tenthous
+                     Index Cond: ((thousand = 42) AND (tenthous = 3))
+               ->  Bitmap Index Scan on tenk1_thous_tenthous
+                     Index Cond: ((thousand = 42) AND (tenthous = 42))
+(10 rows)
 
 SELECT * FROM tenk1
   WHERE thousand = 42 AND (tenthous = 1 OR tenthous = 3 OR tenthous = 42);
@@ -2733,15 +2741,22 @@ SELECT * FROM tenk1
 EXPLAIN (NODES OFF, COSTS OFF)
 SELECT count(*) FROM tenk1
   WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
-                            QUERY PLAN                            
-------------------------------------------------------------------
+                                         QUERY PLAN                                          
+---------------------------------------------------------------------------------------------
  Aggregate
    ->  Remote Subquery Scan on all
          ->  Aggregate
-               ->  Index Scan using tenk1_hundred on tenk1
-                     Index Cond: (hundred = 42)
-                     Filter: ((thousand = 42) OR (thousand = 99))
-(6 rows)
+               ->  Bitmap Heap Scan on tenk1
+                     Recheck Cond: ((hundred = 42) AND ((thousand = 42) OR (thousand = 99)))
+                     ->  BitmapAnd
+                           ->  Bitmap Index Scan on tenk1_hundred
+                                 Index Cond: (hundred = 42)
+                           ->  BitmapOr
+                                 ->  Bitmap Index Scan on tenk1_thous_tenthous
+                                       Index Cond: (thousand = 42)
+                                 ->  Bitmap Index Scan on tenk1_thous_tenthous
+                                       Index Cond: (thousand = 99)
+(13 rows)
 
 SELECT count(*) FROM tenk1
   WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
@@ -2786,11 +2801,16 @@ explain (costs off)
 SELECT unique1 FROM tenk1
 WHERE unique1 IN (1,42,7)
 ORDER BY unique1;
-                      QUERY PLAN                       
--------------------------------------------------------
- Index Only Scan using tenk1_unique1 on tenk1
-   Index Cond: (unique1 = ANY ('{1,42,7}'::integer[]))
-(2 rows)
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Remote Subquery Scan on all (datanode_1,datanode_2)
+   ->  Sort
+         Sort Key: unique1
+         ->  Bitmap Heap Scan on tenk1
+               Recheck Cond: (unique1 = ANY ('{1,42,7}'::integer[]))
+               ->  Bitmap Index Scan on tenk1_unique1
+                     Index Cond: (unique1 = ANY ('{1,42,7}'::integer[]))
+(7 rows)
 
 SELECT unique1 FROM tenk1
 WHERE unique1 IN (1,42,7)
@@ -2806,13 +2826,14 @@ explain (costs off)
 SELECT thousand, tenthous FROM tenk1
 WHERE thousand < 2 AND tenthous IN (1001,3000)
 ORDER BY thousand;
-                                      QUERY PLAN                                      
---------------------------------------------------------------------------------------
- Sort
-   Sort Key: thousand
-   ->  Index Only Scan using tenk1_thous_tenthous on tenk1
-         Index Cond: ((thousand < 2) AND (tenthous = ANY ('{1001,3000}'::integer[])))
-(4 rows)
+                                         QUERY PLAN                                         
+--------------------------------------------------------------------------------------------
+ Remote Subquery Scan on all (datanode_1,datanode_2)
+   ->  Sort
+         Sort Key: thousand
+         ->  Index Only Scan using tenk1_thous_tenthous on tenk1
+               Index Cond: ((thousand < 2) AND (tenthous = ANY ('{1001,3000}'::integer[])))
+(5 rows)
 
 SELECT thousand, tenthous FROM tenk1
 WHERE thousand < 2 AND tenthous IN (1001,3000)

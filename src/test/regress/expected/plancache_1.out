@@ -117,13 +117,13 @@ begin
 end
 $$ language plpgsql;
 select cache_test(1);
-ERROR:  Postgres-XC does not support DML queries in PL/pgSQL
+ERROR:  Postgres-XL does not support DML queries in PL/pgSQL
 CONTEXT:  PL/pgSQL function cache_test(integer) line 5 at SQL statement
 select cache_test(2);
-ERROR:  Postgres-XC does not support DML queries in PL/pgSQL
+ERROR:  Postgres-XL does not support DML queries in PL/pgSQL
 CONTEXT:  PL/pgSQL function cache_test(integer) line 6 at SQL statement
 select cache_test(3);
-ERROR:  Postgres-XC does not support DML queries in PL/pgSQL
+ERROR:  Postgres-XL does not support DML queries in PL/pgSQL
 CONTEXT:  PL/pgSQL function cache_test(integer) line 7 at SQL statement
 -- Check invalidation of plpgsql "simple expression"
 create temp view v1 as
@@ -227,7 +227,7 @@ select cachebug();
 NOTICE:  table "temptable" does not exist, skipping
 CONTEXT:  SQL statement "drop table if exists temptable cascade"
 PL/pgSQL function cachebug() line 4 at SQL statement
-ERROR:  Postgres-XC does not support DML queries in PL/pgSQL
+ERROR:  Postgres-XL does not support DML queries in PL/pgSQL
 CONTEXT:  PL/pgSQL function cachebug() line 5 at SQL statement
 select cachebug();
 NOTICE:  table "temptable" does not exist, skipping

@@ -1548,7 +1548,7 @@ end;
 $$ LANGUAGE plpgsql;
 CREATE TRIGGER y_trig BEFORE INSERT ON y FOR EACH ROW
     EXECUTE PROCEDURE y_trigger();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 WITH t AS (
     INSERT INTO y
@@ -1579,7 +1579,7 @@ DROP TRIGGER y_trig ON y;
 ERROR:  trigger "y_trig" for table "y" does not exist
 CREATE TRIGGER y_trig AFTER INSERT ON y FOR EACH ROW
     EXECUTE PROCEDURE y_trigger();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 WITH t AS (
     INSERT INTO y
@@ -1616,7 +1616,7 @@ end;
 $$ LANGUAGE plpgsql;
 CREATE TRIGGER y_trig AFTER INSERT ON y FOR EACH STATEMENT
     EXECUTE PROCEDURE y_trigger();
-ERROR:  Postgres-XC does not support TRIGGER yet
+ERROR:  Postgres-XL does not support TRIGGER yet
 DETAIL:  The feature is not currently supported
 WITH t AS (
     INSERT INTO y
