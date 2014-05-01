@@ -597,7 +597,7 @@ PACKAGE_NAME='PostgreSQL'
 PACKAGE_TARNAME='postgresql'
 PACKAGE_VERSION='9.2.4 (Postgres-XL 9.2.0)'
 PACKAGE_XC_VERSION='9.2.0'
-PACKAGE_STRING='PostgreSQL 9.2.3 (Postgres-XL 9.2.0)'
+PACKAGE_STRING='PostgreSQL 9.2.4 (Postgres-XL 9.2.0)'
 PACKAGE_BUGREPORT='bugs@postgres-xl.org'
 
 ac_unique_file="src/backend/access/common/heaptuple.c"
