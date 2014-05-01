@@ -431,7 +431,7 @@ typedef struct StdRdOptions
 #ifdef XCP
 #define RELATION_IS_OTHER_TEMP(relation) \
 	(((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP && \
-	 !(relation)->rd_islocaltemp) || \
+	 !(relation)->rd_islocaltemp) && \
 	 ((!OidIsValid(MyCoordId) && (relation)->rd_backend != MyBackendId) || \
 	  (OidIsValid(MyCoordId) && (relation)->rd_backend != MyFirstBackendId)))
 #else
