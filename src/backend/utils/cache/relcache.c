@@ -870,10 +870,10 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 #ifdef XCP
 				relation->rd_backend = OidIsValid(MyCoordId) ?
 												MyFirstBackendId : MyBackendId;
-#else
+				else
+#endif
 				relation->rd_backend = MyBackendId;
 				relation->rd_islocaltemp = true;
-#endif
 			}
 			else
 			{
@@ -2590,8 +2590,8 @@ RelationBuildLocalRelation(const char *relname,
 				rel->rd_backend = MyFirstBackendId;
 			else
 #endif
-			Assert(isTempOrToastNamespace(relnamespace));
 			rel->rd_backend = MyBackendId;
+			Assert(isTempOrToastNamespace(relnamespace));
 			rel->rd_islocaltemp = true;
 			break;
 		default:
