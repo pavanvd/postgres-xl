@@ -67,7 +67,7 @@ select f1, q.c1 from quadtable;		-- fails, q is a table reference
 ERROR:  missing FROM-clause entry for table "q"
 LINE 1: select f1, q.c1 from quadtable;
                    ^
-select f1, (q).c1, (qq.q).c1.i from quadtable qq;
+select f1, (q).c1, (qq.q).c1.i from quadtable qq order by 1;
  f1 |    c1     |  i  
 ----+-----------+-----
   1 | (3.3,4.4) | 4.4
@@ -79,7 +79,7 @@ insert into people values ('(Joe,Blow)', '1984-01-10');
 select * from people;
      fn     |     bd     
 ------------+------------
- (Joe,Blow) | 01-10-1984
+ (Joe,Blow) | 1984-01-10
 (1 row)
 
 -- at the moment this will not work due to ALTER TABLE inadequacy:
@@ -90,7 +90,7 @@ alter table fullname add column suffix text default null;
 select * from people;
      fn      |     bd     
 -------------+------------
- (Joe,Blow,) | 01-10-1984
+ (Joe,Blow,) | 1984-01-10
 (1 row)
 
 -- test insertion/updating of subfields
@@ -98,7 +98,7 @@ update people set fn.suffix = 'Jr';
 select * from people;
       fn       |     bd     
 ---------------+------------
- (Joe,Blow,Jr) | 01-10-1984
+ (Joe,Blow,Jr) | 1984-01-10
 (1 row)
 
 insert into quadtable (f1, q.c1.r, q.c2.i) values(44,55,66);
