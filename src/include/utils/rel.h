@@ -404,7 +404,8 @@ typedef struct StdRdOptions
 #define RELATION_IS_LOCAL(relation) \
 	((!OidIsValid(MyCoordId) && (relation)->rd_backend == MyBackendId) || \
 	 (OidIsValid(MyCoordId) && (relation)->rd_backend == MyFirstBackendId) || \
-	 (relation)->rd_createSubid != InvalidSubTransactionId)
+	 ((relation)->rd_islocaltemp || \
+	 (relation)->rd_createSubid != InvalidSubTransactionId))
 #else
 #define RELATION_IS_LOCAL(relation) \
 	((relation)->rd_islocaltemp || \
@@ -429,7 +430,8 @@ typedef struct StdRdOptions
  */
 #ifdef XCP
 #define RELATION_IS_OTHER_TEMP(relation) \
-	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP && \
+	(((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP && \
+	 !(relation)->rd_islocaltemp) || \
 	 ((!OidIsValid(MyCoordId) && (relation)->rd_backend != MyBackendId) || \
 	  (OidIsValid(MyCoordId) && (relation)->rd_backend != MyFirstBackendId)))
 #else
