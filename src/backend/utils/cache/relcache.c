@@ -870,7 +870,7 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 #ifdef XCP
 				relation->rd_backend = OidIsValid(MyCoordId) ?
 												MyFirstBackendId : MyBackendId;
-				else
+				relation->rd_islocaltemp = true;
 #endif
 				relation->rd_backend = MyBackendId;
 				relation->rd_islocaltemp = true;
