@@ -4,10 +4,20 @@
 
 -- Simple cases
 
-CREATE TEMP TABLE foo (f1 serial, f2 text, f3 int default 42);
+--CREATE TEMP TABLE foo (f1 serial, f2 text, f3 int default 42);
+-- XL: Make this a real table
+CREATE TABLE foo (f1 serial, f2 text, f3 int default 42) DISTRIBUTE BY REPLICATION;
 
+-- XL: temporarily change to 3 inserts
+--INSERT INTO foo (f2,f3)
+--  VALUES ('test', DEFAULT), ('More', 11), (upper('more'), 7+9)
+--  RETURNING *, f1+f3 AS sum;
 INSERT INTO foo (f2,f3)
-  VALUES ('test', DEFAULT), ('More', 11), (upper('more'), 7+9)
+  VALUES ('test', DEFAULT);
+INSERT INTO foo (f2,f3)
+  VALUES ('More', 11);
+INSERT INTO foo (f2,f3)
+  VALUES (upper('more'), 7+9)
   RETURNING *, f1+f3 AS sum;
 
 SELECT * FROM foo ORDER BY f1;
