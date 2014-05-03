@@ -416,14 +416,14 @@ analyze patest1;
 analyze patest2;
 
 explain (costs off, num_nodes off, nodes off)
-select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
-select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
+select * from patest0 join (select f1 from int4_tbl where f1 = 0 limit 1) ss on id = f1;
+select * from patest0 join (select f1 from int4_tbl where f1 = 0 limit 1) ss on id = f1;
 
 drop index patest2i;
 
 explain (costs off, num_nodes off, nodes off)
-select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
-select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
+select * from patest0 join (select f1 from int4_tbl where f1 = 0 limit 1) ss on id = f1;
+select * from patest0 join (select f1 from int4_tbl where f1 = 0 limit 1) ss on id = f1;
 
 drop table patest0 cascade;
 

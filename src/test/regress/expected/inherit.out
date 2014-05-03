@@ -1532,6 +1532,8 @@ Indexes:
     "test_constraints_val1_val2_key" UNIQUE CONSTRAINT, btree (val1, val2)
 Child tables: test_constraints_inh
 Has OIDs: no
+Distribute By: HASH(val1)
+Location Nodes: ALL DATANODES
 
 ALTER TABLE ONLY test_constraints DROP CONSTRAINT test_constraints_val1_val2_key;
 \d+ test_constraints
@@ -1543,6 +1545,8 @@ ALTER TABLE ONLY test_constraints DROP CONSTRAINT test_constraints_val1_val2_key
  val2   | integer           |           | plain    |              | 
 Child tables: test_constraints_inh
 Has OIDs: no
+Distribute By: HASH(val1)
+Location Nodes: ALL DATANODES
 
 \d+ test_constraints_inh
                       Table "public.test_constraints_inh"
@@ -1553,6 +1557,8 @@ Has OIDs: no
  val2   | integer           |           | plain    |              | 
 Inherits: test_constraints
 Has OIDs: no
+Distribute By: HASH(val1)
+Location Nodes: ALL DATANODES
 
 DROP TABLE test_constraints_inh;
 DROP TABLE test_constraints;
@@ -1571,6 +1577,8 @@ Indexes:
     "test_ex_constraints_c_excl" EXCLUDE USING gist (c WITH &&)
 Child tables: test_ex_constraints_inh
 Has OIDs: no
+Distribute By: ROUND ROBIN
+Location Nodes: ALL DATANODES
 
 ALTER TABLE test_ex_constraints DROP CONSTRAINT test_ex_constraints_c_excl;
 \d+ test_ex_constraints
@@ -1580,6 +1588,8 @@ ALTER TABLE test_ex_constraints DROP CONSTRAINT test_ex_constraints_c_excl;
  c      | circle |           | plain   |              | 
 Child tables: test_ex_constraints_inh
 Has OIDs: no
+Distribute By: ROUND ROBIN
+Location Nodes: ALL DATANODES
 
 \d+ test_ex_constraints_inh
                Table "public.test_ex_constraints_inh"
@@ -1588,6 +1598,8 @@ Has OIDs: no
  c      | circle |           | plain   |              | 
 Inherits: test_ex_constraints
 Has OIDs: no
+Distribute By: ROUND ROBIN
+Location Nodes: ALL DATANODES
 
 DROP TABLE test_ex_constraints_inh;
 DROP TABLE test_ex_constraints;
@@ -1606,6 +1618,8 @@ Indexes:
 Referenced by:
     TABLE "test_foreign_constraints" CONSTRAINT "test_foreign_constraints_id1_fkey" FOREIGN KEY (id1) REFERENCES test_primary_constraints(id)
 Has OIDs: no
+Distribute By: HASH(id)
+Location Nodes: ALL DATANODES
 
 \d+ test_foreign_constraints
                Table "public.test_foreign_constraints"
@@ -1616,6 +1630,8 @@ Foreign-key constraints:
     "test_foreign_constraints_id1_fkey" FOREIGN KEY (id1) REFERENCES test_primary_constraints(id)
 Child tables: test_foreign_constraints_inh
 Has OIDs: no
+Distribute By: HASH(id1)
+Location Nodes: ALL DATANODES
 
 ALTER TABLE test_foreign_constraints DROP CONSTRAINT test_foreign_constraints_id1_fkey;
 \d+ test_foreign_constraints
@@ -1625,6 +1641,8 @@ ALTER TABLE test_foreign_constraints DROP CONSTRAINT test_foreign_constraints_id
  id1    | integer |           | plain   |              | 
 Child tables: test_foreign_constraints_inh
 Has OIDs: no
+Distribute By: HASH(id1)
+Location Nodes: ALL DATANODES
 
 \d+ test_foreign_constraints_inh
              Table "public.test_foreign_constraints_inh"
@@ -1633,6 +1651,8 @@ Has OIDs: no
  id1    | integer |           | plain   |              | 
 Inherits: test_foreign_constraints
 Has OIDs: no
+Distribute By: HASH(id1)
+Location Nodes: ALL DATANODES
 
 DROP TABLE test_foreign_constraints_inh;
 DROP TABLE test_foreign_constraints;
@@ -1654,23 +1674,33 @@ create index patest2i on patest2(id);
 analyze patest0;
 analyze patest1;
 analyze patest2;
-explain (costs off)
-select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
+explain (costs off, num_nodes off, nodes off)
+select * from patest0 join (select f1 from int4_tbl where f1 = 0 limit 1) ss on id = f1;
                         QUERY PLAN                        
 ----------------------------------------------------------
  Nested Loop
    ->  Limit
-         ->  Seq Scan on int4_tbl
+         ->  Remote Subquery Scan on all
+               ->  Limit
+                     ->  Seq Scan on int4_tbl
+                           Filter: (f1 = 0)
    ->  Append
-         ->  Index Scan using patest0i on patest0
-               Index Cond: (id = int4_tbl.f1)
-         ->  Index Scan using patest1i on patest1 patest0
-               Index Cond: (id = int4_tbl.f1)
-         ->  Index Scan using patest2i on patest2 patest0
-               Index Cond: (id = int4_tbl.f1)
-(10 rows)
+         ->  Remote Subquery Scan on all
+               ->  Seq Scan on patest0
+                     Filter: (int4_tbl.f1 = id)
+         ->  Remote Subquery Scan on all
+               ->  Bitmap Heap Scan on patest1 patest0
+                     Recheck Cond: (id = int4_tbl.f1)
+                     ->  Bitmap Index Scan on patest1i
+                           Index Cond: (id = int4_tbl.f1)
+         ->  Remote Subquery Scan on all
+               ->  Bitmap Heap Scan on patest2 patest0
+                     Recheck Cond: (id = int4_tbl.f1)
+                     ->  Bitmap Index Scan on patest2i
+                           Index Cond: (id = int4_tbl.f1)
+(20 rows)
 
-select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
+select * from patest0 join (select f1 from int4_tbl where f1 = 0 limit 1) ss on id = f1;
  id | x | f1 
 ----+---+----
   0 | 0 |  0
@@ -1679,23 +1709,31 @@ select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
 (3 rows)
 
 drop index patest2i;
-explain (costs off)
-select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
+explain (costs off, num_nodes off, nodes off)
+select * from patest0 join (select f1 from int4_tbl where f1 = 0 limit 1) ss on id = f1;
                         QUERY PLAN                        
 ----------------------------------------------------------
  Nested Loop
    ->  Limit
-         ->  Seq Scan on int4_tbl
+         ->  Remote Subquery Scan on all
+               ->  Limit
+                     ->  Seq Scan on int4_tbl
+                           Filter: (f1 = 0)
    ->  Append
-         ->  Index Scan using patest0i on patest0
-               Index Cond: (id = int4_tbl.f1)
-         ->  Index Scan using patest1i on patest1 patest0
-               Index Cond: (id = int4_tbl.f1)
-         ->  Seq Scan on patest2 patest0
-               Filter: (int4_tbl.f1 = id)
-(10 rows)
+         ->  Remote Subquery Scan on all
+               ->  Seq Scan on patest0
+                     Filter: (int4_tbl.f1 = id)
+         ->  Remote Subquery Scan on all
+               ->  Bitmap Heap Scan on patest1 patest0
+                     Recheck Cond: (id = int4_tbl.f1)
+                     ->  Bitmap Index Scan on patest1i
+                           Index Cond: (id = int4_tbl.f1)
+         ->  Remote Subquery Scan on all
+               ->  Seq Scan on patest2 patest0
+                     Filter: (int4_tbl.f1 = id)
+(18 rows)
 
-select * from patest0 join (select f1 from int4_tbl limit 1) ss on id = f1;
+select * from patest0 join (select f1 from int4_tbl where f1 = 0 limit 1) ss on id = f1;
  id | x | f1 
 ----+---+----
   0 | 0 |  0
@@ -1825,108 +1863,120 @@ set enable_seqscan = off;
 set enable_indexscan = on;
 set enable_bitmapscan = off;
 -- Check handling of duplicated, constant, or volatile targetlist items
-explain (costs off)
+explain (costs off, num_nodes off, nodes off)
 SELECT thousand, tenthous FROM tenk1
 UNION ALL
 SELECT thousand, thousand FROM tenk1
 ORDER BY thousand, tenthous;
-                              QUERY PLAN                               
------------------------------------------------------------------------
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
  Result
    ->  Merge Append
          Sort Key: public.tenk1.thousand, public.tenk1.tenthous
-         ->  Index Only Scan using tenk1_thous_tenthous on tenk1
-         ->  Sort
-               Sort Key: public.tenk1.thousand, public.tenk1.thousand
+         ->  Remote Subquery Scan on all
                ->  Index Only Scan using tenk1_thous_tenthous on tenk1
-(7 rows)
+         ->  Remote Subquery Scan on all
+               ->  Sort
+                     Sort Key: public.tenk1.thousand, public.tenk1.thousand
+                     ->  Index Only Scan using tenk1_thous_tenthous on tenk1
+(9 rows)
 
-explain (costs off)
+explain (costs off, num_nodes off, nodes off)
 SELECT thousand, tenthous, thousand+tenthous AS x FROM tenk1
 UNION ALL
 SELECT 42, 42, hundred FROM tenk1
 ORDER BY thousand, tenthous;
-                           QUERY PLAN                            
------------------------------------------------------------------
- Result
-   ->  Merge Append
-         Sort Key: public.tenk1.thousand, public.tenk1.tenthous
-         ->  Index Only Scan using tenk1_thous_tenthous on tenk1
-         ->  Sort
-               Sort Key: (42), (42)
-               ->  Index Only Scan using tenk1_hundred on tenk1
-(7 rows)
-
-explain (costs off)
-SELECT thousand, tenthous FROM tenk1
-UNION ALL
-SELECT thousand, random()::integer FROM tenk1
-ORDER BY thousand, tenthous;
                               QUERY PLAN                               
 -----------------------------------------------------------------------
  Result
    ->  Merge Append
          Sort Key: public.tenk1.thousand, public.tenk1.tenthous
-         ->  Index Only Scan using tenk1_thous_tenthous on tenk1
-         ->  Sort
-               Sort Key: public.tenk1.thousand, ((random())::integer)
+         ->  Remote Subquery Scan on all
                ->  Index Only Scan using tenk1_thous_tenthous on tenk1
-(7 rows)
+         ->  Remote Subquery Scan on all
+               ->  Sort
+                     Sort Key: (42), (42)
+                     ->  Index Only Scan using tenk1_hundred on tenk1
+(9 rows)
+
+explain (costs off, num_nodes off, nodes off)
+SELECT thousand, tenthous FROM tenk1
+UNION ALL
+SELECT thousand, random()::integer FROM tenk1
+ORDER BY thousand, tenthous;
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
+ Result
+   ->  Merge Append
+         Sort Key: public.tenk1.thousand, public.tenk1.tenthous
+         ->  Remote Subquery Scan on all
+               ->  Index Only Scan using tenk1_thous_tenthous on tenk1
+         ->  Remote Subquery Scan on all
+               ->  Sort
+                     Sort Key: public.tenk1.thousand, ((random())::integer)
+                     ->  Index Only Scan using tenk1_thous_tenthous on tenk1
+(9 rows)
 
 -- Check min/max aggregate optimization
-explain (costs off)
+explain (costs off, num_nodes off, nodes off)
 SELECT min(x) FROM
   (SELECT unique1 AS x FROM tenk1 a
    UNION ALL
    SELECT unique2 AS x FROM tenk1 b) s;
-                             QUERY PLAN                             
---------------------------------------------------------------------
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
  Result
    InitPlan 1 (returns $0)
      ->  Limit
            ->  Merge Append
                  Sort Key: a.unique1
-                 ->  Index Only Scan using tenk1_unique1 on tenk1 a
-                       Index Cond: (unique1 IS NOT NULL)
-                 ->  Index Only Scan using tenk1_unique2 on tenk1 b
-                       Index Cond: (unique2 IS NOT NULL)
-(9 rows)
+                 ->  Remote Subquery Scan on all
+                       ->  Index Only Scan using tenk1_unique1 on tenk1 a
+                             Index Cond: (unique1 IS NOT NULL)
+                 ->  Remote Subquery Scan on all
+                       ->  Index Only Scan using tenk1_unique2 on tenk1 b
+                             Index Cond: (unique2 IS NOT NULL)
+(11 rows)
 
-explain (costs off)
+explain (costs off, num_nodes off, nodes off)
 SELECT min(y) FROM
   (SELECT unique1 AS x, unique1 AS y FROM tenk1 a
    UNION ALL
    SELECT unique2 AS x, unique2 AS y FROM tenk1 b) s;
-                             QUERY PLAN                             
---------------------------------------------------------------------
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
  Result
    InitPlan 1 (returns $0)
      ->  Limit
            ->  Merge Append
                  Sort Key: a.unique1
-                 ->  Index Only Scan using tenk1_unique1 on tenk1 a
-                       Index Cond: (unique1 IS NOT NULL)
-                 ->  Index Only Scan using tenk1_unique2 on tenk1 b
-                       Index Cond: (unique2 IS NOT NULL)
-(9 rows)
+                 ->  Remote Subquery Scan on all
+                       ->  Index Only Scan using tenk1_unique1 on tenk1 a
+                             Index Cond: (unique1 IS NOT NULL)
+                 ->  Remote Subquery Scan on all
+                       ->  Index Only Scan using tenk1_unique2 on tenk1 b
+                             Index Cond: (unique2 IS NOT NULL)
+(11 rows)
 
 -- XXX planner doesn't recognize that index on unique2 is sufficiently sorted
-explain (costs off)
+explain (costs off, num_nodes off, nodes off)
 SELECT x, y FROM
   (SELECT thousand AS x, tenthous AS y FROM tenk1 a
    UNION ALL
    SELECT unique2 AS x, unique2 AS y FROM tenk1 b) s
 ORDER BY x, y;
-                            QUERY PLAN                             
--------------------------------------------------------------------
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
  Result
    ->  Merge Append
          Sort Key: a.thousand, a.tenthous
-         ->  Index Only Scan using tenk1_thous_tenthous on tenk1 a
-         ->  Sort
-               Sort Key: b.unique2, b.unique2
-               ->  Index Only Scan using tenk1_unique2 on tenk1 b
-(7 rows)
+         ->  Remote Subquery Scan on all
+               ->  Index Only Scan using tenk1_thous_tenthous on tenk1 a
+         ->  Remote Subquery Scan on all
+               ->  Sort
+                     Sort Key: b.unique2, b.unique2
+                     ->  Index Only Scan using tenk1_unique2 on tenk1 b
+(9 rows)
 
 reset enable_seqscan;
 reset enable_indexscan;
