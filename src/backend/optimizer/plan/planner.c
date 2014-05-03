@@ -2122,12 +2122,13 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			if (parse->commandType == CMD_UPDATE)
 				ereport(ERROR,
 						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
-						(errmsg("Partition column can't be updated in current version"))));
+						 errmsg("could not plan this distributed update"),
+						 errdetail("correlated UPDATE or updating distribution column currently not supported in Postgres-XL.")));
 			if (parse->commandType == CMD_DELETE)
 				ereport(ERROR,
 						(errcode(ERRCODE_STATEMENT_TOO_COMPLEX),
-						 errmsg("could not plan this distributed statement"),
-						 errdetail("The plan suggests moving data of the target table between data nodes, possible data corruption.")));
+						 errmsg("could not plan this distributed delete"),
+						 errdetail("correlated or complex DELETE is currently not supported in Postgres-XL.")));
 
 			/*
 			 * Redistribute result according to requested distribution.

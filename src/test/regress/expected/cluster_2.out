@@ -328,7 +328,8 @@ INSERT INTO clustertest VALUES (50);
 BEGIN;
 -- Test update where the old row version is found first in the scan
 UPDATE clustertest SET key = 100 WHERE key = 10;
-ERROR:  Partition column can't be updated in current version
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 -- Test update where the new row version is found first in the scan
 UPDATE clustertest SET key = 35 WHERE key = 40;
 ERROR:  current transaction is aborted, commands ignored until end of transaction block

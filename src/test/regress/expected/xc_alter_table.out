@@ -290,7 +290,8 @@ SELECT b FROM xc_alter_table_3 WHERE a = 11;
 (1 row)
 
 EXECUTE xc_alter_table_update(11, 'bb');
-ERROR:  Partition column can't be updated in current version
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SELECT b FROM xc_alter_table_3 WHERE a = 11;
  b 
 ---
@@ -395,7 +396,8 @@ SELECT b FROM xc_alter_table_3 WHERE a = 11;
 (1 row)
 
 EXECUTE xc_alter_table_update(11, 'bb');
-ERROR:  Partition column can't be updated in current version
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SELECT b FROM xc_alter_table_3 WHERE a = 11;
  b 
 ---

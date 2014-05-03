@@ -50,7 +50,8 @@ SELECT * FROM atest1;
 INSERT INTO atest1 VALUES (1, 'one');
 DELETE FROM atest1;
 UPDATE atest1 SET a = 1 WHERE b = 'blech';
-ERROR:  Partition column can't be updated in current version
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 TRUNCATE atest1;
 BEGIN;
 LOCK atest1 IN ACCESS EXCLUSIVE MODE;
@@ -96,7 +97,8 @@ INSERT INTO atest2 VALUES ('foo', true); -- fail
 ERROR:  permission denied for relation atest2
 INSERT INTO atest1 SELECT 1, b FROM atest1; -- ok
 UPDATE atest1 SET a = 1 WHERE a = 2; -- ok
-ERROR:  Partition column can't be updated in current version
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 UPDATE atest2 SET col2 = NOT col2; -- fail
 ERROR:  permission denied for relation atest2
 SELECT * FROM atest1 ORDER BY 1 FOR UPDATE; -- ok
@@ -154,12 +156,14 @@ ERROR:  permission denied for relation atest2
 INSERT INTO atest1 SELECT 1, b FROM atest1; -- fail
 ERROR:  permission denied for relation atest1
 UPDATE atest1 SET a = 1 WHERE a = 2; -- fail
-ERROR:  Partition column can't be updated in current version
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 UPDATE atest2 SET col2 = NULL; -- ok
 UPDATE atest2 SET col2 = NOT col2; -- fails; requires SELECT on atest2
 ERROR:  permission denied for relation atest2
 UPDATE atest2 SET col2 = true FROM atest1 WHERE atest1.a = 5; -- ok
-ERROR:  Partition column can't be updated in current version
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SELECT * FROM atest1 FOR UPDATE; -- fail
 ERROR:  permission denied for relation atest1
 SELECT * FROM atest2 FOR UPDATE; -- fail
@@ -348,9 +352,11 @@ INSERT INTO atest5 VALUES (5,5,5); -- fail
 ERROR:  permission denied for relation atest5
 UPDATE atest5 SET three = 10; -- ok
 UPDATE atest5 SET one = 8; -- fail
-ERROR:  Partition column can't be updated in current version
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 UPDATE atest5 SET three = 5, one = 2; -- fail
-ERROR:  Partition column can't be updated in current version
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SET SESSION AUTHORIZATION regressuser1;
 REVOKE ALL (one) ON atest5 FROM regressuser4;
 GRANT SELECT (one,two,blue) ON atest6 TO regressuser4;
@@ -358,7 +364,8 @@ SET SESSION AUTHORIZATION regressuser4;
 SELECT one FROM atest5; -- fail
 ERROR:  permission denied for relation atest5
 UPDATE atest5 SET one = 1; -- fail
-ERROR:  Partition column can't be updated in current version
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SELECT atest6 FROM atest6; -- ok
  atest6 
 --------

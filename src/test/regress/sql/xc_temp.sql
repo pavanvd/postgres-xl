@@ -138,7 +138,6 @@ DROP TABLE temptable_rep,table_rep;
 DROP TABLE table_rep,table_hash,table_rb;
 
 -- Check of inheritance between temp and non-temp tables
--- Does not work in Postgres-XL
 CREATE TEMP TABLE table_parent (a int);
 CREATE TABLE table_child (like table_parent, b int);
 DROP TABLE table_child;
