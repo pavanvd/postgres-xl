@@ -10,7 +10,7 @@ PREPARE prepstmt AS SELECT * FROM pcachetest ORDER BY q1, q2;
 EXECUTE prepstmt;
 
 -- and one with parameters
-PREPARE prepstmt2(bigint) AS SELECT * FROM pcachetest WHERE q1 = $1 ORDER BY q1, q2;
+PREPARE prepstmt2(bigint) AS SELECT * FROM pcachetest WHERE q1 = $1;
 
 EXECUTE prepstmt2(123);
 
@@ -22,7 +22,7 @@ EXECUTE prepstmt2(123);
 
 -- recreate the temp table (this demonstrates that the raw plan is
 -- purely textual and doesn't depend on OIDs, for instance)
-CREATE TEMP TABLE pcachetest AS SELECT * FROM int8_tbl ORDER BY q1, q2;
+CREATE TEMP TABLE pcachetest AS SELECT * FROM int8_tbl;
 
 EXECUTE prepstmt;
 EXECUTE prepstmt2(123);
@@ -43,7 +43,7 @@ EXECUTE prepstmt2(123);
 -- Try it with a view, which isn't directly used in the resulting plan
 -- but should trigger invalidation anyway
 CREATE TEMP VIEW pcacheview AS
-  SELECT * FROM pcachetest;
+  SELECT * FROM pcachetest ORDER BY q1, q2;
 
 PREPARE vprep AS SELECT * FROM pcacheview ORDER BY q1, q2;
 

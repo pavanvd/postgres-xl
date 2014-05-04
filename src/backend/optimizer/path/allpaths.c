@@ -1213,6 +1213,21 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 		distribution = subroot->distribution;
 	add_path(rel, create_subqueryscan_path(root, rel, pathkeys, NULL,
 			 distribution));
+
+	/* 
+	 * Temporarily block ORDER BY in subqueries until we can add support 
+     * it in Postgres-XL without outputting incorrect results.
+     *
+     * The extra conditions below try to handle cases where an ORDER BY
+     * appears in a simple VIEW or INSERT SELECT.
+     */
+	if (list_length(subquery->sortClause) > 1 
+				&& (subroot->parent_root != root
+				|| (subroot->parent_root == root 
+					&& (root->parse->commandType != CMD_SELECT
+						|| (root->parse->commandType == CMD_SELECT
+							&& root->parse->hasWindowFuncs)))))
+		elog(ERROR, "Postgres-XL does not currently support ORDER BY in subqueries");
 #else
 	add_path(rel, create_subqueryscan_path(root, rel, pathkeys, NULL));
 #endif
