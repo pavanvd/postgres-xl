@@ -290,7 +290,7 @@ DROP FUNCTION foo(int);
 -- some tests on SQL functions with RETURNING
 --
 
-create temp table tt(f1 serial, data text);
+create table tt(f1 serial, data text);
 
 create function insert_tt(text) returns int as
 $$ insert into tt(data) values($1) returning f1 $$
