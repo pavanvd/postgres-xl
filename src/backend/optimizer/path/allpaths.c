@@ -44,6 +44,7 @@
 #ifdef PGXC
 #ifdef XCP
 #include "nodes/makefuncs.h"
+#include "miscadmin.h"
 #else
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_class.h"
@@ -1216,12 +1217,14 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 
 	/* 
 	 * Temporarily block ORDER BY in subqueries until we can add support 
-     * it in Postgres-XL without outputting incorrect results.
+	 * it in Postgres-XL without outputting incorrect results. Should
+	 * do this only in normal processing mode though!
      *
      * The extra conditions below try to handle cases where an ORDER BY
      * appears in a simple VIEW or INSERT SELECT.
      */
-	if (list_length(subquery->sortClause) > 1 
+	if (IsUnderPostmaster &&
+		list_length(subquery->sortClause) > 1
 				&& (subroot->parent_root != root
 				|| (subroot->parent_root == root 
 					&& (root->parse->commandType != CMD_SELECT
