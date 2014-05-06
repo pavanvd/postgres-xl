@@ -683,6 +683,57 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	if (subroot)
 		*subroot = root;
 
+	/* 
+	 * XCPTODO	
+	 * Temporarily block WITH RECURSIVE for most cases 
+	 * until we can fix. Allow for pg_catalog tables and replicated tables.
+	 */
+	if (root->hasRecursion)
+	{
+		int idx;
+		bool recursiveOk = true;
+
+		/* seems to start at 1... */
+		for (idx = 1; idx < root->simple_rel_array_size - 1; idx++)
+		{
+			RangeTblEntry *rte;
+
+			rte = root->simple_rte_array[idx];
+
+			if (!rte || rte->rtekind == RTE_JOIN)
+			{
+				continue;
+			}
+			else if (rte->rtekind == RTE_RELATION)
+			{
+				char loc_type;
+
+				loc_type = GetRelationLocType(rte->relid);
+
+				/* skip pg_catalog */
+				if (loc_type == LOCATOR_TYPE_NONE)
+					continue;
+
+				/* If replicated, allow */
+				if (IsLocatorReplicated(loc_type))
+				{
+					continue;
+				}
+				else
+				{
+					recursiveOk = false;
+					break;
+				}
+			} 
+			else  
+			{
+				recursiveOk = false;
+				break;
+			}
+		}
+		if (!recursiveOk)
+			elog(ERROR, "WITH RECURSIVE currently not supported on distributed tables.");
+	}
 	return plan;
 }
 

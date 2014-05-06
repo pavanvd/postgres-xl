@@ -1495,22 +1495,7 @@ SELECT a.attrelid::regclass, a.attname, a.attinhcount, e.expected
         WHERE inhparent IN (SELECT inhrelid FROM r) GROUP BY inhrelid) e
   JOIN pg_attribute a ON e.inhrelid = a.attrelid WHERE NOT attislocal
   ORDER BY a.attrelid::regclass::name, a.attnum;
- attrelid | attname | attinhcount | expected 
-----------+---------+-------------+----------
- inht2    | aaaa    |           1 |        1
- inht2    | b       |           1 |        1
- inht3    | aaaa    |           1 |        1
- inht3    | b       |           1 |        1
- inht4    | aaaa    |           2 |        2
- inht4    | b       |           2 |        2
- inht4    | x       |           1 |        2
- inht4    | y       |           1 |        2
- inhts    | aaaa    |           1 |        1
- inhts    | b       |           2 |        1
- inhts    | x       |           1 |        1
- inhts    | c       |           1 |        1
-(12 rows)
-
+ERROR:  WITH RECURSIVE currently not supported on distributed tables.
 DROP TABLE inht1, inhs1 CASCADE;
 NOTICE:  drop cascades to 4 other objects
 DETAIL:  drop cascades to table inht2
