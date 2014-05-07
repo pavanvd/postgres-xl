@@ -1070,17 +1070,14 @@ currval_oid(PG_FUNCTION_ARGS)
 
 #ifdef XCP
 	{
-
-		if (!elm->last_valid)
+		/*
+ 		 * Always contact GTM for currval regardless of valid
+ 		 * elm->last_valid value
+ 		 */
 		{
 			char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
 			result = (int64) GetCurrentValGTM(seqname);
 			pfree(seqname);
-		}
-		else
-		{
-			/* Since GTM hands over ranges of seqvals, we can use local curr val */
-			result = elm->last;
 		}
 	}
 #else
@@ -1089,7 +1086,9 @@ currval_oid(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("currval of sequence \"%s\" is not yet defined in this session",
 						RelationGetRelationName(seqrel))));
+#endif
 
+#ifndef XCP
 #ifdef PGXC
 	if (IS_PGXC_COORDINATOR &&
 		seqrel->rd_backend != MyBackendId)
