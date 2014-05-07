@@ -1068,13 +1068,48 @@ currval_oid(PG_FUNCTION_ARGS)
 				 errmsg("permission denied for sequence %s",
 						RelationGetRelationName(seqrel))));
 
+#ifdef XCP
+	{
+
+		if (!elm->last_valid)
+		{
+			char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
+			result = (int64) GetCurrentValGTM(seqname);
+			pfree(seqname);
+		}
+		else
+		{
+			/* Since GTM hands over ranges of seqvals, we can use local curr val */
+			result = elm->last;
+		}
+	}
+#else
 	if (!elm->last_valid)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("currval of sequence \"%s\" is not yet defined in this session",
 						RelationGetRelationName(seqrel))));
 
+#ifdef PGXC
+	if (IS_PGXC_COORDINATOR &&
+		seqrel->rd_backend != MyBackendId)
+	{
+		char *seqname = GetGlobalSeqName(seqrel, NULL, NULL);
+
+		result = (int64) GetCurrentValGTM(seqname);
+		if (result < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("GTM error, could not obtain sequence value")));
+		pfree(seqname);
+	}
+	else {
+#endif
 	result = elm->last;
+#ifdef PGXC
+	}
+#endif
+#endif
 	relation_close(seqrel, NoLock);
 
 	PG_RETURN_INT64(result);

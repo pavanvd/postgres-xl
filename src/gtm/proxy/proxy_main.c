@@ -1591,6 +1591,7 @@ ProcessCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn,
 			break;
 
 		case MSG_SEQUENCE_INIT:
+		case MSG_SEQUENCE_GET_CURRENT:
 		case MSG_SEQUENCE_GET_NEXT:
 		case MSG_SEQUENCE_GET_LAST:
 		case MSG_SEQUENCE_SET_VAL:
@@ -1891,6 +1892,7 @@ ProcessResponse(GTMProxy_ThreadInfo *thrinfo, GTMProxy_CommandInfo *cmdinfo,
 #endif
 		case MSG_SNAPSHOT_GXID_GET:
 		case MSG_SEQUENCE_INIT:
+		case MSG_SEQUENCE_GET_CURRENT:
 		case MSG_SEQUENCE_GET_NEXT:
 		case MSG_SEQUENCE_GET_LAST:
 		case MSG_SEQUENCE_SET_VAL:
