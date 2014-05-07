@@ -2,11 +2,11 @@
 <!-- See header comment in release.sgml about typical markup -->
 
  <sect1 id="release-xl-9-2">
-  <title>Release 9.2</title>
+  <title>Release 9.2rc</title>
 
   <note>
    <title>Release Date</title>
-   <simpara>2012-06-07</simpara>
+   <simpara>2014-05-13</simpara>
   </note>
 
   <sect2>
@@ -15,7 +15,7 @@
    <para>
     <productname>Postgres-XL</> 9.2 is a symetric multi-headed, read and write-scalable
     shared-nothing massively parallel processing cluster based on PostgreSQL. This release version is based on
-    PostgreSQL 9.2. 
+    PostgreSQL 9.2.4.
    </para>
 
    <para>
@@ -466,13 +466,37 @@
 
       <listitem>
        <para>
-        Utilities cannot be used in SQL functions.
+        Triggers are not supported
        </para>
       </listitem>
 
       <listitem>
        <para>
-        DML cannot be used in plpgsql functions.
+        Functions are always pushed down to the data nodes. This can be dangerous if a stored function tries to use data that is really on another node!  Use with caution; it will only use data local to the node, so updates should not be done.  The documentation in this area to make this clearer.
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        The CLUSTER command is currently broken if used without any arguments. CLUSTER does work for one table at a time, however.
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        WITH queries work, however, WITH RECURSIVE is currently blocked.
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        ORDER BY currently cannot be used in subqueries.
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        Sequences currently cannot be used in temp tables.
        </para>
       </listitem>
 
@@ -484,27 +508,14 @@
 
       <listitem>
        <para>
-        <command>WHERE CURRENT OF</command> is not supported.
-       </para>
-      </listitem>
-
-      <listitem>
-       <para>
-        In cursors, <command>MOVE BACKWARD</command> works only if <command>SCROLL</command>
-        is used in <command>CURSOR</command>
-       </para>
-      </listitem>
-
-      <listitem>
-       <para>
-        <command>WITH HOLD</command> cursors are not supported.
-       </para>
-      </listitem>
-
-      <listitem>
-       <para>
         Barriers have no timeout, meaning that if a 2PC transaction is
         stuck forever, the barrier will be stuck too.
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        The regression test suite needs further refinement. Some of the listed differences are because of an unsupported feature which manipulates the data set and throws off expected results. In addition, the expected plan output for some should be udpated.
        </para>
       </listitem>
 
