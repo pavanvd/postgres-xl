@@ -811,7 +811,9 @@ _copyAgg(const Agg *from)
 	}
 	COPY_SCALAR_FIELD(numGroups);
 #ifdef PGXC
+#ifndef XCP	
 	COPY_SCALAR_FIELD(skip_trans);
+#endif	
 #endif /* PGXC */
 
 	return newnode;
