@@ -20,12 +20,12 @@
  *
  * The other categories, LC_MONETARY, LC_NUMERIC, and LC_TIME are also
  * settable at run-time.  However, we don't actually set those locale
- * categories permanently.	This would have bizarre effects like no
+ * categories permanently.  This would have bizarre effects like no
  * longer accepting standard floating-point literals in some locales.
  * Instead, we only set the locales briefly when needed, cache the
  * required information obtained from localeconv(), and set them back.
  * The cached information is only used by the formatting functions
- * (to_char, etc.) and the money type.	For the user, this should all be
+ * (to_char, etc.) and the money type.  For the user, this should all be
  * transparent.
  *
  * !!! NOW HEAR THIS !!!
@@ -39,7 +39,7 @@
  *				fail = true;
  *			setlocale(category, save);
  * DOES NOT WORK RELIABLY: on some platforms the second setlocale() call
- * will change the memory save is pointing at.	To do this sort of thing
+ * will change the memory save is pointing at.  To do this sort of thing
  * safely, you *must* pstrdup what setlocale returns the first time.
  *
  * FYI, The Open Group locale standard is defined here:
@@ -224,7 +224,7 @@ pg_perm_setlocale(int category, const char *locale)
  * Is the locale name valid for the locale category?
  *
  * If successful, and canonname isn't NULL, a palloc'd copy of the locale's
- * canonical name is stored there.	This is especially useful for figuring out
+ * canonical name is stored there.  This is especially useful for figuring out
  * what locale name "" means (ie, the server environment value).  (Actually,
  * it seems that on most implementations that's the only thing it's good for;
  * we could wish that setlocale gave back a canonically spelled version of
@@ -267,7 +267,7 @@ check_locale(int category, const char *locale, char **canonname)
  *
  * For most locale categories, the assign hook doesn't actually set the locale
  * permanently, just reset flags so that the next use will cache the
- * appropriate values.	(See explanation at the top of this file.)
+ * appropriate values.  (See explanation at the top of this file.)
  *
  * Note: we accept value = "" as selecting the postmaster's environment
  * value, whatever it was (so long as the environment setting is legal).
@@ -714,12 +714,41 @@ cache_locale_time(void)
 
 #if defined(WIN32) && defined(LC_MESSAGES)
 /*
- *	Convert Windows locale name to the ISO formatted one
- *	if possible.
+ * Convert a Windows setlocale() argument to a Unix-style one.
  *
- *	This function returns NULL if conversion is impossible,
- *	otherwise returns the pointer to a static area which
- *	contains the iso formatted locale name.
+ * Regardless of platform, we install message catalogs under a Unix-style
+ * LL[_CC][.ENCODING][@VARIANT] naming convention.  Only LC_MESSAGES settings
+ * following that style will elicit localized interface strings.
+ *
+ * Before Visual Studio 2012 (msvcr110.dll), Windows setlocale() accepted "C"
+ * (but not "c") and strings of the form <Language>[_<Country>][.<CodePage>],
+ * case-insensitive.  setlocale() returns the fully-qualified form; for
+ * example, setlocale("thaI") returns "Thai_Thailand.874".  Internally,
+ * setlocale() and _create_locale() select a "locale identifier"[1] and store
+ * it in an undocumented _locale_t field.  From that LCID, we can retrieve the
+ * ISO 639 language and the ISO 3166 country.  Character encoding does not
+ * matter, because the server and client encodings govern that.
+ *
+ * Windows Vista introduced the "locale name" concept[2], closely following
+ * RFC 4646.  Locale identifiers are now deprecated.  Starting with Visual
+ * Studio 2012, setlocale() accepts locale names in addition to the strings it
+ * accepted historically.  It does not standardize them; setlocale("Th-tH")
+ * returns "Th-tH".  setlocale(category, "") still returns a traditional
+ * string.  Furthermore, msvcr110.dll changed the undocumented _locale_t
+ * content to carry locale names instead of locale identifiers.
+ *
+ * MinGW headers declare _create_locale(), but msvcrt.dll lacks that symbol.
+ * IsoLocaleName() always fails in a MinGW-built postgres.exe, so only
+ * Unix-style values of the lc_messages GUC can elicit localized messages.  In
+ * particular, every lc_messages setting that initdb can select automatically
+ * will yield only C-locale messages.  XXX This could be fixed by running the
+ * fully-qualified locale name through a lookup table.
+ *
+ * This function returns a pointer to a static buffer bearing the converted
+ * name or NULL if conversion fails.
+ *
+ * [1] http://msdn.microsoft.com/en-us/library/windows/desktop/dd373763.aspx
+ * [2] http://msdn.microsoft.com/en-us/library/windows/desktop/dd373814.aspx
  */
 static char *
 IsoLocaleName(const char *winlocname)
@@ -738,6 +767,34 @@ IsoLocaleName(const char *winlocname)
 	loct = _create_locale(LC_CTYPE, winlocname);
 	if (loct != NULL)
 	{
+#if (_MSC_VER >= 1700)			/* Visual Studio 2012 or later */
+		size_t		rc;
+		char	   *hyphen;
+
+		/* Locale names use only ASCII, any conversion locale suffices. */
+		rc = wchar2char(iso_lc_messages, loct->locinfo->locale_name[LC_CTYPE],
+						sizeof(iso_lc_messages), NULL);
+		_free_locale(loct);
+		if (rc == -1 || rc == sizeof(iso_lc_messages))
+			return NULL;
+
+		/*
+		 * Since the message catalogs sit on a case-insensitive filesystem, we
+		 * need not standardize letter case here.  So long as we do not ship
+		 * message catalogs for which it would matter, we also need not
+		 * translate the script/variant portion, e.g. uz-Cyrl-UZ to
+		 * uz_UZ@cyrillic.  Simply replace the hyphen with an underscore.
+		 *
+		 * Note that the locale name can be less-specific than the value we
+		 * would derive under earlier Visual Studio releases.  For example,
+		 * French_France.1252 yields just "fr".  This does not affect any of
+		 * the country-specific message catalogs available as of this writing
+		 * (pt_BR, zh_CN, zh_TW).
+		 */
+		hyphen = strchr(iso_lc_messages, '-');
+		if (hyphen)
+			*hyphen = '_';
+#else
 		char		isolang[32],
 					isocrty[32];
 		LCID		lcid;
@@ -752,6 +809,7 @@ IsoLocaleName(const char *winlocname)
 		if (!GetLocaleInfoA(lcid, LOCALE_SISO3166CTRYNAME, isocrty, sizeof(isocrty)))
 			return NULL;
 		snprintf(iso_lc_messages, sizeof(iso_lc_messages) - 1, "%s_%s", isolang, isocrty);
+#endif
 		return iso_lc_messages;
 	}
 	return NULL;
@@ -780,7 +838,7 @@ IsoLocaleName(const char *winlocname)
  * could fail if the locale is C, so str_tolower() shouldn't call it
  * in that case.
  *
- * Note that we currently lack any way to flush the cache.	Since we don't
+ * Note that we currently lack any way to flush the cache.  Since we don't
  * support ALTER COLLATION, this is OK.  The worst case is that someone
  * drops a collation, and a useless cache entry hangs around in existing
  * backends.
@@ -974,7 +1032,7 @@ report_newlocale_failure(const char *localename)
 
 
 /*
- * Create a locale_t from a collation OID.	Results are cached for the
+ * Create a locale_t from a collation OID.  Results are cached for the
  * lifetime of the backend.  Thus, do not free the result with freelocale().
  *
  * As a special optimization, the default/database collation returns 0.
@@ -1157,7 +1215,7 @@ wchar2char(char *to, const wchar_t *from, size_t tolen, pg_locale_t locale)
  * This has almost the API of mbstowcs_l(), except that *from need not be
  * null-terminated; instead, the number of input bytes is specified as
  * fromlen.  Also, we ereport() rather than returning -1 for invalid
- * input encoding.	tolen is the maximum number of wchar_t's to store at *to.
+ * input encoding.  tolen is the maximum number of wchar_t's to store at *to.
  * The output will be zero-terminated iff there is room.
  */
 size_t
@@ -1205,17 +1263,17 @@ char2wchar(wchar_t *to, size_t tolen, const char *from, size_t fromlen,
 		else
 		{
 #ifdef HAVE_LOCALE_T
-#ifdef HAVE_WCSTOMBS_L
+#ifdef HAVE_MBSTOWCS_L
 			/* Use mbstowcs_l for nondefault locales */
 			result = mbstowcs_l(to, str, tolen, locale);
-#else							/* !HAVE_WCSTOMBS_L */
+#else							/* !HAVE_MBSTOWCS_L */
 			/* We have to temporarily set the locale as current ... ugh */
 			locale_t	save_locale = uselocale(locale);
 
 			result = mbstowcs(to, str, tolen);
 
 			uselocale(save_locale);
-#endif   /* HAVE_WCSTOMBS_L */
+#endif   /* HAVE_MBSTOWCS_L */
 #else							/* !HAVE_LOCALE_T */
 			/* Can't have locale != 0 without HAVE_LOCALE_T */
 			elog(ERROR, "mbstowcs_l is not available");

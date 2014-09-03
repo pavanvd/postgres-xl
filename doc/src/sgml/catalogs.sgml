@@ -2036,7 +2036,7 @@
      </row>
 
      <row>
-      <entry><structfield>conisonly</structfield></entry>
+      <entry><structfield>connoinherit</structfield></entry>
       <entry><type>bool</type></entry>
       <entry></entry>
       <entry>
@@ -2587,7 +2587,8 @@
        Type of object this entry is for:
        <literal>r</> = relation (table, view),
        <literal>S</> = sequence,
-       <literal>f</> = function
+       <literal>f</> = function,
+       <literal>T</> = type
       </entry>
      </row>
 
@@ -3389,11 +3390,12 @@
       <entry><type>bool</type></entry>
       <entry></entry>
       <entry>
-       If true, the index is currently valid for queries.  False means the
+       If both this flag and <structfield>indisready</structfield> are
+       true, the index is currently valid for queries.  False means the
        index is possibly incomplete: it must still be modified by
        <command>INSERT</>/<command>UPDATE</> operations, but it cannot safely
        be used for queries. If it is unique, the uniqueness property is not
-       true either.
+       guaranteed true either.
       </entry>
      </row>
 
@@ -4749,7 +4751,7 @@
       <entry><structfield>ev_attr</structfield></entry>
       <entry><type>int2</type></entry>
       <entry></entry>
-      <entry>The column this rule is for (currently, always zero to
+      <entry>The column this rule is for (currently, always -1 to
       indicate the whole table)</entry>
      </row>
 
@@ -7344,16 +7346,27 @@
 
   <para>
    The <structfield>pid</structfield> column can be joined to the
-   <structfield>pid</structfield> column of the
-   <structname>pg_stat_activity</structname> view to get more
-   information on the session holding or waiting to hold each lock.
+   <structfield>pid</structfield> column of the <link
+   linkend="pg-stat-activity-view"><structname>pg_stat_activity</structname></link>
+   view to get more
+   information on the session holding or waiting to hold each lock,
+   for example
+<programlisting>
+SELECT * FROM pg_locks pl LEFT JOIN pg_stat_activity psa
+    ON pl.pid = psa.pid;
+</programlisting>
    Also, if you are using prepared transactions, the
-   <structfield>transaction</> column can be joined to the
-   <structfield>transaction</structfield> column of the
-   <structname>pg_prepared_xacts</structname> view to get more
-   information on prepared transactions that hold locks.
+   <structfield>virtualtransaction</> column can be joined to the
+   <structfield>transaction</structfield> column of the <link
+   linkend="view-pg-prepared-xacts"><structname>pg_prepared_xacts</structname></link>
+   view to get more information on prepared transactions that hold locks.
    (A prepared transaction can never be waiting for a lock,
    but it continues to hold the locks it acquired while running.)
+   For example:
+<programlisting>
+SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
+    ON pl.virtualtransaction = '-1/' || ppx.transaction;
+</programlisting>
   </para>
 
   <para>

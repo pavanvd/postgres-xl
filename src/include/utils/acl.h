@@ -81,11 +81,11 @@ typedef struct AclItem
 /*
  * Definitions for convenient access to Acl (array of AclItem).
  * These are standard PostgreSQL arrays, but are restricted to have one
- * dimension and no nulls.	We also ignore the lower bound when reading,
+ * dimension and no nulls.  We also ignore the lower bound when reading,
  * and set it to one when writing.
  *
  * CAUTION: as of PostgreSQL 7.1, these arrays are toastable (just like all
- * other array types).	Therefore, be careful to detoast them with the
+ * other array types).  Therefore, be careful to detoast them with the
  * macros provided, unless you know for certain that a particular array
  * can't have been toasted.
  */
@@ -301,6 +301,8 @@ extern void aclcheck_error(AclResult aclerr, AclObjectKind objectkind,
 
 extern void aclcheck_error_col(AclResult aclerr, AclObjectKind objectkind,
 				   const char *objectname, const char *colname);
+
+extern void aclcheck_error_type(AclResult aclerr, Oid typeOid);
 
 /* ownercheck routines just return true (owner) or false (not) */
 extern bool pg_class_ownercheck(Oid class_oid, Oid roleid);

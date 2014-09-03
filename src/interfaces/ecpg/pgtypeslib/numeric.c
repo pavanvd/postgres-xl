@@ -430,14 +430,18 @@ PGTYPESnumeric_to_asc(numeric *num, int dscale)
 	numeric    *numcopy = PGTYPESnumeric_new();
 	char	   *s;
 
-	if (dscale < 0)
-		dscale = num->dscale;
+	if (numcopy == NULL)
+		return NULL;
 
 	if (PGTYPESnumeric_copy(num, numcopy) < 0)
 	{
 		PGTYPESnumeric_free(numcopy);
 		return NULL;
 	}
+
+	if (dscale < 0)
+		dscale = num->dscale;
+
 	/* get_str_from_var may change its argument */
 	s = get_str_from_var(numcopy, dscale);
 	PGTYPESnumeric_free(numcopy);
@@ -970,7 +974,7 @@ PGTYPESnumeric_sub(numeric *var1, numeric *var2, numeric *result)
  * mul_var() -
  *
  *	Multiplication on variable level. Product of var1 * var2 is stored
- *	in result.	Accuracy of result is determined by global_rscale.
+ *	in result.  Accuracy of result is determined by global_rscale.
  * ----------
  */
 int
@@ -1519,6 +1523,9 @@ numericvar_to_double(numeric *var, double *dp)
 	double		val;
 	char	   *endptr;
 	numeric    *varcopy = PGTYPESnumeric_new();
+
+	if (varcopy == NULL)
+		return -1;
 
 	if (PGTYPESnumeric_copy(var, varcopy) < 0)
 	{

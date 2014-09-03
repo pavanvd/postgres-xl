@@ -61,9 +61,6 @@ static int build_startup_packet(const PGconn *conn, char *packet,
  * parseInput: if appropriate, parse input data from backend
  * until input is exhausted or a stopping state is reached.
  * Note that this function will NOT attempt to read more data from the backend.
- *
- * Note: callers of parseInput must be prepared for a longjmp exit when we are
- * in PGASYNC_BUSY state, since an external row processor might do that.
  */
 void
 pqParseInput3(PGconn *conn)
@@ -169,7 +166,7 @@ pqParseInput3(PGconn *conn)
 			 * ERROR messages are displayed using the notice processor;
 			 * ParameterStatus is handled normally; anything else is just
 			 * dropped on the floor after displaying a suitable warning
-			 * notice.	(An ERROR is very possibly the backend telling us why
+			 * notice.  (An ERROR is very possibly the backend telling us why
 			 * it is about to close the connection, so we don't want to just
 			 * discard it...)
 			 */
@@ -209,7 +206,7 @@ pqParseInput3(PGconn *conn)
 						if (!conn->result)
 							return;
 					}
-					strncpy(conn->result->cmdStatus, conn->workBuffer.data,
+					strlcpy(conn->result->cmdStatus, conn->workBuffer.data,
 							CMDSTATUS_LEN);
 					conn->asyncStatus = PGASYNC_READY;
 					break;
@@ -367,7 +364,7 @@ pqParseInput3(PGconn *conn)
 				case 'd':		/* Copy Data */
 
 					/*
-					 * If we see Copy Data, just silently drop it.	This would
+					 * If we see Copy Data, just silently drop it.  This would
 					 * only occur if application exits COPY OUT mode too
 					 * early.
 					 */
@@ -376,7 +373,7 @@ pqParseInput3(PGconn *conn)
 				case 'c':		/* Copy Done */
 
 					/*
-					 * If we see Copy Done, just silently drop it.	This is
+					 * If we see Copy Done, just silently drop it.  This is
 					 * the normal case during PQendcopy.  We will keep
 					 * swallowing data, expecting to see command-complete for
 					 * the COPY command.
@@ -446,10 +443,6 @@ handleSyncLoss(PGconn *conn, char id, int msgLength)
  * Returns: 0 if processed message successfully, EOF to suspend parsing
  * (the latter case is not actually used currently).
  * In either case, conn->inStart has been advanced past the message.
- *
- * Note: the row processor could also choose to longjmp out of libpq,
- * in which case the library's state must allow for resumption at the
- * next message.
  */
 static int
 getRowDescriptions(PGconn *conn, int msgLength)
@@ -564,10 +557,7 @@ getRowDescriptions(PGconn *conn, int msgLength)
 	/* Success! */
 	conn->result = result;
 
-	/*
-	 * Advance inStart to show that the "T" message has been processed.  We
-	 * must do this before calling the row processor, in case it longjmps.
-	 */
+	/* Advance inStart to show that the "T" message has been processed. */
 	conn->inStart = conn->inCursor;
 
 	/*
@@ -580,25 +570,13 @@ getRowDescriptions(PGconn *conn, int msgLength)
 		return 0;
 	}
 
-	/* Give the row processor a chance to initialize for new result set */
-	errmsg = NULL;
-	switch ((*conn->rowProcessor) (result, NULL, &errmsg,
-								   conn->rowProcessorParam))
-	{
-		case 1:
-			/* everything is good */
-			return 0;
+	/*
+	 * We could perform additional setup for the new result set here, but for
+	 * now there's nothing else to do.
+	 */
 
-		case -1:
-			/* error, report the errmsg below */
-			break;
-
-		default:
-			/* unrecognized return code */
-			errmsg = libpq_gettext("unrecognized return value from row processor");
-			break;
-	}
-	goto set_error_result;
+	/* And we're done. */
+	return 0;
 
 advance_and_error:
 	/* Discard unsaved result, if any */
@@ -608,8 +586,6 @@ advance_and_error:
 	/* Discard the failed message by pretending we read it */
 	conn->inStart += 5 + msgLength;
 
-set_error_result:
-
 	/*
 	 * Replace partially constructed result with an error result. First
 	 * discard the old result to try to win back some memory.
@@ -617,8 +593,10 @@ set_error_result:
 	pqClearAsyncResult(conn);
 
 	/*
-	 * If row processor didn't provide an error message, assume "out of
-	 * memory" was meant.
+	 * If preceding code didn't provide an error message, assume "out of
+	 * memory" was meant.  The advantage of having this special case is that
+	 * freeing the old result first greatly improves the odds that gettext()
+	 * will succeed in providing a translation.
 	 */
 	if (!errmsg)
 		errmsg = libpq_gettext("out of memory for query result");
@@ -627,7 +605,7 @@ set_error_result:
 	pqSaveErrorResult(conn);
 
 	/*
-	 * Return zero to allow input parsing to continue.	Subsequent "D"
+	 * Return zero to allow input parsing to continue.  Subsequent "D"
 	 * messages will be ignored until we get to end of data, since an error
 	 * result is already set up.
 	 */
@@ -695,10 +673,6 @@ failure:
  * Returns: 0 if processed message successfully, EOF to suspend parsing
  * (the latter case is not actually used currently).
  * In either case, conn->inStart has been advanced past the message.
- *
- * Note: the row processor could also choose to longjmp out of libpq,
- * in which case the library's state must allow for resumption at the
- * next message.
  */
 static int
 getAnotherTuple(PGconn *conn, int msgLength)
@@ -778,31 +752,15 @@ getAnotherTuple(PGconn *conn, int msgLength)
 		goto advance_and_error;
 	}
 
-	/*
-	 * Advance inStart to show that the "D" message has been processed.  We
-	 * must do this before calling the row processor, in case it longjmps.
-	 */
+	/* Advance inStart to show that the "D" message has been processed. */
 	conn->inStart = conn->inCursor;
 
-	/* Pass the completed row values to rowProcessor */
+	/* Process the collected row */
 	errmsg = NULL;
-	switch ((*conn->rowProcessor) (result, rowbuf, &errmsg,
-								   conn->rowProcessorParam))
-	{
-		case 1:
-			/* everything is good */
-			return 0;
+	if (pqRowProcessor(conn, &errmsg))
+		return 0;				/* normal, successful exit */
 
-		case -1:
-			/* error, report the errmsg below */
-			break;
-
-		default:
-			/* unrecognized return code */
-			errmsg = libpq_gettext("unrecognized return value from row processor");
-			break;
-	}
-	goto set_error_result;
+	goto set_error_result;		/* pqRowProcessor failed, report it */
 
 advance_and_error:
 	/* Discard the failed message by pretending we read it */
@@ -817,7 +775,7 @@ set_error_result:
 	pqClearAsyncResult(conn);
 
 	/*
-	 * If row processor didn't provide an error message, assume "out of
+	 * If preceding code didn't provide an error message, assume "out of
 	 * memory" was meant.  The advantage of having this special case is that
 	 * freeing the old result first greatly improves the odds that gettext()
 	 * will succeed in providing a translation.
@@ -829,7 +787,7 @@ set_error_result:
 	pqSaveErrorResult(conn);
 
 	/*
-	 * Return zero to allow input parsing to continue.	Subsequent "D"
+	 * Return zero to allow input parsing to continue.  Subsequent "D"
 	 * messages will be ignored until we get to end of data, since an error
 	 * result is already set up.
 	 */
@@ -856,14 +814,14 @@ pqGetErrorNotice3(PGconn *conn, bool isError)
 
 	/*
 	 * Since the fields might be pretty long, we create a temporary
-	 * PQExpBuffer rather than using conn->workBuffer.	workBuffer is intended
-	 * for stuff that is expected to be short.	We shouldn't use
+	 * PQExpBuffer rather than using conn->workBuffer.  workBuffer is intended
+	 * for stuff that is expected to be short.  We shouldn't use
 	 * conn->errorMessage either, since this might be only a notice.
 	 */
 	initPQExpBuffer(&workBuf);
 
 	/*
-	 * Make a PGresult to hold the accumulated fields.	We temporarily lie
+	 * Make a PGresult to hold the accumulated fields.  We temporarily lie
 	 * about the result status, so that PQmakeEmptyPGresult doesn't uselessly
 	 * copy conn->errorMessage.
 	 */
@@ -1052,7 +1010,7 @@ reportErrorPosition(PQExpBuffer msg, const char *query, int loc, int encoding)
 	/*
 	 * Each character might occupy multiple physical bytes in the string, and
 	 * in some Far Eastern character sets it might take more than one screen
-	 * column as well.	We compute the starting byte offset and starting
+	 * column as well.  We compute the starting byte offset and starting
 	 * screen column of each logical character, and store these in qidx[] and
 	 * scridx[] respectively.
 	 */
@@ -1080,8 +1038,8 @@ reportErrorPosition(PQExpBuffer msg, const char *query, int loc, int encoding)
 	/*
 	 * Within the scanning loop, cno is the current character's logical
 	 * number, qoffset is its offset in wquery, and scroffset is its starting
-	 * logical screen column (all indexed from 0).	"loc" is the logical
-	 * character number of the error location.	We scan to determine loc_line
+	 * logical screen column (all indexed from 0).  "loc" is the logical
+	 * character number of the error location.  We scan to determine loc_line
 	 * (the 1-based line number containing loc) and ibeg/iend (first character
 	 * number and last+1 character number of the line containing loc). Note
 	 * that qidx[] and scridx[] are filled only as far as iend.
@@ -1514,7 +1472,7 @@ pqGetCopyData3(PGconn *conn, char **buffer, int async)
 	for (;;)
 	{
 		/*
-		 * Collect the next input message.	To make life simpler for async
+		 * Collect the next input message.  To make life simpler for async
 		 * callers, we keep returning 0 until the next message is fully
 		 * available, even if it is not Copy Data.
 		 */
@@ -1523,8 +1481,8 @@ pqGetCopyData3(PGconn *conn, char **buffer, int async)
 		{
 			/*
 			 * On end-of-copy, exit COPY_OUT or COPY_BOTH mode and let caller
-			 * read status with PQgetResult().	The normal case is that it's
-			 * Copy Done, but we let parseInput read that.	If error, we
+			 * read status with PQgetResult().  The normal case is that it's
+			 * Copy Done, but we let parseInput read that.  If error, we
 			 * expect the state was already changed.
 			 */
 			if (msgLength == -1)
@@ -1727,7 +1685,7 @@ pqEndcopy3(PGconn *conn)
 	/*
 	 * Non blocking connections may have to abort at this point.  If everyone
 	 * played the game there should be no problem, but in error scenarios the
-	 * expected messages may not have arrived yet.	(We are assuming that the
+	 * expected messages may not have arrived yet.  (We are assuming that the
 	 * backend's packetizing will ensure that CommandComplete arrives along
 	 * with the CopyDone; are there corner cases where that doesn't happen?)
 	 */

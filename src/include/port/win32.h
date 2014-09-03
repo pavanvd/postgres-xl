@@ -118,7 +118,7 @@
  *	Signal stuff
  *
  *	For WIN32, there is no wait() call so there are no wait() macros
- *	to interpret the return value of system().	Instead, system()
+ *	to interpret the return value of system().  Instead, system()
  *	return values < 0x100 are used for exit() termination, and higher
  *	values are used to indicated non-exit() termination, which is
  *	similar to a unix-style signal exit (think SIGSEGV ==
@@ -156,7 +156,7 @@
  *		NTSTATUS.H from the Windows NT DDK.
  *
  *	Some day we might want to print descriptions for the most common
- *	exceptions, rather than printing an include file name.	We could use
+ *	exceptions, rather than printing an include file name.  We could use
  *	RtlNtStatusToDosError() and pass to FormatMessage(), which can print
  *	the text of error values, but MinGW does not support
  *	RtlNtStatusToDosError().
@@ -270,36 +270,26 @@ typedef int pid_t;
 #undef EINTR
 #define EINTR WSAEINTR
 #define EAGAIN WSAEWOULDBLOCK
-#ifndef EMSGSIZE
+#undef EMSGSIZE
 #define EMSGSIZE WSAEMSGSIZE
-#endif
-#ifndef EAFNOSUPPORT
+#undef EAFNOSUPPORT
 #define EAFNOSUPPORT WSAEAFNOSUPPORT
-#endif
-#ifndef EWOULDBLOCK
+#undef EWOULDBLOCK
 #define EWOULDBLOCK WSAEWOULDBLOCK
-#endif
-#ifndef ECONNRESET
+#undef ECONNRESET
 #define ECONNRESET WSAECONNRESET
-#endif
-#ifndef EINPROGRESS
+#undef EINPROGRESS
 #define EINPROGRESS WSAEINPROGRESS
-#endif
-#ifndef ENOBUFS
+#undef ENOBUFS
 #define ENOBUFS WSAENOBUFS
-#endif
-#ifndef EPROTONOSUPPORT
+#undef EPROTONOSUPPORT
 #define EPROTONOSUPPORT WSAEPROTONOSUPPORT
-#endif
-#ifndef ECONNREFUSED
+#undef ECONNREFUSED
 #define ECONNREFUSED WSAECONNREFUSED
-#endif
-#ifndef EBADFD
+#undef EBADFD
 #define EBADFD WSAENOTSOCK
-#endif
-#ifndef EOPNOTSUPP
+#undef EOPNOTSUPP
 #define EOPNOTSUPP WSAEOPNOTSUPP
-#endif
 
 /*
  * For Microsoft Visual Studio 2010 and above we intentionally redefine

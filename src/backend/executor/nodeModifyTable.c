@@ -35,7 +35,7 @@
  *
  *		If the query specifies RETURNING, then the ModifyTable returns a
  *		RETURNING tuple after completing each row insert, update, or delete.
- *		It must be called again to continue the operation.	Without RETURNING,
+ *		It must be called again to continue the operation.  Without RETURNING,
  *		we just loop within the node until all the work is done, then
  *		return NULL.  This avoids useless call/return overhead.
  */
@@ -486,7 +486,7 @@ ldelete:;
 	{
 		/*
 		 * We have to put the target tuple into a slot, which means first we
-		 * gotta fetch it.	We can use the trigger tuple slot.
+		 * gotta fetch it.  We can use the trigger tuple slot.
 		 */
 		TupleTableSlot *slot = estate->es_trig_tuple_slot;
 		TupleTableSlot *rslot;
@@ -519,6 +519,12 @@ ldelete:;
 		rslot = ExecProcessReturning(resultRelInfo->ri_projectReturning,
 									 slot, planSlot);
 
+		/*
+		 * Before releasing the target tuple again, make sure rslot has a
+		 * local copy of any pass-by-reference values.
+		 */
+		ExecMaterializeSlot(rslot);
+
 		ExecClearTuple(slot);
 		if (BufferIsValid(delbuffer))
 			ReleaseBuffer(delbuffer);
@@ -535,7 +541,7 @@ ldelete:;
  *		note: we can't run UPDATE queries with transactions
  *		off because UPDATEs are actually INSERTs and our
  *		scan will mistakenly loop forever, updating the tuple
- *		it just inserted..	This should be fixed but until it
+ *		it just inserted..  This should be fixed but until it
  *		is, we don't want to get stuck in an infinite loop
  *		which corrupts your database..
  *
@@ -637,7 +643,7 @@ ExecUpdate(ItemPointer tupleid,
 		 *
 		 * If we generate a new candidate tuple after EvalPlanQual testing, we
 		 * must loop back here and recheck constraints.  (We don't need to
-		 * redo triggers, however.	If there are any BEFORE triggers then
+		 * redo triggers, however.  If there are any BEFORE triggers then
 		 * trigger.c will have done heap_lock_tuple to lock the correct tuple,
 		 * so there's no need to do them again.)
 		 */
@@ -878,7 +884,7 @@ ExecModifyTable(ModifyTableState *node)
 
 	/*
 	 * es_result_relation_info must point to the currently active result
-	 * relation while we are within this ModifyTable node.	Even though
+	 * relation while we are within this ModifyTable node.  Even though
 	 * ModifyTable nodes can't be nested statically, they can be nested
 	 * dynamically (since our subplan could include a reference to a modifying
 	 * CTE).  So we have to save and restore the caller's value.
@@ -904,7 +910,7 @@ ExecModifyTable(ModifyTableState *node)
 	for (;;)
 	{
 		/*
-		 * Reset the per-output-tuple exprcontext.	This is needed because
+		 * Reset the per-output-tuple exprcontext.  This is needed because
 		 * triggers expect to use that context as workspace.  It's a bit ugly
 		 * to do this below the top level of the plan, however.  We might need
 		 * to rethink this later.
@@ -1082,7 +1088,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * call ExecInitNode on each of the plans to be executed and save the
 	 * results into the array "mt_plans".  This is also a convenient place to
 	 * verify that the proposed target relations are valid and open their
-	 * indexes for insertion of new index entries.	Note we *must* set
+	 * indexes for insertion of new index entries.  Note we *must* set
 	 * estate->es_result_relation_info correctly while we initialize each
 	 * sub-plan; ExecContextForcesOids depends on that!
 	 */
@@ -1115,7 +1121,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		/*
 		 * If there are indices on the result relation, open them and save
 		 * descriptors in the result relation info, so that we can add new
-		 * index entries for the tuples we add/update.	We need not do this
+		 * index entries for the tuples we add/update.  We need not do this
 		 * for a DELETE, however, since deletion doesn't affect indexes. Also,
 		 * inside an EvalPlanQual operation, the indexes might be open
 		 * already, since we share the resultrel state with the original
@@ -1159,7 +1165,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 		/*
 		 * Initialize result tuple slot and assign its rowtype using the first
-		 * RETURNING list.	We assume the rest will look the same.
+		 * RETURNING list.  We assume the rest will look the same.
 		 */
 		tupDesc = ExecTypeFromTL((List *) linitial(node->returningLists),
 								 false);
@@ -1205,7 +1211,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	/*
 	 * If we have any secondary relations in an UPDATE or DELETE, they need to
 	 * be treated like non-locked relations in SELECT FOR UPDATE, ie, the
-	 * EvalPlanQual mechanism needs to be told about them.	Locate the
+	 * EvalPlanQual mechanism needs to be told about them.  Locate the
 	 * relevant ExecRowMarks.
 	 */
 	foreach(l, node->rowMarks)
@@ -1246,7 +1252,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * attribute present --- no need to look first.
 	 *
 	 * If there are multiple result relations, each one needs its own junk
-	 * filter.	Note multiple rels are only possible for UPDATE/DELETE, so we
+	 * filter.  Note multiple rels are only possible for UPDATE/DELETE, so we
 	 * can't be fooled by some needing a filter and some not.
 	 *
 	 * This section of code is also a convenient place to verify that the

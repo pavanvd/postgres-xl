@@ -30,17 +30,13 @@
 #include "utils/selfuncs.h"
 
 
-/* Local functions */
-static void canonicalize_all_pathkeys(PlannerInfo *root);
-
-
 /*
  * query_planner
  *	  Generate a path (that is, a simplified plan) for a basic query,
  *	  which may involve joins but not any fancier features.
  *
  * Since query_planner does not handle the toplevel processing (grouping,
- * sorting, etc) it cannot select the best path by itself.	It selects
+ * sorting, etc) it cannot select the best path by itself.  It selects
  * two paths: the cheapest path that produces all the required tuples,
  * independent of any ordering considerations, and the cheapest path that
  * produces the expected fraction of the required tuples in the required
@@ -55,6 +51,8 @@ static void canonicalize_all_pathkeys(PlannerInfo *root);
  * tuple_fraction is the fraction of tuples we expect will be retrieved
  * limit_tuples is a hard limit on number of tuples to retrieve,
  *		or -1 if no limit
+ * qp_callback is a function to compute query_pathkeys once it's safe to do so
+ * qp_extra is optional extra data to pass to qp_callback
  *
  * Output parameters:
  * *cheapest_path receives the overall-cheapest path for the query
@@ -63,18 +61,11 @@ static void canonicalize_all_pathkeys(PlannerInfo *root);
  * *num_groups receives the estimated number of groups, or 1 if query
  *				does not use grouping
  *
- * Note: the PlannerInfo node also includes a query_pathkeys field, which is
- * both an input and an output of query_planner().	The input value signals
- * query_planner that the indicated sort order is wanted in the final output
- * plan.  But this value has not yet been "canonicalized", since the needed
- * info does not get computed until we scan the qual clauses.  We canonicalize
- * it as soon as that task is done.  (The main reason query_pathkeys is a
- * PlannerInfo field and not a passed parameter is that the low-level routines
- * in indxpath.c need to see it.)
- *
- * Note: the PlannerInfo node includes other pathkeys fields besides
- * query_pathkeys, all of which need to be canonicalized once the info is
- * available.  See canonicalize_all_pathkeys.
+ * Note: the PlannerInfo node also includes a query_pathkeys field, which
+ * tells query_planner the sort order that is desired in the final output
+ * plan.  This value is *not* available at call time, but is computed by
+ * qp_callback once we have completed merging the query's equivalence classes.
+ * (We cannot construct canonical pathkeys until that's done.)
  *
  * tuple_fraction is interpreted as follows:
  *	  0: expect all tuples to be retrieved (normal case)
@@ -89,6 +80,7 @@ static void canonicalize_all_pathkeys(PlannerInfo *root);
 void
 query_planner(PlannerInfo *root, List *tlist,
 			  double tuple_fraction, double limit_tuples,
+			  query_pathkeys_callback qp_callback, void *qp_extra,
 			  Path **cheapest_path, Path **sorted_path,
 			  double *num_groups)
 {
@@ -108,7 +100,7 @@ query_planner(PlannerInfo *root, List *tlist,
 
 	/*
 	 * If the query has an empty join tree, then it's something easy like
-	 * "SELECT 2+2;" or "INSERT ... VALUES()".	Fall through quickly.
+	 * "SELECT 2+2;" or "INSERT ... VALUES()".  Fall through quickly.
 	 */
 	if (parse->jointree->fromlist == NIL)
 	{
@@ -118,11 +110,11 @@ query_planner(PlannerInfo *root, List *tlist,
 		*sorted_path = NULL;
 
 		/*
-		 * We still are required to canonicalize any pathkeys, in case it's
-		 * something like "SELECT 2+2 ORDER BY 1".
+		 * We still are required to call qp_callback, in case it's something
+		 * like "SELECT 2+2 ORDER BY 1".
 		 */
 		root->canon_pathkeys = NIL;
-		canonicalize_all_pathkeys(root);
+		(*qp_callback) (root, qp_extra);
 		return;
 	}
 
@@ -167,7 +159,7 @@ query_planner(PlannerInfo *root, List *tlist,
 	/*
 	 * Examine the targetlist and join tree, adding entries to baserel
 	 * targetlists for all referenced Vars, and generating PlaceHolderInfo
-	 * entries for all referenced PlaceHolderVars.	Restrict and join clauses
+	 * entries for all referenced PlaceHolderVars.  Restrict and join clauses
 	 * are added to appropriate lists belonging to the mentioned relations. We
 	 * also build EquivalenceClasses for provably equivalent expressions. The
 	 * SpecialJoinInfo list is also built to hold information about join order
@@ -189,29 +181,29 @@ query_planner(PlannerInfo *root, List *tlist,
 
 	/*
 	 * If we formed any equivalence classes, generate additional restriction
-	 * clauses as appropriate.	(Implied join clauses are formed on-the-fly
+	 * clauses as appropriate.  (Implied join clauses are formed on-the-fly
 	 * later.)
 	 */
 	generate_base_implied_equalities(root);
 
 	/*
 	 * We have completed merging equivalence sets, so it's now possible to
-	 * convert previously generated pathkeys (in particular, the requested
-	 * query_pathkeys) to canonical form.
+	 * generate pathkeys in canonical form; so compute query_pathkeys and
+	 * other pathkeys fields in PlannerInfo.
 	 */
-	canonicalize_all_pathkeys(root);
+	(*qp_callback) (root, qp_extra);
 
 	/*
 	 * Examine any "placeholder" expressions generated during subquery pullup.
 	 * Make sure that the Vars they need are marked as needed at the relevant
-	 * join level.	This must be done before join removal because it might
+	 * join level.  This must be done before join removal because it might
 	 * cause Vars or placeholders to be needed above a join when they weren't
 	 * so marked before.
 	 */
 	fix_placeholder_input_needed_levels(root);
 
 	/*
-	 * Remove any useless outer joins.	Ideally this would be done during
+	 * Remove any useless outer joins.  Ideally this would be done during
 	 * jointree preprocessing, but the necessary information isn't available
 	 * until we've built baserel data structures and classified qual clauses.
 	 */
@@ -296,7 +288,7 @@ query_planner(PlannerInfo *root, List *tlist,
 		/*
 		 * If both GROUP BY and ORDER BY are specified, we will need two
 		 * levels of sort --- and, therefore, certainly need to read all the
-		 * tuples --- unless ORDER BY is a subset of GROUP BY.	Likewise if we
+		 * tuples --- unless ORDER BY is a subset of GROUP BY.  Likewise if we
 		 * have both DISTINCT and GROUP BY, or if we have a window
 		 * specification not compatible with the GROUP BY.
 		 */
@@ -418,20 +410,4 @@ query_planner(PlannerInfo *root, List *tlist,
 
 	*cheapest_path = cheapestpath;
 	*sorted_path = sortedpath;
-}
-
-
-/*
- * canonicalize_all_pathkeys
- *		Canonicalize all pathkeys that were generated before entering
- *		query_planner and then stashed in PlannerInfo.
- */
-static void
-canonicalize_all_pathkeys(PlannerInfo *root)
-{
-	root->query_pathkeys = canonicalize_pathkeys(root, root->query_pathkeys);
-	root->group_pathkeys = canonicalize_pathkeys(root, root->group_pathkeys);
-	root->window_pathkeys = canonicalize_pathkeys(root, root->window_pathkeys);
-	root->distinct_pathkeys = canonicalize_pathkeys(root, root->distinct_pathkeys);
-	root->sort_pathkeys = canonicalize_pathkeys(root, root->sort_pathkeys);
 }

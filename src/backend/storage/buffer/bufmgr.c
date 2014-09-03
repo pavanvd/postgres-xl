@@ -118,7 +118,7 @@ static void AtProcExit_Buffers(int code, Datum arg);
  * PrefetchBuffer -- initiate asynchronous read of a block of a relation
  *
  * This is named by analogy to ReadBuffer but doesn't actually allocate a
- * buffer.	Instead it tries to ensure that a future ReadBuffer for the given
+ * buffer.  Instead it tries to ensure that a future ReadBuffer for the given
  * block will not be delayed by the I/O.  Prefetching is optional.
  * No-op if prefetching isn't compiled in.
  */
@@ -208,19 +208,22 @@ ReadBuffer(Relation reln, BlockNumber blockNum)
  * Assume when this function is called, that reln has been opened already.
  *
  * In RBM_NORMAL mode, the page is read from disk, and the page header is
- * validated. An error is thrown if the page header is not valid.
+ * validated.  An error is thrown if the page header is not valid.  (But
+ * note that an all-zero page is considered "valid"; see PageIsVerified().)
  *
  * RBM_ZERO_ON_ERROR is like the normal mode, but if the page header is not
  * valid, the page is zeroed instead of throwing an error. This is intended
  * for non-critical data, where the caller is prepared to repair errors.
  *
  * In RBM_ZERO mode, if the page isn't in buffer cache already, it's filled
- * with zeros instead of reading it from disk.	Useful when the caller is
+ * with zeros instead of reading it from disk.  Useful when the caller is
  * going to fill the page from scratch, since this saves I/O and avoids
  * unnecessary failure if the page-on-disk has corrupt page headers.
  * Caution: do not use this mode to read a page that is beyond the relation's
  * current physical EOF; that is likely to cause problems in md.c when
  * the page is modified and written out. P_NEW is OK, though.
+ *
+ * RBM_NORMAL_NO_LOG mode is treated the same as RBM_NORMAL here.
  *
  * If strategy is not NULL, a nondefault buffer access strategy is used.
  * See buffer/README for details.
@@ -275,6 +278,8 @@ ReadBufferWithoutRelcache(RelFileNode rnode, ForkNumber forkNum,
 	bool		hit;
 
 	SMgrRelation smgr = smgropen(rnode, InvalidBackendId);
+
+	Assert(InRecovery);
 
 	return ReadBuffer_common(smgr, RELPERSISTENCE_PERMANENT, forkNum, blockNum,
 							 mode, strategy, &hit);
@@ -368,7 +373,7 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 * This can happen because mdread doesn't complain about reads beyond
 		 * EOF (when zero_damaged_pages is ON) and so a previous attempt to
 		 * read a block beyond EOF could have left a "valid" zero-filled
-		 * buffer.	Unfortunately, we have also seen this case occurring
+		 * buffer.  Unfortunately, we have also seen this case occurring
 		 * because of buggy Linux kernels that sometimes return an
 		 * lseek(SEEK_END) result that doesn't account for a recent write. In
 		 * that situation, the pre-existing buffer would contain valid data
@@ -593,7 +598,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 	/*
 	 * Didn't find it in the buffer pool.  We'll have to initialize a new
-	 * buffer.	Remember to unlock the mapping lock while doing the work.
+	 * buffer.  Remember to unlock the mapping lock while doing the work.
 	 */
 	LWLockRelease(newPartitionLock);
 
@@ -603,7 +608,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		bool		lock_held;
 
 		/*
-		 * Select a victim buffer.	The buffer is returned with its header
+		 * Select a victim buffer.  The buffer is returned with its header
 		 * spinlock still held!  Also (in most cases) the BufFreelistLock is
 		 * still held, since it would be bad to hold the spinlock while
 		 * possibly waking up other processes.
@@ -652,7 +657,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 				 * If using a nondefault strategy, and writing the buffer
 				 * would require a WAL flush, let the strategy decide whether
 				 * to go ahead and write/reuse the buffer or to choose another
-				 * victim.	We need lock to inspect the page LSN, so this
+				 * victim.  We need lock to inspect the page LSN, so this
 				 * can't be done inside StrategyGetBuffer.
 				 */
 				if (strategy != NULL &&
@@ -773,7 +778,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			{
 				/*
 				 * We can only get here if (a) someone else is still reading
-				 * in the page, or (b) a previous read attempt failed.	We
+				 * in the page, or (b) a previous read attempt failed.  We
 				 * have to wait for any active read attempt to finish, and
 				 * then set up our own read attempt if the page is still not
 				 * BM_VALID.  StartBufferIO does it all.
@@ -866,7 +871,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
  * This is used only in contexts such as dropping a relation.  We assume
  * that no other backend could possibly be interested in using the page,
  * so the only reason the buffer might be pinned is if someone else is
- * trying to write it out.	We have to let them finish before we can
+ * trying to write it out.  We have to let them finish before we can
  * reclaim the buffer.
  *
  * The buffer could get reclaimed by someone else while we are waiting
@@ -965,7 +970,7 @@ retry:
  *
  *		Marks buffer contents as dirty (actual write happens later).
  *
- * Buffer must be pinned and exclusive-locked.	(If caller does not hold
+ * Buffer must be pinned and exclusive-locked.  (If caller does not hold
  * exclusive lock, then somebody could be in process of writing the buffer,
  * leading to risk of bad data written to disk.)
  */
@@ -1014,7 +1019,7 @@ MarkBufferDirty(Buffer buffer)
  *
  * Formerly, this saved one cycle of acquiring/releasing the BufMgrLock
  * compared to calling the two routines separately.  Now it's mainly just
- * a convenience function.	However, if the passed buffer is valid and
+ * a convenience function.  However, if the passed buffer is valid and
  * already contains the desired block, we just return it as-is; and that
  * does save considerable work compared to a full release and reacquire.
  *
@@ -1066,7 +1071,7 @@ ReleaseAndReadBuffer(Buffer buffer,
  * when we first pin it; for other strategies we just make sure the usage_count
  * isn't zero.  (The idea of the latter is that we don't want synchronized
  * heap scans to inflate the count, but we need it to not be zero to discourage
- * other backends from stealing buffers from our ring.	As long as we cycle
+ * other backends from stealing buffers from our ring.  As long as we cycle
  * through the ring faster than the global clock-sweep cycles, buffers in
  * our ring won't be chosen as victims for replacement by other backends.)
  *
@@ -1074,7 +1079,7 @@ ReleaseAndReadBuffer(Buffer buffer,
  *
  * Note that ResourceOwnerEnlargeBuffers must have been done already.
  *
- * Returns TRUE if buffer is BM_VALID, else FALSE.	This provision allows
+ * Returns TRUE if buffer is BM_VALID, else FALSE.  This provision allows
  * some callers to avoid an extra spinlock cycle.
  */
 static bool
@@ -1209,9 +1214,9 @@ BufferSync(int flags)
 
 	/*
 	 * Unless this is a shutdown checkpoint, we write only permanent, dirty
-	 * buffers.  But at shutdown time, we write all dirty buffers.
+	 * buffers.  But at shutdown or end of recovery, we write all dirty buffers.
 	 */
-	if (!(flags & CHECKPOINT_IS_SHUTDOWN))
+	if (!((flags & CHECKPOINT_IS_SHUTDOWN) || (flags & CHECKPOINT_END_OF_RECOVERY)))
 		mask |= BM_PERMANENT;
 
 	/*
@@ -1227,7 +1232,7 @@ BufferSync(int flags)
 	 * have the flag set.
 	 *
 	 * Note that if we fail to write some buffer, we may leave buffers with
-	 * BM_CHECKPOINT_NEEDED still set.	This is OK since any such buffer would
+	 * BM_CHECKPOINT_NEEDED still set.  This is OK since any such buffer would
 	 * certainly need to be written for the next checkpoint attempt, too.
 	 */
 	num_to_write = 0;
@@ -1330,7 +1335,7 @@ BufferSync(int flags)
  * This is called periodically by the background writer process.
  *
  * Returns true if it's appropriate for the bgwriter process to go into
- * low-power hibernation mode.	(This happens if the strategy clock sweep
+ * low-power hibernation mode.  (This happens if the strategy clock sweep
  * has been "lapped" and no buffer allocations have occurred recently,
  * or if the bgwriter has been effectively disabled by setting
  * bgwriter_lru_maxpages to 0.)
@@ -1885,10 +1890,7 @@ BufferGetTag(Buffer buffer, RelFileNode *rnode, ForkNumber *forknum,
  * written.)
  *
  * If the caller has an smgr reference for the buffer's relation, pass it
- * as the second parameter.  If not, pass NULL.  In the latter case, the
- * relation will be marked as "transient" so that the corresponding
- * kernel-level file descriptors are closed when the current transaction ends,
- * if any.
+ * as the second parameter.  If not, pass NULL.
  */
 static void
 FlushBuffer(volatile BufferDesc *buf, SMgrRelation reln)
@@ -1912,12 +1914,9 @@ FlushBuffer(volatile BufferDesc *buf, SMgrRelation reln)
 	errcontext.previous = error_context_stack;
 	error_context_stack = &errcontext;
 
-	/* Find smgr relation for buffer, and mark it as transient */
+	/* Find smgr relation for buffer */
 	if (reln == NULL)
-	{
 		reln = smgropen(buf->tag.rnode, InvalidBackendId);
-		smgrsettransient(reln);
-	}
 
 	TRACE_POSTGRESQL_BUFFER_FLUSH_START(buf->tag.forkNum,
 										buf->tag.blockNum,
@@ -1980,8 +1979,8 @@ FlushBuffer(volatile BufferDesc *buf, SMgrRelation reln)
 }
 
 /*
- * RelationGetNumberOfBlocks
- *		Determines the current number of pages in the relation.
+ * RelationGetNumberOfBlocksInFork
+ *		Determines the current number of pages in the specified relation fork.
  */
 BlockNumber
 RelationGetNumberOfBlocksInFork(Relation relation, ForkNumber forkNum)
@@ -2028,7 +2027,7 @@ BufferIsPermanent(Buffer buffer)
  *		specified relation fork that have block numbers >= firstDelBlock.
  *		(In particular, with firstDelBlock = 0, all pages are removed.)
  *		Dirty pages are simply dropped, without bothering to write them
- *		out first.	Therefore, this is NOT rollback-able, and so should be
+ *		out first.  Therefore, this is NOT rollback-able, and so should be
  *		used only with extreme caution!
  *
  *		Currently, this is called only from smgr.c when the underlying file
@@ -2037,7 +2036,7 @@ BufferIsPermanent(Buffer buffer)
  *		be deleted momentarily anyway, and there is no point in writing it.
  *		It is the responsibility of higher-level code to ensure that the
  *		deletion or truncation does not lose any data that could be needed
- *		later.	It is also the responsibility of higher-level code to ensure
+ *		later.  It is also the responsibility of higher-level code to ensure
  *		that no other process could be trying to load more pages of the
  *		relation into buffers.
  *
@@ -2057,7 +2056,7 @@ DropRelFileNodeBuffers(RelFileNodeBackend rnode, ForkNumber forkNum,
 	if (!OidIsValid(MyCoordId) && rnode.backend != InvalidBackendId)
 #else
 	/* If it's a local relation, it's localbuf.c's problem. */
-	if (rnode.backend != InvalidBackendId)
+	if (RelFileNodeBackendIsTemp(rnode))
 #endif
 	{
 		if (rnode.backend == MyBackendId)
@@ -2112,7 +2111,7 @@ DropRelFileNodeAllBuffers(RelFileNodeBackend rnode)
 	int			i;
 
 	/* If it's a local relation, it's localbuf.c's problem. */
-	if (rnode.backend != InvalidBackendId)
+	if (RelFileNodeBackendIsTemp(rnode))
 	{
 		if (rnode.backend == MyBackendId)
 			DropRelFileNodeAllLocalBuffers(rnode.node);
@@ -2143,9 +2142,9 @@ DropRelFileNodeAllBuffers(RelFileNodeBackend rnode)
  *
  *		This function removes all the buffers in the buffer cache for a
  *		particular database.  Dirty pages are simply dropped, without
- *		bothering to write them out first.	This is used when we destroy a
+ *		bothering to write them out first.  This is used when we destroy a
  *		database, to avoid trying to flush data to disk when the directory
- *		tree no longer exists.	Implementation is pretty similar to
+ *		tree no longer exists.  Implementation is pretty similar to
  *		DropRelFileNodeBuffers() which is for destroying just one relation.
  * --------------------------------------------------------------------
  */
@@ -2467,7 +2466,7 @@ SetBufferCommitInfoNeedsSave(Buffer buffer)
 	/*
 	 * This routine might get called many times on the same page, if we are
 	 * making the first scan after commit of an xact that added/deleted many
-	 * tuples.	So, be as quick as we can if the buffer is already dirty.  We
+	 * tuples.  So, be as quick as we can if the buffer is already dirty.  We
 	 * do this by not acquiring spinlock if it looks like the status bits are
 	 * already.  Since we make this test unlocked, there's a chance we might
 	 * fail to notice that the flags have just been cleared, and failed to
@@ -2484,6 +2483,7 @@ SetBufferCommitInfoNeedsSave(Buffer buffer)
 		{
 			/* Do vacuum cost accounting */
 			VacuumPageDirty++;
+			pgBufferUsage.shared_blks_dirtied++;
 			if (VacuumCostActive)
 				VacuumCostBalance += VacuumCostPageDirty;
 		}

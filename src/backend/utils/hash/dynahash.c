@@ -5,21 +5,26 @@
  *
  * dynahash.c supports both local-to-a-backend hash tables and hash tables in
  * shared memory.  For shared hash tables, it is the caller's responsibility
- * to provide appropriate access interlocking.	The simplest convention is
- * that a single LWLock protects the whole hash table.	Searches (HASH_FIND or
+ * to provide appropriate access interlocking.  The simplest convention is
+ * that a single LWLock protects the whole hash table.  Searches (HASH_FIND or
  * hash_seq_search) need only shared lock, but any update requires exclusive
  * lock.  For heavily-used shared tables, the single-lock approach creates a
  * concurrency bottleneck, so we also support "partitioned" locking wherein
  * there are multiple LWLocks guarding distinct subsets of the table.  To use
  * a hash table in partitioned mode, the HASH_PARTITION flag must be given
- * to hash_create.	This prevents any attempt to split buckets on-the-fly.
+ * to hash_create.  This prevents any attempt to split buckets on-the-fly.
  * Therefore, each hash bucket chain operates independently, and no fields
  * of the hash header change after init except nentries and freeList.
  * A partitioned table uses a spinlock to guard changes of those two fields.
  * This lets any subset of the hash buckets be treated as a separately
- * lockable partition.	We expect callers to use the low-order bits of a
+ * lockable partition.  We expect callers to use the low-order bits of a
  * lookup key's hash value as a partition number --- this will work because
  * of the way calc_bucket() maps hash values to bucket numbers.
+ *
+ * For hash tables in shared memory, the memory allocator function should
+ * match malloc's semantics of returning NULL on failure.  For hash tables
+ * in local memory, we typically use palloc() which will throw error on
+ * failure.  The code in this file has to cope with both cases.
  *
  * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -63,6 +68,8 @@
 
 #include "postgres.h"
 
+#include <limits.h>
+
 #include "access/xact.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
@@ -74,7 +81,7 @@
  * Constants
  *
  * A hash table has a top-level "directory", each of whose entries points
- * to a "segment" of ssize bucket headers.	The maximum number of hash
+ * to a "segment" of ssize bucket headers.  The maximum number of hash
  * buckets is thus dsize * ssize (but dsize may be expansible).  Of course,
  * the number of records in the table can be larger, but we don't want a
  * whole lot of records per bucket or performance goes down.
@@ -82,7 +89,7 @@
  * In a hash table allocated in shared memory, the directory cannot be
  * expanded because it must stay at a fixed address.  The directory size
  * should be selected using hash_select_dirsize (and you'd better have
- * a good idea of the maximum number of entries!).	For non-shared hash
+ * a good idea of the maximum number of entries!).  For non-shared hash
  * tables, the initial directory size can be left at the default.
  */
 #define DEF_SEGSIZE			   256
@@ -200,6 +207,8 @@ static void hdefault(HTAB *hashp);
 static int	choose_nelem_alloc(Size entrysize);
 static bool init_htab(HTAB *hashp, long nelem);
 static void hash_corrupted(HTAB *hashp);
+static long next_pow2_long(long num);
+static int	next_pow2_int(long num);
 static void register_seq_scan(HTAB *hashp);
 static void deregister_seq_scan(HTAB *hashp);
 static bool has_seq_scans(HTAB *hashp);
@@ -326,7 +335,7 @@ hash_create(const char *tabname, long nelem, HASHCTL *info, int flags)
 	{
 		/*
 		 * ctl structure and directory are preallocated for shared memory
-		 * tables.	Note that HASH_DIRSIZE and HASH_ALLOC had better be set as
+		 * tables.  Note that HASH_DIRSIZE and HASH_ALLOC had better be set as
 		 * well.
 		 */
 		hashp->hctl = info->hctl;
@@ -374,8 +383,13 @@ hash_create(const char *tabname, long nelem, HASHCTL *info, int flags)
 	{
 		/* Doesn't make sense to partition a local hash table */
 		Assert(flags & HASH_SHARED_MEM);
-		/* # of partitions had better be a power of 2 */
-		Assert(info->num_partitions == (1L << my_log2(info->num_partitions)));
+
+		/*
+		 * The number of partitions had better be a power of 2. Also, it must
+		 * be less than INT_MAX (see init_htab()), so call the int version of
+		 * next_pow2.
+		 */
+		Assert(info->num_partitions == next_pow2_int(info->num_partitions));
 
 		hctl->num_partitions = info->num_partitions;
 	}
@@ -518,7 +532,6 @@ init_htab(HTAB *hashp, long nelem)
 {
 	HASHHDR    *hctl = hashp->hctl;
 	HASHSEGMENT *segp;
-	long		lnbuckets;
 	int			nbuckets;
 	int			nsegs;
 
@@ -533,9 +546,7 @@ init_htab(HTAB *hashp, long nelem)
 	 * number of buckets.  Allocate space for the next greater power of two
 	 * number of buckets
 	 */
-	lnbuckets = (nelem - 1) / hctl->ffactor + 1;
-
-	nbuckets = 1 << my_log2(lnbuckets);
+	nbuckets = next_pow2_int((nelem - 1) / hctl->ffactor + 1);
 
 	/*
 	 * In a partitioned table, nbuckets must be at least equal to
@@ -553,7 +564,7 @@ init_htab(HTAB *hashp, long nelem)
 	 * Figure number of directory segments needed, round up to a power of 2
 	 */
 	nsegs = (nbuckets - 1) / hctl->ssize + 1;
-	nsegs = 1 << my_log2(nsegs);
+	nsegs = next_pow2_int(nsegs);
 
 	/*
 	 * Make sure directory is big enough. If pre-allocated directory is too
@@ -623,9 +634,9 @@ hash_estimate_size(long num_entries, Size entrysize)
 				elementAllocCnt;
 
 	/* estimate number of buckets wanted */
-	nBuckets = 1L << my_log2((num_entries - 1) / DEF_FFACTOR + 1);
+	nBuckets = next_pow2_long((num_entries - 1) / DEF_FFACTOR + 1);
 	/* # of segments needed for nBuckets */
-	nSegments = 1L << my_log2((nBuckets - 1) / DEF_SEGSIZE + 1);
+	nSegments = next_pow2_long((nBuckets - 1) / DEF_SEGSIZE + 1);
 	/* directory entries */
 	nDirEntries = DEF_DIRSIZE;
 	while (nDirEntries < nSegments)
@@ -666,9 +677,9 @@ hash_select_dirsize(long num_entries)
 				nDirEntries;
 
 	/* estimate number of buckets wanted */
-	nBuckets = 1L << my_log2((num_entries - 1) / DEF_FFACTOR + 1);
+	nBuckets = next_pow2_long((num_entries - 1) / DEF_FFACTOR + 1);
 	/* # of segments needed for nBuckets */
-	nSegments = 1L << my_log2((nBuckets - 1) / DEF_SEGSIZE + 1);
+	nSegments = next_pow2_long((nBuckets - 1) / DEF_SEGSIZE + 1);
 	/* directory entries */
 	nDirEntries = DEF_DIRSIZE;
 	while (nDirEntries < nSegments)
@@ -773,7 +784,7 @@ calc_bucket(HASHHDR *hctl, uint32 hash_val)
  * the result is a dangling pointer that shouldn't be dereferenced!)
  *
  * HASH_ENTER will normally ereport a generic "out of memory" error if
- * it is unable to create a new entry.	The HASH_ENTER_NULL operation is
+ * it is unable to create a new entry.  The HASH_ENTER_NULL operation is
  * the same except it will return NULL if out of memory.  Note that
  * HASH_ENTER_NULL cannot be used with the default palloc-based allocator,
  * since palloc internally ereports on out-of-memory.
@@ -819,6 +830,27 @@ hash_search_with_hash_value(HTAB *hashp,
 	hash_accesses++;
 	hctl->accesses++;
 #endif
+
+	/*
+	 * If inserting, check if it is time to split a bucket.
+	 *
+	 * NOTE: failure to expand table is not a fatal error, it just means we
+	 * have to run at higher fill factor than we wanted.  However, if we're
+	 * using the palloc allocator then it will throw error anyway on
+	 * out-of-memory, so we must do this before modifying the table.
+	 */
+	if (action == HASH_ENTER || action == HASH_ENTER_NULL)
+	{
+		/*
+		 * Can't split if running in partitioned mode, nor if frozen, nor if
+		 * table is the subject of any active hash_seq_search scans.  Strange
+		 * order of these tests is to try to check cheaper conditions first.
+		 */
+		if (!IS_PARTITIONED(hctl) && !hashp->frozen &&
+			hctl->nentries / (long) (hctl->max_bucket + 1) >= hctl->ffactor &&
+			!has_seq_scans(hashp))
+			(void) expand_table(hashp);
+	}
 
 	/*
 	 * Do the initial lookup
@@ -940,24 +972,12 @@ hash_search_with_hash_value(HTAB *hashp,
 			currBucket->hashvalue = hashvalue;
 			hashp->keycopy(ELEMENTKEY(currBucket), keyPtr, keysize);
 
-			/* caller is expected to fill the data field on return */
-
 			/*
-			 * Check if it is time to split a bucket.  Can't split if running
-			 * in partitioned mode, nor if table is the subject of any active
-			 * hash_seq_search scans.  Strange order of these tests is to try
-			 * to check cheaper conditions first.
+			 * Caller is expected to fill the data field on return.  DO NOT
+			 * insert any code that could possibly throw error here, as doing
+			 * so would leave the table entry incomplete and hence corrupt the
+			 * caller's data structure.
 			 */
-			if (!IS_PARTITIONED(hctl) &&
-			hctl->nentries / (long) (hctl->max_bucket + 1) >= hctl->ffactor &&
-				!has_seq_scans(hashp))
-			{
-				/*
-				 * NOTE: failure to expand table is not a fatal error, it just
-				 * means we have to run at higher fill factor than we wanted.
-				 */
-				expand_table(hashp);
-			}
 
 			return (void *) ELEMENTKEY(currBucket);
 	}
@@ -1230,7 +1250,7 @@ expand_table(HTAB *hashp)
 	}
 
 	/*
-	 * Relocate records to the new bucket.	NOTE: because of the way the hash
+	 * Relocate records to the new bucket.  NOTE: because of the way the hash
 	 * masking is done in calc_bucket, only one old bucket can need to be
 	 * split at this point.  With a different way of reducing the hash value,
 	 * that might not be true!
@@ -1379,7 +1399,7 @@ hash_corrupted(HTAB *hashp)
 {
 	/*
 	 * If the corruption is in a shared hashtable, we'd better force a
-	 * systemwide restart.	Otherwise, just shut down this one backend.
+	 * systemwide restart.  Otherwise, just shut down this one backend.
 	 */
 	if (hashp->isshared)
 		elog(PANIC, "hash table \"%s\" corrupted", hashp->tabname);
@@ -1394,16 +1414,37 @@ my_log2(long num)
 	int			i;
 	long		limit;
 
+	/* guard against too-large input, which would put us into infinite loop */
+	if (num > LONG_MAX / 2)
+		num = LONG_MAX / 2;
+
 	for (i = 0, limit = 1; limit < num; i++, limit <<= 1)
 		;
 	return i;
+}
+
+/* calculate first power of 2 >= num, bounded to what will fit in a long */
+static long
+next_pow2_long(long num)
+{
+	/* my_log2's internal range check is sufficient */
+	return 1L << my_log2(num);
+}
+
+/* calculate first power of 2 >= num, bounded to what will fit in an int */
+static int
+next_pow2_int(long num)
+{
+	if (num > INT_MAX / 2)
+		num = INT_MAX / 2;
+	return 1 << my_log2(num);
 }
 
 
 /************************* SEQ SCAN TRACKING ************************/
 
 /*
- * We track active hash_seq_search scans here.	The need for this mechanism
+ * We track active hash_seq_search scans here.  The need for this mechanism
  * comes from the fact that a scan will get confused if a bucket split occurs
  * while it's in progress: it might visit entries twice, or even miss some
  * entirely (if it's partway through the same bucket that splits).  Hence
@@ -1423,7 +1464,7 @@ my_log2(long num)
  *
  * This arrangement is reasonably robust if a transient hashtable is deleted
  * without notifying us.  The absolute worst case is we might inhibit splits
- * in another table created later at exactly the same address.	We will give
+ * in another table created later at exactly the same address.  We will give
  * a warning at transaction end for reference leaks, so any bugs leading to
  * lack of notification should be easy to catch.
  */

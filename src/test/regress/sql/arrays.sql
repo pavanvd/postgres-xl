@@ -202,8 +202,6 @@ SELECT ARRAY[[1,2],[3,4]] || ARRAY[5,6] AS "{{1,2},{3,4},{5,6}}";
 SELECT ARRAY[0,0] || ARRAY[1,1] || ARRAY[2,2] AS "{0,0,1,1,2,2}";
 SELECT 0 || ARRAY[1,2] || 3 AS "{0,1,2,3}";
 
-ANALYZE array_op_test;
-
 SELECT * FROM array_op_test WHERE i @> '{32}' ORDER BY seqno;
 SELECT * FROM array_op_test WHERE i && '{32}' ORDER BY seqno;
 SELECT * FROM array_op_test WHERE i @> '{17}' ORDER BY seqno;
@@ -451,3 +449,20 @@ insert into t1 (f1[5].q1) values(42);
 select * from t1;
 update t1 set f1[5].q2 = 43;
 select * from t1;
+
+-- Check that arrays of composites are safely detoasted when needed
+
+create temp table src (f1 text);
+insert into src
+  select string_agg(random()::text,'') from generate_series(1,10000);
+create type textandtext as (c1 text, c2 text);
+create temp table dest (f1 textandtext[]);
+insert into dest select array[row(f1,f1)::textandtext] from src;
+select length(md5((f1[1]).c2)) from dest;
+delete from src;
+select length(md5((f1[1]).c2)) from dest;
+truncate table src;
+drop table src;
+select length(md5((f1[1]).c2)) from dest;
+drop table dest;
+drop type textandtext;

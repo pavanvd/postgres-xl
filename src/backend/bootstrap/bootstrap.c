@@ -74,6 +74,8 @@ static void cleanup(void);
  * ----------------
  */
 
+AuxProcType	MyAuxProcType = NotAnAuxProcess;	/* declared in miscadmin.h */
+
 Relation	boot_reldesc;		/* current relation descriptor */
 
 Form_pg_attribute attrtypes[MAXATTR];	/* points to attribute info */
@@ -86,7 +88,7 @@ int			numattr;			/* number of attributes for cur. rel */
  * in the core "bootstrapped" catalogs.
  *
  *		XXX several of these input/output functions do catalog scans
- *			(e.g., F_REGPROCIN scans pg_proc).	this obviously creates some
+ *			(e.g., F_REGPROCIN scans pg_proc).  this obviously creates some
  *			order dependencies in the catalog creation process.
  */
 struct typinfo
@@ -198,7 +200,6 @@ AuxiliaryProcessMain(int argc, char *argv[])
 {
 	char	   *progname = argv[0];
 	int			flag;
-	AuxProcType auxType = CheckerProcess;
 	char	   *userDoption = NULL;
 
 	/*
@@ -207,14 +208,6 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	MyProcPid = getpid();
 
 	MyStartTime = time(NULL);
-
-	/*
-	 * Fire up essential subsystems: error and memory management
-	 *
-	 * If we are running under the postmaster, this is done already.
-	 */
-	if (!IsUnderPostmaster)
-		MemoryContextInit();
 
 	/* Compute paths, if we didn't inherit them from postmaster */
 	if (my_exec_path[0] == '\0')
@@ -238,6 +231,9 @@ AuxiliaryProcessMain(int argc, char *argv[])
 		argv++;
 		argc--;
 	}
+
+	/* If no -x argument, we are a CheckerProcess */
+	MyAuxProcType = CheckerProcess;
 
 	while ((flag = getopt(argc, argv, "B:c:d:D:Fr:x:-:")) != -1)
 	{
@@ -269,7 +265,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 				strlcpy(OutputFileName, optarg, MAXPGPATH);
 				break;
 			case 'x':
-				auxType = atoi(optarg);
+				MyAuxProcType = atoi(optarg);
 				break;
 			case 'c':
 			case '-':
@@ -319,7 +315,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	{
 		const char *statmsg;
 
-		switch (auxType)
+		switch (MyAuxProcType)
 		{
 #ifdef PGXC /* PGXC_COORD */
 			case PoolerProcess:
@@ -394,17 +390,17 @@ AuxiliaryProcessMain(int argc, char *argv[])
 #endif
 
 		/*
-		 * Assign the ProcSignalSlot for an auxiliary process.	Since it
+		 * Assign the ProcSignalSlot for an auxiliary process.  Since it
 		 * doesn't have a BackendId, the slot is statically allocated based on
-		 * the auxiliary process type (auxType).  Backends use slots indexed
-		 * in the range from 1 to MaxBackends (inclusive), so we use
+		 * the auxiliary process type (MyAuxProcType).  Backends use slots
+		 * indexed in the range from 1 to MaxBackends (inclusive), so we use
 		 * MaxBackends + AuxProcType + 1 as the index of the slot for an
 		 * auxiliary process.
 		 *
 		 * This will need rethinking if we ever want more than one of a
 		 * particular auxiliary process type.
 		 */
-		ProcSignalInit(MaxBackends + auxType + 1);
+		ProcSignalInit(MaxBackends + MyAuxProcType + 1);
 
 		/* finish setting up bufmgr.c */
 		InitBufferPoolBackend();
@@ -418,7 +414,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	 */
 	SetProcessingMode(NormalProcessing);
 
-	switch (auxType)
+	switch (MyAuxProcType)
 	{
 #ifdef PGXC /* PGXC_COORD */
 		case PoolerProcess:
@@ -465,7 +461,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 			proc_exit(1);		/* should never return */
 
 		default:
-			elog(PANIC, "unrecognized process type: %d", auxType);
+			elog(PANIC, "unrecognized process type: %d", (int) MyAuxProcType);
 			proc_exit(1);
 	}
 }
@@ -588,7 +584,7 @@ bootstrap_signals(void)
 }
 
 /*
- * Begin shutdown of an auxiliary process.	This is approximately the equivalent
+ * Begin shutdown of an auxiliary process.  This is approximately the equivalent
  * of ShutdownPostgres() in postinit.c.  We can't run transactions in an
  * auxiliary process, so most of the work of AbortTransaction() is not needed,
  * but we do need to make sure we've released any LWLocks we are holding.
@@ -849,7 +845,6 @@ InsertOneValue(char *value, int i)
 	Oid			typioparam;
 	Oid			typinput;
 	Oid			typoutput;
-	char	   *prt;
 
 	AssertArg(i >= 0 && i < MAXATTR);
 
@@ -863,9 +858,14 @@ InsertOneValue(char *value, int i)
 						  &typinput, &typoutput);
 
 	values[i] = OidInputFunctionCall(typinput, value, typioparam, -1);
-	prt = OidOutputFunctionCall(typoutput, values[i]);
-	elog(DEBUG4, "inserted -> %s", prt);
-	pfree(prt);
+
+	/*
+	 * We use ereport not elog here so that parameters aren't evaluated unless
+	 * the message is going to be printed, which generally it isn't
+	 */
+	ereport(DEBUG4,
+			(errmsg_internal("inserted -> %s",
+							 OidOutputFunctionCall(typoutput, values[i]))));
 }
 
 /* ----------------
@@ -899,7 +899,7 @@ cleanup(void)
  * and not an OID at all, until the first reference to a type not known in
  * TypInfo[].  At that point it will read and cache pg_type in the Typ array,
  * and subsequently return a real OID (and set the global pointer Ap to
- * point at the found row in Typ).	So caller must check whether Typ is
+ * point at the found row in Typ).  So caller must check whether Typ is
  * still NULL to determine what the return value is!
  * ----------------
  */
@@ -1096,9 +1096,9 @@ MapArrayTypeName(char *s)
  *
  *		At bootstrap time, we define a bunch of indexes on system catalogs.
  *		We postpone actually building the indexes until just before we're
- *		finished with initialization, however.	This is because the indexes
+ *		finished with initialization, however.  This is because the indexes
  *		themselves have catalog entries, and those have to be included in the
- *		indexes on those catalogs.	Doing it in two phases is the simplest
+ *		indexes on those catalogs.  Doing it in two phases is the simplest
  *		way of making sure the indexes have the right contents at the end.
  */
 void
@@ -1111,7 +1111,7 @@ index_register(Oid heap,
 
 	/*
 	 * XXX mao 10/31/92 -- don't gc index reldescs, associated info at
-	 * bootstrap time.	we'll declare the indexes now, but want to create them
+	 * bootstrap time.  we'll declare the indexes now, but want to create them
 	 * later.
 	 */
 

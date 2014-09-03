@@ -103,6 +103,9 @@ ShutdownRecoveryTransactionEnvironment(void)
 
 	/* Release all locks the tracked transactions were holding */
 	StandbyReleaseAllLocks();
+
+	/* Cleanup our VirtualTransaction */
+	VirtualXactLockTableCleanup();
 }
 
 
@@ -125,7 +128,7 @@ GetStandbyLimitTime(void)
 
 	/*
 	 * The cutoff time is the last WAL data receipt time plus the appropriate
-	 * delay variable.	Delay of -1 means wait forever.
+	 * delay variable.  Delay of -1 means wait forever.
 	 */
 	GetXLogReceiptTime(&rtime, &fromStream);
 	if (fromStream)
@@ -467,7 +470,7 @@ SendRecoveryConflictWithBufferPin(ProcSignalReason reason)
  * determine whether an actual deadlock condition is present: the lock we
  * need to wait for might be unrelated to any held by the Startup process.
  * Sooner or later, this mechanism should get ripped out in favor of somehow
- * accounting for buffer locks in DeadLockCheck().	However, errors here
+ * accounting for buffer locks in DeadLockCheck().  However, errors here
  * seem to be very low-probability in practice, so for now it's not worth
  * the trouble.
  */
@@ -509,6 +512,10 @@ CheckRecoveryConflictDeadlock(void)
  * We keep a single dynamically expandible list of locks in local memory,
  * RelationLockList, so we can keep track of the various entries made by
  * the Startup process's virtual xid in the shared lock table.
+ *
+ * We record the lock against the top-level xid, rather than individual
+ * subtransaction xids. This means AccessExclusiveLocks held by aborted
+ * subtransactions are not released as early as possible on standbys.
  *
  * List elements use type xl_rel_lock, since the WAL record type exactly
  * matches the information that we need to keep track of.
@@ -643,8 +650,8 @@ StandbyReleaseAllLocks(void)
 
 /*
  * StandbyReleaseOldLocks
- *		Release standby locks held by XIDs that aren't running, as long
- *		as they're not prepared transactions.
+ *		Release standby locks held by top-level XIDs that aren't running,
+ *		as long as they're not prepared transactions.
  */
 void
 StandbyReleaseOldLocks(int nxids, TransactionId *xids)
@@ -858,7 +865,7 @@ standby_desc(StringInfo buf, uint8 xl_info, char *rec)
  * from a time when they were possible.
  */
 void
-LogStandbySnapshot(TransactionId *nextXid)
+LogStandbySnapshot(void)
 {
 	RunningTransactions running;
 	xl_standby_lock *locks;
@@ -868,16 +875,11 @@ LogStandbySnapshot(TransactionId *nextXid)
 
 	/*
 	 * Get details of any AccessExclusiveLocks being held at the moment.
-	 *
-	 * XXX GetRunningTransactionLocks() currently holds a lock on all
-	 * partitions though it is possible to further optimise the locking. By
-	 * reference counting locks and storing the value on the ProcArray entry
-	 * for each backend we can easily tell if any locks need recording without
-	 * trying to acquire the partition locks and scanning the lock table.
 	 */
 	locks = GetRunningTransactionLocks(&nlocks);
 	if (nlocks > 0)
 		LogAccessExclusiveLocks(nlocks, locks);
+	pfree(locks);
 
 	/*
 	 * Log details of all in-progress transactions. This should be the last
@@ -887,8 +889,6 @@ LogStandbySnapshot(TransactionId *nextXid)
 	LogCurrentRunningXacts(running);
 	/* GetRunningTransactionData() acquired XidGenLock, we must release it */
 	LWLockRelease(XidGenLock);
-
-	*nextXid = running->nextXid;
 }
 
 /*

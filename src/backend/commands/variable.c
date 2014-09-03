@@ -183,7 +183,7 @@ check_datestyle(char **newval, void **extra, GucSource source)
 	}
 
 	/*
-	 * Prepare the canonical string to return.	GUC wants it malloc'd.
+	 * Prepare the canonical string to return.  GUC wants it malloc'd.
 	 */
 	result = (char *) malloc(32);
 	if (!result)
@@ -281,7 +281,7 @@ check_timezone(char **newval, void **extra, GucSource source)
 	if (pg_strncasecmp(*newval, "interval", 8) == 0)
 	{
 		/*
-		 * Support INTERVAL 'foo'.	This is for SQL spec compliance, not
+		 * Support INTERVAL 'foo'.  This is for SQL spec compliance, not
 		 * because it has any actual real-world usefulness.
 		 */
 		const char *valueptr = *newval;
@@ -305,7 +305,7 @@ check_timezone(char **newval, void **extra, GucSource source)
 
 		/*
 		 * Try to parse it.  XXX an invalid interval format will result in
-		 * ereport(ERROR), which is not desirable for GUC.	We did what we
+		 * ereport(ERROR), which is not desirable for GUC.  We did what we
 		 * could to guard against this in flatten_set_variable_args, but a
 		 * string coming in from postgresql.conf might contain anything.
 		 */
@@ -334,6 +334,7 @@ check_timezone(char **newval, void **extra, GucSource source)
 #else
 		myextra.CTimeZone = -interval->time;
 #endif
+		myextra.session_timezone = pg_tzset_offset(myextra.CTimeZone);
 		myextra.HasCTZSet = true;
 
 		pfree(interval);
@@ -348,6 +349,7 @@ check_timezone(char **newval, void **extra, GucSource source)
 		{
 			/* Here we change from SQL to Unix sign convention */
 			myextra.CTimeZone = -hours * SECS_PER_HOUR;
+			myextra.session_timezone = pg_tzset_offset(myextra.CTimeZone);
 			myextra.HasCTZSet = true;
 		}
 		else
@@ -378,12 +380,19 @@ check_timezone(char **newval, void **extra, GucSource source)
 		}
 	}
 
+	/* Test for failure in pg_tzset_offset, which we assume is out-of-range */
+	if (!myextra.session_timezone)
+	{
+		GUC_check_errdetail("UTC timezone offset is out of range.");
+		return false;
+	}
+
 	/*
-	 * Prepare the canonical string to return.	GUC wants it malloc'd.
+	 * Prepare the canonical string to return.  GUC wants it malloc'd.
 	 *
 	 * Note: the result string should be something that we'd accept as input.
 	 * We use the numeric format for interval cases, because it's simpler to
-	 * reload.	In the named-timezone case, *newval is already OK and need not
+	 * reload.  In the named-timezone case, *newval is already OK and need not
 	 * be changed; it might not have the canonical casing, but that's taken
 	 * care of by show_timezone.
 	 */
@@ -539,13 +548,18 @@ show_log_timezone(void)
  * We allow idempotent changes (r/w -> r/w and r/o -> r/o) at any time, and
  * we also always allow changes from read-write to read-only.  However,
  * read-only may be changed to read-write only when in a top-level transaction
- * that has not yet taken an initial snapshot.	Can't do it in a hot standby
+ * that has not yet taken an initial snapshot.  Can't do it in a hot standby
  * slave, either.
+ *
+ * If we are not in a transaction at all, just allow the change; it means
+ * nothing since XactReadOnly will be reset by the next StartTransaction().
+ * The IsTransactionState() test protects us against trying to check
+ * RecoveryInProgress() in contexts where shared memory is not accessible.
  */
 bool
 check_transaction_read_only(bool *newval, void **extra, GucSource source)
 {
-	if (*newval == false && XactReadOnly)
+	if (*newval == false && XactReadOnly && IsTransactionState())
 	{
 		/* Can't go to r/w mode inside a r/o transaction */
 		if (IsSubTransaction())
@@ -564,6 +578,7 @@ check_transaction_read_only(bool *newval, void **extra, GucSource source)
 		/* Can't go to r/w mode while recovery is still active */
 		if (RecoveryInProgress())
 		{
+			GUC_check_errcode(ERRCODE_FEATURE_NOT_SUPPORTED);
 			GUC_check_errmsg("cannot set transaction read-write mode during recovery");
 			return false;
 		}
@@ -577,6 +592,8 @@ check_transaction_read_only(bool *newval, void **extra, GucSource source)
  *
  * We allow idempotent changes at any time, but otherwise this can only be
  * changed in a toplevel transaction that has not yet taken a snapshot.
+ *
+ * As in check_transaction_read_only, allow it if not inside a transaction.
  */
 bool
 check_XactIsoLevel(char **newval, void **extra, GucSource source)
@@ -613,7 +630,7 @@ check_XactIsoLevel(char **newval, void **extra, GucSource source)
 	else
 		return false;
 
-	if (newXactIsoLevel != XactIsoLevel)
+	if (newXactIsoLevel != XactIsoLevel && IsTransactionState())
 	{
 		if (FirstSnapshotSet)
 		{
@@ -631,6 +648,7 @@ check_XactIsoLevel(char **newval, void **extra, GucSource source)
 		/* Can't go to serializable mode while recovery is still active */
 		if (newXactIsoLevel == XACT_SERIALIZABLE && RecoveryInProgress())
 		{
+			GUC_check_errcode(ERRCODE_FEATURE_NOT_SUPPORTED);
 			GUC_check_errmsg("cannot use serializable mode in a hot standby");
 			GUC_check_errhint("You can use REPEATABLE READ instead.");
 			return false;
@@ -705,7 +723,7 @@ check_transaction_deferrable(bool *newval, void **extra, GucSource source)
  *
  * We can't roll back the random sequence on error, and we don't want
  * config file reloads to affect it, so we only want interactive SET SEED
- * commands to set it.	We use the "extra" storage to ensure that rollbacks
+ * commands to set it.  We use the "extra" storage to ensure that rollbacks
  * don't try to do the operation again.
  */
 
@@ -1101,7 +1119,7 @@ const char *
 show_role(void)
 {
 	/*
-	 * Check whether SET ROLE is active; if not return "none".	This is a
+	 * Check whether SET ROLE is active; if not return "none".  This is a
 	 * kluge to deal with the fact that SET SESSION AUTHORIZATION logically
 	 * resets SET ROLE to NONE, but we cannot set the GUC role variable from
 	 * assign_session_authorization (because we haven't got enough info to

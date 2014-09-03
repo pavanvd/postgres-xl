@@ -5,7 +5,7 @@
  *
  * Because of the extremely high rate at which log messages can be generated,
  * we need to be mindful of the performance cost of obtaining any information
- * that may be logged.	Also, it's important to keep in mind that this code may
+ * that may be logged.  Also, it's important to keep in mind that this code may
  * get called from within an aborted transaction, in which case operations
  * such as syscache lookups are unsafe.
  *
@@ -15,23 +15,23 @@
  * if we run out of memory, it's important to be able to report that fact.
  * There are a number of considerations that go into this.
  *
- * First, distinguish between re-entrant use and actual recursion.	It
+ * First, distinguish between re-entrant use and actual recursion.  It
  * is possible for an error or warning message to be emitted while the
- * parameters for an error message are being computed.	In this case
+ * parameters for an error message are being computed.  In this case
  * errstart has been called for the outer message, and some field values
- * may have already been saved, but we are not actually recursing.	We handle
- * this by providing a (small) stack of ErrorData records.	The inner message
+ * may have already been saved, but we are not actually recursing.  We handle
+ * this by providing a (small) stack of ErrorData records.  The inner message
  * can be computed and sent without disturbing the state of the outer message.
  * (If the inner message is actually an error, this isn't very interesting
  * because control won't come back to the outer message generator ... but
  * if the inner message is only debug or log data, this is critical.)
  *
  * Second, actual recursion will occur if an error is reported by one of
- * the elog.c routines or something they call.	By far the most probable
+ * the elog.c routines or something they call.  By far the most probable
  * scenario of this sort is "out of memory"; and it's also the nastiest
  * to handle because we'd likely also run out of memory while trying to
  * report this error!  Our escape hatch for this case is to reset the
- * ErrorContext to empty before trying to process the inner error.	Since
+ * ErrorContext to empty before trying to process the inner error.  Since
  * ErrorContext is guaranteed to have at least 8K of space in it (see mcxt.c),
  * we should be able to process an "out of memory" message successfully.
  * Since we lose the prior error state due to the reset, we won't be able
@@ -118,7 +118,7 @@ int			Log_destination = LOG_DESTINATION_STDERR;
 /*
  * Max string length to send to syslog().  Note that this doesn't count the
  * sequence-number prefix we add, and of course it doesn't count the prefix
- * added by syslog itself.	Solaris and sysklogd truncate the final message
+ * added by syslog itself.  Solaris and sysklogd truncate the final message
  * at 1024 bytes, so this value leaves 124 bytes for those prefixes.  (Most
  * other syslog implementations seem to have limits of 2KB or so.)
  */
@@ -174,6 +174,7 @@ static void send_message_to_server_log(ErrorData *edata);
 static void send_message_to_frontend(ErrorData *edata);
 static char *expand_fmt_string(const char *fmt, ErrorData *edata);
 static const char *useful_strerror(int errnum);
+static const char *get_errno_symbol(int errnum);
 static const char *error_severity(int elevel);
 static void append_with_tabs(StringInfo buf, const char *str);
 static bool is_log_level_output(int elevel, int log_min_level);
@@ -244,7 +245,7 @@ errstart(int elevel, const char *filename, int lineno,
 	{
 		/*
 		 * If we are inside a critical section, all errors become PANIC
-		 * errors.	See miscadmin.h.
+		 * errors.  See miscadmin.h.
 		 */
 		if (CritSectionCount > 0)
 			elevel = PANIC;
@@ -257,7 +258,7 @@ errstart(int elevel, const char *filename, int lineno,
 		 *
 		 * 2. ExitOnAnyError mode switch is set (initdb uses this).
 		 *
-		 * 3. the error occurred after proc_exit has begun to run.	(It's
+		 * 3. the error occurred after proc_exit has begun to run.  (It's
 		 * proc_exit's responsibility to see that this doesn't turn into
 		 * infinite recursion!)
 		 */
@@ -315,6 +316,18 @@ errstart(int elevel, const char *filename, int lineno,
 		return false;
 
 	/*
+	 * We need to do some actual work.  Make sure that memory context
+	 * initialization has finished, else we can't do anything useful.
+	 */
+	if (ErrorContext == NULL)
+	{
+		/* Ooops, hard crash time; very little we can do safely here */
+		write_stderr("error occurred at %s:%d before error message processing is available\n",
+					 filename ? filename : "(unknown file)", lineno);
+		exit(2);
+	}
+
+	/*
 	 * Okay, crank up a stack entry to store the info in.
 	 */
 
@@ -342,7 +355,7 @@ errstart(int elevel, const char *filename, int lineno,
 	if (++errordata_stack_depth >= ERRORDATA_STACK_SIZE)
 	{
 		/*
-		 * Wups, stack not big enough.	We treat this as a PANIC condition
+		 * Wups, stack not big enough.  We treat this as a PANIC condition
 		 * because it suggests an infinite loop of errors during error
 		 * recovery.
 		 */
@@ -397,11 +410,24 @@ errfinish(int dummy,...)
 {
 	ErrorData  *edata = &errordata[errordata_stack_depth];
 	int			elevel = edata->elevel;
+	bool		save_ImmediateInterruptOK;
 	MemoryContext oldcontext;
 	ErrorContextCallback *econtext;
 
 	recursion_depth++;
 	CHECK_STACK_DEPTH();
+
+	/*
+	 * Ensure we can't get interrupted while performing error reporting.  This
+	 * is needed to prevent recursive entry to functions like syslog(), which
+	 * may not be re-entrant.
+	 *
+	 * Note: other places that save-and-clear ImmediateInterruptOK also do
+	 * HOLD_INTERRUPTS(), but that should not be necessary here since we
+	 * don't call anything that could turn on ImmediateInterruptOK.
+	 */
+	save_ImmediateInterruptOK = ImmediateInterruptOK;
+	ImmediateInterruptOK = false;
 
 	/*
 	 * Do processing in ErrorContext, which we hope has enough reserved space
@@ -428,17 +454,16 @@ errfinish(int dummy,...)
 		/*
 		 * We do some minimal cleanup before longjmp'ing so that handlers can
 		 * execute in a reasonably sane state.
-		 */
-
-		/* This is just in case the error came while waiting for input */
-		ImmediateInterruptOK = false;
-
-		/*
+		 *
 		 * Reset InterruptHoldoffCount in case we ereport'd from inside an
 		 * interrupt holdoff section.  (We assume here that no handler will
-		 * itself be inside a holdoff section.	If necessary, such a handler
+		 * itself be inside a holdoff section.  If necessary, such a handler
 		 * could save and restore InterruptHoldoffCount for itself, but this
 		 * should make life easier for most.)
+		 *
+		 * Note that we intentionally don't restore ImmediateInterruptOK here,
+		 * even if it was set at entry.  We definitely don't want that on
+		 * while doing error cleanup.
 		 */
 		InterruptHoldoffCount = 0;
 
@@ -458,7 +483,7 @@ errfinish(int dummy,...)
 	 * progress, so that we can report the message before dying.  (Without
 	 * this, pq_putmessage will refuse to send the message at all, which is
 	 * what we want for NOTICE messages, but not for fatal exits.) This hack
-	 * is necessary because of poor design of old-style copy protocol.	Note
+	 * is necessary because of poor design of old-style copy protocol.  Note
 	 * we must do this even if client is fool enough to have set
 	 * client_min_messages above FATAL, so don't look at output_to_client.
 	 */
@@ -495,10 +520,7 @@ errfinish(int dummy,...)
 	{
 		/*
 		 * For a FATAL error, we let proc_exit clean up and exit.
-		 */
-		ImmediateInterruptOK = false;
-
-		/*
+		 *
 		 * If we just reported a startup failure, the client will disconnect
 		 * on receiving it, so don't send any more to the client.
 		 */
@@ -531,15 +553,18 @@ errfinish(int dummy,...)
 		 * XXX: what if we are *in* the postmaster?  abort() won't kill our
 		 * children...
 		 */
-		ImmediateInterruptOK = false;
 		fflush(stdout);
 		fflush(stderr);
 		abort();
 	}
 
 	/*
-	 * We reach here if elevel <= WARNING. OK to return to caller.
-	 *
+	 * We reach here if elevel <= WARNING.  OK to return to caller, so restore
+	 * caller's setting of ImmediateInterruptOK.
+	 */
+	ImmediateInterruptOK = save_ImmediateInterruptOK;
+
+	/*
 	 * But check for cancel/die interrupt first --- this is so that the user
 	 * can stop a query emitting tons of notice or warning messages, even if
 	 * it's in a loop that otherwise fails to check for interrupts.
@@ -570,7 +595,7 @@ errcode(int sqlerrcode)
 /*
  * errcode_for_file_access --- add SQLSTATE error code to the current error
  *
- * The SQLSTATE code is chosen based on the saved errno value.	We assume
+ * The SQLSTATE code is chosen based on the saved errno value.  We assume
  * that the failing operation was some type of disk file access.
  *
  * NOTE: the primary error message string should generally include %m
@@ -641,7 +666,7 @@ errcode_for_file_access(void)
 /*
  * errcode_for_socket_access --- add SQLSTATE error code to the current error
  *
- * The SQLSTATE code is chosen based on the saved errno value.	We assume
+ * The SQLSTATE code is chosen based on the saved errno value.  We assume
  * that the failing operation was some type of socket access.
  *
  * NOTE: the primary error message string should generally include %m
@@ -679,7 +704,7 @@ errcode_for_socket_access(void)
  * This macro handles expansion of a format string and associated parameters;
  * it's common code for errmsg(), errdetail(), etc.  Must be called inside
  * a routine that is declared like "const char *fmt, ..." and has an edata
- * pointer set up.	The message is assigned to edata->targetfield, or
+ * pointer set up.  The message is assigned to edata->targetfield, or
  * appended to it if appendval is true.  The message is subject to translation
  * if translateit is true.
  *
@@ -1150,10 +1175,19 @@ elog_start(const char *filename, int lineno, const char *funcname)
 {
 	ErrorData  *edata;
 
+	/* Make sure that memory context initialization has finished */
+	if (ErrorContext == NULL)
+	{
+		/* Ooops, hard crash time; very little we can do safely here */
+		write_stderr("error occurred at %s:%d before error message processing is available\n",
+					 filename ? filename : "(unknown file)", lineno);
+		exit(2);
+	}
+
 	if (++errordata_stack_depth >= ERRORDATA_STACK_SIZE)
 	{
 		/*
-		 * Wups, stack not big enough.	We treat this as a PANIC condition
+		 * Wups, stack not big enough.  We treat this as a PANIC condition
 		 * because it suggests an infinite loop of errors during error
 		 * recovery.  Note that the message is intentionally not localized,
 		 * else failure to convert it to client encoding could cause further
@@ -1321,7 +1355,7 @@ EmitErrorReport(void)
 /*
  * CopyErrorData --- obtain a copy of the topmost error stack entry
  *
- * This is only for use in error handler code.	The data is copied into the
+ * This is only for use in error handler code.  The data is copied into the
  * current memory context, so callers should always switch away from
  * ErrorContext first; otherwise it will be lost when FlushErrorState is done.
  */
@@ -1412,7 +1446,7 @@ FlushErrorState(void)
  *
  * A handler can do CopyErrorData/FlushErrorState to get out of the error
  * subsystem, then do some processing, and finally ReThrowError to re-throw
- * the original error.	This is slower than just PG_RE_THROW() but should
+ * the original error.  This is slower than just PG_RE_THROW() but should
  * be used if the "some processing" is likely to incur another error.
  */
 void
@@ -1429,7 +1463,7 @@ ReThrowError(ErrorData *edata)
 	if (++errordata_stack_depth >= ERRORDATA_STACK_SIZE)
 	{
 		/*
-		 * Wups, stack not big enough.	We treat this as a PANIC condition
+		 * Wups, stack not big enough.  We treat this as a PANIC condition
 		 * because it suggests an infinite loop of errors during error
 		 * recovery.
 		 */
@@ -1576,7 +1610,7 @@ set_syslog_parameters(const char *ident, int facility)
 {
 	/*
 	 * guc.c is likely to call us repeatedly with same parameters, so don't
-	 * thrash the syslog connection unnecessarily.	Also, we do not re-open
+	 * thrash the syslog connection unnecessarily.  Also, we do not re-open
 	 * the connection until needed, since this routine will get called whether
 	 * or not Log_destination actually mentions syslog.
 	 *
@@ -2510,7 +2544,7 @@ send_message_to_server_log(ErrorData *edata)
  *
  * Note: when there are multiple backends writing into the syslogger pipe,
  * it's critical that each write go into the pipe indivisibly, and not
- * get interleaved with data from other processes.	Fortunately, the POSIX
+ * get interleaved with data from other processes.  Fortunately, the POSIX
  * spec requires that writes to pipes be atomic so long as they are not
  * more than PIPE_BUF bytes long.  So we divide long messages into chunks
  * that are no more than that length, and send one chunk per write() call.
@@ -2788,7 +2822,7 @@ expand_fmt_string(const char *fmt, ErrorData *edata)
 static const char *
 useful_strerror(int errnum)
 {
-	/* this buffer is only used if errno has a bogus value */
+	/* this buffer is only used if strerror() and get_errno_symbol() fail */
 	static char errorstr_buf[48];
 	const char *str;
 
@@ -2800,10 +2834,16 @@ useful_strerror(int errnum)
 	str = strerror(errnum);
 
 	/*
-	 * Some strerror()s return an empty string for out-of-range errno. This is
-	 * ANSI C spec compliant, but not exactly useful.
+	 * Some strerror()s return an empty string for out-of-range errno.  This
+	 * is ANSI C spec compliant, but not exactly useful.  Also, we may get
+	 * back strings of question marks if libc cannot transcode the message to
+	 * the codeset specified by LC_CTYPE.  If we get nothing useful, first try
+	 * get_errno_symbol(), and if that fails, print the numeric errno.
 	 */
-	if (str == NULL || *str == '\0')
+	if (str == NULL || *str == '\0' || *str == '?')
+		str = get_errno_symbol(errnum);
+
+	if (str == NULL)
 	{
 		snprintf(errorstr_buf, sizeof(errorstr_buf),
 		/*------
@@ -2814,6 +2854,178 @@ useful_strerror(int errnum)
 	}
 
 	return str;
+}
+
+/*
+ * Returns a symbol (e.g. "ENOENT") for an errno code.
+ * Returns NULL if the code is unrecognized.
+ */
+static const char *
+get_errno_symbol(int errnum)
+{
+	switch (errnum)
+	{
+		case E2BIG:
+			return "E2BIG";
+		case EACCES:
+			return "EACCES";
+#ifdef EADDRINUSE
+		case EADDRINUSE:
+			return "EADDRINUSE";
+#endif
+#ifdef EADDRNOTAVAIL
+		case EADDRNOTAVAIL:
+			return "EADDRNOTAVAIL";
+#endif
+		case EAFNOSUPPORT:
+			return "EAFNOSUPPORT";
+#ifdef EAGAIN
+		case EAGAIN:
+			return "EAGAIN";
+#endif
+#ifdef EALREADY
+		case EALREADY:
+			return "EALREADY";
+#endif
+		case EBADF:
+			return "EBADF";
+#ifdef EBADMSG
+		case EBADMSG:
+			return "EBADMSG";
+#endif
+		case EBUSY:
+			return "EBUSY";
+		case ECHILD:
+			return "ECHILD";
+#ifdef ECONNABORTED
+		case ECONNABORTED:
+			return "ECONNABORTED";
+#endif
+		case ECONNREFUSED:
+			return "ECONNREFUSED";
+#ifdef ECONNRESET
+		case ECONNRESET:
+			return "ECONNRESET";
+#endif
+		case EDEADLK:
+			return "EDEADLK";
+		case EDOM:
+			return "EDOM";
+		case EEXIST:
+			return "EEXIST";
+		case EFAULT:
+			return "EFAULT";
+		case EFBIG:
+			return "EFBIG";
+#ifdef EHOSTUNREACH
+		case EHOSTUNREACH:
+			return "EHOSTUNREACH";
+#endif
+		case EIDRM:
+			return "EIDRM";
+		case EINPROGRESS:
+			return "EINPROGRESS";
+		case EINTR:
+			return "EINTR";
+		case EINVAL:
+			return "EINVAL";
+		case EIO:
+			return "EIO";
+#ifdef EISCONN
+		case EISCONN:
+			return "EISCONN";
+#endif
+		case EISDIR:
+			return "EISDIR";
+#ifdef ELOOP
+		case ELOOP:
+			return "ELOOP";
+#endif
+		case EMFILE:
+			return "EMFILE";
+		case EMLINK:
+			return "EMLINK";
+		case EMSGSIZE:
+			return "EMSGSIZE";
+		case ENAMETOOLONG:
+			return "ENAMETOOLONG";
+		case ENFILE:
+			return "ENFILE";
+		case ENOBUFS:
+			return "ENOBUFS";
+		case ENODEV:
+			return "ENODEV";
+		case ENOENT:
+			return "ENOENT";
+		case ENOEXEC:
+			return "ENOEXEC";
+		case ENOMEM:
+			return "ENOMEM";
+		case ENOSPC:
+			return "ENOSPC";
+		case ENOSYS:
+			return "ENOSYS";
+#ifdef ENOTCONN
+		case ENOTCONN:
+			return "ENOTCONN";
+#endif
+		case ENOTDIR:
+			return "ENOTDIR";
+#if defined(ENOTEMPTY) && (ENOTEMPTY != EEXIST) /* same code on AIX */
+		case ENOTEMPTY:
+			return "ENOTEMPTY";
+#endif
+#ifdef ENOTSOCK
+		case ENOTSOCK:
+			return "ENOTSOCK";
+#endif
+#ifdef ENOTSUP
+		case ENOTSUP:
+			return "ENOTSUP";
+#endif
+		case ENOTTY:
+			return "ENOTTY";
+		case ENXIO:
+			return "ENXIO";
+#if defined(EOPNOTSUPP) && (!defined(ENOTSUP) || (EOPNOTSUPP != ENOTSUP))
+		case EOPNOTSUPP:
+			return "EOPNOTSUPP";
+#endif
+#ifdef EOVERFLOW
+		case EOVERFLOW:
+			return "EOVERFLOW";
+#endif
+		case EPERM:
+			return "EPERM";
+		case EPIPE:
+			return "EPIPE";
+		case EPROTONOSUPPORT:
+			return "EPROTONOSUPPORT";
+		case ERANGE:
+			return "ERANGE";
+#ifdef EROFS
+		case EROFS:
+			return "EROFS";
+#endif
+		case ESRCH:
+			return "ESRCH";
+#ifdef ETIMEDOUT
+		case ETIMEDOUT:
+			return "ETIMEDOUT";
+#endif
+#ifdef ETXTBSY
+		case ETXTBSY:
+			return "ETXTBSY";
+#endif
+#if defined(EWOULDBLOCK) && (!defined(EAGAIN) || (EWOULDBLOCK != EAGAIN))
+		case EWOULDBLOCK:
+			return "EWOULDBLOCK";
+#endif
+		case EXDEV:
+			return "EXDEV";
+	}
+
+	return NULL;
 }
 
 

@@ -83,7 +83,7 @@ static void process_settings(Oid databaseid, Oid roleid);
  * GetDatabaseTuple -- fetch the pg_database row for a database
  *
  * This is used during backend startup when we don't yet have any access to
- * system catalogs in general.	In the worst case, we can seqscan pg_database
+ * system catalogs in general.  In the worst case, we can seqscan pg_database
  * using nothing but the hard-wired descriptor that relcache.c creates for
  * pg_database.  In more typical cases, relcache.c was able to load
  * descriptors for both pg_database and its indexes from the shared relcache
@@ -107,7 +107,7 @@ GetDatabaseTuple(const char *dbname)
 				CStringGetDatum(dbname));
 
 	/*
-	 * Open pg_database and fetch a tuple.	Force heap scan if we haven't yet
+	 * Open pg_database and fetch a tuple.  Force heap scan if we haven't yet
 	 * built the critical shared relcache entries (i.e., we're starting up
 	 * without a shared relcache cache file).
 	 */
@@ -150,7 +150,7 @@ GetDatabaseTupleByOid(Oid dboid)
 				ObjectIdGetDatum(dboid));
 
 	/*
-	 * Open pg_database and fetch a tuple.	Force heap scan if we haven't yet
+	 * Open pg_database and fetch a tuple.  Force heap scan if we haven't yet
 	 * built the critical shared relcache entries (i.e., we're starting up
 	 * without a shared relcache cache file).
 	 */
@@ -191,7 +191,7 @@ PerformAuthentication(Port *port)
 	 * are loading them into the startup transaction's memory context, not
 	 * PostmasterContext, but that shouldn't matter.
 	 *
-	 * FIXME: [fork/exec] Ugh.	Is there a way around this overhead?
+	 * FIXME: [fork/exec] Ugh.  Is there a way around this overhead?
 	 */
 #ifdef EXEC_BACKEND
 	if (!load_hba())
@@ -290,7 +290,7 @@ CheckMyDatabase(const char *name, bool am_superuser)
 					name)));
 
 		/*
-		 * Check privilege to connect to the database.	(The am_superuser test
+		 * Check privilege to connect to the database.  (The am_superuser test
 		 * is redundant, but since we have the flag, might as well check it
 		 * and save a few cycles.)
 		 */
@@ -306,7 +306,7 @@ CheckMyDatabase(const char *name, bool am_superuser)
 		 * Check connection limit for this database.
 		 *
 		 * There is a race condition here --- we create our PGPROC before
-		 * checking for other PGPROCs.	If two backends did this at about the
+		 * checking for other PGPROCs.  If two backends did this at about the
 		 * same time, they might both think they were over the limit, while
 		 * ideally one should succeed and one fail.  Getting that to work
 		 * exactly seems more trouble than it is worth, however; instead we
@@ -454,7 +454,7 @@ BaseInit(void)
  *		Initialize POSTGRES.
  *
  * The database can be specified by name, using the in_dbname parameter, or by
- * OID, using the dboid parameter.	In the latter case, the actual database
+ * OID, using the dboid parameter.  In the latter case, the actual database
  * name can be returned to the caller in out_dbname.  If out_dbname isn't
  * NULL, it must point to a buffer of size NAMEDATALEN.
  *
@@ -584,6 +584,15 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		/* statement_timestamp must be set for timeouts to work correctly */
 		SetCurrentStatementStartTimestamp();
 		StartTransactionCommand();
+
+		/*
+		 * transaction_isolation will have been set to the default by the
+		 * above.  If the default is "serializable", and we are in hot
+		 * standby, we will fail if we don't change it to something lower.
+		 * Fortunately, "read committed" is plenty good enough.
+		 */
+		XactIsoLevel = XACT_READ_COMMITTED;
+
 		(void) GetTransactionSnapshot();
 	}
 
@@ -669,7 +678,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	{
 		Assert(!bootstrap);
 
-		if (!superuser() && !is_authenticated_user_replication_role())
+		if (!superuser() && !has_rolreplication(GetUserId()))
 			ereport(FATAL,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("must be superuser or replication role to start walsender")));
@@ -838,7 +847,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 
 	/*
 	 * Now process any command-line switches and any additional GUC variable
-	 * settings passed in the startup packet.	We couldn't do this before
+	 * settings passed in the startup packet.   We couldn't do this before
 	 * because we didn't know if client is a superuser.
 	 */
 	if (MyProcPort != NULL)
@@ -912,7 +921,7 @@ process_startup_options(Port *port, bool am_superuser)
 
 		Assert(ac < maxac);
 
-		(void) process_postgres_switches(ac, av, gucctx);
+		(void) process_postgres_switches(ac, av, gucctx, NULL);
 	}
 
 	/*

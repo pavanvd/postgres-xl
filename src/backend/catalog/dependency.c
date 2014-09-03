@@ -185,13 +185,13 @@ static void findDependentObjects(const ObjectAddress *object,
 					 ObjectAddressStack *stack,
 					 ObjectAddresses *targetObjects,
 					 const ObjectAddresses *pendingObjects,
-					 Relation depRel);
+					 Relation *depRel);
 static void reportDependentObjects(const ObjectAddresses *targetObjects,
 					   DropBehavior behavior,
 					   int msglevel,
 					   const ObjectAddress *origObject);
 static void deleteOneObject(const ObjectAddress *object,
-				Relation depRel, int32 flags);
+				Relation *depRel, int32 flags);
 static void doDeletion(const ObjectAddress *object, int flags);
 static void AcquireDeletionLock(const ObjectAddress *object, int flags);
 static void ReleaseDeletionLock(const ObjectAddress *object);
@@ -248,7 +248,7 @@ performDeletion(const ObjectAddress *object,
 	depRel = heap_open(DependRelationId, RowExclusiveLock);
 
 	/*
-	 * Acquire deletion lock on the target object.	(Ideally the caller has
+	 * Acquire deletion lock on the target object.  (Ideally the caller has
 	 * done this already, but many places are sloppy about it.)
 	 */
 	AcquireDeletionLock(object, 0);
@@ -264,7 +264,7 @@ performDeletion(const ObjectAddress *object,
 						 NULL,	/* empty stack */
 						 targetObjects,
 						 NULL,	/* no pendingObjects */
-						 depRel);
+						 &depRel);
 
 	/*
 	 * Check if deletion is allowed, and report about cascaded deletes.
@@ -281,7 +281,7 @@ performDeletion(const ObjectAddress *object,
 	{
 		ObjectAddress *thisobj = targetObjects->refs + i;
 
-		deleteOneObject(thisobj, depRel, flags);
+		deleteOneObject(thisobj, &depRel, flags);
 	}
 
 	/* And clean up */
@@ -342,7 +342,7 @@ performMultipleDeletions(const ObjectAddresses *objects,
 							 NULL,		/* empty stack */
 							 targetObjects,
 							 objects,
-							 depRel);
+							 &depRel);
 	}
 
 	/*
@@ -363,18 +363,13 @@ performMultipleDeletions(const ObjectAddresses *objects,
 	{
 		ObjectAddress *thisobj = targetObjects->refs + i;
 
-		deleteOneObject(thisobj, depRel, flags);
+		deleteOneObject(thisobj, &depRel, flags);
 	}
 
 	/* And clean up */
 	free_object_addresses(targetObjects);
 
-	/*
-	 * We closed depRel earlier in deleteOneObject if doing a drop
-	 * concurrently
-	 */
-	if ((flags & PERFORM_DELETION_CONCURRENTLY) != PERFORM_DELETION_CONCURRENTLY)
-		heap_close(depRel, RowExclusiveLock);
+	heap_close(depRel, RowExclusiveLock);
 }
 
 #ifdef PGXC
@@ -469,7 +464,7 @@ performRename(const ObjectAddress *object, const char *oldname, const char *newn
 
 /*
  * deleteWhatDependsOn: attempt to drop everything that depends on the
- * specified object, though not the object itself.	Behavior is always
+ * specified object, though not the object itself.  Behavior is always
  * CASCADE.
  *
  * This is currently used only to clean out the contents of a schema
@@ -491,7 +486,7 @@ deleteWhatDependsOn(const ObjectAddress *object,
 	depRel = heap_open(DependRelationId, RowExclusiveLock);
 
 	/*
-	 * Acquire deletion lock on the target object.	(Ideally the caller has
+	 * Acquire deletion lock on the target object.  (Ideally the caller has
 	 * done this already, but many places are sloppy about it.)
 	 */
 	AcquireDeletionLock(object, 0);
@@ -507,7 +502,7 @@ deleteWhatDependsOn(const ObjectAddress *object,
 						 NULL,	/* empty stack */
 						 targetObjects,
 						 NULL,	/* no pendingObjects */
-						 depRel);
+						 &depRel);
 
 	/*
 	 * Check if deletion is allowed, and report about cascaded deletes.
@@ -533,10 +528,10 @@ deleteWhatDependsOn(const ObjectAddress *object,
 		 * Since this function is currently only used to clean out temporary
 		 * schemas, we pass PERFORM_DELETION_INTERNAL here, indicating that
 		 * the operation is an automatic system operation rather than a user
-		 * action.	If, in the future, this function is used for other
+		 * action.  If, in the future, this function is used for other
 		 * purposes, we might need to revisit this.
 		 */
-		deleteOneObject(thisobj, depRel, PERFORM_DELETION_INTERNAL);
+		deleteOneObject(thisobj, &depRel, PERFORM_DELETION_INTERNAL);
 	}
 
 	/* And clean up */
@@ -550,7 +545,7 @@ deleteWhatDependsOn(const ObjectAddress *object,
  *
  * For every object that depends on the starting object, acquire a deletion
  * lock on the object, add it to targetObjects (if not already there),
- * and recursively find objects that depend on it.	An object's dependencies
+ * and recursively find objects that depend on it.  An object's dependencies
  * will be placed into targetObjects before the object itself; this means
  * that the finished list's order represents a safe deletion order.
  *
@@ -571,7 +566,7 @@ deleteWhatDependsOn(const ObjectAddress *object,
  *	targetObjects: list of objects that are scheduled to be deleted
  *	pendingObjects: list of other objects slated for destruction, but
  *			not necessarily in targetObjects yet (can be NULL if none)
- *	depRel: already opened pg_depend relation
+ *	*depRel: already opened pg_depend relation
  */
 static void
 findDependentObjects(const ObjectAddress *object,
@@ -579,7 +574,7 @@ findDependentObjects(const ObjectAddress *object,
 					 ObjectAddressStack *stack,
 					 ObjectAddresses *targetObjects,
 					 const ObjectAddresses *pendingObjects,
-					 Relation depRel)
+					 Relation *depRel)
 {
 	ScanKeyData key[3];
 	int			nkeys;
@@ -602,7 +597,7 @@ findDependentObjects(const ObjectAddress *object,
 	 * will not break a loop at an internal dependency: if we enter the loop
 	 * at an "owned" object we will switch and start at the "owning" object
 	 * instead.  We could probably hack something up to avoid breaking at an
-	 * auto dependency, too, if we had to.	However there are no known cases
+	 * auto dependency, too, if we had to.  However there are no known cases
 	 * where that would be necessary.
 	 */
 	if (stack_address_present_add_flags(object, flags, stack))
@@ -623,7 +618,7 @@ findDependentObjects(const ObjectAddress *object,
 	/*
 	 * The target object might be internally dependent on some other object
 	 * (its "owner"), and/or be a member of an extension (also considered its
-	 * owner).	If so, and if we aren't recursing from the owning object, we
+	 * owner).  If so, and if we aren't recursing from the owning object, we
 	 * have to transform this deletion request into a deletion request of the
 	 * owning object.  (We'll eventually recurse back to this object, but the
 	 * owning object has to be visited first so it will be deleted after.) The
@@ -649,7 +644,7 @@ findDependentObjects(const ObjectAddress *object,
 	else
 		nkeys = 2;
 
-	scan = systable_beginscan(depRel, DependDependerIndexId, true,
+	scan = systable_beginscan(*depRel, DependDependerIndexId, true,
 							  SnapshotNow, nkeys, key);
 
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
@@ -686,7 +681,7 @@ findDependentObjects(const ObjectAddress *object,
 					/*
 					 * Exception 1a: if the owning object is listed in
 					 * pendingObjects, just release the caller's lock and
-					 * return.	We'll eventually complete the DROP when we
+					 * return.  We'll eventually complete the DROP when we
 					 * reach that entry in the pending list.
 					 */
 					if (pendingObjects &&
@@ -739,7 +734,7 @@ findDependentObjects(const ObjectAddress *object,
 				 * owning object.
 				 *
 				 * First, release caller's lock on this object and get
-				 * deletion lock on the owning object.	(We must release
+				 * deletion lock on the owning object.  (We must release
 				 * caller's lock to avoid deadlock against a concurrent
 				 * deletion of the owning object.)
 				 */
@@ -824,7 +819,7 @@ findDependentObjects(const ObjectAddress *object,
 	else
 		nkeys = 2;
 
-	scan = systable_beginscan(depRel, DependReferenceIndexId, true,
+	scan = systable_beginscan(*depRel, DependReferenceIndexId, true,
 							  SnapshotNow, nkeys, key);
 
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
@@ -901,7 +896,7 @@ findDependentObjects(const ObjectAddress *object,
 	systable_endscan(scan);
 
 	/*
-	 * Finally, we can add the target object to targetObjects.	Be careful to
+	 * Finally, we can add the target object to targetObjects.  Be careful to
 	 * include any flags that were passed back down to us from inner recursion
 	 * levels.
 	 */
@@ -956,7 +951,7 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 	/*
 	 * We limit the number of dependencies reported to the client to
 	 * MAX_REPORTED_DEPS, since client software may not deal well with
-	 * enormous error strings.	The server log always gets a full report.
+	 * enormous error strings.  The server log always gets a full report.
 	 */
 #define MAX_REPORTED_DEPS 100
 
@@ -989,7 +984,7 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 							DEPFLAG_EXTENSION))
 		{
 			/*
-			 * auto-cascades are reported at DEBUG2, not msglevel.	We don't
+			 * auto-cascades are reported at DEBUG2, not msglevel.  We don't
 			 * try to combine them with the regular message because the
 			 * results are too confusing when client_min_messages and
 			 * log_min_messages are different.
@@ -1095,10 +1090,10 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 /*
  * deleteOneObject: delete a single object for performDeletion.
  *
- * depRel is the already-open pg_depend relation.
+ * *depRel is the already-open pg_depend relation.
  */
 static void
-deleteOneObject(const ObjectAddress *object, Relation depRel, int flags)
+deleteOneObject(const ObjectAddress *object, Relation *depRel, int flags)
 {
 	ScanKeyData key[3];
 	int			nkeys;
@@ -1116,8 +1111,33 @@ deleteOneObject(const ObjectAddress *object, Relation depRel, int flags)
 	}
 
 	/*
-	 * First remove any pg_depend records that link from this object to
-	 * others.	(Any records linking to this object should be gone already.)
+	 * Close depRel if we are doing a drop concurrently.  The object deletion
+	 * subroutine will commit the current transaction, so we can't keep the
+	 * relation open across doDeletion().
+	 */
+	if (flags & PERFORM_DELETION_CONCURRENTLY)
+		heap_close(*depRel, RowExclusiveLock);
+
+	/*
+	 * Delete the object itself, in an object-type-dependent way.
+	 *
+	 * We used to do this after removing the outgoing dependency links, but it
+	 * seems just as reasonable to do it beforehand.  In the concurrent case
+	 * we *must* do it in this order, because we can't make any transactional
+	 * updates before calling doDeletion() --- they'd get committed right
+	 * away, which is not cool if the deletion then fails.
+	 */
+	doDeletion(object, flags);
+
+	/*
+	 * Reopen depRel if we closed it above
+	 */
+	if (flags & PERFORM_DELETION_CONCURRENTLY)
+		*depRel = heap_open(DependRelationId, RowExclusiveLock);
+
+	/*
+	 * Now remove any pg_depend records that link from this object to others.
+	 * (Any records linking to this object should be gone already.)
 	 *
 	 * When dropping a whole object (subId = 0), remove all pg_depend records
 	 * for its sub-objects too.
@@ -1141,34 +1161,23 @@ deleteOneObject(const ObjectAddress *object, Relation depRel, int flags)
 	else
 		nkeys = 2;
 
-	scan = systable_beginscan(depRel, DependDependerIndexId, true,
+	scan = systable_beginscan(*depRel, DependDependerIndexId, true,
 							  SnapshotNow, nkeys, key);
 
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
 	{
-		simple_heap_delete(depRel, &tup->t_self);
+		simple_heap_delete(*depRel, &tup->t_self);
 	}
 
 	systable_endscan(scan);
 
 	/*
-	 * Delete shared dependency references related to this object.	Again, if
+	 * Delete shared dependency references related to this object.  Again, if
 	 * subId = 0, remove records for sub-objects too.
 	 */
 	deleteSharedDependencyRecordsFor(object->classId, object->objectId,
 									 object->objectSubId);
 
-	/*
-	 * Close depRel if we are doing a drop concurrently because it commits the
-	 * transaction, so we don't want dangling references.
-	 */
-	if ((flags & PERFORM_DELETION_CONCURRENTLY) == PERFORM_DELETION_CONCURRENTLY)
-		heap_close(depRel, RowExclusiveLock);
-
-	/*
-	 * Now delete the object itself, in an object-type-dependent way.
-	 */
-	doDeletion(object, flags);
 
 	/*
 	 * Delete any comments or security labels associated with this object.
@@ -1420,15 +1429,23 @@ AcquireDeletionLock(const ObjectAddress *object, int flags)
 {
 	if (object->classId == RelationRelationId)
 	{
-		if ((flags & PERFORM_DELETION_CONCURRENTLY) == PERFORM_DELETION_CONCURRENTLY)
+		/*
+		 * In DROP INDEX CONCURRENTLY, take only ShareUpdateExclusiveLock on
+		 * the index for the moment.  index_drop() will promote the lock once
+		 * it's safe to do so.  In all other cases we need full exclusive
+		 * lock.
+		 */
+		if (flags & PERFORM_DELETION_CONCURRENTLY)
 			LockRelationOid(object->objectId, ShareUpdateExclusiveLock);
 		else
 			LockRelationOid(object->objectId, AccessExclusiveLock);
 	}
 	else
+	{
 		/* assume we should lock the whole object not a sub-object */
 		LockDatabaseObject(object->classId, object->objectId, 0,
 						   AccessExclusiveLock);
+	}
 }
 
 /*
@@ -1489,13 +1506,13 @@ recordDependencyOnExpr(const ObjectAddress *depender,
  * recordDependencyOnSingleRelExpr - find expression dependencies
  *
  * As above, but only one relation is expected to be referenced (with
- * varno = 1 and varlevelsup = 0).	Pass the relation OID instead of a
+ * varno = 1 and varlevelsup = 0).  Pass the relation OID instead of a
  * range table.  An additional frammish is that dependencies on that
  * relation (or its component columns) will be marked with 'self_behavior',
  * whereas 'behavior' is used for everything else.
  *
  * NOTE: the caller should ensure that a whole-table dependency on the
- * specified relation is created separately, if one is needed.	In particular,
+ * specified relation is created separately, if one is needed.  In particular,
  * a whole-row Var "relation.*" will not cause this routine to emit any
  * dependency item.  This is appropriate behavior for subexpressions of an
  * ordinary query, so other cases need to cope as necessary.
@@ -1615,7 +1632,7 @@ find_expr_references_walker(Node *node,
 
 		/*
 		 * A whole-row Var references no specific columns, so adds no new
-		 * dependency.	(We assume that there is a whole-table dependency
+		 * dependency.  (We assume that there is a whole-table dependency
 		 * arising from each underlying rangetable entry.  While we could
 		 * record such a dependency when finding a whole-row Var that
 		 * references a relation directly, it's quite unclear how to extend
@@ -1674,7 +1691,7 @@ find_expr_references_walker(Node *node,
 
 		/*
 		 * If it's a regclass or similar literal referring to an existing
-		 * object, add a reference to that object.	(Currently, only the
+		 * object, add a reference to that object.  (Currently, only the
 		 * regclass and regconfig cases have any likely use, but we may as
 		 * well handle all the OID-alias datatypes consistently.)
 		 */
@@ -2267,7 +2284,7 @@ object_address_present_add_flags(const ObjectAddress *object,
 			{
 				/*
 				 * We get here if we find a need to delete a column after
-				 * having already decided to drop its whole table.	Obviously
+				 * having already decided to drop its whole table.  Obviously
 				 * we no longer need to drop the column.  But don't plaster
 				 * its flags on the table.
 				 */
@@ -3056,6 +3073,11 @@ getObjectDescription(const ObjectAddress *object)
 					case DEFACLOBJ_FUNCTION:
 						appendStringInfo(&buffer,
 										 _("default privileges on new functions belonging to role %s"),
+									  GetUserNameFromId(defacl->defaclrole));
+						break;
+					case DEFACLOBJ_TYPE:
+						appendStringInfo(&buffer,
+										 _("default privileges on new types belonging to role %s"),
 									  GetUserNameFromId(defacl->defaclrole));
 						break;
 					default:

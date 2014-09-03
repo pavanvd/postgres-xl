@@ -17,7 +17,6 @@
 #include "storage/spin.h"
 #include "pgtime.h"
 
-extern bool am_walreceiver;
 extern int	wal_receiver_status_interval;
 extern bool hot_standby_feedback;
 
@@ -73,7 +72,7 @@ typedef struct
 	/*
 	 * latestChunkStart is the starting byte position of the current "batch"
 	 * of received WAL.  It's actually the same as the previous value of
-	 * receivedUpto before the last flush to disk.	Startup process can use
+	 * receivedUpto before the last flush to disk.  Startup process can use
 	 * this to detect whether it's keeping up or not.
 	 */
 	XLogRecPtr	latestChunkStart;
@@ -83,6 +82,12 @@ typedef struct
 	 */
 	TimestampTz lastMsgSendTime;
 	TimestampTz lastMsgReceiptTime;
+
+	/*
+	 * Latest reported end of WAL on the sender
+	 */
+	XLogRecPtr	latestWalEnd;
+	TimestampTz latestWalEndTime;
 
 	/*
 	 * connection string; is used for walreceiver to connect with the primary.

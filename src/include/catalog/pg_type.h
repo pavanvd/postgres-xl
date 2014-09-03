@@ -47,7 +47,7 @@ CATALOG(pg_type,1247) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71) BKI_SCHEMA_MACRO
 
 	/*
 	 * For a fixed-size type, typlen is the number of bytes we use to
-	 * represent a value of this type, e.g. 4 for an int4.	But for a
+	 * represent a value of this type, e.g. 4 for an int4.  But for a
 	 * variable-length type, typlen is negative.  We use -1 to indicate a
 	 * "varlena" type (one that has a length word), -2 to indicate a
 	 * null-terminated C string.
@@ -56,7 +56,7 @@ CATALOG(pg_type,1247) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71) BKI_SCHEMA_MACRO
 
 	/*
 	 * typbyval determines whether internal Postgres routines pass a value of
-	 * this type by value or by reference.	typbyval had better be FALSE if
+	 * this type by value or by reference.  typbyval had better be FALSE if
 	 * the length is not 1, 2, or 4 (or 8 on 8-byte-Datum machines).
 	 * Variable-length types are always passed by reference. Note that
 	 * typbyval can be false even if the length would allow pass-by-value;
@@ -76,7 +76,7 @@ CATALOG(pg_type,1247) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71) BKI_SCHEMA_MACRO
 	/*
 	 * typcategory and typispreferred help the parser distinguish preferred
 	 * and non-preferred coercions.  The category can be any single ASCII
-	 * character (but not \0).	The categories used for built-in types are
+	 * character (but not \0).  The categories used for built-in types are
 	 * identified by the TYPCATEGORY macros below.
 	 */
 	char		typcategory;	/* arbitrary type classification */
@@ -85,7 +85,7 @@ CATALOG(pg_type,1247) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71) BKI_SCHEMA_MACRO
 
 	/*
 	 * If typisdefined is false, the entry is only a placeholder (forward
-	 * reference).	We know the type name, but not yet anything else about it.
+	 * reference).  We know the type name, but not yet anything else about it.
 	 */
 	bool		typisdefined;
 
@@ -146,7 +146,7 @@ CATALOG(pg_type,1247) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71) BKI_SCHEMA_MACRO
 	 * 'd' = DOUBLE alignment (8 bytes on many machines, but by no means all).
 	 *
 	 * See include/access/tupmacs.h for the macros that compute these
-	 * alignment requirements.	Note also that we allow the nominal alignment
+	 * alignment requirements.  Note also that we allow the nominal alignment
 	 * to be violated when storing "packed" varlenas; the TOAST mechanism
 	 * takes care of hiding that from most code.
 	 *
@@ -181,7 +181,7 @@ CATALOG(pg_type,1247) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71) BKI_SCHEMA_MACRO
 
 	/*
 	 * Domains use typbasetype to show the base (or domain) type that the
-	 * domain is based on.	Zero if the type is not a domain.
+	 * domain is based on.  Zero if the type is not a domain.
 	 */
 	Oid			typbasetype;
 
@@ -452,6 +452,7 @@ DATA(insert OID = 1001 (  _bytea	 PGNSP PGUID -1 f b A f t \054 0	17 0 array_in 
 DATA(insert OID = 1002 (  _char		 PGNSP PGUID -1 f b A f t \054 0	18 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 0 _null_ _null_ _null_ ));
 DATA(insert OID = 1003 (  _name		 PGNSP PGUID -1 f b A f t \054 0	19 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 0 _null_ _null_ _null_ ));
 DATA(insert OID = 1005 (  _int2		 PGNSP PGUID -1 f b A f t \054 0	21 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 0 _null_ _null_ _null_ ));
+#define INT2ARRAYOID		1005
 DATA(insert OID = 1006 (  _int2vector PGNSP PGUID -1 f b A f t \054 0	22 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 0 _null_ _null_ _null_ ));
 DATA(insert OID = 1007 (  _int4		 PGNSP PGUID -1 f b A f t \054 0	23 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 0 _null_ _null_ _null_ ));
 #define INT4ARRAYOID		1007
@@ -459,6 +460,7 @@ DATA(insert OID = 1008 (  _regproc	 PGNSP PGUID -1 f b A f t \054 0	24 0 array_i
 DATA(insert OID = 1009 (  _text		 PGNSP PGUID -1 f b A f t \054 0	25 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 100 _null_ _null_ _null_ ));
 #define TEXTARRAYOID		1009
 DATA(insert OID = 1028 (  _oid		 PGNSP PGUID -1 f b A f t \054 0	26 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 0 _null_ _null_ _null_ ));
+#define OIDARRAYOID			1028
 DATA(insert OID = 1010 (  _tid		 PGNSP PGUID -1 f b A f t \054 0	27 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 0 _null_ _null_ _null_ ));
 DATA(insert OID = 1011 (  _xid		 PGNSP PGUID -1 f b A f t \054 0	28 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 0 _null_ _null_ _null_ ));
 DATA(insert OID = 1012 (  _cid		 PGNSP PGUID -1 f b A f t \054 0	29 0 array_in array_out array_recv array_send - - array_typanalyze i x f 0 -1 0 0 _null_ _null_ _null_ ));

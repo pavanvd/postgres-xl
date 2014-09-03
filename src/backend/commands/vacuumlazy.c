@@ -13,7 +13,7 @@
  * We are willing to use at most maintenance_work_mem memory space to keep
  * track of dead tuples.  We initially allocate an array of TIDs of that size,
  * with an upper limit that depends on table size (this limit ensures we don't
- * allocate a huge area uselessly for vacuuming small tables).	If the array
+ * allocate a huge area uselessly for vacuuming small tables).  If the array
  * threatens to overflow, we suspend the heap scan phase and perform a pass of
  * index cleanup and page compaction, then resume the heap scan with an empty
  * TID array.
@@ -46,6 +46,7 @@
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "portability/instr_time.h"
 #include "postmaster/autovacuum.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
@@ -66,6 +67,17 @@
  */
 #define REL_TRUNCATE_MINIMUM	1000
 #define REL_TRUNCATE_FRACTION	16
+
+/*
+ * Timing parameters for truncate locking heuristics.
+ *
+ * These were not exposed as user tunable GUC values because it didn't seem
+ * that the potential for improvement was great enough to merit the cost of
+ * supporting them.
+ */
+#define VACUUM_TRUNCATE_LOCK_CHECK_INTERVAL		20	/* ms */
+#define VACUUM_TRUNCATE_LOCK_WAIT_INTERVAL		50	/* ms */
+#define VACUUM_TRUNCATE_LOCK_TIMEOUT			5000		/* ms */
 
 /*
  * Guesstimation of number of dead tuples per page.  This is used to
@@ -101,6 +113,7 @@ typedef struct LVRelStats
 	ItemPointer dead_tuples;	/* array of ItemPointerData */
 	int			num_index_scans;
 	TransactionId latestRemovedXid;
+	bool		lock_waiter_detected;
 } LVRelStats;
 
 
@@ -159,7 +172,8 @@ lazy_vacuum_rel(Relation onerel, VacuumStmt *vacstmt,
 	int			usecs;
 	double		read_rate,
 				write_rate;
-	bool		scan_all;
+	bool		scan_all;		/* should we scan all pages? */
+	bool		scanned_all;	/* did we actually scan all pages? */
 	TransactionId freezeTableLimit;
 	BlockNumber new_rel_pages;
 	double		new_rel_tuples;
@@ -191,6 +205,8 @@ lazy_vacuum_rel(Relation onerel, VacuumStmt *vacstmt,
 	vacrelstats->old_rel_pages = onerel->rd_rel->relpages;
 	vacrelstats->old_rel_tuples = onerel->rd_rel->reltuples;
 	vacrelstats->num_index_scans = 0;
+	vacrelstats->pages_removed = 0;
+	vacrelstats->lock_waiter_detected = false;
 
 	/* Open all indexes of the relation */
 	vac_open_indexes(onerel, RowExclusiveLock, &nindexes, &Irel);
@@ -201,6 +217,21 @@ lazy_vacuum_rel(Relation onerel, VacuumStmt *vacstmt,
 
 	/* Done with indexes */
 	vac_close_indexes(nindexes, Irel, NoLock);
+
+	/*
+	 * Compute whether we actually scanned the whole relation. If we did, we
+	 * can adjust relfrozenxid.
+	 *
+	 * NB: We need to check this before truncating the relation, because that
+	 * will change ->rel_pages.
+	 */
+	if (vacrelstats->scanned_pages < vacrelstats->rel_pages)
+	{
+		Assert(!scan_all);
+		scanned_all = false;
+	}
+	else
+		scanned_all = true;
 
 	/*
 	 * Optionally truncate the relation.
@@ -246,9 +277,7 @@ lazy_vacuum_rel(Relation onerel, VacuumStmt *vacstmt,
 	if (new_rel_allvisible > new_rel_pages)
 		new_rel_allvisible = new_rel_pages;
 
-	new_frozen_xid = FreezeLimit;
-	if (vacrelstats->scanned_pages < vacrelstats->rel_pages)
-		new_frozen_xid = InvalidTransactionId;
+	new_frozen_xid = scanned_all ? FreezeLimit : InvalidTransactionId;
 
 	vac_update_relstats(onerel,
 						new_rel_pages,
@@ -259,8 +288,8 @@ lazy_vacuum_rel(Relation onerel, VacuumStmt *vacstmt,
 
 	/* report results to the stats collector, too */
 	pgstat_report_vacuum(RelationGetRelid(onerel),
-						 onerel->rd_rel->relisshared,
-						 new_rel_tuples);
+						  onerel->rd_rel->relisshared,
+						  new_rel_tuples);
 
 	/* and log the action if appropriate */
 	if (IsAutoVacuumWorkerProcess() && Log_autovacuum_min_duration >= 0)
@@ -411,7 +440,7 @@ lazy_scan_heap(Relation onerel, LVRelStats *vacrelstats,
 	 * Before entering the main loop, establish the invariant that
 	 * next_not_all_visible_block is the next block number >= blkno that's not
 	 * all-visible according to the visibility map, or nblocks if there's no
-	 * such block.	Also, we set up the skipping_all_visible_blocks flag,
+	 * such block.  Also, we set up the skipping_all_visible_blocks flag,
 	 * which is needed because we need hysteresis in the decision: once we've
 	 * started skipping blocks, we may as well skip everything up to the next
 	 * not-all-visible block.
@@ -574,6 +603,7 @@ lazy_scan_heap(Relation onerel, LVRelStats *vacrelstats,
 			if (!lazy_check_needs_freeze(buf))
 			{
 				UnlockReleaseBuffer(buf);
+				vacrelstats->scanned_pages++;
 				continue;
 			}
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
@@ -635,10 +665,33 @@ lazy_scan_heap(Relation onerel, LVRelStats *vacrelstats,
 			/* empty pages are always all-visible */
 			if (!PageIsAllVisible(page))
 			{
-				PageSetAllVisible(page);
+				START_CRIT_SECTION();
+
+				/* mark buffer dirty before writing a WAL record */
 				MarkBufferDirty(buf);
+
+				/*
+				 * It's possible that another backend has extended the heap,
+				 * initialized the page, and then failed to WAL-log the page
+				 * due to an ERROR.  Since heap extension is not WAL-logged,
+				 * recovery might try to replay our record setting the
+				 * page all-visible and find that the page isn't initialized,
+				 * which will cause a PANIC.  To prevent that, check whether
+				 * the page has been previously WAL-logged, and if not, do that
+				 * now.
+				 *
+				 * XXX: It would be nice to use a logging method supporting
+				 * standard buffers here since log_newpage_buffer() will write
+				 * the full block instead of omitting the hole.
+				 */
+				if (RelationNeedsWAL(onerel) &&
+					XLByteEQ(PageGetLSN(page), InvalidXLogRecPtr))
+					log_newpage_buffer(buf);
+
+				PageSetAllVisible(page);
 				visibilitymap_set(onerel, blkno, InvalidXLogRecPtr, vmbuffer,
 								  InvalidTransactionId);
+				END_CRIT_SECTION();
 			}
 
 			UnlockReleaseBuffer(buf);
@@ -848,6 +901,7 @@ lazy_scan_heap(Relation onerel, LVRelStats *vacrelstats,
 		{
 			/* Remove tuples from heap */
 			lazy_vacuum_page(onerel, blkno, buf, 0, vacrelstats);
+			has_dead_tuples = false;
 
 			/*
 			 * Forget the now-vacuumed tuples, and press on, but be careful
@@ -929,8 +983,8 @@ lazy_scan_heap(Relation onerel, LVRelStats *vacrelstats,
 		/*
 		 * If we remembered any tuples for deletion, then the page will be
 		 * visited again by lazy_vacuum_heap, which will compute and record
-		 * its post-compaction free space.	If not, then we're done with this
-		 * page, so remember its free space as-is.	(This path will always be
+		 * its post-compaction free space.  If not, then we're done with this
+		 * page, so remember its free space as-is.  (This path will always be
 		 * taken if there are no indexes.)
 		 */
 		if (vacrelstats->num_dead_tuples == prev_dead_count)
@@ -947,6 +1001,15 @@ lazy_scan_heap(Relation onerel, LVRelStats *vacrelstats,
 												  vacrelstats->scanned_pages,
 														 num_tuples);
 
+	/*
+	 * Release any remaining pin on visibility map page.
+	 */
+	if (BufferIsValid(vmbuffer))
+	{
+		ReleaseBuffer(vmbuffer);
+		vmbuffer = InvalidBuffer;
+	}
+
 	/* If any tuples need to be deleted, perform final vacuum cycle */
 	/* XXX put a threshold on min number of tuples here? */
 	if (vacrelstats->num_dead_tuples > 0)
@@ -962,13 +1025,6 @@ lazy_scan_heap(Relation onerel, LVRelStats *vacrelstats,
 		/* Remove tuples from heap */
 		lazy_vacuum_heap(onerel, vacrelstats);
 		vacrelstats->num_index_scans++;
-	}
-
-	/* Release the pin on the visibility map page */
-	if (BufferIsValid(vmbuffer))
-	{
-		ReleaseBuffer(vmbuffer);
-		vmbuffer = InvalidBuffer;
 	}
 
 	/* Do post-vacuum cleanup and statistics update for each index */
@@ -1253,80 +1309,117 @@ lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats)
 	BlockNumber old_rel_pages = vacrelstats->rel_pages;
 	BlockNumber new_rel_pages;
 	PGRUsage	ru0;
+	int			lock_retry;
 
 	pg_rusage_init(&ru0);
 
 	/*
-	 * We need full exclusive lock on the relation in order to do truncation.
-	 * If we can't get it, give up rather than waiting --- we don't want to
-	 * block other backends, and we don't want to deadlock (which is quite
-	 * possible considering we already hold a lower-grade lock).
+	 * Loop until no more truncating can be done.
 	 */
-	if (!ConditionalLockRelation(onerel, AccessExclusiveLock))
-		return;
-
-	/*
-	 * Now that we have exclusive lock, look to see if the rel has grown
-	 * whilst we were vacuuming with non-exclusive lock.  If so, give up; the
-	 * newly added pages presumably contain non-deletable tuples.
-	 */
-	new_rel_pages = RelationGetNumberOfBlocks(onerel);
-	if (new_rel_pages != old_rel_pages)
+	do
 	{
 		/*
-		 * Note: we intentionally don't update vacrelstats->rel_pages with the
-		 * new rel size here.  If we did, it would amount to assuming that the
-		 * new pages are empty, which is unlikely.	Leaving the numbers alone
-		 * amounts to assuming that the new pages have the same tuple density
-		 * as existing ones, which is less unlikely.
+		 * We need full exclusive lock on the relation in order to do
+		 * truncation. If we can't get it, give up rather than waiting --- we
+		 * don't want to block other backends, and we don't want to deadlock
+		 * (which is quite possible considering we already hold a lower-grade
+		 * lock).
+		 */
+		vacrelstats->lock_waiter_detected = false;
+		lock_retry = 0;
+		while (true)
+		{
+			if (ConditionalLockRelation(onerel, AccessExclusiveLock))
+				break;
+
+			/*
+			 * Check for interrupts while trying to (re-)acquire the exclusive
+			 * lock.
+			 */
+			CHECK_FOR_INTERRUPTS();
+
+			if (++lock_retry > (VACUUM_TRUNCATE_LOCK_TIMEOUT /
+								VACUUM_TRUNCATE_LOCK_WAIT_INTERVAL))
+			{
+				/*
+				 * We failed to establish the lock in the specified number of
+				 * retries. This means we give up truncating.
+				 */
+				vacrelstats->lock_waiter_detected = true;
+				ereport(elevel,
+						(errmsg("\"%s\": stopping truncate due to conflicting lock request",
+								RelationGetRelationName(onerel))));
+				return;
+			}
+
+			pg_usleep(VACUUM_TRUNCATE_LOCK_WAIT_INTERVAL);
+		}
+
+		/*
+		 * Now that we have exclusive lock, look to see if the rel has grown
+		 * whilst we were vacuuming with non-exclusive lock.  If so, give up;
+		 * the newly added pages presumably contain non-deletable tuples.
+		 */
+		new_rel_pages = RelationGetNumberOfBlocks(onerel);
+		if (new_rel_pages != old_rel_pages)
+		{
+			/*
+			 * Note: we intentionally don't update vacrelstats->rel_pages with
+			 * the new rel size here.  If we did, it would amount to assuming
+			 * that the new pages are empty, which is unlikely. Leaving the
+			 * numbers alone amounts to assuming that the new pages have the
+			 * same tuple density as existing ones, which is less unlikely.
+			 */
+			UnlockRelation(onerel, AccessExclusiveLock);
+			return;
+		}
+
+		/*
+		 * Scan backwards from the end to verify that the end pages actually
+		 * contain no tuples.  This is *necessary*, not optional, because
+		 * other backends could have added tuples to these pages whilst we
+		 * were vacuuming.
+		 */
+		new_rel_pages = count_nondeletable_pages(onerel, vacrelstats);
+
+		if (new_rel_pages >= old_rel_pages)
+		{
+			/* can't do anything after all */
+			UnlockRelation(onerel, AccessExclusiveLock);
+			return;
+		}
+
+		/*
+		 * Okay to truncate.
+		 */
+		RelationTruncate(onerel, new_rel_pages);
+
+		/*
+		 * We can release the exclusive lock as soon as we have truncated.
+		 * Other backends can't safely access the relation until they have
+		 * processed the smgr invalidation that smgrtruncate sent out ... but
+		 * that should happen as part of standard invalidation processing once
+		 * they acquire lock on the relation.
 		 */
 		UnlockRelation(onerel, AccessExclusiveLock);
-		return;
-	}
 
-	/*
-	 * Scan backwards from the end to verify that the end pages actually
-	 * contain no tuples.  This is *necessary*, not optional, because other
-	 * backends could have added tuples to these pages whilst we were
-	 * vacuuming.
-	 */
-	new_rel_pages = count_nondeletable_pages(onerel, vacrelstats);
+		/*
+		 * Update statistics.  Here, it *is* correct to adjust rel_pages
+		 * without also touching reltuples, since the tuple count wasn't
+		 * changed by the truncation.
+		 */
+		vacrelstats->pages_removed += old_rel_pages - new_rel_pages;
+		vacrelstats->rel_pages = new_rel_pages;
 
-	if (new_rel_pages >= old_rel_pages)
-	{
-		/* can't do anything after all */
-		UnlockRelation(onerel, AccessExclusiveLock);
-		return;
-	}
-
-	/*
-	 * Okay to truncate.
-	 */
-	RelationTruncate(onerel, new_rel_pages);
-
-	/*
-	 * We can release the exclusive lock as soon as we have truncated.	Other
-	 * backends can't safely access the relation until they have processed the
-	 * smgr invalidation that smgrtruncate sent out ... but that should happen
-	 * as part of standard invalidation processing once they acquire lock on
-	 * the relation.
-	 */
-	UnlockRelation(onerel, AccessExclusiveLock);
-
-	/*
-	 * Update statistics.  Here, it *is* correct to adjust rel_pages without
-	 * also touching reltuples, since the tuple count wasn't changed by the
-	 * truncation.
-	 */
-	vacrelstats->rel_pages = new_rel_pages;
-	vacrelstats->pages_removed = old_rel_pages - new_rel_pages;
-
-	ereport(elevel,
-			(errmsg("\"%s\": truncated %u to %u pages",
-					RelationGetRelationName(onerel),
-					old_rel_pages, new_rel_pages),
-			 errdetail("%s.",
-					   pg_rusage_show(&ru0))));
+		ereport(elevel,
+				(errmsg("\"%s\": truncated %u to %u pages",
+						RelationGetRelationName(onerel),
+						old_rel_pages, new_rel_pages),
+				 errdetail("%s.",
+						   pg_rusage_show(&ru0))));
+		old_rel_pages = new_rel_pages;
+	} while (new_rel_pages > vacrelstats->nonempty_pages &&
+			 vacrelstats->lock_waiter_detected);
 }
 
 /*
@@ -1338,6 +1431,10 @@ static BlockNumber
 count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats)
 {
 	BlockNumber blkno;
+	instr_time	starttime;
+
+	/* Initialize the starttime if we check for conflicting lock requests */
+	INSTR_TIME_SET_CURRENT(starttime);
 
 	/* Strange coding of loop control is needed because blkno is unsigned */
 	blkno = vacrelstats->rel_pages;
@@ -1348,6 +1445,38 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats)
 		OffsetNumber offnum,
 					maxoff;
 		bool		hastup;
+
+		/*
+		 * Check if another process requests a lock on our relation. We are
+		 * holding an AccessExclusiveLock here, so they will be waiting. We
+		 * only do this once per VACUUM_TRUNCATE_LOCK_CHECK_INTERVAL, and we
+		 * only check if that interval has elapsed once every 32 blocks to
+		 * keep the number of system calls and actual shared lock table
+		 * lookups to a minimum.
+		 */
+		if ((blkno % 32) == 0)
+		{
+			instr_time	currenttime;
+			instr_time	elapsed;
+
+			INSTR_TIME_SET_CURRENT(currenttime);
+			elapsed = currenttime;
+			INSTR_TIME_SUBTRACT(elapsed, starttime);
+			if ((INSTR_TIME_GET_MICROSEC(elapsed) / 1000)
+				>= VACUUM_TRUNCATE_LOCK_CHECK_INTERVAL)
+			{
+				if (LockHasWaitersRelation(onerel, AccessExclusiveLock))
+				{
+					ereport(elevel,
+							(errmsg("\"%s\": suspending truncate due to conflicting lock request",
+									RelationGetRelationName(onerel))));
+
+					vacrelstats->lock_waiter_detected = true;
+					return blkno;
+				}
+				starttime = currenttime;
+			}
+		}
 
 		/*
 		 * We don't insert a vacuum delay point here, because we have an

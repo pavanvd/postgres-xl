@@ -28,6 +28,7 @@
 #include "funcapi.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "parser/parsetree.h"
 #include "parser/parse_relation.h"
 #include "parser/parse_type.h"
@@ -79,7 +80,7 @@ static int	specialAttNum(const char *attname);
  *
  * A qualified refname (schemaname != NULL) can only match a relation RTE
  * that (a) has no alias and (b) is for the same relation identified by
- * schemaname.refname.	In this case we convert schemaname.refname to a
+ * schemaname.refname.  In this case we convert schemaname.refname to a
  * relation OID and search by relid, rather than by alias name.  This is
  * peculiar, but it's what SQL92 says to do.
  */
@@ -168,7 +169,7 @@ scanNameSpaceForRefname(ParseState *pstate, const char *refname, int location)
 
 /*
  * Search the query's table namespace for a relation RTE matching the
- * given relation OID.	Return the RTE if a unique match, or NULL
+ * given relation OID.  Return the RTE if a unique match, or NULL
  * if no match.  Raise error if multiple matches (which shouldn't
  * happen if the namespace was checked correctly when it was created).
  *
@@ -287,8 +288,8 @@ searchRangeTable(ParseState *pstate, RangeVar *relation)
 	 * relation.
 	 *
 	 * NB: It's not critical that RangeVarGetRelid return the correct answer
-	 * here in the face of concurrent DDL.	If it doesn't, the worst case
-	 * scenario is a less-clear error message.	Also, the tables involved in
+	 * here in the face of concurrent DDL.  If it doesn't, the worst case
+	 * scenario is a less-clear error message.  Also, the tables involved in
 	 * the query are already locked, which reduces the number of cases in
 	 * which surprising behavior can occur.  So we do the name lookup
 	 * unlocked.
@@ -368,7 +369,7 @@ checkNameSpaceConflicts(ParseState *pstate, List *namespace1,
 
 /*
  * given an RTE, return RT index (starting with 1) of the entry,
- * and optionally get its nesting depth (0 = current).	If sublevels_up
+ * and optionally get its nesting depth (0 = current).  If sublevels_up
  * is NULL, only consider rels at the current nesting level.
  * Raises error if RTE not found.
  */
@@ -521,10 +522,17 @@ scanRTEForColumn(ParseState *pstate, RangeTblEntry *rte, char *colname,
 		attnum = specialAttNum(colname);
 		if (attnum != InvalidAttrNumber)
 		{
-			/* now check to see if column actually is defined */
+			/*
+			 * Now check to see if column actually is defined.  Because of
+			 * an ancient oversight in DefineQueryRewrite, it's possible that
+			 * pg_attribute contains entries for system columns for a view,
+			 * even though views should not have such --- so we also check
+			 * the relkind.  This kluge will not be needed in 9.3 and later.
+			 */
 			if (SearchSysCacheExists2(ATTNUM,
 									  ObjectIdGetDatum(rte->relid),
-									  Int16GetDatum(attnum)))
+									  Int16GetDatum(attnum)) &&
+				get_rel_relkind(rte->relid) != RELKIND_VIEW)
 			{
 				var = make_var(pstate, rte, attnum, location);
 				/* Require read access to the column */
@@ -686,14 +694,15 @@ markRTEForSelectPriv(ParseState *pstate, RangeTblEntry *rte,
 			 * The aliasvar could be either a Var or a COALESCE expression,
 			 * but in the latter case we should already have marked the two
 			 * referent variables as being selected, due to their use in the
-			 * JOIN clause.  So we need only be concerned with the simple Var
-			 * case.
+			 * JOIN clause.  So we need only be concerned with the Var case.
+			 * But we do need to drill down through implicit coercions.
 			 */
 			Var		   *aliasvar;
 
 			Assert(col > 0 && col <= list_length(rte->joinaliasvars));
 			aliasvar = (Var *) list_nth(rte->joinaliasvars, col - 1);
-			if (IsA(aliasvar, Var))
+			aliasvar = (Var *) strip_implicit_coercions((Node *) aliasvar);
+			if (aliasvar && IsA(aliasvar, Var))
 				markVarForSelectPriv(pstate, aliasvar, NULL);
 		}
 	}
@@ -926,7 +935,7 @@ addRangeTableEntry(ParseState *pstate,
 
 	/*
 	 * Get the rel's OID.  This access also ensures that we have an up-to-date
-	 * relcache entry for the rel.	Since this is typically the first access
+	 * relcache entry for the rel.  Since this is typically the first access
 	 * to a rel in a statement, be careful to get the right access level
 	 * depending on whether we're doing SELECT FOR UPDATE/SHARE.
 	 */
@@ -1870,10 +1879,10 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 					 * deleted columns in the join; but we have to check since
 					 * this routine is also used by the rewriter, and joins
 					 * found in stored rules might have join columns for
-					 * since-deleted columns.  This will be signaled by a NULL
-					 * Const in the alias-vars list.
+					 * since-deleted columns.  This will be signaled by a null
+					 * pointer in the alias-vars list.
 					 */
-					if (IsA(avar, Const))
+					if (avar == NULL)
 					{
 						if (include_dropped)
 						{
@@ -1881,8 +1890,16 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 								*colnames = lappend(*colnames,
 													makeString(pstrdup("")));
 							if (colvars)
+							{
+								/*
+								 * Can't use join's column type here (it might
+								 * be dropped!); but it doesn't really matter
+								 * what type the Const claims to be.
+								 */
 								*colvars = lappend(*colvars,
-												   copyObject(avar));
+												   makeNullConst(INT4OID, -1,
+																 InvalidOid));
+							}
 						}
 						continue;
 					}
@@ -2271,6 +2288,7 @@ get_rte_attribute_type(RangeTblEntry *rte, AttrNumber attnum,
 
 				Assert(attnum > 0 && attnum <= list_length(rte->joinaliasvars));
 				aliasvar = (Node *) list_nth(rte->joinaliasvars, attnum - 1);
+				Assert(aliasvar != NULL);
 				*vartype = exprType(aliasvar);
 				*vartypmod = exprTypmod(aliasvar);
 				*varcollid = exprCollation(aliasvar);
@@ -2333,7 +2351,7 @@ get_rte_attribute_is_dropped(RangeTblEntry *rte, AttrNumber attnum)
 				 * but one in a stored rule might contain columns that were
 				 * dropped from the underlying tables, if said columns are
 				 * nowhere explicitly referenced in the rule.  This will be
-				 * signaled to us by a NULL Const in the joinaliasvars list.
+				 * signaled to us by a null pointer in the joinaliasvars list.
 				 */
 				Var		   *aliasvar;
 
@@ -2342,7 +2360,7 @@ get_rte_attribute_is_dropped(RangeTblEntry *rte, AttrNumber attnum)
 					elog(ERROR, "invalid varattno %d", attnum);
 				aliasvar = (Var *) list_nth(rte->joinaliasvars, attnum - 1);
 
-				result = IsA(aliasvar, Const);
+				result = (aliasvar == NULL);
 			}
 			break;
 		case RTE_FUNCTION:
@@ -2570,7 +2588,7 @@ errorMissingRTE(ParseState *pstate, RangeVar *relation)
 
 	/*
 	 * Check to see if there are any potential matches in the query's
-	 * rangetable.	(Note: cases involving a bad schema name in the RangeVar
+	 * rangetable.  (Note: cases involving a bad schema name in the RangeVar
 	 * will throw error immediately here.  That seems OK.)
 	 */
 	rte = searchRangeTable(pstate, relation);

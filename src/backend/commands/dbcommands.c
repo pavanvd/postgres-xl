@@ -141,6 +141,7 @@ createdb(const CreatedbStmt *stmt)
 	int			notherbackends;
 	int			npreparedxacts;
 	createdb_failure_params fparms;
+	Snapshot	snapshot;
 
 	/* Extract options from the statement node tree */
 	foreach(option, stmt->options)
@@ -272,7 +273,7 @@ createdb(const CreatedbStmt *stmt)
 	 * To create a database, must have createdb privilege and must be able to
 	 * become the target role (this does not imply that the target role itself
 	 * must have createdb privilege).  The latter provision guards against
-	 * "giveaway" attacks.	Note that a superuser will always have both of
+	 * "giveaway" attacks.  Note that a superuser will always have both of
 	 * these privileges a fortiori.
 	 */
 	if (!have_createdb_privilege())
@@ -404,7 +405,7 @@ createdb(const CreatedbStmt *stmt)
 		/*
 		 * If we are trying to change the default tablespace of the template,
 		 * we require that the template not have any files in the new default
-		 * tablespace.	This is necessary because otherwise the copied
+		 * tablespace.  This is necessary because otherwise the copied
 		 * database would contain pg_class rows that refer to its default
 		 * tablespace both explicitly (by OID) and implicitly (as zero), which
 		 * would cause problems.  For example another CREATE DATABASE using
@@ -440,7 +441,7 @@ createdb(const CreatedbStmt *stmt)
 	}
 
 	/*
-	 * Check for db name conflict.	This is just to give a more friendly error
+	 * Check for db name conflict.  This is just to give a more friendly error
 	 * message than "unique index violation".  There's a race condition but
 	 * we're willing to accept the less friendly message in that case.
 	 */
@@ -504,7 +505,7 @@ createdb(const CreatedbStmt *stmt)
 
 	/*
 	 * We deliberately set datacl to default (NULL), rather than copying it
-	 * from the template database.	Copying it would be a bad idea when the
+	 * from the template database.  Copying it would be a bad idea when the
 	 * owner is not the same as the template's owner.
 	 */
 	new_record_nulls[Anum_pg_database_datacl - 1] = true;
@@ -545,6 +546,29 @@ createdb(const CreatedbStmt *stmt)
 	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT);
 
 	/*
+	 * Take an MVCC snapshot to use while scanning through pg_tablespace.  For
+	 * safety, register the snapshot (this prevents it from changing if
+	 * something else were to request a snapshot during the loop).
+	 *
+	 * Traversing pg_tablespace with an MVCC snapshot is necessary to provide
+	 * us with a consistent view of the tablespaces that exist.  Using
+	 * SnapshotNow here would risk seeing the same tablespace multiple times,
+	 * or worse not seeing a tablespace at all, if its tuple is moved around
+	 * by a concurrent update (eg an ACL change).
+	 *
+	 * Inconsistency of this sort is inherent to all SnapshotNow scans, unless
+	 * some lock is held to prevent concurrent updates of the rows being
+	 * sought.  There should be a generic fix for that, but in the meantime
+	 * it's worth fixing this case in particular because we are doing very
+	 * heavyweight operations within the scan, so that the elapsed time for
+	 * the scan is vastly longer than for most other catalog scans.  That
+	 * means there's a much wider window for concurrent updates to cause
+	 * trouble here than anywhere else.  XXX this code should be changed
+	 * whenever a generic fix is implemented.
+	 */
+	snapshot = RegisterSnapshot(GetLatestSnapshot());
+
+	/*
 	 * Once we start copying subdirectories, we need to be able to clean 'em
 	 * up if we fail.  Use an ENSURE block to make sure this happens.  (This
 	 * is not a 100% solution, because of the possibility of failure during
@@ -561,7 +585,7 @@ createdb(const CreatedbStmt *stmt)
 		 * each one to the new database.
 		 */
 		rel = heap_open(TableSpaceRelationId, AccessShareLock);
-		scan = heap_beginscan(rel, SnapshotNow, 0, NULL);
+		scan = heap_beginscan(rel, snapshot, 0, NULL);
 		while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
 			Oid			srctablespace = HeapTupleGetOid(tuple);
@@ -674,6 +698,9 @@ createdb(const CreatedbStmt *stmt)
 	set_dbcleanup_callback(createdb_xact_callback, &fparms.dest_dboid,
 	                      sizeof(fparms.dest_dboid));
 #endif
+
+	/* Free our snapshot */
+	UnregisterSnapshot(snapshot);
 }
 
 /*
@@ -1220,7 +1247,7 @@ movedb(const char *dbname, const char *tblspcname)
 
 	/*
 	 * Use an ENSURE block to make sure we remove the debris if the copy fails
-	 * (eg, due to out-of-disk-space).	This is not a 100% solution, because
+	 * (eg, due to out-of-disk-space).  This is not a 100% solution, because
 	 * of the possibility of failure during transaction commit, but it should
 	 * handle most scenarios.
 	 */
@@ -1747,7 +1774,7 @@ get_db_info(const char *name, LOCKMODE lockmode,
 			LockSharedObject(DatabaseRelationId, dbOid, 0, lockmode);
 
 		/*
-		 * And now, re-fetch the tuple by OID.	If it's still there and still
+		 * And now, re-fetch the tuple by OID.  If it's still there and still
 		 * the same name, we win; else, drop the lock and loop back to try
 		 * again.
 		 */
@@ -1836,9 +1863,20 @@ remove_dbtablespaces(Oid db_id)
 	Relation	rel;
 	HeapScanDesc scan;
 	HeapTuple	tuple;
+	Snapshot	snapshot;
+
+	/*
+	 * As in createdb(), we'd better use an MVCC snapshot here, since this
+	 * scan can run for a long time.  Duplicate visits to tablespaces would be
+	 * harmless, but missing a tablespace could result in permanently leaked
+	 * files.
+	 *
+	 * XXX change this when a generic fix for SnapshotNow races is implemented
+	 */
+	snapshot = RegisterSnapshot(GetLatestSnapshot());
 
 	rel = heap_open(TableSpaceRelationId, AccessShareLock);
-	scan = heap_beginscan(rel, SnapshotNow, 0, NULL);
+	scan = heap_beginscan(rel, snapshot, 0, NULL);
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Oid			dsttablespace = HeapTupleGetOid(tuple);
@@ -1884,6 +1922,7 @@ remove_dbtablespaces(Oid db_id)
 
 	heap_endscan(scan);
 	heap_close(rel, AccessShareLock);
+	UnregisterSnapshot(snapshot);
 }
 
 /*
@@ -1905,9 +1944,19 @@ check_db_file_conflict(Oid db_id)
 	Relation	rel;
 	HeapScanDesc scan;
 	HeapTuple	tuple;
+	Snapshot	snapshot;
+
+	/*
+	 * As in createdb(), we'd better use an MVCC snapshot here; missing a
+	 * tablespace could result in falsely reporting the OID is unique, with
+	 * disastrous future consequences per the comment above.
+	 *
+	 * XXX change this when a generic fix for SnapshotNow races is implemented
+	 */
+	snapshot = RegisterSnapshot(GetLatestSnapshot());
 
 	rel = heap_open(TableSpaceRelationId, AccessShareLock);
-	scan = heap_beginscan(rel, SnapshotNow, 0, NULL);
+	scan = heap_beginscan(rel, snapshot, 0, NULL);
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Oid			dsttablespace = HeapTupleGetOid(tuple);
@@ -1933,6 +1982,8 @@ check_db_file_conflict(Oid db_id)
 
 	heap_endscan(scan);
 	heap_close(rel, AccessShareLock);
+	UnregisterSnapshot(snapshot);
+
 	return result;
 }
 
@@ -1942,20 +1993,21 @@ check_db_file_conflict(Oid db_id)
 static int
 errdetail_busy_db(int notherbackends, int npreparedxacts)
 {
-	/*
-	 * We don't worry about singular versus plural here, since the English
-	 * rules for that don't translate very well.  But we can at least avoid
-	 * the case of zero items.
-	 */
 	if (notherbackends > 0 && npreparedxacts > 0)
+		/* We don't deal with singular versus plural here, since gettext
+		 * doesn't support multiple plurals in one string. */
 		errdetail("There are %d other session(s) and %d prepared transaction(s) using the database.",
 				  notherbackends, npreparedxacts);
 	else if (notherbackends > 0)
-		errdetail("There are %d other session(s) using the database.",
-				  notherbackends);
+		errdetail_plural("There is %d other session using the database.",
+						 "There are %d other sessions using the database.",
+						 notherbackends,
+						 notherbackends);
 	else
-		errdetail("There are %d prepared transaction(s) using the database.",
-				  npreparedxacts);
+		errdetail_plural("There is %d prepared transaction using the database.",
+						 "There are %d prepared transactions using the database.",
+						 npreparedxacts,
+						 npreparedxacts);
 	return 0;					/* just to keep ereport macro happy */
 }
 

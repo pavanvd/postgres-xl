@@ -11,7 +11,7 @@
  * be handled easily in a simple depth-first traversal.
  *
  * Currently, in fact, equal() doesn't know how to compare Plan trees
- * either.	This might need to be fixed someday.
+ * either.  This might need to be fixed someday.
  *
  * NOTE: it is intentional that parse location fields (in nodes that have
  * one) are not compared.  This is because we want, for example, a variable
@@ -40,8 +40,8 @@
 
 
 /*
- * Macros to simplify comparison of different kinds of fields.	Use these
- * wherever possible to reduce the chance for silly typos.	Note that these
+ * Macros to simplify comparison of different kinds of fields.  Use these
+ * wherever possible to reduce the chance for silly typos.  Note that these
  * hard-wire the convention that the local variables in an Equal routine are
  * named 'a' and 'b'.
  */
@@ -89,6 +89,10 @@
 #define COMPARE_LOCATION_FIELD(fldname) \
 	((void) 0)
 
+/* Compare a CoercionForm field (also a no-op, per comment in primnodes.h) */
+#define COMPARE_COERCIONFORM_FIELD(fldname) \
+	((void) 0)
+
 
 /*
  *	Stuff from primnodes.h
@@ -132,7 +136,7 @@ _equalIntoClause(const IntoClause *a, const IntoClause *b)
 
 /*
  * We don't need an _equalExpr because Expr is an abstract supertype which
- * should never actually get instantiated.	Also, since it has no common
+ * should never actually get instantiated.  Also, since it has no common
  * fields except NodeTag, there's no need for a helper routine to factor
  * out comparing the common fields...
  */
@@ -251,16 +255,7 @@ _equalFuncExpr(const FuncExpr *a, const FuncExpr *b)
 	COMPARE_SCALAR_FIELD(funcid);
 	COMPARE_SCALAR_FIELD(funcresulttype);
 	COMPARE_SCALAR_FIELD(funcretset);
-
-	/*
-	 * Special-case COERCE_DONTCARE, so that planner can build coercion nodes
-	 * that are equal() to both explicit and implicit coercions.
-	 */
-	if (a->funcformat != b->funcformat &&
-		a->funcformat != COERCE_DONTCARE &&
-		b->funcformat != COERCE_DONTCARE)
-		return false;
-
+	COMPARE_COERCIONFORM_FIELD(funcformat);
 	COMPARE_SCALAR_FIELD(funccollid);
 	COMPARE_SCALAR_FIELD(inputcollid);
 	COMPARE_NODE_FIELD(args);
@@ -464,16 +459,7 @@ _equalRelabelType(const RelabelType *a, const RelabelType *b)
 	COMPARE_SCALAR_FIELD(resulttype);
 	COMPARE_SCALAR_FIELD(resulttypmod);
 	COMPARE_SCALAR_FIELD(resultcollid);
-
-	/*
-	 * Special-case COERCE_DONTCARE, so that planner can build coercion nodes
-	 * that are equal() to both explicit and implicit coercions.
-	 */
-	if (a->relabelformat != b->relabelformat &&
-		a->relabelformat != COERCE_DONTCARE &&
-		b->relabelformat != COERCE_DONTCARE)
-		return false;
-
+	COMPARE_COERCIONFORM_FIELD(relabelformat);
 	COMPARE_LOCATION_FIELD(location);
 
 	return true;
@@ -485,16 +471,7 @@ _equalCoerceViaIO(const CoerceViaIO *a, const CoerceViaIO *b)
 	COMPARE_NODE_FIELD(arg);
 	COMPARE_SCALAR_FIELD(resulttype);
 	COMPARE_SCALAR_FIELD(resultcollid);
-
-	/*
-	 * Special-case COERCE_DONTCARE, so that planner can build coercion nodes
-	 * that are equal() to both explicit and implicit coercions.
-	 */
-	if (a->coerceformat != b->coerceformat &&
-		a->coerceformat != COERCE_DONTCARE &&
-		b->coerceformat != COERCE_DONTCARE)
-		return false;
-
+	COMPARE_COERCIONFORM_FIELD(coerceformat);
 	COMPARE_LOCATION_FIELD(location);
 
 	return true;
@@ -509,16 +486,7 @@ _equalArrayCoerceExpr(const ArrayCoerceExpr *a, const ArrayCoerceExpr *b)
 	COMPARE_SCALAR_FIELD(resulttypmod);
 	COMPARE_SCALAR_FIELD(resultcollid);
 	COMPARE_SCALAR_FIELD(isExplicit);
-
-	/*
-	 * Special-case COERCE_DONTCARE, so that planner can build coercion nodes
-	 * that are equal() to both explicit and implicit coercions.
-	 */
-	if (a->coerceformat != b->coerceformat &&
-		a->coerceformat != COERCE_DONTCARE &&
-		b->coerceformat != COERCE_DONTCARE)
-		return false;
-
+	COMPARE_COERCIONFORM_FIELD(coerceformat);
 	COMPARE_LOCATION_FIELD(location);
 
 	return true;
@@ -529,16 +497,7 @@ _equalConvertRowtypeExpr(const ConvertRowtypeExpr *a, const ConvertRowtypeExpr *
 {
 	COMPARE_NODE_FIELD(arg);
 	COMPARE_SCALAR_FIELD(resulttype);
-
-	/*
-	 * Special-case COERCE_DONTCARE, so that planner can build coercion nodes
-	 * that are equal() to both explicit and implicit coercions.
-	 */
-	if (a->convertformat != b->convertformat &&
-		a->convertformat != COERCE_DONTCARE &&
-		b->convertformat != COERCE_DONTCARE)
-		return false;
-
+	COMPARE_COERCIONFORM_FIELD(convertformat);
 	COMPARE_LOCATION_FIELD(location);
 
 	return true;
@@ -605,16 +564,7 @@ _equalRowExpr(const RowExpr *a, const RowExpr *b)
 {
 	COMPARE_NODE_FIELD(args);
 	COMPARE_SCALAR_FIELD(row_typeid);
-
-	/*
-	 * Special-case COERCE_DONTCARE, so that planner can build coercion nodes
-	 * that are equal() to both explicit and implicit coercions.
-	 */
-	if (a->row_format != b->row_format &&
-		a->row_format != COERCE_DONTCARE &&
-		b->row_format != COERCE_DONTCARE)
-		return false;
-
+	COMPARE_COERCIONFORM_FIELD(row_format);
 	COMPARE_NODE_FIELD(colnames);
 	COMPARE_LOCATION_FIELD(location);
 
@@ -700,16 +650,7 @@ _equalCoerceToDomain(const CoerceToDomain *a, const CoerceToDomain *b)
 	COMPARE_SCALAR_FIELD(resulttype);
 	COMPARE_SCALAR_FIELD(resulttypmod);
 	COMPARE_SCALAR_FIELD(resultcollid);
-
-	/*
-	 * Special-case COERCE_DONTCARE, so that planner can build coercion nodes
-	 * that are equal() to both explicit and implicit coercions.
-	 */
-	if (a->coercionformat != b->coercionformat &&
-		a->coercionformat != COERCE_DONTCARE &&
-		b->coercionformat != COERCE_DONTCARE)
-		return false;
-
+	COMPARE_COERCIONFORM_FIELD(coercionformat);
 	COMPARE_LOCATION_FIELD(location);
 
 	return true;
@@ -801,22 +742,8 @@ _equalFromExpr(const FromExpr *a, const FromExpr *b)
 static bool
 _equalPathKey(const PathKey *a, const PathKey *b)
 {
-	/*
-	 * This is normally used on non-canonicalized PathKeys, so must chase up
-	 * to the topmost merged EquivalenceClass and see if those are the same
-	 * (by pointer equality).
-	 */
-	EquivalenceClass *a_eclass;
-	EquivalenceClass *b_eclass;
-
-	a_eclass = a->pk_eclass;
-	while (a_eclass->ec_merged)
-		a_eclass = a_eclass->ec_merged;
-	b_eclass = b->pk_eclass;
-	while (b_eclass->ec_merged)
-		b_eclass = b_eclass->ec_merged;
-	if (a_eclass != b_eclass)
-		return false;
+	/* We assume pointer equality is sufficient to compare the eclasses */
+	COMPARE_SCALAR_FIELD(pk_eclass);
 	COMPARE_SCALAR_FIELD(pk_opfamily);
 	COMPARE_SCALAR_FIELD(pk_strategy);
 	COMPARE_SCALAR_FIELD(pk_nulls_first);
@@ -846,17 +773,21 @@ static bool
 _equalPlaceHolderVar(const PlaceHolderVar *a, const PlaceHolderVar *b)
 {
 	/*
-	 * We intentionally do not compare phexpr.	Two PlaceHolderVars with the
+	 * We intentionally do not compare phexpr.  Two PlaceHolderVars with the
 	 * same ID and levelsup should be considered equal even if the contained
-	 * expressions have managed to mutate to different states.	One way in
-	 * which that can happen is that initplan sublinks would get replaced by
-	 * differently-numbered Params when sublink folding is done.  (The end
-	 * result of such a situation would be some unreferenced initplans, which
-	 * is annoying but not really a problem.)
+	 * expressions have managed to mutate to different states.  This will
+	 * happen during final plan construction when there are nested PHVs, since
+	 * the inner PHV will get replaced by a Param in some copies of the outer
+	 * PHV.  Another way in which it can happen is that initplan sublinks
+	 * could get replaced by differently-numbered Params when sublink folding
+	 * is done.  (The end result of such a situation would be some
+	 * unreferenced initplans, which is annoying but not really a problem.) On
+	 * the same reasoning, there is no need to examine phrels.
 	 *
 	 * COMPARE_NODE_FIELD(phexpr);
+	 *
+	 * COMPARE_BITMAPSET_FIELD(phrels);
 	 */
-	COMPARE_BITMAPSET_FIELD(phrels);
 	COMPARE_SCALAR_FIELD(phid);
 	COMPARE_SCALAR_FIELD(phlevelsup);
 
@@ -1276,6 +1207,7 @@ _equalIndexStmt(const IndexStmt *a, const IndexStmt *b)
 	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(whereClause);
 	COMPARE_NODE_FIELD(excludeOpNames);
+	COMPARE_STRING_FIELD(idxcomment);
 	COMPARE_SCALAR_FIELD(indexOid);
 	COMPARE_SCALAR_FIELD(oldNode);
 	COMPARE_SCALAR_FIELD(unique);
@@ -2241,6 +2173,7 @@ _equalConstraint(const Constraint *a, const Constraint *b)
 	COMPARE_SCALAR_FIELD(fk_upd_action);
 	COMPARE_SCALAR_FIELD(fk_del_action);
 	COMPARE_NODE_FIELD(old_conpfeqop);
+	COMPARE_SCALAR_FIELD(old_pktable_oid);
 	COMPARE_SCALAR_FIELD(skip_validation);
 	COMPARE_SCALAR_FIELD(initially_valid);
 

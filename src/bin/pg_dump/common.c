@@ -38,7 +38,7 @@ static int	numCatalogIds = 0;
 
 /*
  * These variables are static to avoid the notational cruft of having to pass
- * them into findTableByOid() and friends.	For each of these arrays, we
+ * them into findTableByOid() and friends.  For each of these arrays, we
  * build a sorted-by-OID index array immediately after it's built, and then
  * we use binary search in findTableByOid() and friends.  (qsort'ing the base
  * arrays themselves would be simpler, but it doesn't work because pg_dump.c
@@ -202,10 +202,6 @@ getSchemaData(Archive *fout, int *numTablesPtr)
 		write_msg(NULL, "reading table inheritance information\n");
 	inhinfo = getInherits(fout, &numInherits);
 
-	if (g_verbose)
-		write_msg(NULL, "reading rewrite rules\n");
-	getRules(fout, &numRules);
-
 	/*
 	 * Identify extension member objects and mark them as not to be dumped.
 	 * This must happen after reading all objects that can be direct members
@@ -239,6 +235,10 @@ getSchemaData(Archive *fout, int *numTablesPtr)
 	if (g_verbose)
 		write_msg(NULL, "reading triggers\n");
 	getTriggers(fout, tblinfo, numTables);
+
+	if (g_verbose)
+		write_msg(NULL, "reading rewrite rules\n");
+	getRules(fout, &numRules);
 
 	*numTablesPtr = numTables;
 	return tblinfo;
@@ -481,7 +481,7 @@ findObjectByDumpId(DumpId dumpId)
  *
  * We use binary search in a sorted list that is built on first call.
  * If AssignDumpId() and findObjectByCatalogId() calls were freely intermixed,
- * the code would work, but possibly be very slow.	In the current usage
+ * the code would work, but possibly be very slow.  In the current usage
  * pattern that does not happen, indeed we build the list at most twice.
  */
 DumpableObject *

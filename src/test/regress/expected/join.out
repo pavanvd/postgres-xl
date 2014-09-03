@@ -2165,7 +2165,6 @@ ORDER BY x1, x2, y1, y2;
 -- regression test: check for bug with propagation of implied equality
 -- to outside an IN
 --
-analyze tenk1;		-- ensure we get consistent plans here
 select count(*) from tenk1 a where unique1 in
   (select unique1 from tenk1 b join tenk1 c using (unique1)
    where b.unique2 = 42);
@@ -2615,6 +2614,80 @@ SELECT qq, unique1
 (3 rows)
 
 --
+-- nested nestloops can require nested PlaceHolderVars
+--
+create temp table nt1 (
+  id int primary key,
+  a1 boolean,
+  a2 boolean
+);
+NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "nt1_pkey" for table "nt1"
+create temp table nt2 (
+  id int primary key,
+  nt1_id int,
+  b1 boolean,
+  b2 boolean,
+  foreign key (nt1_id) references nt1(id)
+);
+NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "nt2_pkey" for table "nt2"
+create temp table nt3 (
+  id int primary key,
+  nt2_id int,
+  c1 boolean,
+  foreign key (nt2_id) references nt2(id)
+);
+NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "nt3_pkey" for table "nt3"
+insert into nt1 values (1,true,true);
+insert into nt1 values (2,true,false);
+insert into nt1 values (3,false,false);
+insert into nt2 values (1,1,true,true);
+insert into nt2 values (2,2,true,false);
+insert into nt2 values (3,3,false,false);
+insert into nt3 values (1,1,true);
+insert into nt3 values (2,2,false);
+insert into nt3 values (3,3,true);
+explain (costs off)
+select nt3.id
+from nt3 as nt3
+  left join
+    (select nt2.*, (nt2.b1 and ss1.a3) AS b3
+     from nt2 as nt2
+       left join
+         (select nt1.*, (nt1.id is not null) as a3 from nt1) as ss1
+         on ss1.id = nt2.nt1_id
+    ) as ss2
+    on ss2.id = nt3.nt2_id
+where nt3.id = 1 and ss2.b3;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Nested Loop
+   ->  Nested Loop
+         ->  Index Scan using nt3_pkey on nt3
+               Index Cond: (id = 1)
+         ->  Index Scan using nt2_pkey on nt2
+               Index Cond: (id = nt3.nt2_id)
+   ->  Index Only Scan using nt1_pkey on nt1
+         Index Cond: (id = nt2.nt1_id)
+         Filter: (nt2.b1 AND (id IS NOT NULL))
+(9 rows)
+
+select nt3.id
+from nt3 as nt3
+  left join
+    (select nt2.*, (nt2.b1 and ss1.a3) AS b3
+     from nt2 as nt2
+       left join
+         (select nt1.*, (nt1.id is not null) as a3 from nt1) as ss1
+         on ss1.id = nt2.nt1_id
+    ) as ss2
+    on ss2.id = nt3.nt2_id
+where nt3.id = 1 and ss2.b3;
+ id 
+----
+  1
+(1 row)
+
+--
 -- test case where a PlaceHolderVar is propagated into a subquery
 --
 explain (num_nodes off, nodes off, costs off)
@@ -2872,6 +2945,187 @@ select b.unique1 from
         
         
 (5 rows)
+
+explain (costs off)
+select * from
+(
+  select unique1, q1, coalesce(unique1, -1) + q1 as fault
+  from int8_tbl left join tenk1 on (q2 = unique2)
+) ss
+where fault = 122
+order by fault;
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Nested Loop Left Join
+   Filter: ((COALESCE(tenk1.unique1, (-1)) + int8_tbl.q1) = 122)
+   ->  Seq Scan on int8_tbl
+   ->  Index Scan using tenk1_unique2 on tenk1
+         Index Cond: (int8_tbl.q2 = unique2)
+(5 rows)
+
+select * from
+(
+  select unique1, q1, coalesce(unique1, -1) + q1 as fault
+  from int8_tbl left join tenk1 on (q2 = unique2)
+) ss
+where fault = 122
+order by fault;
+ unique1 | q1  | fault 
+---------+-----+-------
+         | 123 |   122
+(1 row)
+
+--
+-- test handling of potential equivalence clauses above outer joins
+--
+explain (costs off)
+select q1, unique2, thousand, hundred
+  from int8_tbl a left join tenk1 b on q1 = unique2
+  where coalesce(thousand,123) = q1 and q1 = coalesce(hundred,123);
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Nested Loop Left Join
+   Filter: ((COALESCE(b.thousand, 123) = a.q1) AND (a.q1 = COALESCE(b.hundred, 123)))
+   ->  Seq Scan on int8_tbl a
+   ->  Index Scan using tenk1_unique2 on tenk1 b
+         Index Cond: (a.q1 = unique2)
+(5 rows)
+
+select q1, unique2, thousand, hundred
+  from int8_tbl a left join tenk1 b on q1 = unique2
+  where coalesce(thousand,123) = q1 and q1 = coalesce(hundred,123);
+ q1 | unique2 | thousand | hundred 
+----+---------+----------+---------
+(0 rows)
+
+explain (costs off)
+select f1, unique2, case when unique2 is null then f1 else 0 end
+  from int4_tbl a left join tenk1 b on f1 = unique2
+  where (case when unique2 is null then f1 else 0 end) = 0;
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Nested Loop Left Join
+   Filter: (CASE WHEN (b.unique2 IS NULL) THEN a.f1 ELSE 0 END = 0)
+   ->  Seq Scan on int4_tbl a
+   ->  Index Only Scan using tenk1_unique2 on tenk1 b
+         Index Cond: (unique2 = a.f1)
+(5 rows)
+
+select f1, unique2, case when unique2 is null then f1 else 0 end
+  from int4_tbl a left join tenk1 b on f1 = unique2
+  where (case when unique2 is null then f1 else 0 end) = 0;
+ f1 | unique2 | case 
+----+---------+------
+  0 |       0 |    0
+(1 row)
+
+--
+-- another case with equivalence clauses above outer joins (bug #8591)
+--
+explain (costs off)
+select a.unique1, b.unique1, c.unique1, coalesce(b.twothousand, a.twothousand)
+  from tenk1 a left join tenk1 b on b.thousand = a.unique1                        left join tenk1 c on c.unique2 = coalesce(b.twothousand, a.twothousand)
+  where a.unique2 = 5530 and coalesce(b.twothousand, a.twothousand) = 44;
+                                         QUERY PLAN                                          
+---------------------------------------------------------------------------------------------
+ Nested Loop Left Join
+   ->  Nested Loop Left Join
+         Filter: (COALESCE(b.twothousand, a.twothousand) = 44)
+         ->  Index Scan using tenk1_unique2 on tenk1 a
+               Index Cond: (unique2 = 5530)
+         ->  Bitmap Heap Scan on tenk1 b
+               Recheck Cond: (thousand = a.unique1)
+               ->  Bitmap Index Scan on tenk1_thous_tenthous
+                     Index Cond: (thousand = a.unique1)
+   ->  Index Scan using tenk1_unique2 on tenk1 c
+         Index Cond: ((unique2 = COALESCE(b.twothousand, a.twothousand)) AND (unique2 = 44))
+(11 rows)
+
+select a.unique1, b.unique1, c.unique1, coalesce(b.twothousand, a.twothousand)
+  from tenk1 a left join tenk1 b on b.thousand = a.unique1                        left join tenk1 c on c.unique2 = coalesce(b.twothousand, a.twothousand)
+  where a.unique2 = 5530 and coalesce(b.twothousand, a.twothousand) = 44;
+ unique1 | unique1 | unique1 | coalesce 
+---------+---------+---------+----------
+(0 rows)
+
+--
+-- check handling of join aliases when flattening multiple levels of subquery
+--
+explain (verbose, costs off)
+select foo1.join_key as foo1_id, foo3.join_key AS foo3_id, bug_field from
+  (values (0),(1)) foo1(join_key)
+left join
+  (select join_key, bug_field from
+    (select ss1.join_key, ss1.bug_field from
+      (select f1 as join_key, 666 as bug_field from int4_tbl i1) ss1
+    ) foo2
+   left join
+    (select unique2 as join_key from tenk1 i2) ss2
+   using (join_key)
+  ) foo3
+using (join_key);
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Nested Loop Left Join
+   Output: "*VALUES*".column1, i1.f1, (666)
+   Join Filter: ("*VALUES*".column1 = i1.f1)
+   ->  Values Scan on "*VALUES*"
+         Output: "*VALUES*".column1
+   ->  Materialize
+         Output: i1.f1, (666)
+         ->  Nested Loop Left Join
+               Output: i1.f1, 666
+               ->  Seq Scan on public.int4_tbl i1
+                     Output: i1.f1
+               ->  Index Only Scan using tenk1_unique2 on public.tenk1 i2
+                     Output: i2.unique2
+                     Index Cond: (i2.unique2 = i1.f1)
+(14 rows)
+
+select foo1.join_key as foo1_id, foo3.join_key AS foo3_id, bug_field from
+  (values (0),(1)) foo1(join_key)
+left join
+  (select join_key, bug_field from
+    (select ss1.join_key, ss1.bug_field from
+      (select f1 as join_key, 666 as bug_field from int4_tbl i1) ss1
+    ) foo2
+   left join
+    (select unique2 as join_key from tenk1 i2) ss2
+   using (join_key)
+  ) foo3
+using (join_key);
+ foo1_id | foo3_id | bug_field 
+---------+---------+-----------
+       0 |       0 |       666
+       1 |         |          
+(2 rows)
+
+--
+-- test ability to push constants through outer join clauses
+--
+explain (costs off)
+  select * from int4_tbl a left join tenk1 b on f1 = unique2 where f1 = 0;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Nested Loop Left Join
+   Join Filter: (a.f1 = b.unique2)
+   ->  Seq Scan on int4_tbl a
+         Filter: (f1 = 0)
+   ->  Index Scan using tenk1_unique2 on tenk1 b
+         Index Cond: (unique2 = 0)
+(6 rows)
+
+explain (costs off)
+  select * from tenk1 a full join tenk1 b using(unique2) where unique2 = 42;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Merge Full Join
+   Merge Cond: (a.unique2 = b.unique2)
+   ->  Index Scan using tenk1_unique2 on tenk1 a
+         Index Cond: (unique2 = 42)
+   ->  Index Scan using tenk1_unique2 on tenk1 b
+         Index Cond: (unique2 = 42)
+(6 rows)
 
 --
 -- test join removal

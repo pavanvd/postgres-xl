@@ -97,6 +97,7 @@ typedef struct RelationData
 	bool		rd_isvalid;		/* relcache entry is valid */
 	char		rd_indexvalid;	/* state of rd_indexlist: 0 = not valid, 1 =
 								 * valid, 2 = temporarily forced */
+	bool		rd_islocaltemp; /* rel is a temp rel of this session */
 
 	/*
 	 * rd_createSubid is the ID of the highest subtransaction the rel has
@@ -146,7 +147,7 @@ typedef struct RelationData
 	 * Note: rd_amcache is available for index AMs to cache private data about
 	 * an index.  This must be just a cache since it may get reset at any time
 	 * (in particular, it will get reset by a relcache inval message for the
-	 * index).	If used, it must point to a single memory chunk palloc'd in
+	 * index).  If used, it must point to a single memory chunk palloc'd in
 	 * rd_indexcxt.  A relcache reset will include freeing that chunk and
 	 * setting rd_amcache = NULL.
 	 */
@@ -347,7 +348,7 @@ typedef struct StdRdOptions
  * RelationGetTargetBlock
  *		Fetch relation's current insertion target block.
  *
- * Returns InvalidBlockNumber if there is no current target block.	Note
+ * Returns InvalidBlockNumber if there is no current target block.  Note
  * that the target block status is discarded on any smgr-level invalidation.
  */
 #define RelationGetTargetBlock(relation) \
@@ -392,16 +393,10 @@ typedef struct StdRdOptions
 #endif
 
 /*
- * RelationUsesTempNamespace
- *		True if relation's catalog entries live in a private namespace.
- */
-#define RelationUsesTempNamespace(relation) \
-	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
-
-/*
  * RELATION_IS_LOCAL
  *		If a rel is either temp or newly created in the current transaction,
- *		it can be assumed to be visible only to the current backend.
+ *		it can be assumed to be accessible only to the current backend.
+ *		This is typically used to decide that we can skip acquiring locks.
  *
  * Beware of multiple eval of argument
  */
@@ -413,7 +408,7 @@ typedef struct StdRdOptions
 	 (relation)->rd_createSubid != InvalidSubTransactionId))
 #else
 #define RELATION_IS_LOCAL(relation) \
-	((relation)->rd_backend == MyBackendId || \
+	((relation)->rd_islocaltemp || \
 	 (relation)->rd_createSubid != InvalidSubTransactionId)
 #endif
 
@@ -436,13 +431,13 @@ typedef struct StdRdOptions
 #ifdef XCP
 #define RELATION_IS_OTHER_TEMP(relation) \
 	(((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP && \
-	 (relation)->rd_backend != MyBackendId) && \
+	 !(relation)->rd_islocaltemp) && \
 	 ((!OidIsValid(MyCoordId) && (relation)->rd_backend != MyBackendId) || \
 	  (OidIsValid(MyCoordId) && (relation)->rd_backend != MyFirstBackendId)))
 #else
 #define RELATION_IS_OTHER_TEMP(relation) \
-	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP \
-	&& (relation)->rd_backend != MyBackendId)
+	((relation)->rd_rel->relpersistence == RELPERSISTENCE_TEMP && \
+	 !(relation)->rd_islocaltemp)
 #endif
 
 /* routines in utils/cache/relcache.c */

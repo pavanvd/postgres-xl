@@ -603,7 +603,7 @@ check_TSCurrentConfig(char **newval, void **extra, GucSource source)
 
 		/*
 		 * When source == PGC_S_TEST, we are checking the argument of an ALTER
-		 * DATABASE SET or ALTER USER SET command.	It could be that the
+		 * DATABASE SET or ALTER USER SET command.  It could be that the
 		 * intended use of the setting is for some other database, so we
 		 * should not error out if the text search configuration is not
 		 * present in the current database.  We issue a NOTICE instead.
@@ -640,7 +640,7 @@ check_TSCurrentConfig(char **newval, void **extra, GucSource source)
 		free(*newval);
 		*newval = strdup(buf);
 		pfree(buf);
-		if (!newval)
+		if (!*newval)
 			return false;
 	}
 

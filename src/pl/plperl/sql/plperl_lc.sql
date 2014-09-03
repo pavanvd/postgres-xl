@@ -14,3 +14,11 @@ CREATE OR REPLACE FUNCTION perl_utf_inout(text) RETURNS TEXT AS $$
   return ($str ne $match ? $code."DIFFER" : $code."ab\x{5ddd}cd");
 $$ LANGUAGE plperl;
 SELECT encode(perl_utf_inout(E'ab\xe5\xb1\xb1cd')::bytea, 'escape')
+--
+-- Make sure strings are validated
+-- Should fail for all encodings, as nul bytes are never permitted.
+--
+CREATE OR REPLACE FUNCTION perl_zerob() RETURNS TEXT AS $$
+  return "abcd\0efg";
+$$ LANGUAGE plperl;
+SELECT perl_zerob();

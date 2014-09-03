@@ -459,7 +459,7 @@ get_object_address(ObjectType objtype, List *objname, List *objargs,
 
 		/*
 		 * If we're dealing with a relation or attribute, then the relation is
-		 * already locked.	Otherwise, we lock it now.
+		 * already locked.  Otherwise, we lock it now.
 		 */
 		if (address.classId != RelationRelationId)
 		{
@@ -937,8 +937,7 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_DOMAIN:
 		case OBJECT_ATTRIBUTE:
 			if (!pg_type_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_TYPE,
-							   format_type_be(address.objectId));
+				aclcheck_error_type(ACLCHECK_NOT_OWNER, address.objectId);
 			break;
 		case OBJECT_AGGREGATE:
 		case OBJECT_FUNCTION:

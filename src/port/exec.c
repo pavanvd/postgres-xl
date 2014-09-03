@@ -66,7 +66,7 @@ validate_exec(const char *path)
 	if (strlen(path) >= strlen(".exe") &&
 		pg_strcasecmp(path + strlen(path) - strlen(".exe"), ".exe") != 0)
 	{
-		strcpy(path_exe, path);
+		strlcpy(path_exe, path, sizeof(path_exe) - 4);
 		strcat(path_exe, ".exe");
 		path = path_exe;
 	}
@@ -275,7 +275,7 @@ resolve_symlinks(char *path)
 	}
 
 	/* must copy final component out of 'path' temporarily */
-	strcpy(link_buf, fname);
+	strlcpy(link_buf, fname, sizeof(link_buf));
 
 	if (!getcwd(path, MAXPGPATH))
 	{
@@ -322,7 +322,7 @@ find_other_exec(const char *argv0, const char *target,
 	if (validate_exec(retpath) != 0)
 		return -1;
 
-	snprintf(cmd, sizeof(cmd), "\"%s\" -V 2>%s", retpath, DEVNULL);
+	snprintf(cmd, sizeof(cmd), "\"%s\" -V", retpath);
 
 	if (!pipe_read_line(cmd, line, sizeof(line)))
 		return -1;
@@ -352,12 +352,20 @@ pipe_read_line(char *cmd, char *line, int maxsize)
 	fflush(stdout);
 	fflush(stderr);
 
+	errno = 0;
 	if ((pgver = popen(cmd, "r")) == NULL)
+	{
+		perror("popen failure");
 		return NULL;
+	}
 
+	errno = 0;
 	if (fgets(line, maxsize, pgver) == NULL)
 	{
-		perror("fgets failure");
+		if (feof(pgver))
+			fprintf(stderr, "no data was returned by command \"%s\"\n", cmd);
+		else
+			perror("fgets failure");
 		pclose(pgver);			/* no error checking */
 		return NULL;
 	}
@@ -496,7 +504,7 @@ pipe_read_line(char *cmd, char *line, int maxsize)
 /*
  * pclose() plus useful error reporting
  * Is this necessary?  bjm 2004-05-11
- * Originaally this was stated to be here because pipe.c had backend linkage.
+ * Originally this was stated to be here because pipe.c had backend linkage.
  * Perhaps that's no longer so now we have got rid of pipe.c amd 2012-03-28
  */
 int

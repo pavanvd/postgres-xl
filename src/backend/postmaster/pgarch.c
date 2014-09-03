@@ -234,8 +234,6 @@ PgArchiverMain(int argc, char *argv[])
 
 	MyProcPid = getpid();		/* reset MyProcPid */
 
-	InitLatch(&mainloop_latch); /* initialize latch used in main loop */
-
 	MyStartTime = time(NULL);	/* record Start Time for logging */
 
 	/*
@@ -246,6 +244,10 @@ PgArchiverMain(int argc, char *argv[])
 	if (setsid() < 0)
 		elog(FATAL, "setsid() failed: %m");
 #endif
+
+	InitializeLatchSupport();		/* needed for latch waits */
+
+	InitLatch(&mainloop_latch); /* initialize latch used in main loop */
 
 	/*
 	 * Ignore all signals usually bound to some action in the postmaster,
@@ -590,9 +592,9 @@ pgarch_archiveXlog(char *xlog)
 	{
 		/*
 		 * If either the shell itself, or a called command, died on a signal,
-		 * abort the archiver.	We do this because system() ignores SIGINT and
+		 * abort the archiver.  We do this because system() ignores SIGINT and
 		 * SIGQUIT while waiting; so a signal is very likely something that
-		 * should have interrupted us too.	If we overreact it's no big deal,
+		 * should have interrupted us too.  If we overreact it's no big deal,
 		 * the postmaster will just start the archiver again.
 		 *
 		 * Per the Single Unix Spec, shells report exit status > 128 when a

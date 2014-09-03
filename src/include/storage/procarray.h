@@ -37,6 +37,7 @@ extern void SetGlobalSnapshotData(int xmin, int xmax, int xcnt, int *xip);
 extern void UnsetGlobalSnapshotData(void);
 extern void ReloadConnInfoOnBackends(void);
 #endif /* PGXC */
+extern void ProcArrayInitRecovery(TransactionId initializedUptoXID);
 extern void ProcArrayApplyRecoveryInfo(RunningTransactions running);
 extern void ProcArrayApplyXidAssignment(TransactionId topxid,
 							int nsubxids, TransactionId *subxids);

@@ -29,11 +29,15 @@
 #define DEFAULT_CURSOR_TUPLE_FRACTION 0.1
 extern double cursor_tuple_fraction;
 
+/* query_planner callback to compute query_pathkeys */
+typedef void (*query_pathkeys_callback) (PlannerInfo *root, void *extra);
+
 /*
  * prototypes for plan/planmain.c
  */
 extern void query_planner(PlannerInfo *root, List *tlist,
 			  double tuple_fraction, double limit_tuples,
+			  query_pathkeys_callback qp_callback, void *qp_extra,
 			  Path **cheapest_path, Path **sorted_path,
 			  double *num_groups);
 
@@ -111,13 +115,15 @@ extern void process_implied_equality(PlannerInfo *root,
 						 Expr *item1,
 						 Expr *item2,
 						 Relids qualscope,
+						 Relids nullable_relids,
 						 bool below_outer_join,
 						 bool both_const);
 extern RestrictInfo *build_implied_join_equality(Oid opno,
 							Oid collation,
 							Expr *item1,
 							Expr *item2,
-							Relids qualscope);
+							Relids qualscope,
+							Relids nullable_relids);
 
 /*
  * prototypes for plan/analyzejoins.c

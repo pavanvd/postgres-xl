@@ -203,6 +203,7 @@ CreateTupleDescCopyConstr(TupleDesc tupdesc)
 				if (constr->check[i].ccbin)
 					cpy->check[i].ccbin = pstrdup(constr->check[i].ccbin);
 				cpy->check[i].ccvalid = constr->check[i].ccvalid;
+				cpy->check[i].ccnoinherit = constr->check[i].ccnoinherit;
 			}
 		}
 
@@ -416,7 +417,9 @@ equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2)
 			for (j = 0; j < n; check2++, j++)
 			{
 				if (strcmp(check1->ccname, check2->ccname) == 0 &&
-					strcmp(check1->ccbin, check2->ccbin) == 0)
+					strcmp(check1->ccbin, check2->ccbin) == 0 &&
+					check1->ccvalid == check2->ccvalid &&
+					check1->ccnoinherit == check2->ccnoinherit)
 					break;
 			}
 			if (j >= n)
@@ -536,7 +539,7 @@ TupleDescInitEntryCollation(TupleDesc desc,
  * Given a relation schema (list of ColumnDef nodes), build a TupleDesc.
  *
  * Note: the default assumption is no OIDs; caller may modify the returned
- * TupleDesc if it wants OIDs.	Also, tdtypeid will need to be filled in
+ * TupleDesc if it wants OIDs.  Also, tdtypeid will need to be filled in
  * later on.
  */
 TupleDesc
@@ -579,8 +582,7 @@ BuildDescForRelation(List *schema)
 
 		aclresult = pg_type_aclcheck(atttypid, GetUserId(), ACL_USAGE);
 		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, ACL_KIND_TYPE,
-						   format_type_be(atttypid));
+			aclcheck_error_type(aclresult, atttypid);
 
 		attcollation = GetColumnDefCollation(NULL, entry, atttypid);
 		attdim = list_length(entry->typeName->arrayBounds);

@@ -39,7 +39,7 @@
  * that have been created or deleted in the current transaction.  When
  * a relation is created, we create the physical file immediately, but
  * remember it so that we can delete the file again if the current
- * transaction is aborted.	Conversely, a deletion request is NOT
+ * transaction is aborted.  Conversely, a deletion request is NOT
  * executed immediately, but is just entered in the list.  When and if
  * the transaction commits, we can delete the physical file.
  *
@@ -385,7 +385,7 @@ smgrDoPendingDeletes(bool isCommit)
  * *ptr is set to point to a freshly-palloc'd array of RelFileNodes.
  * If there are no relations to be deleted, *ptr is set to NULL.
  *
- * Only non-temporary relations are included in the returned list.	This is OK
+ * Only non-temporary relations are included in the returned list.  This is OK
  * because the list is used only in contexts where temporary relations don't
  * matter: we're either writing to the two-phase state file (and transactions
  * that have touched temp tables can't be prepared) or we're writing to xlog
@@ -514,6 +514,24 @@ smgr_redo(XLogRecPtr lsn, XLogRecord *record)
 		 * best we can until the drop is seen.
 		 */
 		smgrcreate(reln, MAIN_FORKNUM, true);
+
+		/*
+		 * Before we perform the truncation, update minimum recovery point
+		 * to cover this WAL record. Once the relation is truncated, there's
+		 * no going back. The buffer manager enforces the WAL-first rule
+		 * for normal updates to relation files, so that the minimum recovery
+		 * point is always updated before the corresponding change in the
+		 * data file is flushed to disk. We have to do the same manually
+		 * here.
+		 *
+		 * Doing this before the truncation means that if the truncation fails
+		 * for some reason, you cannot start up the system even after restart,
+		 * until you fix the underlying situation so that the truncation will
+		 * succeed. Alternatively, we could update the minimum recovery point
+		 * after truncation, but that would leave a small window where the
+		 * WAL-first rule could be violated.
+		 */
+		XLogFlush(lsn);
 
 		smgrtruncate(reln, MAIN_FORKNUM, xlrec->blkno);
 

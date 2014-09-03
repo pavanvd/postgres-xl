@@ -67,7 +67,7 @@
  * and other code that tries to open files without consulting fd.c.  This
  * is the number left free.  (While we can be pretty sure we won't get
  * EMFILE, there's never any guarantee that we won't get ENFILE due to
- * other processes chewing up FDs.	So it's a bad idea to try to open files
+ * other processes chewing up FDs.  So it's a bad idea to try to open files
  * without consulting fd.c.  Nonetheless we cannot control all code.)
  *
  * Because this is just a fixed setting, we are effectively assuming that
@@ -111,9 +111,15 @@ int			max_safe_fds = 32;	/* default if not changed */
 /* Debugging.... */
 
 #ifdef FDDEBUG
-#define DO_DB(A) A
+#define DO_DB(A) \
+	do { \
+		int			_do_db_save_errno = errno; \
+		A; \
+		errno = _do_db_save_errno; \
+	} while (0)
 #else
-#define DO_DB(A)				/* A */
+#define DO_DB(A) \
+	((void) 0)
 #endif
 
 #define VFD_CLOSED (-1)
@@ -128,8 +134,6 @@ int			max_safe_fds = 32;	/* default if not changed */
 /* these are the assigned bits in fdstate below: */
 #define FD_TEMPORARY		(1 << 0)	/* T = delete when closed */
 #define FD_XACT_TEMPORARY	(1 << 1)	/* T = delete at eoXact */
-#define FD_XACT_TRANSIENT	(1 << 2)	/* T = close (not delete) at aoXact,
-										 * but keep VFD */
 
 typedef struct vfd
 {
@@ -148,8 +152,8 @@ typedef struct vfd
 } Vfd;
 
 /*
- * Virtual File Descriptor array pointer and size.	This grows as
- * needed.	'File' values are indexes into this array.
+ * Virtual File Descriptor array pointer and size.  This grows as
+ * needed.  'File' values are indexes into this array.
  * Note that VfdCache[0] is not a usable VFD, just a list header.
  */
 static Vfd *VfdCache;
@@ -160,13 +164,16 @@ static Size SizeVfdCache = 0;
  */
 static int	nfile = 0;
 
-/* True if there are files to close/delete at end of transaction */
-static bool have_pending_fd_cleanup = false;
+/*
+ * Flag to tell whether it's worth scanning VfdCache looking for temp files
+ * to close
+ */
+static bool have_xact_temporary_files = false;
 
 /*
  * Tracks the total size of all temporary files.  Note: when temp_file_limit
  * is being enforced, this cannot overflow since the limit cannot be more
- * than INT_MAX kilobytes.	When not enforcing, it could theoretically
+ * than INT_MAX kilobytes.  When not enforcing, it could theoretically
  * overflow, but we don't care.
  */
 static uint64 temporary_files_size = 0;
@@ -174,13 +181,7 @@ static uint64 temporary_files_size = 0;
 /*
  * List of stdio FILEs and <dirent.h> DIRs opened with AllocateFile
  * and AllocateDir.
- *
- * Since we don't want to encourage heavy use of AllocateFile or AllocateDir,
- * it seems OK to put a pretty small maximum limit on the number of
- * simultaneously allocated descs.
  */
-#define MAX_ALLOCATED_DESCS  32
-
 typedef enum
 {
 	AllocateDescFile,
@@ -190,16 +191,17 @@ typedef enum
 typedef struct
 {
 	AllocateDescKind kind;
+	SubTransactionId create_subid;
 	union
 	{
 		FILE	   *file;
 		DIR		   *dir;
 	}			desc;
-	SubTransactionId create_subid;
 } AllocateDesc;
 
 static int	numAllocatedDescs = 0;
-static AllocateDesc allocatedDescs[MAX_ALLOCATED_DESCS];
+static int	maxAllocatedDescs = 0;
+static AllocateDesc *allocatedDescs = NULL;
 
 /*
  * Number of temporary files opened during the current session;
@@ -225,12 +227,13 @@ static int	nextTempTableSpace = 0;
  * Insert		   - put a file at the front of the Lru ring
  * LruInsert	   - put a file at the front of the Lru ring and open it
  * ReleaseLruFile  - Release an fd by closing the last entry in the Lru ring
+ * ReleaseLruFiles - Release fd(s) until we're under the max_safe_fds limit
  * AllocateVfd	   - grab a free (or new) file record (from VfdArray)
  * FreeVfd		   - free a file record
  *
  * The Least Recently Used ring is a doubly linked list that begins and
  * ends on element zero.  Element zero is special -- it doesn't represent
- * a file and its "fd" field always == VFD_CLOSED.	Element zero is just an
+ * a file and its "fd" field always == VFD_CLOSED.  Element zero is just an
  * anchor that shows us the beginning/end of the ring.
  * Only VFD elements that are currently really open (have an FD assigned) are
  * in the Lru ring.  Elements that are "virtually" open can be recognized
@@ -252,11 +255,14 @@ static void LruDelete(File file);
 static void Insert(File file);
 static int	LruInsert(File file);
 static bool ReleaseLruFile(void);
+static void ReleaseLruFiles(void);
 static File AllocateVfd(void);
 static void FreeVfd(File file);
 
 static int	FileAccess(File file);
 static File OpenTemporaryFileInTablespace(Oid tblspcOid, bool rejectError);
+static bool reserveAllocatedDesc(void);
+static int	FreeDesc(AllocateDesc *desc);
 static void AtProcExit_Files(int code, Datum arg);
 static void CleanupTempFiles(bool isProcExit);
 static void RemovePgTempFilesInDir(const char *tmpdirname);
@@ -385,7 +391,7 @@ InitFileAccess(void)
  * We stop counting if usable_fds reaches max_to_probe.  Note: a small
  * value of max_to_probe might result in an underestimate of already_open;
  * we must fill in any "gaps" in the set of used FDs before the calculation
- * of already_open will give the right answer.	In practice, max_to_probe
+ * of already_open will give the right answer.  In practice, max_to_probe
  * of a couple of dozen should be enough to ensure good results.
  *
  * We assume stdin (FD 0) is available for dup'ing
@@ -462,7 +468,7 @@ count_usable_fds(int max_to_probe, int *usable_fds, int *already_open)
 	pfree(fd);
 
 	/*
-	 * Return results.	usable_fds is just the number of successful dups. We
+	 * Return results.  usable_fds is just the number of successful dups. We
 	 * assume that the system limit is highestfd+1 (remember 0 is a legal FD
 	 * number) and so already_open is highestfd+1 - usable_fds.
 	 */
@@ -602,7 +608,6 @@ LruDelete(File file)
 	Vfd		   *vfdP;
 
 	Assert(file != 0);
-	Assert(!FileIsNotOpen(file));
 
 	DO_DB(elog(LOG, "LruDelete %d (%s)",
 			   file, VfdCache[file].fileName));
@@ -660,11 +665,8 @@ LruInsert(File file)
 
 	if (FileIsNotOpen(file))
 	{
-		while (nfile + numAllocatedDescs >= max_safe_fds)
-		{
-			if (!ReleaseLruFile())
-				break;
-		}
+		/* Close excess kernel FDs. */
+		ReleaseLruFiles();
 
 		/*
 		 * The open could still fail for lack of file descriptors, eg due to
@@ -676,7 +678,7 @@ LruInsert(File file)
 		if (vfdP->fd < 0)
 		{
 			DO_DB(elog(LOG, "RE_OPEN FAILED: %d", errno));
-			return vfdP->fd;
+			return -1;
 		}
 		else
 		{
@@ -703,6 +705,9 @@ LruInsert(File file)
 	return 0;
 }
 
+/*
+ * Release one kernel FD by closing the least-recently-used VFD.
+ */
 static bool
 ReleaseLruFile(void)
 {
@@ -721,13 +726,27 @@ ReleaseLruFile(void)
 	return false;				/* no files available to free */
 }
 
+/*
+ * Release kernel FDs as needed to get under the max_safe_fds limit.
+ * After calling this, it's OK to try to open another file.
+ */
+static void
+ReleaseLruFiles(void)
+{
+	while (nfile + numAllocatedDescs >= max_safe_fds)
+	{
+		if (!ReleaseLruFile())
+			break;
+	}
+}
+
 static File
 AllocateVfd(void)
 {
 	Index		i;
 	File		file;
 
-	DO_DB(elog(LOG, "AllocateVfd. Size %lu", SizeVfdCache));
+	DO_DB(elog(LOG, "AllocateVfd. Size %lu", (unsigned long) SizeVfdCache));
 
 	Assert(SizeVfdCache > 0);	/* InitFileAccess not called? */
 
@@ -874,18 +893,18 @@ PathNameOpenFile(FileName fileName, int fileFlags, int fileMode)
 	file = AllocateVfd();
 	vfdP = &VfdCache[file];
 
-	while (nfile + numAllocatedDescs >= max_safe_fds)
-	{
-		if (!ReleaseLruFile())
-			break;
-	}
+	/* Close excess kernel FDs. */
+	ReleaseLruFiles();
 
 	vfdP->fd = BasicOpenFile(fileName, fileFlags, fileMode);
 
 	if (vfdP->fd < 0)
 	{
+		int			save_errno = errno;
+
 		FreeVfd(file);
 		free(fnamecopy);
+		errno = save_errno;
 		return -1;
 	}
 	++nfile;
@@ -944,7 +963,7 @@ OpenTemporaryFile(bool interXact)
 
 	/*
 	 * If not, or if tablespace is bad, create in database's default
-	 * tablespace.	MyDatabaseTableSpace should normally be set before we get
+	 * tablespace.  MyDatabaseTableSpace should normally be set before we get
 	 * here, but just in case it isn't, fall back to pg_default tablespace.
 	 */
 	if (file <= 0)
@@ -966,7 +985,7 @@ OpenTemporaryFile(bool interXact)
 		VfdCache[file].resowner = CurrentResourceOwner;
 
 		/* ensure cleanup happens at eoxact */
-		have_pending_fd_cleanup = true;
+		have_xact_temporary_files = true;
 	}
 
 	return file;
@@ -1043,25 +1062,6 @@ OpenTemporaryFileInTablespace(Oid tblspcOid, bool rejectError)
 	}
 
 	return file;
-}
-
-/*
- * Set the transient flag on a file
- *
- * This flag tells CleanupTempFiles to close the kernel-level file descriptor
- * (but not the VFD itself) at end of transaction.
- */
-void
-FileSetTransient(File file)
-{
-	Vfd		   *vfdP;
-
-	Assert(FileIsValid(file));
-
-	vfdP = &VfdCache[file];
-	vfdP->fdstate |= FD_XACT_TRANSIENT;
-
-	have_pending_fd_cleanup = true;
 }
 
 /*
@@ -1263,7 +1263,7 @@ FileWrite(File file, char *buffer, int amount)
 
 	/*
 	 * If enforcing temp_file_limit and it's a temp file, check to see if the
-	 * write would overrun temp_file_limit, and throw error if so.	Note: it's
+	 * write would overrun temp_file_limit, and throw error if so.  Note: it's
 	 * really a modularity violation to throw error here; we should set errno
 	 * and return -1.  However, there's no way to report a suitable error
 	 * message if we do that.  All current callers would just throw error
@@ -1480,9 +1480,69 @@ FilePathName(File file)
 
 
 /*
+ * Make room for another allocatedDescs[] array entry if needed and possible.
+ * Returns true if an array element is available.
+ */
+static bool
+reserveAllocatedDesc(void)
+{
+	AllocateDesc *newDescs;
+	int			newMax;
+
+	/* Quick out if array already has a free slot. */
+	if (numAllocatedDescs < maxAllocatedDescs)
+		return true;
+
+	/*
+	 * If the array hasn't yet been created in the current process, initialize
+	 * it with FD_MINFREE / 2 elements.  In many scenarios this is as many as
+	 * we will ever need, anyway.  We don't want to look at max_safe_fds
+	 * immediately because set_max_safe_fds() may not have run yet.
+	 */
+	if (allocatedDescs == NULL)
+	{
+		newMax = FD_MINFREE / 2;
+		newDescs = (AllocateDesc *) malloc(newMax * sizeof(AllocateDesc));
+		/* Out of memory already?  Treat as fatal error. */
+		if (newDescs == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
+		allocatedDescs = newDescs;
+		maxAllocatedDescs = newMax;
+		return true;
+	}
+
+	/*
+	 * Consider enlarging the array beyond the initial allocation used above.
+	 * By the time this happens, max_safe_fds should be known accurately.
+	 *
+	 * We mustn't let allocated descriptors hog all the available FDs, and in
+	 * practice we'd better leave a reasonable number of FDs for VFD use.  So
+	 * set the maximum to max_safe_fds / 2.  (This should certainly be at
+	 * least as large as the initial size, FD_MINFREE / 2.)
+	 */
+	newMax = max_safe_fds / 2;
+	if (newMax > maxAllocatedDescs)
+	{
+		newDescs = (AllocateDesc *) realloc(allocatedDescs,
+											newMax * sizeof(AllocateDesc));
+		/* Treat out-of-memory as a non-fatal error. */
+		if (newDescs == NULL)
+			return false;
+		allocatedDescs = newDescs;
+		maxAllocatedDescs = newMax;
+		return true;
+	}
+
+	/* Can't enlarge allocatedDescs[] any more. */
+	return false;
+}
+
+/*
  * Routines that want to use stdio (ie, FILE*) should use AllocateFile
  * rather than plain fopen().  This lets fd.c deal with freeing FDs if
- * necessary to open the file.	When done, call FreeFile rather than fclose.
+ * necessary to open the file.  When done, call FreeFile rather than fclose.
  *
  * Note that files that will be open for any significant length of time
  * should NOT be handled this way, since they cannot share kernel file
@@ -1504,16 +1564,15 @@ AllocateFile(const char *name, const char *mode)
 	DO_DB(elog(LOG, "AllocateFile: Allocated %d (%s)",
 			   numAllocatedDescs, name));
 
-	/*
-	 * The test against MAX_ALLOCATED_DESCS prevents us from overflowing
-	 * allocatedFiles[]; the test against max_safe_fds prevents AllocateFile
-	 * from hogging every one of the available FDs, which'd lead to infinite
-	 * looping.
-	 */
-	if (numAllocatedDescs >= MAX_ALLOCATED_DESCS ||
-		numAllocatedDescs >= max_safe_fds - 1)
-		elog(ERROR, "exceeded MAX_ALLOCATED_DESCS while trying to open file \"%s\"",
-			 name);
+	/* Can we allocate another non-virtual FD? */
+	if (!reserveAllocatedDesc())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+				 errmsg("exceeded maxAllocatedDescs (%d) while trying to open file \"%s\"",
+						maxAllocatedDescs, name)));
+
+	/* Close excess kernel FDs. */
+	ReleaseLruFiles();
 
 TryAgain:
 	if ((file = fopen(name, mode)) != NULL)
@@ -1620,16 +1679,15 @@ AllocateDir(const char *dirname)
 	DO_DB(elog(LOG, "AllocateDir: Allocated %d (%s)",
 			   numAllocatedDescs, dirname));
 
-	/*
-	 * The test against MAX_ALLOCATED_DESCS prevents us from overflowing
-	 * allocatedDescs[]; the test against max_safe_fds prevents AllocateDir
-	 * from hogging every one of the available FDs, which'd lead to infinite
-	 * looping.
-	 */
-	if (numAllocatedDescs >= MAX_ALLOCATED_DESCS ||
-		numAllocatedDescs >= max_safe_fds - 1)
-		elog(ERROR, "exceeded MAX_ALLOCATED_DESCS while trying to open directory \"%s\"",
-			 dirname);
+	/* Can we allocate another non-virtual FD? */
+	if (!reserveAllocatedDesc())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+				 errmsg("exceeded maxAllocatedDescs (%d) while trying to open directory \"%s\"",
+						maxAllocatedDescs, dirname)));
+
+	/* Close excess kernel FDs. */
+	ReleaseLruFiles();
 
 TryAgain:
 	if ((dir = opendir(dirname)) != NULL)
@@ -1663,7 +1721,7 @@ TryAgain:
  * Read a directory opened with AllocateDir, ereport'ing any error.
  *
  * This is easier to use than raw readdir() since it takes care of some
- * otherwise rather tedious and error-prone manipulation of errno.	Also,
+ * otherwise rather tedious and error-prone manipulation of errno.  Also,
  * if you are happy with a generic error message for AllocateDir failure,
  * you can just do
  *
@@ -1696,11 +1754,7 @@ ReadDir(DIR *dir, const char *dirname)
 		return dent;
 
 #ifdef WIN32
-
-	/*
-	 * This fix is in mingw cvs (runtime/mingwex/dirent.c rev 1.4), but not in
-	 * released version
-	 */
+	/* Bug in old Mingw dirent.c;  fixed in mingw-runtime-3.2, 2003-10-10 */
 	if (GetLastError() == ERROR_NO_MORE_FILES)
 		errno = 0;
 #endif
@@ -1783,7 +1837,7 @@ SetTempTablespaces(Oid *tableSpaces, int numSpaces)
 	numTempTableSpaces = numSpaces;
 
 	/*
-	 * Select a random starting point in the list.	This is to minimize
+	 * Select a random starting point in the list.  This is to minimize
 	 * conflicts between backends that are most likely sharing the same list
 	 * of temp tablespaces.  Note that if we create multiple temp files in the
 	 * same transaction, we'll advance circularly through the list --- this
@@ -1812,7 +1866,7 @@ TempTablespacesAreSet(void)
 /*
  * GetNextTempTableSpace
  *
- * Select the next temp tablespace to use.	A result of InvalidOid means
+ * Select the next temp tablespace to use.  A result of InvalidOid means
  * to use the current database's default tablespace.
  */
 Oid
@@ -1864,9 +1918,8 @@ AtEOSubXact_Files(bool isCommit, SubTransactionId mySubid,
  * particularly care which).  All still-open per-transaction temporary file
  * VFDs are closed, which also causes the underlying files to be deleted
  * (although they should've been closed already by the ResourceOwner
- * cleanup). Transient files have their kernel file descriptors closed.
- * Furthermore, all "allocated" stdio files are closed. We also forget any
- * transaction-local temp tablespace list.
+ * cleanup). Furthermore, all "allocated" stdio files are closed. We also
+ * forget any transaction-local temp tablespace list.
  */
 void
 AtEOXact_Files(void)
@@ -1889,10 +1942,7 @@ AtProcExit_Files(int code, Datum arg)
 }
 
 /*
- * General cleanup routine for fd.c.
- *
- * Temporary files are closed, and their underlying files deleted.
- * Transient files are closed.
+ * Close temporary files and delete their underlying files.
  *
  * isProcExit: if true, this is being called as the backend process is
  * exiting. If that's the case, we should remove all temporary files; if
@@ -1909,51 +1959,35 @@ CleanupTempFiles(bool isProcExit)
 	 * Careful here: at proc_exit we need extra cleanup, not just
 	 * xact_temporary files.
 	 */
-	if (isProcExit || have_pending_fd_cleanup)
+	if (isProcExit || have_xact_temporary_files)
 	{
 		Assert(FileIsNotOpen(0));		/* Make sure ring not corrupted */
 		for (i = 1; i < SizeVfdCache; i++)
 		{
 			unsigned short fdstate = VfdCache[i].fdstate;
 
-			if (VfdCache[i].fileName != NULL)
+			if ((fdstate & FD_TEMPORARY) && VfdCache[i].fileName != NULL)
 			{
-				if (fdstate & FD_TEMPORARY)
+				/*
+				 * If we're in the process of exiting a backend process, close
+				 * all temporary files. Otherwise, only close temporary files
+				 * local to the current transaction. They should be closed by
+				 * the ResourceOwner mechanism already, so this is just a
+				 * debugging cross-check.
+				 */
+				if (isProcExit)
+					FileClose(i);
+				else if (fdstate & FD_XACT_TEMPORARY)
 				{
-					/*
-					 * If we're in the process of exiting a backend process,
-					 * close all temporary files. Otherwise, only close
-					 * temporary files local to the current transaction. They
-					 * should be closed by the ResourceOwner mechanism
-					 * already, so this is just a debugging cross-check.
-					 */
-					if (isProcExit)
-						FileClose(i);
-					else if (fdstate & FD_XACT_TEMPORARY)
-					{
-						elog(WARNING,
-						"temporary file %s not closed at end-of-transaction",
-							 VfdCache[i].fileName);
-						FileClose(i);
-					}
-				}
-				else if (fdstate & FD_XACT_TRANSIENT)
-				{
-					/*
-					 * Close the FD, and remove the entry from the LRU ring,
-					 * but also remove the flag from the VFD.  This is to
-					 * ensure that if the VFD is reused in the future for
-					 * non-transient access, we don't close it inappropriately
-					 * then.
-					 */
-					if (!FileIsNotOpen(i))
-						LruDelete(i);
-					VfdCache[i].fdstate &= ~FD_XACT_TRANSIENT;
+					elog(WARNING,
+						 "temporary file %s not closed at end-of-transaction",
+						 VfdCache[i].fileName);
+					FileClose(i);
 				}
 			}
 		}
 
-		have_pending_fd_cleanup = false;
+		have_xact_temporary_files = false;
 	}
 
 	/* Clean up "allocated" stdio files and dirs. */

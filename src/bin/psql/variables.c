@@ -15,7 +15,7 @@
  * Check whether a variable's name is allowed.
  *
  * We allow any non-ASCII character, as well as ASCII letters, digits, and
- * underscore.	Keep this in sync with the definition of variable_char in
+ * underscore.  Keep this in sync with the definition of variable_char in
  * psqlscan.l.
  */
 static bool
@@ -112,7 +112,7 @@ ParseVariableBool(const char *value)
 	else
 	{
 		/* NULL is treated as false, so a non-matching value is 'true' */
-		psql_error("unrecognized boolean value; assuming \"on\".\n");
+		psql_error("unrecognized Boolean value; assuming \"on\"\n");
 		return true;
 	}
 	/* suppress compiler warning */

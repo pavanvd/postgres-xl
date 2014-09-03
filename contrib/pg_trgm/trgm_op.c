@@ -9,6 +9,7 @@
 
 #include "catalog/pg_type.h"
 #include "tsearch/ts_locale.h"
+#include "utils/memutils.h"
 
 
 PG_MODULE_MAGIC;
@@ -191,6 +192,18 @@ generate_trgm(char *str, int slen)
 	char	   *bword,
 			   *eword;
 
+	/*
+	 * Guard against possible overflow in the palloc requests below.  (We
+	 * don't worry about the additive constants, since palloc can detect
+	 * requests that are a little above MaxAllocSize --- we just need to
+	 * prevent integer overflow in the multiplications.)
+	 */
+	if ((Size) (slen / 2) >= (MaxAllocSize / (sizeof(trgm) * 3)) ||
+		(Size) slen >= (MaxAllocSize / pg_database_encoding_max_length()))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("out of memory")));
+
 	trg = (TRGM *) palloc(TRGMHDRSIZE + sizeof(trgm) * (slen / 2 + 1) *3);
 	trg->flag = ARRKEY;
 	SET_VARSIZE(trg, TRGMHDRSIZE);
@@ -200,7 +213,8 @@ generate_trgm(char *str, int slen)
 
 	tptr = GETARR(trg);
 
-	buf = palloc(sizeof(char) * (slen + 4));
+	/* Allocate a buffer for case-folded, blank-padded words */
+	buf = (char *) palloc(slen * pg_database_encoding_max_length() + 4);
 
 	if (LPADDING > 0)
 	{
@@ -224,6 +238,7 @@ generate_trgm(char *str, int slen)
 #ifdef IGNORECASE
 		pfree(bword);
 #endif
+
 		buf[LPADDING + bytelen] = ' ';
 		buf[LPADDING + bytelen + 1] = ' ';
 
@@ -239,7 +254,10 @@ generate_trgm(char *str, int slen)
 	if ((len = tptr - GETARR(trg)) == 0)
 		return trg;
 
-	if (len > 0)
+	/*
+	 * Make trigrams unique.
+	 */
+	if (len > 1)
 	{
 		qsort((void *) GETARR(trg), len, sizeof(trgm), comp_trgm);
 		len = unique_array(GETARR(trg), len);
@@ -272,33 +290,36 @@ get_wildcard_part(const char *str, int lenstr,
 	const char *beginword = str;
 	const char *endword;
 	char	   *s = buf;
-	bool		in_wildcard_meta = false;
+	bool		in_leading_wildcard_meta = false;
+	bool		in_trailing_wildcard_meta = false;
 	bool		in_escape = false;
 	int			clen;
 
 	/*
-	 * Find the first word character remembering whether last character was
-	 * wildcard meta-character.
+	 * Find the first word character, remembering whether preceding character
+	 * was wildcard meta-character.  Note that the in_escape state persists
+	 * from this loop to the next one, since we may exit at a word character
+	 * that is in_escape.
 	 */
 	while (beginword - str < lenstr)
 	{
 		if (in_escape)
 		{
-			in_escape = false;
-			in_wildcard_meta = false;
 			if (iswordchr(beginword))
 				break;
+			in_escape = false;
+			in_leading_wildcard_meta = false;
 		}
 		else
 		{
 			if (ISESCAPECHAR(beginword))
 				in_escape = true;
 			else if (ISWILDCARDCHAR(beginword))
-				in_wildcard_meta = true;
+				in_leading_wildcard_meta = true;
 			else if (iswordchr(beginword))
 				break;
 			else
-				in_wildcard_meta = false;
+				in_leading_wildcard_meta = false;
 		}
 		beginword += pg_mblen(beginword);
 	}
@@ -310,11 +331,11 @@ get_wildcard_part(const char *str, int lenstr,
 		return NULL;
 
 	/*
-	 * Add left padding spaces if last character wasn't wildcard
+	 * Add left padding spaces if preceding character wasn't wildcard
 	 * meta-character.
 	 */
 	*charlen = 0;
-	if (!in_wildcard_meta)
+	if (!in_leading_wildcard_meta)
 	{
 		if (LPADDING > 0)
 		{
@@ -333,15 +354,11 @@ get_wildcard_part(const char *str, int lenstr,
 	 * string boundary.  Strip escapes during copy.
 	 */
 	endword = beginword;
-	in_wildcard_meta = false;
-	in_escape = false;
 	while (endword - str < lenstr)
 	{
 		clen = pg_mblen(endword);
 		if (in_escape)
 		{
-			in_escape = false;
-			in_wildcard_meta = false;
 			if (iswordchr(endword))
 			{
 				memcpy(s, endword, clen);
@@ -349,7 +366,17 @@ get_wildcard_part(const char *str, int lenstr,
 				s += clen;
 			}
 			else
+			{
+				/*
+				 * Back up endword to the escape character when stopping at
+				 * an escaped char, so that subsequent get_wildcard_part will
+				 * restart from the escape character.  We assume here that
+				 * escape chars are single-byte.
+				 */
+				endword--;
 				break;
+			}
+			in_escape = false;
 		}
 		else
 		{
@@ -357,7 +384,7 @@ get_wildcard_part(const char *str, int lenstr,
 				in_escape = true;
 			else if (ISWILDCARDCHAR(endword))
 			{
-				in_wildcard_meta = true;
+				in_trailing_wildcard_meta = true;
 				break;
 			}
 			else if (iswordchr(endword))
@@ -367,19 +394,16 @@ get_wildcard_part(const char *str, int lenstr,
 				s += clen;
 			}
 			else
-			{
-				in_wildcard_meta = false;
 				break;
-			}
 		}
 		endword += clen;
 	}
 
 	/*
-	 * Add right padding spaces if last character wasn't wildcard
+	 * Add right padding spaces if next character isn't wildcard
 	 * meta-character.
 	 */
-	if (!in_wildcard_meta)
+	if (!in_trailing_wildcard_meta)
 	{
 		if (RPADDING > 0)
 		{
@@ -416,6 +440,18 @@ generate_wildcard_trgm(const char *str, int slen)
 				bytelen;
 	const char *eword;
 
+	/*
+	 * Guard against possible overflow in the palloc requests below.  (We
+	 * don't worry about the additive constants, since palloc can detect
+	 * requests that are a little above MaxAllocSize --- we just need to
+	 * prevent integer overflow in the multiplications.)
+	 */
+	if ((Size) (slen / 2) >= (MaxAllocSize / (sizeof(trgm) * 3)) ||
+		(Size) slen >= (MaxAllocSize / pg_database_encoding_max_length()))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("out of memory")));
+
 	trg = (TRGM *) palloc(TRGMHDRSIZE + sizeof(trgm) * (slen / 2 + 1) *3);
 	trg->flag = ARRKEY;
 	SET_VARSIZE(trg, TRGMHDRSIZE);
@@ -425,6 +461,7 @@ generate_wildcard_trgm(const char *str, int slen)
 
 	tptr = GETARR(trg);
 
+	/* Allocate a buffer for blank-padded, but not yet case-folded, words */
 	buf = palloc(sizeof(char) * (slen + 4));
 
 	/*
@@ -445,6 +482,7 @@ generate_wildcard_trgm(const char *str, int slen)
 		 * count trigrams
 		 */
 		tptr = make_trigrams(tptr, buf2, bytelen, charlen);
+
 #ifdef IGNORECASE
 		pfree(buf2);
 #endif
@@ -458,7 +496,7 @@ generate_wildcard_trgm(const char *str, int slen)
 	/*
 	 * Make trigrams unique.
 	 */
-	if (len > 0)
+	if (len > 1)
 	{
 		qsort((void *) GETARR(trg), len, sizeof(trgm), comp_trgm);
 		len = unique_array(GETARR(trg), len);
@@ -547,6 +585,10 @@ cnt_sml(TRGM *trg1, TRGM *trg2)
 	len1 = ARRNELEM(trg1);
 	len2 = ARRNELEM(trg2);
 
+	/* explicit test is needed to avoid 0/0 division when both lengths are 0 */
+	if (len1 <= 0 || len2 <= 0)
+		return (float4) 0.0;
+
 	while (ptr1 - GETARR(trg1) < len1 && ptr2 - GETARR(trg2) < len2)
 	{
 		int			res = CMPTRGM(ptr1, ptr2);
@@ -564,9 +606,9 @@ cnt_sml(TRGM *trg1, TRGM *trg2)
 	}
 
 #ifdef DIVUNION
-	return ((((float4) count) / ((float4) (len1 + len2 - count))));
+	return ((float4) count) / ((float4) (len1 + len2 - count));
 #else
-	return (((float) count) / ((float) ((len1 > len2) ? len1 : len2)));
+	return ((float4) count) / ((float4) ((len1 > len2) ? len1 : len2));
 #endif
 
 }

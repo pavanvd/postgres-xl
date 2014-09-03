@@ -22,6 +22,21 @@
 #include "utils/rbtree.h"
 #include "utils/hsearch.h"
 
+/*
+ * Maximum number of "halves" a page can be split into in one operation.
+ * Typically a split produces 2 halves, but can be more if keys have very
+ * different lengths, or when inserting multiple keys in one operation (as
+ * when inserting downlinks to an internal node).  There is no theoretical
+ * limit on this, but in practice if you get more than a handful page halves
+ * in one split, there's something wrong with the opclass implementation.
+ * GIST_MAX_SPLIT_PAGES is an arbitrary limit on that, used to size some
+ * local arrays used during split.  Note that there is also a limit on the
+ * number of buffers that can be held locked at a time, MAX_SIMUL_LWLOCKS,
+ * so if you raise this higher than that limit, you'll just get a different
+ * error.
+ */
+#define GIST_MAX_SPLIT_PAGES		75
+
 /* Buffer lock modes */
 #define GIST_SHARE	BUFFER_LOCK_SHARE
 #define GIST_EXCLUSIVE	BUFFER_LOCK_EXCLUSIVE
@@ -254,20 +269,21 @@ typedef struct GISTInsertStack
 	struct GISTInsertStack *parent;
 } GISTInsertStack;
 
+/* Working state and results for multi-column split logic in gistsplit.c */
 typedef struct GistSplitVector
 {
-	GIST_SPLITVEC splitVector;	/* to/from PickSplit method */
+	GIST_SPLITVEC splitVector;	/* passed to/from user PickSplit method */
 
 	Datum		spl_lattr[INDEX_MAX_KEYS];		/* Union of subkeys in
-												 * spl_left */
+												 * splitVector.spl_left */
 	bool		spl_lisnull[INDEX_MAX_KEYS];
 
 	Datum		spl_rattr[INDEX_MAX_KEYS];		/* Union of subkeys in
-												 * spl_right */
+												 * splitVector.spl_right */
 	bool		spl_risnull[INDEX_MAX_KEYS];
 
-	bool	   *spl_equiv;		/* equivalent tuples which can be freely
-								 * distributed between left and right pages */
+	bool	   *spl_dontcare;	/* flags tuples which could go to either side
+								 * of the split for zero penalty */
 } GistSplitVector;
 
 typedef struct
@@ -430,7 +446,8 @@ typedef struct
 
 extern bool gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 				Buffer buffer,
-				IndexTuple *itup, int ntup, OffsetNumber oldoffnum,
+				IndexTuple *itup, int ntup,
+				OffsetNumber oldoffnum, BlockNumber *newblkno,
 				Buffer leftchildbuf,
 				List **splitinfo,
 				bool markleftchild);
@@ -505,7 +522,7 @@ extern void gistdentryinit(GISTSTATE *giststate, int nkey, GISTENTRY *e,
 extern float gistpenalty(GISTSTATE *giststate, int attno,
 			GISTENTRY *key1, bool isNull1,
 			GISTENTRY *key2, bool isNull2);
-extern void gistMakeUnionItVec(GISTSTATE *giststate, IndexTuple *itvec, int len, int startkey,
+extern void gistMakeUnionItVec(GISTSTATE *giststate, IndexTuple *itvec, int len,
 				   Datum *attr, bool *isnull);
 extern bool gistKeyIsEQ(GISTSTATE *giststate, int attno, Datum a, Datum b);
 extern void gistDeCompressAtt(GISTSTATE *giststate, Relation r, IndexTuple tuple, Page p,
@@ -525,7 +542,7 @@ extern Datum gistvacuumcleanup(PG_FUNCTION_ARGS);
 /* gistsplit.c */
 extern void gistSplitByKey(Relation r, Page page, IndexTuple *itup,
 			   int len, GISTSTATE *giststate,
-			   GistSplitVector *v, GistEntryVector *entryvec,
+			   GistSplitVector *v,
 			   int attno);
 
 /* gistbuild.c */

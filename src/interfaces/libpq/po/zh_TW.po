@@ -12,7 +12,7 @@ msgstr ""
 "Last-Translator: Zhenbang Wei <znbang@gmail.com>\n"
 "Language-Team: EnterpriseDB translation team <dev-escalations@enterprisedb."
 "com>\n"
-"Language: \n"
+"Language: zh_TW\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -802,7 +802,6 @@ msgstr "無法與伺服器協調: 收到訊息類型 \"%c\"，長度 %d\n"
 msgid "unexpected field count in \"D\" message\n"
 msgstr "\"D\" 訊息的欄位數不符預期\n"
 
-#  translator: %s represents a digit string
 #  translator: %s represents a digit string
 # fe-protocol3.c:651
 # fe-protocol3.c:659

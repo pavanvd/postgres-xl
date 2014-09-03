@@ -105,16 +105,11 @@ moveRightIfItNeeded(GinBtreeData *btree, GinBtreeStack *stack)
 		/*
 		 * We scanned the whole page, so we should take right page
 		 */
-		stack->blkno = GinPageGetOpaque(page)->rightlink;
-
 		if (GinPageRightMost(page))
 			return false;		/* no more pages */
 
-		LockBuffer(stack->buffer, GIN_UNLOCK);
-		stack->buffer = ReleaseAndReadBuffer(stack->buffer,
-											 btree->index,
-											 stack->blkno);
-		LockBuffer(stack->buffer, GIN_SHARE);
+		stack->buffer = ginStepRight(stack->buffer, btree->index, GIN_SHARE);
+		stack->blkno = BufferGetBlockNumber(stack->buffer);
 		stack->off = FirstOffsetNumber;
 	}
 
@@ -132,7 +127,6 @@ scanPostingTree(Relation index, GinScanEntry scanEntry,
 	GinPostingTreeScan *gdi;
 	Buffer		buffer;
 	Page		page;
-	BlockNumber blkno;
 
 	/* Descend to the leftmost leaf page */
 	gdi = ginPrepareScanPostingTree(index, rootPostingTree, TRUE);
@@ -162,10 +156,7 @@ scanPostingTree(Relation index, GinScanEntry scanEntry,
 		if (GinPageRightMost(page))
 			break;				/* no more pages */
 
-		blkno = GinPageGetOpaque(page)->rightlink;
-		LockBuffer(buffer, GIN_UNLOCK);
-		buffer = ReleaseAndReadBuffer(buffer, index, blkno);
-		LockBuffer(buffer, GIN_SHARE);
+		buffer = ginStepRight(buffer, index, GIN_SHARE);
 	}
 
 	UnlockReleaseBuffer(buffer);
@@ -173,7 +164,7 @@ scanPostingTree(Relation index, GinScanEntry scanEntry,
 
 /*
  * Collects TIDs into scanEntry->matchBitmap for all heap tuples that
- * match the search entry.	This supports three different match modes:
+ * match the search entry.  This supports three different match modes:
  *
  * 1. Partial-match support: scan from current point until the
  *	  comparePartialFn says we're done.
@@ -269,7 +260,7 @@ collectMatchBitmap(GinBtreeData *btree, GinBtreeStack *stack,
 			/*
 			 * In ALL mode, we are not interested in null items, so we can
 			 * stop if we get to a null-item placeholder (which will be the
-			 * last entry for a given attnum).	We do want to include NULL_KEY
+			 * last entry for a given attnum).  We do want to include NULL_KEY
 			 * and EMPTY_ITEM entries, though.
 			 */
 			if (icategory == GIN_CAT_NULL_ITEM)
@@ -544,7 +535,6 @@ static void
 entryGetNextItem(GinState *ginstate, GinScanEntry entry)
 {
 	Page		page;
-	BlockNumber blkno;
 
 	for (;;)
 	{
@@ -562,23 +552,18 @@ entryGetNextItem(GinState *ginstate, GinScanEntry entry)
 			 * It's needed to go by right link. During that we should refind
 			 * first ItemPointer greater that stored
 			 */
-
-			blkno = GinPageGetOpaque(page)->rightlink;
-
-			LockBuffer(entry->buffer, GIN_UNLOCK);
-			if (blkno == InvalidBlockNumber)
+			if (GinPageRightMost(page))
 			{
-				ReleaseBuffer(entry->buffer);
+				UnlockReleaseBuffer(entry->buffer);
 				ItemPointerSetInvalid(&entry->curItem);
 				entry->buffer = InvalidBuffer;
 				entry->isFinished = TRUE;
 				return;
 			}
 
-			entry->buffer = ReleaseAndReadBuffer(entry->buffer,
-												 ginstate->index,
-												 blkno);
-			LockBuffer(entry->buffer, GIN_SHARE);
+			entry->buffer = ginStepRight(entry->buffer,
+										 ginstate->index,
+										 GIN_SHARE);
 			page = BufferGetPage(entry->buffer);
 
 			entry->offset = InvalidOffsetNumber;
@@ -973,14 +958,14 @@ scanGetItem(IndexScanDesc scan, ItemPointer advancePast,
 		 * that exact TID, or a lossy reference to the same page.
 		 *
 		 * This logic works only if a keyGetItem stream can never contain both
-		 * exact and lossy pointers for the same page.	Else we could have a
+		 * exact and lossy pointers for the same page.  Else we could have a
 		 * case like
 		 *
 		 *		stream 1		stream 2
-		 *		...				...
+		 *		...             ...
 		 *		42/6			42/7
 		 *		50/1			42/0xffff
-		 *		...				...
+		 *		...             ...
 		 *
 		 * We would conclude that 42/6 is not a match and advance stream 1,
 		 * thus never detecting the match to the lossy pointer in stream 2.
@@ -1009,7 +994,7 @@ scanGetItem(IndexScanDesc scan, ItemPointer advancePast,
 			break;
 
 		/*
-		 * No hit.	Update myAdvancePast to this TID, so that on the next pass
+		 * No hit.  Update myAdvancePast to this TID, so that on the next pass
 		 * we'll move to the next possible entry.
 		 */
 		myAdvancePast = *item;
@@ -1525,10 +1510,10 @@ gingetbitmap(PG_FUNCTION_ARGS)
 
 	/*
 	 * First, scan the pending list and collect any matching entries into the
-	 * bitmap.	After we scan a pending item, some other backend could post it
+	 * bitmap.  After we scan a pending item, some other backend could post it
 	 * into the main index, and so we might visit it a second time during the
 	 * main scan.  This is okay because we'll just re-set the same bit in the
-	 * bitmap.	(The possibility of duplicate visits is a major reason why GIN
+	 * bitmap.  (The possibility of duplicate visits is a major reason why GIN
 	 * can't support the amgettuple API, however.) Note that it would not do
 	 * to scan the main index before the pending list, since concurrent
 	 * cleanup could then make us miss entries entirely.

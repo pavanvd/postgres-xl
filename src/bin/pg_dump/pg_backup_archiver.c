@@ -112,6 +112,7 @@ typedef struct _outputContext
 	int			gzOut;
 } OutputContext;
 
+/* translator: this is a module name */
 static const char *modulename = gettext_noop("archiver");
 
 
@@ -247,8 +248,42 @@ SetArchiveRestoreOptions(Archive *AHX, RestoreOptions *ropt)
 	curSection = SECTION_PRE_DATA;
 	for (te = AH->toc->next; te != AH->toc; te = te->next)
 	{
+		/*
+		 * When writing an archive, we also take this opportunity to check
+		 * that we have generated the entries in a sane order that respects
+		 * the section divisions.  When reading, don't complain, since buggy
+		 * old versions of pg_dump might generate out-of-order archives.
+		 */
+		if (AH->mode != archModeRead)
+		{
+			switch (te->section)
+			{
+				case SECTION_NONE:
+					/* ok to be anywhere */
+					break;
+				case SECTION_PRE_DATA:
+					if (curSection != SECTION_PRE_DATA)
+						write_msg(modulename,
+								  "WARNING: archive items not in correct section order\n");
+					break;
+				case SECTION_DATA:
+					if (curSection == SECTION_POST_DATA)
+						write_msg(modulename,
+								  "WARNING: archive items not in correct section order\n");
+					break;
+				case SECTION_POST_DATA:
+					/* ok no matter which section we were in */
+					break;
+				default:
+					exit_horribly(modulename, "unexpected section code %d\n",
+								  (int) te->section);
+					break;
+			}
+		}
+
 		if (te->section != SECTION_NONE)
 			curSection = te->section;
+
 		te->reqs = _tocEntryRequired(te, curSection, ropt);
 	}
 }
@@ -268,15 +303,6 @@ RestoreArchive(Archive *AHX)
 	/*
 	 * Check for nonsensical option combinations.
 	 *
-	 * NB: createDB+dropSchema is useless because if you're creating the DB,
-	 * there's no need to drop individual items in it.  Moreover, if we tried
-	 * to do that then we'd issue the drops in the database initially
-	 * connected to, not the one we will create, which is very bad...
-	 */
-	if (ropt->createDB && ropt->dropSchema)
-		exit_horribly(modulename, "-C and -c are incompatible options\n");
-
-	/*
 	 * -C is not compatible with -1, because we can't create a database inside
 	 * a transaction block.
 	 */
@@ -334,8 +360,12 @@ RestoreArchive(Archive *AHX)
 		if (AH->version < K_VERS_1_3)
 			exit_horribly(modulename, "direct database connections are not supported in pre-1.3 archives\n");
 
-		/* XXX Should get this from the archive */
-		AHX->minRemoteVersion = 070100;
+		/*
+		 * We don't want to guess at whether the dump will successfully
+		 * restore; allow the attempt regardless of the version of the restore
+		 * target.
+		 */
+		AHX->minRemoteVersion = 0;
 		AHX->maxRemoteVersion = 999999;
 
 		ConnectDatabase(AHX, ropt->dbname,
@@ -421,7 +451,25 @@ RestoreArchive(Archive *AHX)
 		{
 			AH->currentTE = te;
 
-			/* We want anything that's selected and has a dropStmt */
+			/*
+			 * In createDB mode, issue a DROP *only* for the database as a
+			 * whole.  Issuing drops against anything else would be wrong,
+			 * because at this point we're connected to the wrong database.
+			 * Conversely, if we're not in createDB mode, we'd better not
+			 * issue a DROP against the database at all.
+			 */
+			if (ropt->createDB)
+			{
+				if (strcmp(te->desc, "DATABASE") != 0)
+					continue;
+			}
+			else
+			{
+				if (strcmp(te->desc, "DATABASE") == 0)
+					continue;
+			}
+
+			/* Otherwise, drop anything that's selected and has a dropStmt */
 			if (((te->reqs & (REQ_SCHEMA | REQ_DATA)) != 0) && te->dropStmt)
 			{
 				ahlog(AH, 1, "dropping %s %s\n", te->desc, te->tag);
@@ -624,7 +672,13 @@ restore_toc_entry(ArchiveHandle *AH, TocEntry *te,
 
 					_selectOutputSchema(AH, "pg_catalog");
 
+					/* Send BLOB COMMENTS data to ExecuteSimpleCommands() */
+					if (strcmp(te->desc, "BLOB COMMENTS") == 0)
+						AH->outputKind = OUTPUT_OTHERDATA;
+
 					(*AH->PrintTocDataPtr) (AH, te, ropt);
+
+					AH->outputKind = OUTPUT_SQLCMDS;
 				}
 				else
 				{
@@ -640,8 +694,8 @@ restore_toc_entry(ArchiveHandle *AH, TocEntry *te,
 					/*
 					 * In parallel restore, if we created the table earlier in
 					 * the run then we wrap the COPY in a transaction and
-					 * precede it with a TRUNCATE.	If archiving is not on
-					 * this prevents WAL-logging the COPY.	This obtains a
+					 * precede it with a TRUNCATE.  If archiving is not on
+					 * this prevents WAL-logging the COPY.  This obtains a
 					 * speedup similar to that from using single_txn mode in
 					 * non-parallel restores.
 					 */
@@ -883,6 +937,9 @@ PrintTOCSummary(Archive *AHX, RestoreOptions *ropt)
 		case archCustom:
 			fmtName = "CUSTOM";
 			break;
+		case archDirectory:
+			fmtName = "DIRECTORY";
+			break;
 		case archTar:
 			fmtName = "TAR";
 			break;
@@ -902,9 +959,6 @@ PrintTOCSummary(Archive *AHX, RestoreOptions *ropt)
 				 AH->archiveDumpVersion);
 
 	ahprintf(AH, ";\n;\n; Selected TOC Entries:\n;\n");
-
-	/* We should print DATABASE entries whether or not -C was specified */
-	ropt->createDB = 1;
 
 	curSection = SECTION_PRE_DATA;
 	for (te = AH->toc->next; te != AH->toc; te = te->next)
@@ -1018,7 +1072,7 @@ StartRestoreBlob(ArchiveHandle *AH, Oid oid, bool drop)
 	/* Initialize the LO Buffer */
 	AH->lo_buf_used = 0;
 
-	ahlog(AH, 2, "restoring large object with OID %u\n", oid);
+	ahlog(AH, 1, "restoring large object with OID %u\n", oid);
 
 	/* With an old archive we must do drop and create logic here */
 	if (old_blob_style && drop)
@@ -1549,7 +1603,7 @@ _moveBefore(ArchiveHandle *AH, TocEntry *pos, TocEntry *te)
  * items.
  *
  * The arrays are indexed by dump ID (so entry zero is unused).  Note that the
- * array entries run only up to maxDumpId.	We might see dependency dump IDs
+ * array entries run only up to maxDumpId.  We might see dependency dump IDs
  * beyond that (if the dump was partial); so always check the array bound
  * before trying to touch an array entry.
  */
@@ -1566,14 +1620,14 @@ buildTocEntryArrays(ArchiveHandle *AH)
 	{
 		/* this check is purely paranoia, maxDumpId should be correct */
 		if (te->dumpId <= 0 || te->dumpId > maxDumpId)
-			exit_horribly(modulename, "bad dumpId");
+			exit_horribly(modulename, "bad dumpId\n");
 
 		/* tocsByDumpId indexes all TOCs by their dump ID */
 		AH->tocsByDumpId[te->dumpId] = te;
 
 		/*
 		 * tableDataId provides the TABLE DATA item's dump ID for each TABLE
-		 * TOC entry that has a DATA item.	We compute this by reversing the
+		 * TOC entry that has a DATA item.  We compute this by reversing the
 		 * TABLE DATA item's dependency, knowing that a TABLE DATA item has
 		 * just one dependency and it is the TABLE item.
 		 */
@@ -1587,7 +1641,7 @@ buildTocEntryArrays(ArchiveHandle *AH)
 			 * item's dump ID, so there should be a place for it in the array.
 			 */
 			if (tableId <= 0 || tableId > maxDumpId)
-				exit_horribly(modulename, "bad table dumpId for TABLE DATA item");
+				exit_horribly(modulename, "bad table dumpId for TABLE DATA item\n");
 
 			AH->tableDataId[tableId] = te->dumpId;
 		}
@@ -2591,7 +2645,7 @@ _doSetSessionAuth(ArchiveHandle *AH, const char *user)
 	appendPQExpBuffer(cmd, "SET SESSION AUTHORIZATION ");
 
 	/*
-	 * SQL requires a string literal here.	Might as well be correct.
+	 * SQL requires a string literal here.  Might as well be correct.
 	 */
 	if (user && *user)
 		appendStringLiteralAHX(cmd, user, AH);
@@ -2722,7 +2776,7 @@ _becomeUser(ArchiveHandle *AH, const char *user)
 }
 
 /*
- * Become the owner of the given TOC entry object.	If
+ * Become the owner of the given TOC entry object.  If
  * changes in ownership are not allowed, this doesn't do anything.
  */
 static void
@@ -3213,7 +3267,7 @@ ReadHead(ArchiveHandle *AH)
 	/*
 	 * If we haven't already read the header, do so.
 	 *
-	 * NB: this code must agree with _discoverArchiveFormat().	Maybe find a
+	 * NB: this code must agree with _discoverArchiveFormat().  Maybe find a
 	 * way to unify the cases?
 	 */
 	if (!AH->readHeader)
@@ -3324,7 +3378,7 @@ checkSeek(FILE *fp)
 		return false;
 
 	/*
-	 * Check that fseeko(SEEK_SET) works, too.	NB: we used to try to test
+	 * Check that fseeko(SEEK_SET) works, too.  NB: we used to try to test
 	 * this with fseeko(fp, 0, SEEK_CUR).  But some platforms treat that as a
 	 * successful no-op even on files that are otherwise unseekable.
 	 */
@@ -3425,7 +3479,7 @@ on_exit_close_archive(Archive *AHX)
  *
  * Work is done in three phases.
  * First we process all SECTION_PRE_DATA tocEntries, in a single connection,
- * just as for a standard restore.	Second we process the remaining non-ACL
+ * just as for a standard restore.  Second we process the remaining non-ACL
  * steps in parallel worker children (threads on Windows, processes on Unix),
  * each of which connects separately to the database.  Finally we process all
  * the ACL entries in a single connection (that happens back in
@@ -3464,9 +3518,14 @@ restore_toc_entries_parallel(ArchiveHandle *AH)
 	 * Do all the early stuff in a single connection in the parent. There's no
 	 * great point in running it in parallel, in fact it will actually run
 	 * faster in a single connection because we avoid all the connection and
-	 * setup overhead.	Also, pg_dump is not currently very good about showing
-	 * all the dependencies of SECTION_PRE_DATA items, so we do not risk
-	 * trying to process them out-of-order.
+	 * setup overhead.  Also, pre-9.2 pg_dump versions were not very good
+	 * about showing all the dependencies of SECTION_PRE_DATA items, so we do
+	 * not risk trying to process them out-of-order.
+	 *
+	 * Note: as of 9.2, it should be guaranteed that all PRE_DATA items appear
+	 * before DATA items, and all DATA items before POST_DATA items.  That is
+	 * not certain to be true in older archives, though, so this loop is coded
+	 * to not assume it.
 	 */
 	skipped_some = false;
 	for (next_work_item = AH->toc->next; next_work_item != AH->toc; next_work_item = next_work_item->next)
@@ -3505,7 +3564,7 @@ restore_toc_entries_parallel(ArchiveHandle *AH)
 	}
 
 	/*
-	 * Now close parent connection in prep for parallel steps.	We do this
+	 * Now close parent connection in prep for parallel steps.  We do this
 	 * mainly to ensure that we don't exceed the specified number of parallel
 	 * connections.
 	 */
@@ -3533,7 +3592,7 @@ restore_toc_entries_parallel(ArchiveHandle *AH)
 	 * Initialize the lists of pending and ready items.  After this setup, the
 	 * pending list is everything that needs to be done but is blocked by one
 	 * or more dependencies, while the ready list contains items that have no
-	 * remaining dependencies.	Note: we don't yet filter out entries that
+	 * remaining dependencies.  Note: we don't yet filter out entries that
 	 * aren't going to be restored.  They might participate in dependency
 	 * chains connecting entries that should be restored, so we treat them as
 	 * live until we actually process them.
@@ -4128,8 +4187,9 @@ fix_dependencies(ArchiveHandle *AH)
 
 	/*
 	 * Count the incoming dependencies for each item.  Also, it is possible
-	 * that the dependencies list items that are not in the archive at all.
-	 * Subtract such items from the depCounts.
+	 * that the dependencies list items that are not in the archive at all
+	 * (that should not happen in 9.2 and later, but is highly likely in
+	 * older archives).  Subtract such items from the depCounts.
 	 */
 	for (te = AH->toc->next; te != AH->toc; te = te->next)
 	{

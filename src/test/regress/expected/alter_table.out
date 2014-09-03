@@ -140,7 +140,6 @@ ALTER INDEX tmp_onek_unique1 RENAME TO onek_unique1;
 CREATE VIEW tmp_view (unique1) AS SELECT unique1 FROM tenk1;
 ALTER TABLE tmp_view RENAME TO tmp_view_new;
 -- hack to ensure we get an indexscan here
-ANALYZE tenk1;
 set enable_seqscan to off;
 set enable_bitmapscan to off;
 -- 5 values, sorted 
@@ -235,7 +234,7 @@ Check constraints:
     "con1foo" CHECK (a > 0)
 Inherits: constraint_rename_test
 
-ALTER TABLE constraint_rename_test ADD CONSTRAINT con2 CHECK NO INHERIT (b > 0);
+ALTER TABLE constraint_rename_test ADD CONSTRAINT con2 CHECK (b > 0) NO INHERIT;
 ALTER TABLE ONLY constraint_rename_test RENAME CONSTRAINT con2 TO con2foo; -- ok
 ALTER TABLE constraint_rename_test RENAME CONSTRAINT con2foo TO con2bar; -- ok
 \d constraint_rename_test
@@ -247,7 +246,7 @@ Table "public.constraint_rename_test"
  c      | integer | 
 Check constraints:
     "con1foo" CHECK (a > 0)
-    "con2bar" CHECK NO INHERIT (b > 0)
+    "con2bar" CHECK (b > 0) NO INHERIT
 Number of child tables: 1 (Use \d+ to list them.)
 
 \d constraint_rename_test2
@@ -276,7 +275,7 @@ Indexes:
     "con3foo" PRIMARY KEY, btree (a)
 Check constraints:
     "con1foo" CHECK (a > 0)
-    "con2bar" CHECK NO INHERIT (b > 0)
+    "con2bar" CHECK (b > 0) NO INHERIT
 Number of child tables: 1 (Use \d+ to list them.)
 
 \d constraint_rename_test2
@@ -652,7 +651,7 @@ drop table atacc1;
 create table atacc1 (test int);
 create table atacc2 (test2 int) inherits (atacc1);
 -- ok:
-alter table atacc1 add constraint foo check no inherit (test>0);
+alter table atacc1 add constraint foo check (test>0) no inherit;
 -- check constraint is not there on child
 insert into atacc2 (test) values (-3);
 -- check constraint is there on parent
@@ -661,7 +660,7 @@ ERROR:  new row for relation "atacc1" violates check constraint "foo"
 DETAIL:  Failing row contains (-3).
 insert into atacc1 (test) values (3);
 -- fail, violating row:
-alter table atacc2 add constraint foo check no inherit (test>0);
+alter table atacc2 add constraint foo check (test>0) no inherit;
 ERROR:  check constraint "foo" is violated by some row
 drop table atacc2;
 drop table atacc1;
@@ -1233,6 +1232,22 @@ select * from atacc1;
 --
 (1 row)
 
+drop table atacc1;
+-- test constraint error reporting in presence of dropped columns
+create table atacc1 (id serial primary key, value int check (value < 10));
+NOTICE:  CREATE TABLE will create implicit sequence "atacc1_id_seq" for serial column "atacc1.id"
+NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "atacc1_pkey" for table "atacc1"
+insert into atacc1(value) values (100);
+ERROR:  new row for relation "atacc1" violates check constraint "atacc1_value_check"
+DETAIL:  Failing row contains (1, 100).
+alter table atacc1 drop column value;
+alter table atacc1 add column value int check (value < 10);
+insert into atacc1(value) values (100);
+ERROR:  new row for relation "atacc1" violates check constraint "atacc1_value_check"
+DETAIL:  Failing row contains (2, 100).
+insert into atacc1(id, value) values (null, 0);
+ERROR:  null value in column "id" violates not-null constraint
+DETAIL:  Failing row contains (null, 0).
 drop table atacc1;
 -- test inheritance
 create table parent (a int, b int, c int) distribute by roundrobin;
@@ -1816,6 +1831,28 @@ where oid = 'test_storage'::regclass;
 -----------------
  t
 (1 row)
+
+-- ALTER TYPE with a check constraint and a child table (bug before Nov 2012)
+CREATE TABLE test_inh_check (a float check (a > 10.2));
+CREATE TABLE test_inh_check_child() INHERITS(test_inh_check);
+ALTER TABLE test_inh_check ALTER COLUMN a TYPE numeric;
+\d test_inh_check
+Table "public.test_inh_check"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | numeric | 
+Check constraints:
+    "test_inh_check_a_check" CHECK (a::double precision > 10.2::double precision)
+Number of child tables: 1 (Use \d+ to list them.)
+
+\d test_inh_check_child
+Table "public.test_inh_check_child"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | numeric | 
+Check constraints:
+    "test_inh_check_a_check" CHECK (a::double precision > 10.2::double precision)
+Inherits: test_inh_check
 
 --
 -- lock levels

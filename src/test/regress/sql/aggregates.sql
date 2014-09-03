@@ -212,7 +212,6 @@ FROM bool_test;
 -- In Postgres-XL, plans printed by explain are the ones created on the
 -- coordinator. Coordinator does not generate index scan plans.
 --
-analyze tenk1;		-- ensure we get consistent plans here
 
 -- Basic cases
 explain (costs off, nodes off)
@@ -282,6 +281,11 @@ insert into minmaxtest3 values(17), (18);
 explain (costs off, nodes off)
   select min(f1), max(f1) from minmaxtest;
 select min(f1), max(f1) from minmaxtest;
+
+-- DISTINCT doesn't do anything useful here, but it shouldn't fail
+explain (costs off)
+  select distinct min(f1), max(f1) from minmaxtest;
+select distinct min(f1), max(f1) from minmaxtest;
 
 drop table minmaxtest cascade;
 

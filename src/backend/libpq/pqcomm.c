@@ -363,7 +363,7 @@ StreamServerPort(int family, char *hostName, unsigned short portNumber,
 				break;
 		}
 
-		if ((fd = socket(addr->ai_family, SOCK_STREAM, 0)) < 0)
+		if ((fd = socket(addr->ai_family, SOCK_STREAM, 0)) == PGINVALID_SOCKET)
 		{
 			ereport(LOG,
 					(errcode_for_socket_access(),
@@ -418,7 +418,7 @@ StreamServerPort(int family, char *hostName, unsigned short portNumber,
 		/*
 		 * Note: This might fail on some OS's, like Linux older than
 		 * 2.4.21-pre3, that don't have the IPV6_V6ONLY socket option, and map
-		 * ipv4 addresses to ipv6.	It will show ::ffff:ipv4 for all ipv4
+		 * ipv4 addresses to ipv6.  It will show ::ffff:ipv4 for all ipv4
 		 * connections.
 		 */
 		err = bind(fd, addr->ai_addr, addr->ai_addrlen);
@@ -493,6 +493,14 @@ static int
 Lock_AF_UNIX(unsigned short portNumber, char *unixSocketName)
 {
 	UNIXSOCK_PATH(sock_path, portNumber, unixSocketName);
+	if (strlen(sock_path) >= UNIXSOCK_PATH_BUFLEN)
+	{
+		ereport(LOG,
+				(errmsg("Unix-domain socket path \"%s\" is too long (maximum %d bytes)",
+						sock_path,
+						(int) (UNIXSOCK_PATH_BUFLEN - 1))));
+		return STATUS_ERROR;
+	}
 
 	/*
 	 * Grab an interlock file associated with the socket file.
@@ -598,7 +606,7 @@ StreamConnection(pgsocket server_fd, Port *port)
 	port->raddr.salen = sizeof(port->raddr.addr);
 	if ((port->sock = accept(server_fd,
 							 (struct sockaddr *) & port->raddr.addr,
-							 &port->raddr.salen)) < 0)
+							 &port->raddr.salen)) == PGINVALID_SOCKET)
 	{
 		ereport(LOG,
 				(errcode_for_socket_access(),
@@ -1089,7 +1097,7 @@ pq_getmessage(StringInfo s, int maxlen)
 	if (len > 0)
 	{
 		/*
-		 * Allocate space for message.	If we run out of room (ridiculously
+		 * Allocate space for message.  If we run out of room (ridiculously
 		 * large message), we will elog(ERROR), but we want to discard the
 		 * message body so as not to lose communication sync.
 		 */

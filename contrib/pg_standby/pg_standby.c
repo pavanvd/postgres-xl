@@ -256,7 +256,7 @@ CustomizableCleanupPriorWALFiles(void)
 		 */
 		if ((xldir = opendir(archiveLocation)) != NULL)
 		{
-			while ((xlde = readdir(xldir)) != NULL)
+			while (errno = 0, (xlde = readdir(xldir)) != NULL)
 			{
 				/*
 				 * We ignore the timeline part of the XLOG segment identifiers
@@ -294,6 +294,16 @@ CustomizableCleanupPriorWALFiles(void)
 					}
 				}
 			}
+
+#ifdef WIN32
+			/* Bug in old Mingw dirent.c;  fixed in mingw-runtime-3.2, 2003-10-10 */
+			if (GetLastError() == ERROR_NO_MORE_FILES)
+				errno = 0;
+#endif
+
+			if (errno)
+				fprintf(stderr, "%s: could not read archive location \"%s\": %s\n",
+						progname, archiveLocation, strerror(errno));
 			if (debug)
 				fprintf(stderr, "\n");
 		}
@@ -301,7 +311,10 @@ CustomizableCleanupPriorWALFiles(void)
 			fprintf(stderr, "%s: could not open archive location \"%s\": %s\n",
 					progname, archiveLocation, strerror(errno));
 
-		closedir(xldir);
+		if (closedir(xldir))
+			fprintf(stderr, "%s: could not close archive location \"%s\": %s\n",
+					progname, archiveLocation, strerror(errno));
+
 		fflush(stderr);
 	}
 }
@@ -338,7 +351,7 @@ SetWALFileNameForCleanup(void)
 		if (strcmp(restartWALFileName, nextWALFileName) > 0)
 			return false;
 
-		strcpy(exclusiveCleanupFileName, restartWALFileName);
+		strlcpy(exclusiveCleanupFileName, restartWALFileName, sizeof(exclusiveCleanupFileName));
 		return true;
 	}
 
@@ -527,9 +540,9 @@ usage(void)
 	printf("  -s SLEEPTIME       seconds to wait between file checks (min=1, max=60,\n"
 		   "                     default=5)\n");
 	printf("  -t TRIGGERFILE     trigger file to initiate failover (no default)\n");
+	printf("  -V, --version      output version information, then exit\n");
 	printf("  -w MAXWAITTIME     max seconds to wait for a file (0=no limit) (default=0)\n");
-	printf("  --help             show this help, then exit\n");
-	printf("  --version          output version information, then exit\n");
+	printf("  -?, --help         show this help, then exit\n");
 	printf("\n"
 		   "Main intended use as restore_command in recovery.conf:\n"
 		   "  restore_command = 'pg_standby [OPTION]... ARCHIVELOCATION %%f %%p %%r'\n"

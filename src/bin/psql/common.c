@@ -60,6 +60,9 @@ pg_malloc(size_t size)
 {
 	void	   *tmp;
 
+	/* Avoid unportable behavior of malloc(0) */
+	if (size == 0)
+		size = 1;
 	tmp = malloc(size);
 	if (!tmp)
 	{
@@ -332,7 +335,7 @@ ConnectionUp(void)
  * see if it can be restored.
  *
  * Returns true if either the connection was still there, or it could be
- * restored successfully; false otherwise.	If, however, there was no
+ * restored successfully; false otherwise.  If, however, there was no
  * connection and the session is non-interactive, this will exit the program
  * with a code of EXIT_BADCONN.
  */
@@ -462,7 +465,7 @@ AcceptResult(const PGresult *result)
 
 			default:
 				OK = false;
-				psql_error("unexpected PQresultStatus (%d)",
+				psql_error("unexpected PQresultStatus: %d\n",
 						   PQresultStatus(result));
 				break;
 		}
@@ -636,7 +639,7 @@ PrintQueryTuples(const PGresult *results)
  * command.  In that event, we'll marshal data for the COPY and then cycle
  * through any subsequent PGresult objects.
  *
- * When the command string contained no affected COPY command, this function
+ * When the command string contained no such COPY command, this function
  * degenerates to an AcceptResult() call.
  *
  * Changes its argument to point to the last PGresult of the command string,
@@ -686,7 +689,7 @@ ProcessResult(PGresult **results)
 			default:
 				/* AcceptResult() should have caught anything else. */
 				is_copy = false;
-				psql_error("unexpected PQresultStatus (%d)", result_status);
+				psql_error("unexpected PQresultStatus: %d\n", result_status);
 				break;
 		}
 
@@ -696,18 +699,33 @@ ProcessResult(PGresult **results)
 			 * Marshal the COPY data.  Either subroutine will get the
 			 * connection out of its COPY state, then call PQresultStatus()
 			 * once and report any error.
+			 *
+			 * If pset.copyStream is set, use that as data source/sink,
+			 * otherwise use queryFout or cur_cmd_source as appropriate.
 			 */
+			FILE	   *copystream = pset.copyStream;
+
 			SetCancelConn();
 			if (result_status == PGRES_COPY_OUT)
-				success = handleCopyOut(pset.db, pset.queryFout) && success;
+			{
+				if (!copystream)
+					copystream = pset.queryFout;
+				success = handleCopyOut(pset.db,
+										copystream) && success;
+			}
 			else
-				success = handleCopyIn(pset.db, pset.cur_cmd_source,
+			{
+				if (!copystream)
+					copystream = pset.cur_cmd_source;
+				success = handleCopyIn(pset.db,
+									   copystream,
 									   PQbinaryTuples(*results)) && success;
+			}
 			ResetCancelConn();
 
 			/*
 			 * Call PQgetResult() once more.  In the typical case of a
-			 * single-command string, it will return NULL.	Otherwise, we'll
+			 * single-command string, it will return NULL.  Otherwise, we'll
 			 * have other results to process that may include other COPYs.
 			 */
 			PQclear(*results);
@@ -816,7 +834,7 @@ PrintQueryResults(PGresult *results)
 
 		default:
 			success = false;
-			psql_error("unexpected PQresultStatus (%d)",
+			psql_error("unexpected PQresultStatus: %d\n",
 					   PQresultStatus(results));
 			break;
 	}
@@ -1614,11 +1632,11 @@ session_username(void)
  * substitute '~' with HOME or '~username' with username's home dir
  *
  */
-char *
+void
 expand_tilde(char **filename)
 {
 	if (!filename || !(*filename))
-		return NULL;
+		return;
 
 	/*
 	 * WIN32 doesn't use tilde expansion for file names. Also, it uses tilde
@@ -1666,5 +1684,5 @@ expand_tilde(char **filename)
 	}
 #endif
 
-	return *filename;
+	return;
 }

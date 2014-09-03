@@ -52,7 +52,7 @@ strcpy_quoted(StringInfo r, const char *s, const char q)
  * triggered_change_notification
  *
  * This trigger function will send a notification of data modification with
- * primary key values.	The channel will be "tcn" unless the trigger is
+ * primary key values.  The channel will be "tcn" unless the trigger is
  * created with a parameter, in which case that parameter will be used.
  */
 PG_FUNCTION_INFO_V1(triggered_change_notification);
@@ -140,8 +140,8 @@ triggered_change_notification(PG_FUNCTION_ARGS)
 		if (!HeapTupleIsValid(indexTuple))		/* should not happen */
 			elog(ERROR, "cache lookup failed for index %u", indexoid);
 		index = (Form_pg_index) GETSTRUCT(indexTuple);
-		/* we're only interested if it is the primary key */
-		if (index->indisprimary)
+		/* we're only interested if it is the primary key and valid */
+		if (index->indisprimary && IndexIsValid(index))
 		{
 			int			numatts = index->indnatts;
 

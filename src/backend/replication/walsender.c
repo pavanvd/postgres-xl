@@ -22,7 +22,8 @@
  * If the server is shut down, postmaster sends us SIGUSR2 after all
  * regular backends have exited and the shutdown checkpoint has been written.
  * This instruct walsender to send any outstanding WAL, including the
- * shutdown checkpoint record, and then exit.
+ * shutdown checkpoint record, wait for it to be replicated to the standby,
+ * and then exit.
  *
  *
  * Portions Copyright (c) 2010-2012, PostgreSQL Global Development Group
@@ -299,7 +300,7 @@ IdentifySystem(void)
 			 GetSystemIdentifier());
 	snprintf(tli, sizeof(tli), "%u", ThisTimeLineID);
 
-	logptr = am_cascading_walsender ? GetStandbyFlushRecPtr() : GetInsertRecPtr();
+	logptr = am_cascading_walsender ? GetStandbyFlushRecPtr(NULL) : GetInsertRecPtr();
 
 	snprintf(xpos, sizeof(xpos), "%X/%X",
 			 logptr.xlogid, logptr.xrecoff);
@@ -655,9 +656,12 @@ ProcessStandbyHSFeedbackMessage(void)
 		 reply.xmin,
 		 reply.epoch);
 
-	/* Ignore invalid xmin (can't actually happen with current walreceiver) */
+	/* Unset WalSender's xmin if the feedback message value is invalid */
 	if (!TransactionIdIsNormal(reply.xmin))
+	{
+		MyPgXact->xmin = InvalidTransactionId;
 		return;
+	}
 
 	/*
 	 * Check that the provided xmin/epoch are sane, that is, not in the future
@@ -694,7 +698,7 @@ ProcessStandbyHSFeedbackMessage(void)
 	 * far enough to make reply.xmin wrap around.  In that case the xmin we
 	 * set here would be "in the future" and have no effect.  No point in
 	 * worrying about this since it's too late to save the desired data
-	 * anyway.	Assuming that the standby sends us an increasing sequence of
+	 * anyway.  Assuming that the standby sends us an increasing sequence of
 	 * xmins, this could only happen during the first reply cycle, else our
 	 * own xmin would prevent nextXid from advancing so far.
 	 *
@@ -800,15 +804,28 @@ WalSndLoop(void)
 
 			/*
 			 * When SIGUSR2 arrives, we send any outstanding logs up to the
-			 * shutdown checkpoint record (i.e., the latest record) and exit.
+			 * shutdown checkpoint record (i.e., the latest record), wait
+			 * for them to be replicated to the standby, and exit.
 			 * This may be a normal termination at shutdown, or a promotion,
 			 * the walsender is not sure which.
 			 */
 			if (walsender_ready_to_stop)
 			{
+				XLogRecPtr	replicatedPtr;
+
 				/* ... let's just be real sure we're caught up ... */
 				XLogSend(output_message, &caughtup);
-				if (caughtup && !pq_is_send_pending())
+
+				/*
+				 * Check a write location to see whether all the WAL have
+				 * successfully been replicated if this walsender is connecting
+				 * to a standby such as pg_receivexlog which always returns
+				 * an invalid flush location. Otherwise, check a flush location.
+				 */
+				replicatedPtr = XLogRecPtrIsInvalid(MyWalSnd->flush) ?
+					MyWalSnd->write : MyWalSnd->flush;
+				if (caughtup && XLByteEQ(sentPtr, replicatedPtr) &&
+					!pq_is_send_pending())
 				{
 					walsender_shutdown_requested = true;
 					continue;	/* don't want to wait more */
@@ -834,7 +851,7 @@ WalSndLoop(void)
 
 			if (pq_is_send_pending())
 				wakeEvents |= WL_SOCKET_WRITEABLE;
-			else
+			else if (MyWalSnd->sendKeepalive)
 			{
 				WalSndKeepalive(output_message);
 				/* Try to flush pending output to the client */
@@ -947,17 +964,23 @@ InitWalSnd(void)
 static void
 WalSndKill(int code, Datum arg)
 {
-	Assert(MyWalSnd != NULL);
+	WalSnd	   *walsnd = MyWalSnd;
+
+	Assert(walsnd != NULL);
+
+	/*
+	 * Clear MyWalSnd first; then disown the latch.  This is so that signal
+	 * handlers won't try to touch the latch after it's no longer ours.
+	 */
+	MyWalSnd = NULL;
+
+	DisownLatch(&walsnd->latch);
 
 	/*
 	 * Mark WalSnd struct no longer in use. Assume that no lock is required
 	 * for this.
 	 */
-	MyWalSnd->pid = 0;
-	DisownLatch(&MyWalSnd->latch);
-
-	/* WalSnd struct isn't mine anymore */
-	MyWalSnd = NULL;
+	walsnd->pid = 0;
 }
 
 /*
@@ -977,8 +1000,6 @@ XLogRead(char *buf, XLogRecPtr startptr, Size count)
 	char	   *p;
 	XLogRecPtr	recptr;
 	Size		nbytes;
-	uint32		lastRemovedLog;
-	uint32		lastRemovedSeg;
 	uint32		log;
 	uint32		seg;
 
@@ -1073,19 +1094,8 @@ retry:
 	 * read() succeeds in that case, but the data we tried to read might
 	 * already have been overwritten with new WAL records.
 	 */
-	XLogGetLastRemoved(&lastRemovedLog, &lastRemovedSeg);
 	XLByteToSeg(startptr, log, seg);
-	if (log < lastRemovedLog ||
-		(log == lastRemovedLog && seg <= lastRemovedSeg))
-	{
-		char		filename[MAXFNAMELEN];
-
-		XLogFileName(filename, ThisTimeLineID, log, seg);
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("requested WAL segment %s has already been removed",
-						filename)));
-	}
+	CheckXLogRemoved(log, seg, ThisTimeLineID);
 
 	/*
 	 * During recovery, the currently-open WAL file might be replaced with the
@@ -1144,7 +1154,31 @@ XLogSend(char *msgbuf, bool *caughtup)
 	 * subsequently crashes and restarts, slaves must not have applied any WAL
 	 * that gets lost on the master.
 	 */
-	SendRqstPtr = am_cascading_walsender ? GetStandbyFlushRecPtr() : GetFlushRecPtr();
+	if (am_cascading_walsender)
+	{
+		TimeLineID	currentTargetTLI;
+		SendRqstPtr = GetStandbyFlushRecPtr(&currentTargetTLI);
+
+		/*
+		 * If the recovery target timeline changed, bail out. It's a bit
+		 * unfortunate that we have to just disconnect, but there is no way
+		 * to tell the client that the timeline changed. We also don't know
+		 * exactly where the switch happened, so we cannot safely try to send
+		 * up to the switchover point before disconnecting.
+		 */
+		if (currentTargetTLI != ThisTimeLineID)
+		{
+			if (!walsender_ready_to_stop)
+				ereport(LOG,
+						(errmsg("terminating walsender process to force cascaded standby "
+								"to update timeline and reconnect")));
+			walsender_ready_to_stop = true;
+			*caughtup = true;
+			return;
+		}
+	}
+	else
+		SendRqstPtr = GetFlushRecPtr();
 
 	/* Quick exit if nothing to do */
 	if (XLByteLE(SendRqstPtr, sentPtr))
@@ -1326,7 +1360,7 @@ WalSndQuickDieHandler(SIGNAL_ARGS)
 	on_exit_reset();
 
 	/*
-	 * Note we do exit(2) not exit(0).	This is to force the postmaster into a
+	 * Note we do exit(2) not exit(0).  This is to force the postmaster into a
 	 * system reset cycle if some idiot DBA sends a manual SIGQUIT to a random
 	 * backend.  This is necessary precisely because we don't clean up our
 	 * shared memory state.  (The "dead man switch" mechanism in pmsignal.c
@@ -1370,7 +1404,7 @@ WalSndSignals(void)
 	pqsignal(SIGINT, SIG_IGN);	/* not used */
 	pqsignal(SIGTERM, WalSndShutdownHandler);	/* request shutdown */
 	pqsignal(SIGQUIT, WalSndQuickDieHandler);	/* hard crash time */
-	pqsignal(SIGALRM, SIG_IGN);
+	pqsignal(SIGALRM, handle_sig_alarm);
 	pqsignal(SIGPIPE, SIG_IGN);
 	pqsignal(SIGUSR1, WalSndXLogSendHandler);	/* request WAL sending */
 	pqsignal(SIGUSR2, WalSndLastCycleHandler);	/* request a last cycle and
@@ -1530,12 +1564,19 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 
 		if (walsnd->pid != 0)
 		{
-			sync_priority[i] = walsnd->sync_standby_priority;
+			/*
+			 * Treat a standby such as a pg_basebackup background process
+			 * which always returns an invalid flush location, as an
+			 * asynchronous standby.
+			 */
+			sync_priority[i] = XLByteEQ(walsnd->flush, InvalidXLogRecPtr) ?
+				0 : walsnd->sync_standby_priority;
 
 			if (walsnd->state == WALSNDSTATE_STREAMING &&
 				walsnd->sync_standby_priority > 0 &&
 				(priority == 0 ||
-				 priority > walsnd->sync_standby_priority))
+				 priority > walsnd->sync_standby_priority) &&
+				!XLByteEQ(walsnd->flush, InvalidXLogRecPtr))
 			{
 				priority = walsnd->sync_standby_priority;
 				sync_standby = i;

@@ -2,11 +2,11 @@
  *
  * bgwriter.c
  *
- * The background writer (bgwriter) is new as of Postgres 8.0.	It attempts
+ * The background writer (bgwriter) is new as of Postgres 8.0.  It attempts
  * to keep regular backends from having to write out dirty shared buffers
  * (which they would only do when needing to free a shared buffer to read in
  * another page).  In the best scenario all writes from shared buffers will
- * be issued by the background writer process.	However, regular backends are
+ * be issued by the background writer process.  However, regular backends are
  * still empowered to issue writes if the bgwriter fails to maintain enough
  * clean shared buffers.
  *
@@ -74,11 +74,6 @@ int			BgWriterDelay = 200;
 static volatile sig_atomic_t got_SIGHUP = false;
 static volatile sig_atomic_t shutdown_requested = false;
 
-/*
- * Private state
- */
-static bool am_bg_writer = false;
-
 /* Signal handlers */
 
 static void bg_quickdie(SIGNAL_ARGS);
@@ -90,8 +85,8 @@ static void bgwriter_sigusr1_handler(SIGNAL_ARGS);
 /*
  * Main entry point for bgwriter process
  *
- * This is invoked from BootstrapMain, which has already created the basic
- * execution environment, but not enabled signals yet.
+ * This is invoked from AuxiliaryProcessMain, which has already created the
+ * basic execution environment, but not enabled signals yet.
  */
 void
 BackgroundWriterMain(void)
@@ -100,11 +95,9 @@ BackgroundWriterMain(void)
 	MemoryContext bgwriter_context;
 	bool		prev_hibernate;
 
-	am_bg_writer = true;
-
 	/*
 	 * If possible, make this process a group leader, so that the postmaster
-	 * can signal any child processes too.	(bgwriter probably never has any
+	 * can signal any child processes too.  (bgwriter probably never has any
 	 * child processes, but for consistency we make all postmaster child
 	 * processes do this.)
 	 */
@@ -177,7 +170,7 @@ BackgroundWriterMain(void)
 
 		/*
 		 * These operations are really just a minimal subset of
-		 * AbortTransaction().	We don't have very many resources to worry
+		 * AbortTransaction().  We don't have very many resources to worry
 		 * about in bgwriter, but we do have LWLocks, buffers, and temp files.
 		 */
 		LWLockReleaseAll();
@@ -189,6 +182,7 @@ BackgroundWriterMain(void)
 							 false, true);
 		/* we needn't bother with the other ResourceOwnerRelease phases */
 		AtEOXact_Buffers(false);
+		AtEOXact_SMgr();
 		AtEOXact_Files();
 		AtEOXact_HashTables(false);
 
@@ -279,7 +273,7 @@ BackgroundWriterMain(void)
 		if (FirstCallSinceLastCheckpoint())
 		{
 			/*
-			 * After any checkpoint, close all smgr files.	This is so we
+			 * After any checkpoint, close all smgr files.  This is so we
 			 * won't hang onto smgr references to deleted files indefinitely.
 			 */
 			smgrcloseall();
@@ -314,7 +308,7 @@ BackgroundWriterMain(void)
 		 * and the time we call StrategyNotifyBgWriter.  While it's not
 		 * critical that we not hibernate anyway, we try to reduce the odds of
 		 * that by only hibernating when BgBufferSync says nothing's happening
-		 * for two consecutive cycles.	Also, we mitigate any possible
+		 * for two consecutive cycles.  Also, we mitigate any possible
 		 * consequences of a missed wakeup by not hibernating forever.
 		 */
 		if (rc == WL_TIMEOUT && can_hibernate && prev_hibernate)
@@ -368,7 +362,7 @@ bg_quickdie(SIGNAL_ARGS)
 	on_exit_reset();
 
 	/*
-	 * Note we do exit(2) not exit(0).	This is to force the postmaster into a
+	 * Note we do exit(2) not exit(0).  This is to force the postmaster into a
 	 * system reset cycle if some idiot DBA sends a manual SIGQUIT to a random
 	 * backend.  This is necessary precisely because we don't clean up our
 	 * shared memory state.  (The "dead man switch" mechanism in pmsignal.c

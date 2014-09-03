@@ -76,11 +76,16 @@ static const int NSmgr = lengthof(smgrsw);
 
 /*
  * Each backend has a hashtable that stores all extant SMgrRelation objects.
+ * In addition, "unowned" SMgrRelation objects are chained together in a list.
  */
 static HTAB *SMgrRelationHash = NULL;
 
+static SMgrRelation first_unowned_reln = NULL;
+
 /* local function prototypes */
 static void smgrshutdown(int code, Datum arg);
+static void add_to_unowned_list(SMgrRelation reln);
+static void remove_from_unowned_list(SMgrRelation reln);
 
 
 /*
@@ -124,7 +129,7 @@ smgrshutdown(int code, Datum arg)
 /*
  *	smgropen() -- Return an SMgrRelation object, creating it if need be.
  *
- *		This does not attempt to actually open the object.
+ *		This does not attempt to actually open the underlying file.
  */
 SMgrRelation
 smgropen(RelFileNode rnode, BackendId backend)
@@ -144,6 +149,7 @@ smgropen(RelFileNode rnode, BackendId backend)
 		ctl.hash = tag_hash;
 		SMgrRelationHash = hash_create("smgr relation table", 400,
 									   &ctl, HASH_ELEM | HASH_FUNCTION);
+		first_unowned_reln = NULL;
 	}
 
 	/* Look up or create an entry */
@@ -163,31 +169,17 @@ smgropen(RelFileNode rnode, BackendId backend)
 		reln->smgr_targblock = InvalidBlockNumber;
 		reln->smgr_fsm_nblocks = InvalidBlockNumber;
 		reln->smgr_vm_nblocks = InvalidBlockNumber;
-		reln->smgr_transient = false;
 		reln->smgr_which = 0;	/* we only have md.c at present */
 
 		/* mark it not open */
 		for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
 			reln->md_fd[forknum] = NULL;
+
+		/* it has no owner yet */
+		add_to_unowned_list(reln);
 	}
-	else
-		/* if it was transient before, it no longer is */
-		reln->smgr_transient = false;
 
 	return reln;
-}
-
-/*
- * smgrsettransient() -- mark an SMgrRelation object as transaction-bound
- *
- * The main effect of this is that all opened files are marked to be
- * kernel-level closed (but not necessarily VFD-closed) when the current
- * transaction ends.
- */
-void
-smgrsettransient(SMgrRelation reln)
-{
-	reln->smgr_transient = true;
 }
 
 /*
@@ -199,18 +191,92 @@ smgrsettransient(SMgrRelation reln)
 void
 smgrsetowner(SMgrRelation *owner, SMgrRelation reln)
 {
+	/* We don't support "disowning" an SMgrRelation here, use smgrclearowner */
+	Assert(owner != NULL);
+
 	/*
 	 * First, unhook any old owner.  (Normally there shouldn't be any, but it
 	 * seems possible that this can happen during swap_relation_files()
 	 * depending on the order of processing.  It's ok to close the old
 	 * relcache entry early in that case.)
+	 *
+	 * If there isn't an old owner, then the reln should be in the unowned
+	 * list, and we need to remove it.
 	 */
 	if (reln->smgr_owner)
 		*(reln->smgr_owner) = NULL;
+	else
+		remove_from_unowned_list(reln);
 
 	/* Now establish the ownership relationship. */
 	reln->smgr_owner = owner;
 	*owner = reln;
+}
+
+/*
+ * smgrclearowner() -- Remove long-lived reference to an SMgrRelation object
+ *					   if one exists
+ */
+void
+smgrclearowner(SMgrRelation *owner, SMgrRelation reln)
+{
+	/* Do nothing if the SMgrRelation object is not owned by the owner */
+	if (reln->smgr_owner != owner)
+		return;
+
+	/* unset the owner's reference */
+	*owner = NULL;
+
+	/* unset our reference to the owner */
+	reln->smgr_owner = NULL;
+
+	add_to_unowned_list(reln);
+}
+
+/*
+ * add_to_unowned_list -- link an SMgrRelation onto the unowned list
+ *
+ * Check remove_from_unowned_list()'s comments for performance
+ * considerations.
+ */
+static void
+add_to_unowned_list(SMgrRelation reln)
+{
+	/* place it at head of the list (to make smgrsetowner cheap) */
+	reln->next_unowned_reln = first_unowned_reln;
+	first_unowned_reln = reln;
+}
+
+/*
+ * remove_from_unowned_list -- unlink an SMgrRelation from the unowned list
+ *
+ * If the reln is not present in the list, nothing happens.  Typically this
+ * would be caller error, but there seems no reason to throw an error.
+ *
+ * In the worst case this could be rather slow; but in all the cases that seem
+ * likely to be performance-critical, the reln being sought will actually be
+ * first in the list.  Furthermore, the number of unowned relns touched in any
+ * one transaction shouldn't be all that high typically.  So it doesn't seem
+ * worth expending the additional space and management logic needed for a
+ * doubly-linked list.
+ */
+static void
+remove_from_unowned_list(SMgrRelation reln)
+{
+	SMgrRelation *link;
+	SMgrRelation cur;
+
+	for (link = &first_unowned_reln, cur = *link;
+		 cur != NULL;
+		 link = &cur->next_unowned_reln, cur = *link)
+	{
+		if (cur == reln)
+		{
+			*link = cur->next_unowned_reln;
+			cur->next_unowned_reln = NULL;
+			break;
+		}
+	}
 }
 
 /*
@@ -235,6 +301,9 @@ smgrclose(SMgrRelation reln)
 		(*(smgrsw[reln->smgr_which].smgr_close)) (reln, forknum);
 
 	owner = reln->smgr_owner;
+
+	if (!owner)
+		remove_from_unowned_list(reln);
 
 	if (hash_search(SMgrRelationHash,
 					(void *) &(reln->smgr_rnode),
@@ -381,8 +450,7 @@ smgrdounlink(SMgrRelation reln, bool isRedo)
 	 * ERROR, because we've already decided to commit or abort the current
 	 * xact.
 	 */
-	for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
-		(*(smgrsw[which].smgr_unlink)) (rnode, forknum, isRedo);
+	(*(smgrsw[which].smgr_unlink)) (rnode, InvalidForkNumber, isRedo);
 }
 
 /*
@@ -530,7 +598,7 @@ smgrtruncate(SMgrRelation reln, ForkNumber forknum, BlockNumber nblocks)
 	 * Send a shared-inval message to force other backends to close any smgr
 	 * references they may have for this rel.  This is useful because they
 	 * might have open file pointers to segments that got removed, and/or
-	 * smgr_targblock variables pointing past the new rel end.	(The inval
+	 * smgr_targblock variables pointing past the new rel end.  (The inval
 	 * message will come back to our backend, too, causing a
 	 * probably-unnecessary local smgr flush.  But we don't expect that this
 	 * is a performance-critical path.)  As in the unlink code, we want to be
@@ -616,5 +684,31 @@ smgrpostckpt(void)
 	{
 		if (smgrsw[i].smgr_post_ckpt)
 			(*(smgrsw[i].smgr_post_ckpt)) ();
+	}
+}
+
+/*
+ * AtEOXact_SMgr
+ *
+ * This routine is called during transaction commit or abort (it doesn't
+ * particularly care which).  All transient SMgrRelation objects are closed.
+ *
+ * We do this as a compromise between wanting transient SMgrRelations to
+ * live awhile (to amortize the costs of blind writes of multiple blocks)
+ * and needing them to not live forever (since we're probably holding open
+ * a kernel file descriptor for the underlying file, and we need to ensure
+ * that gets closed reasonably soon if the file gets deleted).
+ */
+void
+AtEOXact_SMgr(void)
+{
+	/*
+	 * Zap all unowned SMgrRelations.  We rely on smgrclose() to remove each
+	 * one from the list.
+	 */
+	while (first_unowned_reln != NULL)
+	{
+		Assert(first_unowned_reln->smgr_owner == NULL);
+		smgrclose(first_unowned_reln);
 	}
 }

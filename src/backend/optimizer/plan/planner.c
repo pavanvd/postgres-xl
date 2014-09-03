@@ -65,7 +65,14 @@ planner_hook_type planner_hook = NULL;
 #define EXPRKIND_LIMIT		4
 #define EXPRKIND_APPINFO	5
 
+/* Passthrough data for standard_qp_callback */
+typedef struct
+{
+	List	   *tlist;			/* preprocessed query targetlist */
+	List	   *activeWindows;	/* active windows, if any */
+} standard_qp_extra;
 
+/* Local functions */
 static Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);
 static void preprocess_qual_conditions(PlannerInfo *root, Node *jtnode);
 static Plan *inheritance_planner(PlannerInfo *root);
@@ -75,6 +82,7 @@ static double preprocess_limit(PlannerInfo *root,
 				 double tuple_fraction,
 				 int64 *offset_est, int64 *count_est);
 static void preprocess_groupclause(PlannerInfo *root);
+static void standard_qp_callback(PlannerInfo *root, void *extra);
 static bool choose_hashed_grouping(PlannerInfo *root,
 					   double tuple_fraction, double limit_tuples,
 					   double path_rows, int path_width,
@@ -96,10 +104,10 @@ static void locate_grouping_columns(PlannerInfo *root,
 						AttrNumber *groupColIdx);
 static List *postprocess_setop_tlist(List *new_tlist, List *orig_tlist);
 static List *select_active_windows(PlannerInfo *root, WindowFuncLists *wflists);
-static List *add_volatile_sort_exprs(List *window_tlist, List *tlist,
-						List *activeWindows);
+static List *make_windowInputTargetList(PlannerInfo *root,
+						   List *tlist, List *activeWindows);
 static List *make_pathkeys_for_window(PlannerInfo *root, WindowClause *wc,
-						 List *tlist, bool canonicalize);
+						 List *tlist);
 static void get_column_info_for_window(PlannerInfo *root, WindowClause *wc,
 						   List *tlist,
 						   int numSortCols, AttrNumber *sortColIdx,
@@ -189,7 +197,6 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	glob = makeNode(PlannerGlobal);
 
 	glob->boundParams = boundParams;
-	glob->paramlist = NIL;
 	glob->subplans = NIL;
 	glob->subroots = NIL;
 	glob->rewindPlanIDs = NULL;
@@ -198,6 +205,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	glob->resultRelations = NIL;
 	glob->relationOids = NIL;
 	glob->invalItems = NIL;
+	glob->nParamExec = 0;
 	glob->lastPHId = 0;
 	glob->lastRowMarkId = 0;
 	glob->transientPlan = false;
@@ -216,7 +224,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 
 		/*
 		 * We document cursor_tuple_fraction as simply being a fraction, which
-		 * means the edge cases 0 and 1 have to be treated specially here.	We
+		 * means the edge cases 0 and 1 have to be treated specially here.  We
 		 * convert 1 to 0 ("all the tuples") and 0 to a very small fraction.
 		 */
 		if (tuple_fraction >= 1.0)
@@ -314,7 +322,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	result->rowMarks = glob->finalrowmarks;
 	result->relationOids = glob->relationOids;
 	result->invalItems = glob->invalItems;
-	result->nParamExec = list_length(glob->paramlist);
+	result->nParamExec = glob->nParamExec;
 #ifdef XCP
 	result->distributionType = LOCATOR_TYPE_NONE;
 	result->distributionKey = InvalidAttrNumber;
@@ -371,6 +379,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->glob = glob;
 	root->query_level = parent_root ? parent_root->query_level + 1 : 1;
 	root->parent_root = parent_root;
+	root->plan_params = NIL;
 	root->planner_cxt = CurrentMemoryContext;
 	root->init_plans = NIL;
 	root->cte_plan_ids = NIL;
@@ -455,7 +464,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	}
 
 	/*
-	 * Preprocess RowMark information.	We need to do this after subquery
+	 * Preprocess RowMark information.  We need to do this after subquery
 	 * pullup (so that all non-inherited RTEs are present) and before
 	 * inheritance expansion (so that the info is available for
 	 * expand_inherited_tables to examine and modify).
@@ -564,7 +573,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	 * to execute that we're better off doing it only once per group, despite
 	 * the loss of selectivity.  This is hard to estimate short of doing the
 	 * entire planning process twice, so we use a heuristic: clauses
-	 * containing subplans are left in HAVING.	Otherwise, we move or copy the
+	 * containing subplans are left in HAVING.  Otherwise, we move or copy the
 	 * HAVING clause into WHERE, in hopes of eliminating tuples before
 	 * aggregation instead of after.
 	 *
@@ -675,7 +684,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	 * and attach the initPlans to the top plan node.
 	 */
 	if (list_length(glob->subplans) != num_old_subplans ||
-		root->glob->paramlist != NIL)
+		root->glob->nParamExec > 0)
 		SS_finalize_plan(root, plan, true);
 
 	/* Return internal info if caller wants it */
@@ -937,6 +946,13 @@ inheritance_planner(PlannerInfo *root)
 		subroot.rowMarks = (List *) copyObject(root->rowMarks);
 
 		/*
+		 * The append_rel_list likewise might contain references to subquery
+		 * RTEs (if any subqueries were flattenable UNION ALLs).  So prepare
+		 * to apply ChangeVarNodes to that, too.
+		 */
+		subroot.append_rel_list = (List *) copyObject(root->append_rel_list);
+
+		/*
 		 * Add placeholders to the child Query's rangetable list to fill the
 		 * RT indexes already reserved for subqueries in previous children.
 		 * These won't be referenced, so there's no need to make them very
@@ -976,6 +992,7 @@ inheritance_planner(PlannerInfo *root)
 					newrti = list_length(subroot.parse->rtable) + 1;
 					ChangeVarNodes((Node *) subroot.parse, rti, newrti, 0);
 					ChangeVarNodes((Node *) subroot.rowMarks, rti, newrti, 0);
+					ChangeVarNodes((Node *) subroot.append_rel_list, rti, newrti, 0);
 					rte = copyObject(rte);
 					subroot.parse->rtable = lappend(subroot.parse->rtable,
 													rte);
@@ -984,7 +1001,6 @@ inheritance_planner(PlannerInfo *root)
 			}
 		}
 
-		/* We needn't modify the child's append_rel_list */
 		/* There shouldn't be any OJ info to translate, as yet */
 		Assert(subroot.join_info_list == NIL);
 		/* and we haven't created PlaceHolderInfos, either */
@@ -1182,7 +1198,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 
 		/*
 		 * If there's a top-level ORDER BY, assume we have to fetch all the
-		 * tuples.	This might be too simplistic given all the hackery below
+		 * tuples.  This might be too simplistic given all the hackery below
 		 * to possibly avoid the sort; but the odds of accurate estimates here
 		 * are pretty low anyway.
 		 */
@@ -1210,7 +1226,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 
 		/*
 		 * We should not need to call preprocess_targetlist, since we must be
-		 * in a SELECT query node.	Instead, use the targetlist returned by
+		 * in a SELECT query node.  Instead, use the targetlist returned by
 		 * plan_set_operations (since this tells whether it returned any
 		 * resjunk columns!), and transfer any sort key information from the
 		 * original tlist.
@@ -1245,7 +1261,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		double		sub_limit_tuples;
 		AttrNumber *groupColIdx = NULL;
 		bool		need_tlist_eval = true;
-		QualCost	tlist_cost;
+		standard_qp_extra qp_extra;
 		Path	   *cheapest_path;
 		Path	   *sorted_path;
 		Path	   *best_path;
@@ -1322,82 +1338,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		}
 
 		/*
-		 * Calculate pathkeys that represent grouping/ordering requirements.
-		 * Stash them in PlannerInfo so that query_planner can canonicalize
-		 * them after EquivalenceClasses have been formed.	The sortClause is
-		 * certainly sort-able, but GROUP BY and DISTINCT might not be, in
-		 * which case we just leave their pathkeys empty.
-		 */
-		if (parse->groupClause &&
-			grouping_is_sortable(parse->groupClause))
-			root->group_pathkeys =
-				make_pathkeys_for_sortclauses(root,
-											  parse->groupClause,
-											  tlist,
-											  false);
-		else
-			root->group_pathkeys = NIL;
-
-		/* We consider only the first (bottom) window in pathkeys logic */
-		if (activeWindows != NIL)
-		{
-			WindowClause *wc = (WindowClause *) linitial(activeWindows);
-
-			root->window_pathkeys = make_pathkeys_for_window(root,
-															 wc,
-															 tlist,
-															 false);
-		}
-		else
-			root->window_pathkeys = NIL;
-
-		if (parse->distinctClause &&
-			grouping_is_sortable(parse->distinctClause))
-			root->distinct_pathkeys =
-				make_pathkeys_for_sortclauses(root,
-											  parse->distinctClause,
-											  tlist,
-											  false);
-		else
-			root->distinct_pathkeys = NIL;
-
-		root->sort_pathkeys =
-			make_pathkeys_for_sortclauses(root,
-										  parse->sortClause,
-										  tlist,
-										  false);
-
-		/*
-		 * Figure out whether we want a sorted result from query_planner.
-		 *
-		 * If we have a sortable GROUP BY clause, then we want a result sorted
-		 * properly for grouping.  Otherwise, if we have window functions to
-		 * evaluate, we try to sort for the first window.  Otherwise, if
-		 * there's a sortable DISTINCT clause that's more rigorous than the
-		 * ORDER BY clause, we try to produce output that's sufficiently well
-		 * sorted for the DISTINCT.  Otherwise, if there is an ORDER BY
-		 * clause, we want to sort by the ORDER BY clause.
-		 *
-		 * Note: if we have both ORDER BY and GROUP BY, and ORDER BY is a
-		 * superset of GROUP BY, it would be tempting to request sort by ORDER
-		 * BY --- but that might just leave us failing to exploit an available
-		 * sort order at all.  Needs more thought.	The choice for DISTINCT
-		 * versus ORDER BY is much easier, since we know that the parser
-		 * ensured that one is a superset of the other.
-		 */
-		if (root->group_pathkeys)
-			root->query_pathkeys = root->group_pathkeys;
-		else if (root->window_pathkeys)
-			root->query_pathkeys = root->window_pathkeys;
-		else if (list_length(root->distinct_pathkeys) >
-				 list_length(root->sort_pathkeys))
-			root->query_pathkeys = root->distinct_pathkeys;
-		else if (root->sort_pathkeys)
-			root->query_pathkeys = root->sort_pathkeys;
-		else
-			root->query_pathkeys = NIL;
-
-		/*
 		 * Figure out whether there's a hard limit on the number of rows that
 		 * query_planner's result subplan needs to return.  Even if we know a
 		 * hard limit overall, it doesn't apply if the query has any
@@ -1412,13 +1352,19 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		else
 			sub_limit_tuples = limit_tuples;
 
+		/* Set up data needed by standard_qp_callback */
+		qp_extra.tlist = tlist;
+		qp_extra.activeWindows = activeWindows;
+
 		/*
 		 * Generate the best unsorted and presorted paths for this Query (but
-		 * note there may not be any presorted path).  query_planner will also
-		 * estimate the number of groups in the query, and canonicalize all
-		 * the pathkeys.
+		 * note there may not be any presorted path).  We also generate (in
+		 * standard_qp_callback) pathkey representations of the query's sort
+		 * clause, distinct clause, etc.  query_planner will also estimate the
+		 * number of groups in the query.
 		 */
 		query_planner(root, sub_tlist, tuple_fraction, sub_limit_tuples,
+					  standard_qp_callback, &qp_extra,
 					  &cheapest_path, &sorted_path, &dNumGroups);
 
 		/*
@@ -1566,27 +1512,9 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 
 				/*
 				 * Also, account for the cost of evaluation of the sub_tlist.
-				 *
-				 * Up to now, we have only been dealing with "flat" tlists,
-				 * containing just Vars.  So their evaluation cost is zero
-				 * according to the model used by cost_qual_eval() (or if you
-				 * prefer, the cost is factored into cpu_tuple_cost).  Thus we
-				 * can avoid accounting for tlist cost throughout
-				 * query_planner() and subroutines.  But now we've inserted a
-				 * tlist that might contain actual operators, sub-selects, etc
-				 * --- so we'd better account for its cost.
-				 *
-				 * Below this point, any tlist eval cost for added-on nodes
-				 * should be accounted for as we create those nodes.
-				 * Presently, of the node types we can add on, only Agg,
-				 * WindowAgg, and Group project new tlists (the rest just copy
-				 * their input tuples) --- so make_agg(), make_windowagg() and
-				 * make_group() are responsible for computing the added cost.
+				 * See comments for add_tlist_costs_to_plan() for more info.
 				 */
-				cost_qual_eval(&tlist_cost, sub_tlist, root);
-				result_plan->startup_cost += tlist_cost.startup;
-				result_plan->total_cost += tlist_cost.startup +
-					tlist_cost.per_tuple * result_plan->plan_rows;
+				add_tlist_costs_to_plan(root, result_plan, sub_tlist);
 			}
 			else
 			{
@@ -1729,7 +1657,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 				 * Furthermore, there cannot be any variables in either HAVING
 				 * or the targetlist, so we actually do not need the FROM
 				 * table at all!  We can just throw away the plan-so-far and
-				 * generate a Result node.	This is a sufficiently unusual
+				 * generate a Result node.  This is a sufficiently unusual
 				 * corner case that it's not worth contorting the structure of
 				 * this routine to avoid having to generate the plan in the
 				 * first place.
@@ -1788,31 +1716,25 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 
 			/*
 			 * The "base" targetlist for all steps of the windowing process is
-			 * a flat tlist of all Vars and Aggs needed in the result. (In
+			 * a flat tlist of all Vars and Aggs needed in the result.  (In
 			 * some cases we wouldn't need to propagate all of these all the
 			 * way to the top, since they might only be needed as inputs to
 			 * WindowFuncs.  It's probably not worth trying to optimize that
-			 * though.)  We also need any volatile sort expressions, because
-			 * make_sort_from_pathkeys won't add those on its own, and anyway
-			 * we want them evaluated only once at the bottom of the stack. As
-			 * we climb up the stack, we add outputs for the WindowFuncs
-			 * computed at each level.	Also, each input tlist has to present
-			 * all the columns needed to sort the data for the next WindowAgg
-			 * step.  That's handled internally by make_sort_from_pathkeys,
-			 * but we need the copyObject steps here to ensure that each plan
-			 * node has a separately modifiable tlist.
-			 *
-			 * Note: it's essential here to use PVC_INCLUDE_AGGREGATES so that
-			 * Vars mentioned only in aggregate expressions aren't pulled out
-			 * as separate targetlist entries.	Otherwise we could be putting
-			 * ungrouped Vars directly into an Agg node's tlist, resulting in
-			 * undefined behavior.
+			 * though.)  We also add window partitioning and sorting
+			 * expressions to the base tlist, to ensure they're computed only
+			 * once at the bottom of the stack (that's critical for volatile
+			 * functions).  As we climb up the stack, we'll add outputs for
+			 * the WindowFuncs computed at each level.
 			 */
-			window_tlist = flatten_tlist(tlist,
-										 PVC_INCLUDE_AGGREGATES,
-										 PVC_INCLUDE_PLACEHOLDERS);
-			window_tlist = add_volatile_sort_exprs(window_tlist, tlist,
-												   activeWindows);
+			window_tlist = make_windowInputTargetList(root,
+													  tlist,
+													  activeWindows);
+
+			/*
+			 * The copyObject steps here are needed to ensure that each plan
+			 * node has a separately modifiable tlist.  (XXX wouldn't a
+			 * shallow list copy do for that?)
+			 */
 			result_plan->targetlist = (List *) copyObject(window_tlist);
 #ifdef XCP
 			/*
@@ -1843,17 +1765,18 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 
 				window_pathkeys = make_pathkeys_for_window(root,
 														   wc,
-														   tlist,
-														   true);
+														   tlist);
 
 				/*
 				 * This is a bit tricky: we build a sort node even if we don't
 				 * really have to sort.  Even when no explicit sort is needed,
 				 * we need to have suitable resjunk items added to the input
 				 * plan's tlist for any partitioning or ordering columns that
-				 * aren't plain Vars.  Furthermore, this way we can use
-				 * existing infrastructure to identify which input columns are
-				 * the interesting ones.
+				 * aren't plain Vars.  (In theory, make_windowInputTargetList
+				 * should have provided all such columns, but let's not assume
+				 * that here.)  Furthermore, this way we can use existing
+				 * infrastructure to identify which input columns are the
+				 * interesting ones.
 				 */
 				if (window_pathkeys)
 				{
@@ -2288,6 +2211,61 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 }
 
 /*
+ * add_tlist_costs_to_plan
+ *
+ * Estimate the execution costs associated with evaluating the targetlist
+ * expressions, and add them to the cost estimates for the Plan node.
+ *
+ * If the tlist contains set-returning functions, also inflate the Plan's cost
+ * and plan_rows estimates accordingly.  (Hence, this must be called *after*
+ * any logic that uses plan_rows to, eg, estimate qual evaluation costs.)
+ *
+ * Note: during initial stages of planning, we mostly consider plan nodes with
+ * "flat" tlists, containing just Vars.  So their evaluation cost is zero
+ * according to the model used by cost_qual_eval() (or if you prefer, the cost
+ * is factored into cpu_tuple_cost).  Thus we can avoid accounting for tlist
+ * cost throughout query_planner() and subroutines.  But once we apply a
+ * tlist that might contain actual operators, sub-selects, etc, we'd better
+ * account for its cost.  Any set-returning functions in the tlist must also
+ * affect the estimated rowcount.
+ *
+ * Once grouping_planner() has applied a general tlist to the topmost
+ * scan/join plan node, any tlist eval cost for added-on nodes should be
+ * accounted for as we create those nodes.  Presently, of the node types we
+ * can add on later, only Agg, WindowAgg, and Group project new tlists (the
+ * rest just copy their input tuples) --- so make_agg(), make_windowagg() and
+ * make_group() are responsible for calling this function to account for their
+ * tlist costs.
+ */
+void
+add_tlist_costs_to_plan(PlannerInfo *root, Plan *plan, List *tlist)
+{
+	QualCost	tlist_cost;
+	double		tlist_rows;
+
+	cost_qual_eval(&tlist_cost, tlist, root);
+	plan->startup_cost += tlist_cost.startup;
+	plan->total_cost += tlist_cost.startup +
+		tlist_cost.per_tuple * plan->plan_rows;
+
+	tlist_rows = tlist_returns_set_rows(tlist);
+	if (tlist_rows > 1)
+	{
+		/*
+		 * We assume that execution costs of the tlist proper were all
+		 * accounted for by cost_qual_eval.  However, it still seems
+		 * appropriate to charge something more for the executor's general
+		 * costs of processing the added tuples.  The cost is probably less
+		 * than cpu_tuple_cost, though, so we arbitrarily use half of that.
+		 */
+		plan->total_cost += plan->plan_rows * (tlist_rows - 1) *
+			cpu_tuple_cost / 2;
+
+		plan->plan_rows *= tlist_rows;
+	}
+}
+
+/*
  * Detect whether a plan node is a "dummy" plan created when a relation
  * is deemed not to need scanning due to constraint exclusion.
  *
@@ -2417,7 +2395,7 @@ preprocess_rowmarks(PlannerInfo *root)
 
 		/*
 		 * Currently, it is syntactically impossible to have FOR UPDATE
-		 * applied to an update/delete target rel.	If that ever becomes
+		 * applied to an update/delete target rel.  If that ever becomes
 		 * possible, we should drop the target from the PlanRowMark list.
 		 */
 		Assert(rc->rti != parse->resultRelation);
@@ -2520,7 +2498,7 @@ separate_rowmarks(PlannerInfo *root)
  * preprocess_limit - do pre-estimation for LIMIT and/or OFFSET clauses
  *
  * We try to estimate the values of the LIMIT/OFFSET clauses, and pass the
- * results back in *count_est and *offset_est.	These variables are set to
+ * results back in *count_est and *offset_est.  These variables are set to
  * 0 if the corresponding clause is not present, and -1 if it's present
  * but we couldn't estimate the value for it.  (The "0" convention is OK
  * for OFFSET but a little bit bogus for LIMIT: effectively we estimate
@@ -2529,7 +2507,7 @@ separate_rowmarks(PlannerInfo *root)
  * be passed to make_limit, which see if you change this code.
  *
  * The return value is the suitably adjusted tuple_fraction to use for
- * planning the query.	This adjustment is not overridable, since it reflects
+ * planning the query.  This adjustment is not overridable, since it reflects
  * plan actions that grouping_planner() will certainly take, not assumptions
  * about context.
  */
@@ -2653,7 +2631,7 @@ preprocess_limit(PlannerInfo *root, double tuple_fraction,
 	else if (*offset_est != 0 && tuple_fraction > 0.0)
 	{
 		/*
-		 * We have an OFFSET but no LIMIT.	This acts entirely differently
+		 * We have an OFFSET but no LIMIT.  This acts entirely differently
 		 * from the LIMIT case: here, we need to increase rather than decrease
 		 * the caller's tuple_fraction, because the OFFSET acts to cause more
 		 * tuples to be fetched instead of fewer.  This only matters if we got
@@ -2668,7 +2646,7 @@ preprocess_limit(PlannerInfo *root, double tuple_fraction,
 
 		/*
 		 * If we have absolute counts from both caller and OFFSET, add them
-		 * together; likewise if they are both fractional.	If one is
+		 * together; likewise if they are both fractional.  If one is
 		 * fractional and the other absolute, we want to take the larger, and
 		 * we heuristically assume that's the fractional one.
 		 */
@@ -2793,6 +2771,91 @@ preprocess_groupclause(PlannerInfo *root)
 }
 
 /*
+ * Compute query_pathkeys and other pathkeys during plan generation
+ */
+static void
+standard_qp_callback(PlannerInfo *root, void *extra)
+{
+	Query	   *parse = root->parse;
+	standard_qp_extra *qp_extra = (standard_qp_extra *) extra;
+	List	   *tlist = qp_extra->tlist;
+	List	   *activeWindows = qp_extra->activeWindows;
+
+	/*
+	 * Calculate pathkeys that represent grouping/ordering requirements.  The
+	 * sortClause is certainly sort-able, but GROUP BY and DISTINCT might not
+	 * be, in which case we just leave their pathkeys empty.
+	 */
+	if (parse->groupClause &&
+		grouping_is_sortable(parse->groupClause))
+		root->group_pathkeys =
+			make_pathkeys_for_sortclauses(root,
+										  parse->groupClause,
+										  tlist,
+										  true);
+	else
+		root->group_pathkeys = NIL;
+
+	/* We consider only the first (bottom) window in pathkeys logic */
+	if (activeWindows != NIL)
+	{
+		WindowClause *wc = (WindowClause *) linitial(activeWindows);
+
+		root->window_pathkeys = make_pathkeys_for_window(root,
+														 wc,
+														 tlist);
+	}
+	else
+		root->window_pathkeys = NIL;
+
+	if (parse->distinctClause &&
+		grouping_is_sortable(parse->distinctClause))
+		root->distinct_pathkeys =
+			make_pathkeys_for_sortclauses(root,
+										  parse->distinctClause,
+										  tlist,
+										  true);
+	else
+		root->distinct_pathkeys = NIL;
+
+	root->sort_pathkeys =
+		make_pathkeys_for_sortclauses(root,
+									  parse->sortClause,
+									  tlist,
+									  true);
+
+	/*
+	 * Figure out whether we want a sorted result from query_planner.
+	 *
+	 * If we have a sortable GROUP BY clause, then we want a result sorted
+	 * properly for grouping.  Otherwise, if we have window functions to
+	 * evaluate, we try to sort for the first window.  Otherwise, if there's a
+	 * sortable DISTINCT clause that's more rigorous than the ORDER BY clause,
+	 * we try to produce output that's sufficiently well sorted for the
+	 * DISTINCT.  Otherwise, if there is an ORDER BY clause, we want to sort
+	 * by the ORDER BY clause.
+	 *
+	 * Note: if we have both ORDER BY and GROUP BY, and ORDER BY is a superset
+	 * of GROUP BY, it would be tempting to request sort by ORDER BY --- but
+	 * that might just leave us failing to exploit an available sort order at
+	 * all.  Needs more thought.  The choice for DISTINCT versus ORDER BY is
+	 * much easier, since we know that the parser ensured that one is a
+	 * superset of the other.
+	 */
+	if (root->group_pathkeys)
+		root->query_pathkeys = root->group_pathkeys;
+	else if (root->window_pathkeys)
+		root->query_pathkeys = root->window_pathkeys;
+	else if (list_length(root->distinct_pathkeys) >
+			 list_length(root->sort_pathkeys))
+		root->query_pathkeys = root->distinct_pathkeys;
+	else if (root->sort_pathkeys)
+		root->query_pathkeys = root->sort_pathkeys;
+	else
+		root->query_pathkeys = NIL;
+}
+
+/*
  * choose_hashed_grouping - should we use hashed grouping?
  *
  * Returns TRUE to select hashing, FALSE to select sorting.
@@ -2816,7 +2879,7 @@ choose_hashed_grouping(PlannerInfo *root,
 
 	/*
 	 * Executor doesn't support hashed aggregation with DISTINCT or ORDER BY
-	 * aggregates.	(Doing so would imply storing *all* the input values in
+	 * aggregates.  (Doing so would imply storing *all* the input values in
 	 * the hash table, and/or running many sorts in parallel, either of which
 	 * seems like a certain loser.)
 	 */
@@ -2958,7 +3021,7 @@ choose_hashed_grouping(PlannerInfo *root,
  * pass in the costs as individual variables.)
  *
  * But note that making the two choices independently is a bit bogus in
- * itself.	If the two could be combined into a single choice operation
+ * itself.  If the two could be combined into a single choice operation
  * it'd probably be better, but that seems far too unwieldy to be practical,
  * especially considering that the combination of GROUP BY and DISTINCT
  * isn't very common in real queries.  By separating them, we are giving
@@ -3051,7 +3114,7 @@ choose_hashed_distinct(PlannerInfo *root,
 				  0.0, work_mem, limit_tuples);
 
 	/*
-	 * Now for the GROUP case.	See comments in grouping_planner about the
+	 * Now for the GROUP case.  See comments in grouping_planner about the
 	 * sorting choices here --- this code should match that code.
 	 */
 	sorted_p.startup_cost = sorted_startup_cost;
@@ -3134,7 +3197,8 @@ choose_hashed_distinct(PlannerInfo *root,
  * 'groupColIdx' receives an array of column numbers for the GROUP BY
  *			expressions (if there are any) in the returned target list.
  * 'need_tlist_eval' is set true if we really need to evaluate the
- *			returned tlist as-is.
+ *			returned tlist as-is.  (Note: locate_grouping_columns assumes
+ *			that if this is FALSE, all grouping columns are simple Vars.)
  *
  * The result is the targetlist to be passed to query_planner.
  */
@@ -3244,7 +3308,7 @@ make_subplanTargetList(PlannerInfo *root,
 	 * add them to the result tlist if not already present.  (A Var used
 	 * directly as a GROUP BY item will be present already.)  Note this
 	 * includes Vars used in resjunk items, so we are covering the needs of
-	 * ORDER BY and window specifications.	Vars used within Aggrefs will be
+	 * ORDER BY and window specifications.  Vars used within Aggrefs will be
 	 * pulled out here, too.
 	 */
 	non_group_vars = pull_var_clause((Node *) non_group_cols,
@@ -3295,8 +3359,9 @@ get_grouping_column_index(Query *parse, TargetEntry *tle)
  *		Locate grouping columns in the tlist chosen by create_plan.
  *
  * This is only needed if we don't use the sub_tlist chosen by
- * make_subplanTargetList.	We have to forget the column indexes found
+ * make_subplanTargetList.  We have to forget the column indexes found
  * by that routine and re-locate the grouping exprs in the real sub_tlist.
+ * We assume the grouping exprs are just Vars (see make_subplanTargetList).
  */
 static void
 locate_grouping_columns(PlannerInfo *root,
@@ -3320,11 +3385,24 @@ locate_grouping_columns(PlannerInfo *root,
 	foreach(gl, root->parse->groupClause)
 	{
 		SortGroupClause *grpcl = (SortGroupClause *) lfirst(gl);
-		Node	   *groupexpr = get_sortgroupclause_expr(grpcl, tlist);
-		TargetEntry *te = tlist_member(groupexpr, sub_tlist);
+		Var		   *groupexpr = (Var *) get_sortgroupclause_expr(grpcl, tlist);
+		TargetEntry *te;
 
+		/*
+		 * The grouping column returned by create_plan might not have the same
+		 * typmod as the original Var.  (This can happen in cases where a
+		 * set-returning function has been inlined, so that we now have more
+		 * knowledge about what it returns than we did when the original Var
+		 * was created.)  So we can't use tlist_member() to search the tlist;
+		 * instead use tlist_member_match_var.  For safety, still check that
+		 * the vartype matches.
+		 */
+		if (!(groupexpr && IsA(groupexpr, Var)))
+			elog(ERROR, "grouping column is not a Var as expected");
+		te = tlist_member_match_var(groupexpr, sub_tlist);
 		if (!te)
 			elog(ERROR, "failed to locate grouping columns");
+		Assert(((Var *) te->expr)->vartype == groupexpr->vartype);
 		groupColIdx[keyno++] = te->resno;
 	}
 }
@@ -3437,18 +3515,57 @@ select_active_windows(PlannerInfo *root, WindowFuncLists *wflists)
 }
 
 /*
- * add_volatile_sort_exprs
- *		Identify any volatile sort/group expressions used by the active
- *		windows, and add them to window_tlist if not already present.
- *		Return the modified window_tlist.
+ * make_windowInputTargetList
+ *	  Generate appropriate target list for initial input to WindowAgg nodes.
+ *
+ * When grouping_planner inserts one or more WindowAgg nodes into the plan,
+ * this function computes the initial target list to be computed by the node
+ * just below the first WindowAgg.  This list must contain all values needed
+ * to evaluate the window functions, compute the final target list, and
+ * perform any required final sort step.  If multiple WindowAggs are needed,
+ * each intermediate one adds its window function results onto this tlist;
+ * only the topmost WindowAgg computes the actual desired target list.
+ *
+ * This function is much like make_subplanTargetList, though not quite enough
+ * like it to share code.  As in that function, we flatten most expressions
+ * into their component variables.  But we do not want to flatten window
+ * PARTITION BY/ORDER BY clauses, since that might result in multiple
+ * evaluations of them, which would be bad (possibly even resulting in
+ * inconsistent answers, if they contain volatile functions).  Also, we must
+ * not flatten GROUP BY clauses that were left unflattened by
+ * make_subplanTargetList, because we may no longer have access to the
+ * individual Vars in them.
+ *
+ * Another key difference from make_subplanTargetList is that we don't flatten
+ * Aggref expressions, since those are to be computed below the window
+ * functions and just referenced like Vars above that.
+ *
+ * 'tlist' is the query's final target list.
+ * 'activeWindows' is the list of active windows previously identified by
+ *			select_active_windows.
+ *
+ * The result is the targetlist to be computed by the plan node immediately
+ * below the first WindowAgg node.
  */
 static List *
-add_volatile_sort_exprs(List *window_tlist, List *tlist, List *activeWindows)
+make_windowInputTargetList(PlannerInfo *root,
+						   List *tlist,
+						   List *activeWindows)
 {
-	Bitmapset  *sgrefs = NULL;
+	Query	   *parse = root->parse;
+	Bitmapset  *sgrefs;
+	List	   *new_tlist;
+	List	   *flattenable_cols;
+	List	   *flattenable_vars;
 	ListCell   *lc;
 
-	/* First, collect the sortgrouprefs of the windows into a bitmapset */
+	Assert(parse->hasWindowFuncs);
+
+	/*
+	 * Collect the sortgroupref numbers of window PARTITION/ORDER BY clauses
+	 * into a bitmapset for convenient reference below.
+	 */
+	sgrefs = NULL;
 	foreach(lc, activeWindows)
 	{
 		WindowClause *wc = (WindowClause *) lfirst(lc);
@@ -3468,34 +3585,74 @@ add_volatile_sort_exprs(List *window_tlist, List *tlist, List *activeWindows)
 		}
 	}
 
+	/* Add in sortgroupref numbers of GROUP BY clauses, too */
+	foreach(lc, parse->groupClause)
+	{
+		SortGroupClause *grpcl = (SortGroupClause *) lfirst(lc);
+
+		sgrefs = bms_add_member(sgrefs, grpcl->tleSortGroupRef);
+	}
+
 	/*
-	 * Now scan the original tlist to find the referenced expressions. Any
-	 * that are volatile must be added to window_tlist.
-	 *
-	 * Note: we know that the input window_tlist contains no items marked with
-	 * ressortgrouprefs, so we don't have to worry about collisions of the
-	 * reference numbers.
+	 * Construct a tlist containing all the non-flattenable tlist items, and
+	 * save aside the others for a moment.
 	 */
+	new_tlist = NIL;
+	flattenable_cols = NIL;
+
 	foreach(lc, tlist)
 	{
 		TargetEntry *tle = (TargetEntry *) lfirst(lc);
 
+		/*
+		 * Don't want to deconstruct window clauses or GROUP BY items.  (Note
+		 * that such items can't contain window functions, so it's okay to
+		 * compute them below the WindowAgg nodes.)
+		 */
 		if (tle->ressortgroupref != 0 &&
-			bms_is_member(tle->ressortgroupref, sgrefs) &&
-			contain_volatile_functions((Node *) tle->expr))
+			bms_is_member(tle->ressortgroupref, sgrefs))
 		{
+			/* Don't want to deconstruct this value, so add to new_tlist */
 			TargetEntry *newtle;
 
 			newtle = makeTargetEntry(tle->expr,
-									 list_length(window_tlist) + 1,
+									 list_length(new_tlist) + 1,
 									 NULL,
 									 false);
+			/* Preserve its sortgroupref marking, in case it's volatile */
 			newtle->ressortgroupref = tle->ressortgroupref;
-			window_tlist = lappend(window_tlist, newtle);
+			new_tlist = lappend(new_tlist, newtle);
+		}
+		else
+		{
+			/*
+			 * Column is to be flattened, so just remember the expression for
+			 * later call to pull_var_clause.  There's no need for
+			 * pull_var_clause to examine the TargetEntry node itself.
+			 */
+			flattenable_cols = lappend(flattenable_cols, tle->expr);
 		}
 	}
 
-	return window_tlist;
+	/*
+	 * Pull out all the Vars and Aggrefs mentioned in flattenable columns, and
+	 * add them to the result tlist if not already present.  (Some might be
+	 * there already because they're used directly as window/group clauses.)
+	 *
+	 * Note: it's essential to use PVC_INCLUDE_AGGREGATES here, so that the
+	 * Aggrefs are placed in the Agg node's tlist and not left to be computed
+	 * at higher levels.
+	 */
+	flattenable_vars = pull_var_clause((Node *) flattenable_cols,
+									   PVC_INCLUDE_AGGREGATES,
+									   PVC_INCLUDE_PLACEHOLDERS);
+	new_tlist = add_to_flat_tlist(new_tlist, flattenable_vars);
+
+	/* clean up cruft */
+	list_free(flattenable_vars);
+	list_free(flattenable_cols);
+
+	return new_tlist;
 }
 
 /*
@@ -3509,7 +3666,7 @@ add_volatile_sort_exprs(List *window_tlist, List *tlist, List *activeWindows)
  */
 static List *
 make_pathkeys_for_window(PlannerInfo *root, WindowClause *wc,
-						 List *tlist, bool canonicalize)
+						 List *tlist)
 {
 	List	   *window_pathkeys;
 	List	   *window_sortclauses;
@@ -3532,7 +3689,7 @@ make_pathkeys_for_window(PlannerInfo *root, WindowClause *wc,
 	window_pathkeys = make_pathkeys_for_sortclauses(root,
 													window_sortclauses,
 													tlist,
-													canonicalize);
+													true);
 	list_free(window_sortclauses);
 	return window_pathkeys;
 }
@@ -3545,7 +3702,7 @@ make_pathkeys_for_window(PlannerInfo *root, WindowClause *wc,
  * This depends on the behavior of make_pathkeys_for_window()!
  *
  * We are given the target WindowClause and an array of the input column
- * numbers associated with the resulting pathkeys.	In the easy case, there
+ * numbers associated with the resulting pathkeys.  In the easy case, there
  * are the same number of pathkey columns as partitioning + ordering columns
  * and we just have to copy some data around.  However, it's possible that
  * some of the original partitioning + ordering columns were eliminated as
@@ -3557,7 +3714,7 @@ make_pathkeys_for_window(PlannerInfo *root, WindowClause *wc,
  * determine which keys are significant.
  *
  * The method used here is a bit brute-force: add the sort columns to a list
- * one at a time and note when the resulting pathkey list gets longer.	But
+ * one at a time and note when the resulting pathkey list gets longer.  But
  * it's a sufficiently uncommon case that a faster way doesn't seem worth
  * the amount of code refactoring that'd be needed.
  *----------

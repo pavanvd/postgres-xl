@@ -245,10 +245,10 @@ InitProcGlobal(void)
 
 		/*
 		 * Newly created PGPROCs for normal backends or for autovacuum must be
-		 * queued up on the appropriate free list.	Because there can only
+		 * queued up on the appropriate free list.  Because there can only
 		 * ever be a small, fixed number of auxiliary processes, no free list
 		 * is used in that case; InitAuxiliaryProcess() instead uses a linear
-		 * search.	PGPROCs for prepared transactions are added to a free list
+		 * search.  PGPROCs for prepared transactions are added to a free list
 		 * by TwoPhaseShmemInit().
 		 */
 		if (i < MaxConnections)
@@ -299,6 +299,13 @@ InitProcess(void)
 
 	if (MyProc != NULL)
 		elog(ERROR, "you already exist");
+
+	/*
+	 * Initialize process-local latch support.  This could fail if the kernel
+	 * is low on resources, and if so we want to exit cleanly before acquiring
+	 * any shared-memory resources.
+	 */
+	InitializeLatchSupport();
 
 	/*
 	 * Try to get a proc struct from the free list.  If this fails, we must be
@@ -355,6 +362,8 @@ InitProcess(void)
 	SHMQueueElemInit(&(MyProc->links));
 	MyProc->waitStatus = STATUS_OK;
 	MyProc->lxid = InvalidLocalTransactionId;
+	MyProc->fpVXIDLock = false;
+	MyProc->fpLocalTransactionId = InvalidLocalTransactionId;
 	MyPgXact->xid = InvalidTransactionId;
 	MyPgXact->xmin = InvalidTransactionId;
 	MyProc->pid = MyProcPid;
@@ -405,7 +414,7 @@ InitProcess(void)
 
 	/*
 	 * We might be reusing a semaphore that belonged to a failed process. So
-	 * be careful and reinitialize its value here.	(This is not strictly
+	 * be careful and reinitialize its value here.  (This is not strictly
 	 * necessary anymore, but seems like a good idea for cleanliness.)
 	 */
 	PGSemaphoreReset(&MyProc->sem);
@@ -455,7 +464,7 @@ InitProcessPhase2(void)
  *
  * Auxiliary processes are presently not expected to wait for real (lockmgr)
  * locks, so we need not set up the deadlock checker.  They are never added
- * to the ProcArray or the sinval messaging mechanism, either.	They also
+ * to the ProcArray or the sinval messaging mechanism, either.  They also
  * don't get a VXID assigned, since this is only useful when we actually
  * hold lockmgr locks.
  *
@@ -479,6 +488,13 @@ InitAuxiliaryProcess(void)
 
 	if (MyProc != NULL)
 		elog(ERROR, "you already exist");
+
+	/*
+	 * Initialize process-local latch support.  This could fail if the kernel
+	 * is low on resources, and if so we want to exit cleanly before acquiring
+	 * any shared-memory resources.
+	 */
+	InitializeLatchSupport();
 
 	/*
 	 * We use the ProcStructLock to protect assignment and releasing of
@@ -522,6 +538,8 @@ InitAuxiliaryProcess(void)
 	SHMQueueElemInit(&(MyProc->links));
 	MyProc->waitStatus = STATUS_OK;
 	MyProc->lxid = InvalidLocalTransactionId;
+	MyProc->fpVXIDLock = false;
+	MyProc->fpLocalTransactionId = InvalidLocalTransactionId;
 	MyPgXact->xid = InvalidTransactionId;
 	MyPgXact->xmin = InvalidTransactionId;
 	MyProc->backendId = InvalidBackendId;
@@ -562,7 +580,7 @@ InitAuxiliaryProcess(void)
 
 	/*
 	 * We might be reusing a semaphore that belonged to a failed process. So
-	 * be careful and reinitialize its value here.	(This is not strictly
+	 * be careful and reinitialize its value here.  (This is not strictly
 	 * necessary anymore, but seems like a good idea for cleanliness.)
 	 */
 	PGSemaphoreReset(&MyProc->sem);
@@ -708,7 +726,7 @@ LockErrorCleanup(void)
 
 	/*
 	 * We used to do PGSemaphoreReset() here to ensure that our proc's wait
-	 * semaphore is reset to zero.	This prevented a leftover wakeup signal
+	 * semaphore is reset to zero.  This prevented a leftover wakeup signal
 	 * from remaining in the semaphore if someone else had granted us the lock
 	 * we wanted before we were able to remove ourselves from the wait-list.
 	 * However, now that ProcSleep loops until waitStatus changes, a leftover
@@ -767,6 +785,7 @@ ProcKill(int code, Datum arg)
 {
 	/* use volatile pointer to prevent code rearrangement */
 	volatile PROC_HDR *procglobal = ProcGlobal;
+	PGPROC	   *proc;
 
 	Assert(MyProc != NULL);
 
@@ -791,25 +810,28 @@ ProcKill(int code, Datum arg)
 	 */
 	LWLockReleaseAll();
 
-	/* Release ownership of the process's latch, too */
-	DisownLatch(&MyProc->procLatch);
+	/*
+	 * Clear MyProc first; then disown the process latch.  This is so that
+	 * signal handlers won't try to clear the process latch after it's no
+	 * longer ours.
+	 */
+	proc = MyProc;
+	MyProc = NULL;
+	DisownLatch(&proc->procLatch);
 
 	SpinLockAcquire(ProcStructLock);
 
 	/* Return PGPROC structure (and semaphore) to appropriate freelist */
 	if (IsAnyAutoVacuumProcess())
 	{
-		MyProc->links.next = (SHM_QUEUE *) procglobal->autovacFreeProcs;
-		procglobal->autovacFreeProcs = MyProc;
+		proc->links.next = (SHM_QUEUE *) procglobal->autovacFreeProcs;
+		procglobal->autovacFreeProcs = proc;
 	}
 	else
 	{
-		MyProc->links.next = (SHM_QUEUE *) procglobal->freeProcs;
-		procglobal->freeProcs = MyProc;
+		proc->links.next = (SHM_QUEUE *) procglobal->freeProcs;
+		procglobal->freeProcs = proc;
 	}
-
-	/* PGPROC struct isn't mine anymore */
-	MyProc = NULL;
 
 	/* Update shared estimate of spins_per_delay */
 	procglobal->spins_per_delay = update_spins_per_delay(procglobal->spins_per_delay);
@@ -831,7 +853,7 @@ ProcKill(int code, Datum arg)
 
 /*
  * AuxiliaryProcKill() -- Cut-down version of ProcKill for auxiliary
- *		processes (bgwriter, etc).	The PGPROC and sema are not released, only
+ *		processes (bgwriter, etc).  The PGPROC and sema are not released, only
  *		marked as not-in-use.
  */
 static void
@@ -839,6 +861,7 @@ AuxiliaryProcKill(int code, Datum arg)
 {
 	int			proctype = DatumGetInt32(arg);
 	PGPROC	   *auxproc PG_USED_FOR_ASSERTS_ONLY;
+	PGPROC	   *proc;
 
 	Assert(proctype >= 0 && proctype < NUM_AUXILIARY_PROCS);
 
@@ -849,16 +872,19 @@ AuxiliaryProcKill(int code, Datum arg)
 	/* Release any LW locks I am holding (see notes above) */
 	LWLockReleaseAll();
 
-	/* Release ownership of the process's latch, too */
-	DisownLatch(&MyProc->procLatch);
+	/*
+	 * Clear MyProc first; then disown the process latch.  This is so that
+	 * signal handlers won't try to clear the process latch after it's no
+	 * longer ours.
+	 */
+	proc = MyProc;
+	MyProc = NULL;
+	DisownLatch(&proc->procLatch);
 
 	SpinLockAcquire(ProcStructLock);
 
 	/* Mark auxiliary proc no longer in use */
-	MyProc->pid = 0;
-
-	/* PGPROC struct isn't mine anymore */
-	MyProc = NULL;
+	proc->pid = 0;
 
 	/* Update shared estimate of spins_per_delay */
 	ProcGlobal->spins_per_delay = update_spins_per_delay(ProcGlobal->spins_per_delay);
@@ -953,7 +979,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	 *
 	 * Special case: if I find I should go in front of some waiter, check to
 	 * see if I conflict with already-held locks or the requests before that
-	 * waiter.	If not, then just grant myself the requested lock immediately.
+	 * waiter.  If not, then just grant myself the requested lock immediately.
 	 * This is the same as the test for immediate grant in LockAcquire, except
 	 * we are only considering the part of the wait queue before my insertion
 	 * point.
@@ -972,7 +998,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 				if (lockMethodTable->conflictTab[lockmode] & proc->heldLocks)
 				{
 					/*
-					 * Yes, so we have a deadlock.	Easiest way to clean up
+					 * Yes, so we have a deadlock.  Easiest way to clean up
 					 * correctly is to call RemoveFromWaitQueue(), but we
 					 * can't do that until we are *on* the wait queue. So, set
 					 * a flag to check below, and break out of loop.  Also,
@@ -1079,8 +1105,8 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 
 	/*
 	 * If someone wakes us between LWLockRelease and PGSemaphoreLock,
-	 * PGSemaphoreLock will not block.	The wakeup is "saved" by the semaphore
-	 * implementation.	While this is normally good, there are cases where a
+	 * PGSemaphoreLock will not block.  The wakeup is "saved" by the semaphore
+	 * implementation.  While this is normally good, there are cases where a
 	 * saved wakeup might be leftover from a previous operation (for example,
 	 * we aborted ProcWaitForSignal just before someone did ProcSendSignal).
 	 * So, loop to wait again if the waitStatus shows we haven't been granted
@@ -1100,7 +1126,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 
 		/*
 		 * waitStatus could change from STATUS_WAITING to something else
-		 * asynchronously.	Read it just once per loop to prevent surprising
+		 * asynchronously.  Read it just once per loop to prevent surprising
 		 * behavior (such as missing log messages).
 		 */
 		myWaitStatus = MyProc->waitStatus;
@@ -1125,12 +1151,29 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 				!(autovac_pgxact->vacuumFlags & PROC_VACUUM_FOR_WRAPAROUND))
 			{
 				int			pid = autovac->pid;
+				StringInfoData locktagbuf;
+				StringInfoData logbuf;		/* errdetail for server log */
 
-				elog(DEBUG2, "sending cancel to blocking autovacuum PID %d",
-					 pid);
+				initStringInfo(&locktagbuf);
+				initStringInfo(&logbuf);
+				DescribeLockTag(&locktagbuf, &lock->tag);
+				appendStringInfo(&logbuf,
+					  _("Process %d waits for %s on %s."),
+						 MyProcPid,
+						 GetLockmodeName(lock->tag.locktag_lockmethodid,
+										 lockmode),
+						 locktagbuf.data);
 
-				/* don't hold the lock across the kill() syscall */
+				/* release lock as quickly as possible */
 				LWLockRelease(ProcArrayLock);
+
+				ereport(LOG,
+						(errmsg("sending cancel to blocking autovacuum PID %d",
+							pid),
+						 errdetail_log("%s", logbuf.data)));
+
+				pfree(logbuf.data);
+				pfree(locktagbuf.data);
 
 				/* send the autovacuum worker Back to Old Kent Road */
 				if (kill(pid, SIGINT) < 0)
@@ -1478,10 +1521,10 @@ check_done:
  * This can share the semaphore normally used for waiting for locks,
  * since a backend could never be waiting for a lock and a signal at
  * the same time.  As with locks, it's OK if the signal arrives just
- * before we actually reach the waiting state.	Also as with locks,
+ * before we actually reach the waiting state.  Also as with locks,
  * it's necessary that the caller be robust against bogus wakeups:
  * always check that the desired state has occurred, and wait again
- * if not.	This copes with possible "leftover" wakeups.
+ * if not.  This copes with possible "leftover" wakeups.
  */
 void
 ProcWaitForSignal(void)
@@ -1535,7 +1578,7 @@ ProcSendSignal(int pid)
 /*
  * Enable the SIGALRM interrupt to fire after the specified delay
  *
- * Delay is given in milliseconds.	Caller should be sure a SIGALRM
+ * Delay is given in milliseconds.  Caller should be sure a SIGALRM
  * signal handler is installed before this is called.
  *
  * This code properly handles nesting of deadlock timeout alarms within
@@ -1586,7 +1629,7 @@ enable_sig_alarm(int delayms, bool is_statement_timeout)
 		 * NOTE: in this case it is possible that this routine will be
 		 * interrupted by the previously-set timer alarm.  This is okay
 		 * because the signal handler will do only what it should do according
-		 * to the state variables.	The deadlock checker may get run earlier
+		 * to the state variables.  The deadlock checker may get run earlier
 		 * than normal, but that does no harm.
 		 */
 		timeout_start_time = GetCurrentTimestamp();

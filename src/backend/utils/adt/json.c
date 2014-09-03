@@ -70,10 +70,21 @@ typedef enum					/* required operations on state stack */
 	JSON_STACKOP_POP			/* pop, or expect end of input if no stack */
 } JsonStackOp;
 
+typedef enum					/* type categories for datum_to_json */
+{
+	JSONTYPE_NULL,				/* null, so we didn't bother to identify */
+	JSONTYPE_BOOL,				/* boolean (built-in types only) */
+	JSONTYPE_NUMERIC,			/* numeric (ditto) */
+	JSONTYPE_JSON,				/* JSON itself */
+	JSONTYPE_ARRAY,				/* array */
+	JSONTYPE_COMPOSITE,			/* composite */
+	JSONTYPE_OTHER				/* all else */
+} JsonTypeCategory;
+
 static void json_validate_cstring(char *input);
 static void json_lex(JsonLexContext *lex);
 static void json_lex_string(JsonLexContext *lex);
-static void json_lex_number(JsonLexContext *lex, char *s);
+static void json_lex_number(JsonLexContext *lex, char *s, bool *num_err);
 static void report_parse_error(JsonParseStack *stack, JsonLexContext *lex);
 static void report_invalid_token(JsonLexContext *lex);
 static int report_json_context(JsonLexContext *lex);
@@ -82,15 +93,16 @@ static void composite_to_json(Datum composite, StringInfo result,
 							  bool use_line_feeds);
 static void array_dim_to_json(StringInfo result, int dim, int ndims, int *dims,
 				  Datum *vals, bool *nulls, int *valcount,
-				  TYPCATEGORY tcategory, Oid typoutputfunc,
+				  JsonTypeCategory tcategory, Oid outfuncoid,
 				  bool use_line_feeds);
 static void array_to_json_internal(Datum array, StringInfo result,
-								   bool use_line_feeds);
+					   bool use_line_feeds);
+static void json_categorize_type(Oid typoid,
+					 JsonTypeCategory *tcategory,
+					 Oid *outfuncoid);
+static void datum_to_json(Datum val, bool is_null, StringInfo result,
+			  JsonTypeCategory tcategory, Oid outfuncoid);
 
-/* fake type category for JSON so we can distinguish it in datum_to_json */
-#define TYPCATEGORY_JSON 'j'
-/* letters appearing in numeric output that aren't valid in a JSON number */
-#define NON_NUMERIC_LETTER "NnAaIiFfTtYy"
 /* chars to consider as part of an alphanumeric token */
 #define JSON_ALPHANUMERIC_CHAR(c)  \
 	(((c) >= 'a' && (c) <= 'z') || \
@@ -361,13 +373,13 @@ json_lex(JsonLexContext *lex)
 	else if (*s == '-')
 	{
 		/* Negative number. */
-		json_lex_number(lex, s + 1);
+		json_lex_number(lex, s + 1, NULL);
 		lex->token_type = JSON_VALUE_NUMBER;
 	}
 	else if (*s >= '0' && *s <= '9')
 	{
 		/* Positive number. */
-		json_lex_number(lex, s);
+		json_lex_number(lex, s, NULL);
 		lex->token_type = JSON_VALUE_NUMBER;
 	}
 	else
@@ -514,12 +526,12 @@ json_lex_string(JsonLexContext *lex)
  *	   begin with a '0'.
  *
  * (3) An optional decimal part, consisting of a period ('.') followed by
- *	   one or more digits.	(Note: While this part can be omitted
+ *	   one or more digits.  (Note: While this part can be omitted
  *	   completely, it's not OK to have only the decimal point without
  *	   any digits afterwards.)
  *
  * (4) An optional exponent part, consisting of 'e' or 'E', optionally
- *	   followed by '+' or '-', followed by one or more digits.	(Note:
+ *	   followed by '+' or '-', followed by one or more digits.  (Note:
  *	   As with the decimal part, if 'e' or 'E' is present, it must be
  *	   followed by at least one digit.)
  *
@@ -530,7 +542,7 @@ json_lex_string(JsonLexContext *lex)
  *-------------------------------------------------------------------------
  */
 static void
-json_lex_number(JsonLexContext *lex, char *s)
+json_lex_number(JsonLexContext *lex, char *s, bool *num_err)
 {
 	bool		error = false;
 	char	   *p;
@@ -590,9 +602,18 @@ json_lex_number(JsonLexContext *lex, char *s)
 	 */
 	for (p = s; JSON_ALPHANUMERIC_CHAR(*p); p++)
 		error = true;
-	lex->token_terminator = p;
-	if (error)
-		report_invalid_token(lex);
+
+	if (num_err != NULL)
+	{
+		/* let the caller handle the error */
+		*num_err = error;
+	}
+	else
+	{
+		lex->token_terminator = p;
+		if (error)
+			report_invalid_token(lex);
+	}
 }
 
 /*
@@ -809,16 +830,70 @@ extract_mb_char(char *s)
 }
 
 /*
- * Turn a scalar Datum into JSON, appending the string to "result".
+ * Determine how we want to print values of a given type in datum_to_json.
  *
- * Hand off a non-scalar datum to composite_to_json or array_to_json_internal
- * as appropriate.
+ * Given the datatype OID, return its JsonTypeCategory, as well as the type's
+ * output function OID.  If the returned category is JSONTYPE_CAST, we
+ * return the OID of the type->JSON cast function instead.
+ */
+static void
+json_categorize_type(Oid typoid,
+					 JsonTypeCategory *tcategory,
+					 Oid *outfuncoid)
+{
+	bool		typisvarlena;
+
+	/* Look through any domain */
+	typoid = getBaseType(typoid);
+
+	/* We'll usually need to return the type output function */
+	getTypeOutputInfo(typoid, outfuncoid, &typisvarlena);
+
+	/* Check for known types */
+	switch (typoid)
+	{
+		case BOOLOID:
+			*tcategory = JSONTYPE_BOOL;
+			break;
+
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case FLOAT4OID:
+		case FLOAT8OID:
+		case NUMERICOID:
+			*tcategory = JSONTYPE_NUMERIC;
+			break;
+
+		case JSONOID:
+			*tcategory = JSONTYPE_JSON;
+			break;
+
+		default:
+			/* Check for arrays and composites */
+			if (OidIsValid(get_element_type(typoid)))
+				*tcategory = JSONTYPE_ARRAY;
+			else if (type_is_rowtype(typoid))
+				*tcategory = JSONTYPE_COMPOSITE;
+			else
+				*tcategory = JSONTYPE_OTHER;
+			break;
+	}
+}
+
+/*
+ * Turn a Datum into JSON text, appending the string to "result".
+ *
+ * tcategory and outfuncoid are from a previous call to json_categorize_type,
+ * except that if is_null is true then they can be invalid.
  */
 static void
 datum_to_json(Datum val, bool is_null, StringInfo result,
-			  TYPCATEGORY tcategory, Oid typoutputfunc)
+			  JsonTypeCategory tcategory, Oid outfuncoid)
 {
 	char	   *outputstr;
+	bool		numeric_error;
+	JsonLexContext dummy_lex;
 
 	if (is_null)
 	{
@@ -828,41 +903,40 @@ datum_to_json(Datum val, bool is_null, StringInfo result,
 
 	switch (tcategory)
 	{
-		case TYPCATEGORY_ARRAY:
+		case JSONTYPE_ARRAY:
 			array_to_json_internal(val, result, false);
 			break;
-		case TYPCATEGORY_COMPOSITE:
+		case JSONTYPE_COMPOSITE:
 			composite_to_json(val, result, false);
 			break;
-		case TYPCATEGORY_BOOLEAN:
+		case JSONTYPE_BOOL:
 			if (DatumGetBool(val))
 				appendStringInfoString(result, "true");
 			else
 				appendStringInfoString(result, "false");
 			break;
-		case TYPCATEGORY_NUMERIC:
-			outputstr = OidOutputFunctionCall(typoutputfunc, val);
+		case JSONTYPE_NUMERIC:
+			outputstr = OidOutputFunctionCall(outfuncoid, val);
 
 			/*
 			 * Don't call escape_json here if it's a valid JSON number.
-			 * Numeric output should usually be a valid JSON number and JSON
-			 * numbers shouldn't be quoted. Quote cases like "Nan" and
-			 * "Infinity", however.
 			 */
-			if (strpbrk(outputstr, NON_NUMERIC_LETTER) == NULL)
+			dummy_lex.input = *outputstr == '-' ? outputstr + 1 : outputstr;
+			json_lex_number(&dummy_lex, dummy_lex.input, &numeric_error);
+			if (!numeric_error)
 				appendStringInfoString(result, outputstr);
 			else
 				escape_json(result, outputstr);
 			pfree(outputstr);
 			break;
-		case TYPCATEGORY_JSON:
+		case JSONTYPE_JSON:
 			/* JSON will already be escaped */
-			outputstr = OidOutputFunctionCall(typoutputfunc, val);
+			outputstr = OidOutputFunctionCall(outfuncoid, val);
 			appendStringInfoString(result, outputstr);
 			pfree(outputstr);
 			break;
 		default:
-			outputstr = OidOutputFunctionCall(typoutputfunc, val);
+			outputstr = OidOutputFunctionCall(outfuncoid, val);
 			escape_json(result, outputstr);
 			pfree(outputstr);
 			break;
@@ -876,8 +950,8 @@ datum_to_json(Datum val, bool is_null, StringInfo result,
  */
 static void
 array_dim_to_json(StringInfo result, int dim, int ndims, int *dims, Datum *vals,
-				  bool *nulls, int *valcount, TYPCATEGORY tcategory,
-				  Oid typoutputfunc, bool use_line_feeds)
+				  bool *nulls, int *valcount, JsonTypeCategory tcategory,
+				  Oid outfuncoid, bool use_line_feeds)
 {
 	int			i;
 	const char *sep;
@@ -896,7 +970,7 @@ array_dim_to_json(StringInfo result, int dim, int ndims, int *dims, Datum *vals,
 		if (dim + 1 == ndims)
 		{
 			datum_to_json(vals[*valcount], nulls[*valcount], result, tcategory,
-						  typoutputfunc);
+						  outfuncoid);
 			(*valcount)++;
 		}
 		else
@@ -906,7 +980,7 @@ array_dim_to_json(StringInfo result, int dim, int ndims, int *dims, Datum *vals,
 			 * we'll say no.
 			 */
 			array_dim_to_json(result, dim + 1, ndims, dims, vals, nulls,
-							  valcount, tcategory, typoutputfunc, false);
+							  valcount, tcategory, outfuncoid, false);
 		}
 	}
 
@@ -929,11 +1003,9 @@ array_to_json_internal(Datum array, StringInfo result, bool use_line_feeds)
 	bool	   *nulls;
 	int16		typlen;
 	bool		typbyval;
-	char		typalign,
-				typdelim;
-	Oid			typioparam;
-	Oid			typoutputfunc;
-	TYPCATEGORY tcategory;
+	char		typalign;
+	JsonTypeCategory tcategory;
+	Oid			outfuncoid;
 
 	ndim = ARR_NDIM(v);
 	dim = ARR_DIMS(v);
@@ -945,23 +1017,18 @@ array_to_json_internal(Datum array, StringInfo result, bool use_line_feeds)
 		return;
 	}
 
-	get_type_io_data(element_type, IOFunc_output,
-					 &typlen, &typbyval, &typalign,
-					 &typdelim, &typioparam, &typoutputfunc);
+	get_typlenbyvalalign(element_type,
+						 &typlen, &typbyval, &typalign);
+
+	json_categorize_type(element_type,
+						 &tcategory, &outfuncoid);
 
 	deconstruct_array(v, element_type, typlen, typbyval,
 					  typalign, &elements, &nulls,
 					  &nitems);
 
-	if (element_type == RECORDOID)
-		tcategory = TYPCATEGORY_COMPOSITE;
-	else if (element_type == JSONOID)
-		tcategory = TYPCATEGORY_JSON;
-	else
-		tcategory = TypeCategory(element_type);
-
 	array_dim_to_json(result, 0, ndim, dim, elements, nulls, &count, tcategory,
-					  typoutputfunc, use_line_feeds);
+					  outfuncoid, use_line_feeds);
 
 	pfree(elements);
 	pfree(nulls);
@@ -1001,13 +1068,11 @@ composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
 
 	for (i = 0; i < tupdesc->natts; i++)
 	{
-		Datum		val,
-					origval;
+		Datum		val;
 		bool		isnull;
 		char	   *attname;
-		TYPCATEGORY tcategory;
-		Oid			typoutput;
-		bool		typisvarlena;
+		JsonTypeCategory tcategory;
+		Oid			outfuncoid;
 
 		if (tupdesc->attrs[i]->attisdropped)
 			continue;
@@ -1020,34 +1085,18 @@ composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
 		escape_json(result, attname);
 		appendStringInfoChar(result, ':');
 
-		origval = heap_getattr(tuple, i + 1, tupdesc, &isnull);
+		val = heap_getattr(tuple, i + 1, tupdesc, &isnull);
 
-		if (tupdesc->attrs[i]->atttypid == RECORDARRAYOID)
-			tcategory = TYPCATEGORY_ARRAY;
-		else if (tupdesc->attrs[i]->atttypid == RECORDOID)
-			tcategory = TYPCATEGORY_COMPOSITE;
-		else if (tupdesc->attrs[i]->atttypid == JSONOID)
-			tcategory = TYPCATEGORY_JSON;
+		if (isnull)
+		{
+			tcategory = JSONTYPE_NULL;
+			outfuncoid = InvalidOid;
+		}
 		else
-			tcategory = TypeCategory(tupdesc->attrs[i]->atttypid);
+			json_categorize_type(tupdesc->attrs[i]->atttypid,
+								 &tcategory, &outfuncoid);
 
-		getTypeOutputInfo(tupdesc->attrs[i]->atttypid,
-						  &typoutput, &typisvarlena);
-
-		/*
-		 * If we have a toasted datum, forcibly detoast it here to avoid
-		 * memory leakage inside the type's output routine.
-		 */
-		if (typisvarlena && !isnull)
-			val = PointerGetDatum(PG_DETOAST_DATUM(origval));
-		else
-			val = origval;
-
-		datum_to_json(val, isnull, result, tcategory, typoutput);
-
-		/* Clean up detoasted copy, if any */
-		if (val != origval)
-			pfree(DatumGetPointer(val));
+		datum_to_json(val, isnull, result, tcategory, outfuncoid);
 	}
 
 	appendStringInfoChar(result, '}');
@@ -1068,7 +1117,7 @@ array_to_json(PG_FUNCTION_ARGS)
 	array_to_json_internal(array, result, false);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result->data));
-};
+}
 
 /*
  * SQL function array_to_json(row, prettybool)
@@ -1085,7 +1134,7 @@ array_to_json_pretty(PG_FUNCTION_ARGS)
 	array_to_json_internal(array, result, use_line_feeds);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result->data));
-};
+}
 
 /*
  * SQL function row_to_json(row)
@@ -1101,7 +1150,7 @@ row_to_json(PG_FUNCTION_ARGS)
 	composite_to_json(array, result, false);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result->data));
-};
+}
 
 /*
  * SQL function row_to_json(row, prettybool)
@@ -1118,7 +1167,7 @@ row_to_json_pretty(PG_FUNCTION_ARGS)
 	composite_to_json(array, result, use_line_feeds);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result->data));
-};
+}
 
 /*
  * Produce a JSON string literal, properly escaping characters in the text.

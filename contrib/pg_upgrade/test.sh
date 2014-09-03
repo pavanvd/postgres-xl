@@ -15,6 +15,44 @@ set -e
 : ${PGPORT=50432}
 export PGPORT
 
+# Establish how the server will listen for connections
+testhost=`uname -s`
+
+case $testhost in
+	MINGW*)
+		LISTEN_ADDRESSES="localhost"
+		PGHOST=""; unset PGHOST
+		;;
+	*)
+		LISTEN_ADDRESSES=""
+		# Select a socket directory.  The algorithm is from the "configure"
+		# script; the outcome mimics pg_regress.c:make_temp_sockdir().
+		PGHOST=$PG_REGRESS_SOCK_DIR
+		if [ "x$PGHOST" = x ]; then
+			{
+				dir=`(umask 077 &&
+					  mktemp -d /tmp/pg_upgrade_check-XXXXXX) 2>/dev/null` &&
+				[ -d "$dir" ]
+			} ||
+			{
+				dir=/tmp/pg_upgrade_check-$$-$RANDOM
+				(umask 077 && mkdir "$dir")
+			} ||
+			{
+				echo "could not create socket temporary directory in \"/tmp\""
+				exit 1
+			}
+
+			PGHOST=$dir
+			trap 'rm -rf "$PGHOST"' 0
+			trap 'exit 3' 1 2 13 15
+		fi
+		export PGHOST
+		;;
+esac
+
+POSTMASTER_OPTS="-F -c listen_addresses=$LISTEN_ADDRESSES -k \"$PGHOST\""
+
 temp_root=$PWD/tmp_check
 
 if [ "$1" = '--install' ]; then
@@ -38,8 +76,9 @@ if [ "$1" = '--install' ]; then
 	# We need to make it use psql from our temporary installation,
 	# because otherwise the installcheck run below would try to
 	# use psql from the proper installation directory, which might
-	# be outdated or missing.
-	EXTRA_REGRESS_OPTS=--psqldir=$bindir
+	# be outdated or missing. But don't override anything else that's
+	# already in EXTRA_REGRESS_OPTS.
+	EXTRA_REGRESS_OPTS="$EXTRA_REGRESS_OPTS --psqldir=$bindir"
 	export EXTRA_REGRESS_OPTS
 fi
 
@@ -52,20 +91,36 @@ newsrc=`cd ../.. && pwd`
 PATH=$bindir:$PATH
 export PATH
 
-PGDATA=$temp_root/data
+BASE_PGDATA=$temp_root/data
+PGDATA="$BASE_PGDATA.old"
 export PGDATA
-rm -rf "$PGDATA" "$PGDATA".old
+rm -rf "$BASE_PGDATA" "$PGDATA"
+
+# Clear out any environment vars that might cause libpq to connect to
+# the wrong postmaster (cf pg_regress.c)
+#
+# Some shells, such as NetBSD's, return non-zero from unset if the variable
+# is already unset. Since we are operating under 'set -e', this causes the
+# script to fail. To guard against this, set them all to an empty string first.
+PGDATABASE="";        unset PGDATABASE
+PGUSER="";            unset PGUSER
+PGSERVICE="";         unset PGSERVICE
+PGSSLMODE="";         unset PGSSLMODE
+PGREQUIRESSL="";      unset PGREQUIRESSL
+PGCONNECT_TIMEOUT=""; unset PGCONNECT_TIMEOUT
+PGHOSTADDR="";        unset PGHOSTADDR
 
 logdir=$PWD/log
 rm -rf "$logdir"
 mkdir "$logdir"
 
+# enable echo so the user can see what is being executed
 set -x
 
 $oldbindir/initdb
-$oldbindir/pg_ctl start -l "$logdir/postmaster1.log" -w
+$oldbindir/pg_ctl start -l "$logdir/postmaster1.log" -o "$POSTMASTER_OPTS" -w
 if "$MAKE" -C "$oldsrc" installcheck; then
-	pg_dumpall >"$temp_root"/dump1.sql || pg_dumpall1_status=$?
+	pg_dumpall -f "$temp_root"/dump1.sql || pg_dumpall1_status=$?
 	if [ "$newsrc" != "$oldsrc" ]; then
 		oldpgversion=`psql -A -t -d regression -c "SHOW server_version_num"`
 		fix_sql=""
@@ -100,19 +155,35 @@ if [ -n "$pg_dumpall1_status" ]; then
 	exit 1
 fi
 
-mv "${PGDATA}" "${PGDATA}.old"
+PGDATA=$BASE_PGDATA
 
 initdb
 
 pg_upgrade -d "${PGDATA}.old" -D "${PGDATA}" -b "$oldbindir" -B "$bindir"
 
-pg_ctl start -l "$logdir/postmaster2.log" -w
-pg_dumpall >"$temp_root"/dump2.sql || pg_dumpall2_status=$?
+pg_ctl start -l "$logdir/postmaster2.log" -o "$POSTMASTER_OPTS" -w
+
+case $testhost in
+	MINGW*)	cmd /c analyze_new_cluster.bat ;;
+	*)		sh ./analyze_new_cluster.sh ;;
+esac
+
+pg_dumpall -f "$temp_root"/dump2.sql || pg_dumpall2_status=$?
 pg_ctl -m fast stop
+
+# no need to echo commands anymore
+set +x
+echo
+
 if [ -n "$pg_dumpall2_status" ]; then
 	echo "pg_dumpall of post-upgrade database cluster failed"
 	exit 1
 fi
+
+case $testhost in
+	MINGW*)	cmd /c delete_old_cluster.bat ;;
+	*)	    sh ./delete_old_cluster.sh ;;
+esac
 
 if diff -q "$temp_root"/dump1.sql "$temp_root"/dump2.sql; then
 	echo PASSED

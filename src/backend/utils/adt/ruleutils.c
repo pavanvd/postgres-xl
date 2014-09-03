@@ -49,6 +49,7 @@
 #ifdef PGXC
 #include "nodes/execnodes.h"
 #endif
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
@@ -92,7 +93,8 @@
 #define PRETTYFLAG_PAREN		1
 #define PRETTYFLAG_INDENT		2
 
-#define PRETTY_WRAP_DEFAULT		79
+/* Default line length for pretty-print wrapping */
+#define WRAP_COLUMN_DEFAULT		79
 
 /* macro to test if pretty action needed */
 #define PRETTY_PAREN(context)	((context)->prettyFlags & PRETTYFLAG_PAREN)
@@ -112,6 +114,7 @@ typedef struct
 	List	   *windowClause;	/* Current query level's WINDOW clause */
 	List	   *windowTList;	/* targetlist for resolving WINDOW clause */
 	int			prettyFlags;	/* enabling of pretty-print functions */
+	int			wrapColumn;		/* max line length, or -1 for no limit */
 	int			indentLevel;	/* current indent level for prettyprint */
 	bool		varprefix;		/* TRUE to print prefixes on Vars */
 #ifdef PGXC
@@ -165,7 +168,6 @@ static SPIPlanPtr plan_getrulebyoid = NULL;
 static const char *query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
 static SPIPlanPtr plan_getviewrule = NULL;
 static const char *query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
-static int	pretty_wrap = PRETTY_WRAP_DEFAULT;
 
 /* GUC parameters */
 bool		quote_all_identifiers = false;
@@ -182,7 +184,8 @@ bool		quote_all_identifiers = false;
 static char *deparse_expression_pretty(Node *expr, List *dpcontext,
 						  bool forceprefix, bool showimplicit,
 						  int prettyFlags, int startIndent);
-static char *pg_get_viewdef_worker(Oid viewoid, int prettyFlags);
+static char *pg_get_viewdef_worker(Oid viewoid,
+					  int prettyFlags, int wrapColumn);
 static char *pg_get_triggerdef_worker(Oid trigid, bool pretty);
 static void decompile_column_index_array(Datum column_index_array, Oid relId,
 							 StringInfo buf);
@@ -213,9 +216,10 @@ static void pop_ancestor_plan(deparse_namespace *dpns,
 static void make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 			 int prettyFlags);
 static void make_viewdef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
-			 int prettyFlags);
+			 int prettyFlags, int wrapColumn);
 static void get_query_def(Query *query, StringInfo buf, List *parentnamespace,
-			  TupleDesc resultDesc, int prettyFlags, int startIndent);
+			  TupleDesc resultDesc,
+			  int prettyFlags, int wrapColumn, int startIndent);
 static void get_values_def(List *values_lists, deparse_context *context);
 static void get_with_clause(Query *query, deparse_context *context);
 static void get_select_query_def(Query *query, deparse_context *context,
@@ -397,7 +401,7 @@ pg_get_viewdef(PG_FUNCTION_ARGS)
 	/* By OID */
 	Oid			viewoid = PG_GETARG_OID(0);
 
-	PG_RETURN_TEXT_P(string_to_text(pg_get_viewdef_worker(viewoid, 0)));
+	PG_RETURN_TEXT_P(string_to_text(pg_get_viewdef_worker(viewoid, 0, -1)));
 }
 
 
@@ -410,7 +414,7 @@ pg_get_viewdef_ext(PG_FUNCTION_ARGS)
 	int			prettyFlags;
 
 	prettyFlags = pretty ? PRETTYFLAG_PAREN | PRETTYFLAG_INDENT : 0;
-	PG_RETURN_TEXT_P(string_to_text(pg_get_viewdef_worker(viewoid, prettyFlags)));
+	PG_RETURN_TEXT_P(string_to_text(pg_get_viewdef_worker(viewoid, prettyFlags, WRAP_COLUMN_DEFAULT)));
 }
 
 Datum
@@ -424,9 +428,7 @@ pg_get_viewdef_wrap(PG_FUNCTION_ARGS)
 
 	/* calling this implies we want pretty printing */
 	prettyFlags = PRETTYFLAG_PAREN | PRETTYFLAG_INDENT;
-	pretty_wrap = wrap;
-	result = pg_get_viewdef_worker(viewoid, prettyFlags);
-	pretty_wrap = PRETTY_WRAP_DEFAULT;
+	result = pg_get_viewdef_worker(viewoid, prettyFlags, wrap);
 	PG_RETURN_TEXT_P(string_to_text(result));
 }
 
@@ -442,7 +444,7 @@ pg_get_viewdef_name(PG_FUNCTION_ARGS)
 	viewrel = makeRangeVarFromNameList(textToQualifiedNameList(viewname));
 	viewoid = RangeVarGetRelid(viewrel, NoLock, false);
 
-	PG_RETURN_TEXT_P(string_to_text(pg_get_viewdef_worker(viewoid, 0)));
+	PG_RETURN_TEXT_P(string_to_text(pg_get_viewdef_worker(viewoid, 0, -1)));
 }
 
 
@@ -462,14 +464,14 @@ pg_get_viewdef_name_ext(PG_FUNCTION_ARGS)
 	viewrel = makeRangeVarFromNameList(textToQualifiedNameList(viewname));
 	viewoid = RangeVarGetRelid(viewrel, NoLock, false);
 
-	PG_RETURN_TEXT_P(string_to_text(pg_get_viewdef_worker(viewoid, prettyFlags)));
+	PG_RETURN_TEXT_P(string_to_text(pg_get_viewdef_worker(viewoid, prettyFlags, WRAP_COLUMN_DEFAULT)));
 }
 
 /*
  * Common code for by-OID and by-name variants of pg_get_viewdef
  */
 static char *
-pg_get_viewdef_worker(Oid viewoid, int prettyFlags)
+pg_get_viewdef_worker(Oid viewoid, int prettyFlags, int wrapColumn)
 {
 	Datum		args[2];
 	char		nulls[2];
@@ -512,7 +514,7 @@ pg_get_viewdef_worker(Oid viewoid, int prettyFlags)
 	 * Get the pg_rewrite tuple for the view's SELECT rule
 	 */
 	args[0] = ObjectIdGetDatum(viewoid);
-	args[1] = PointerGetDatum(ViewSelectRuleName);
+	args[1] = DirectFunctionCall1(namein, CStringGetDatum(ViewSelectRuleName));
 	nulls[0] = ' ';
 	nulls[1] = ' ';
 	spirc = SPI_execute_plan(plan_getviewrule, args, nulls, true, 2);
@@ -527,7 +529,7 @@ pg_get_viewdef_worker(Oid viewoid, int prettyFlags)
 		 */
 		ruletup = SPI_tuptable->vals[0];
 		rulettc = SPI_tuptable->tupdesc;
-		make_viewdef(&buf, ruletup, rulettc, prettyFlags);
+		make_viewdef(&buf, ruletup, rulettc, prettyFlags, wrapColumn);
 	}
 
 	/*
@@ -734,6 +736,7 @@ pg_get_triggerdef_worker(Oid trigid, bool pretty)
 		context.finalise_aggs = false;
 #endif /* XCP */
 #endif /* PGXC */
+		context.wrapColumn = WRAP_COLUMN_DEFAULT;
 		context.indentLevel = PRETTYINDENT_STD;
 
 		get_rule_expr(qual, &context, false);
@@ -939,7 +942,7 @@ pg_get_indexdef_worker(Oid indexrelid, int colno,
 	context = deparse_context_for(get_relation_name(indrelid), indrelid);
 
 	/*
-	 * Start the index definition.	Note that the index's name should never be
+	 * Start the index definition.  Note that the index's name should never be
 	 * schema-qualified, but the indexed rel's name may be.
 	 */
 	initStringInfo(&buf);
@@ -1378,10 +1381,9 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 				 * Note that simply checking for leading '(' and trailing ')'
 				 * would NOT be good enough, consider "(x > 0) AND (y > 0)".
 				 */
-				appendStringInfo(&buf, "CHECK %s(%s)",
-								 conForm->connoinherit ? "NO INHERIT " : "",
-								 consrc);
-
+				appendStringInfo(&buf, "CHECK (%s)%s",
+								 consrc,
+								 conForm->connoinherit ? " NO INHERIT" : "");
 				break;
 			}
 		case CONSTRAINT_TRIGGER:
@@ -1634,7 +1636,7 @@ pg_get_serial_sequence(PG_FUNCTION_ARGS)
 	SysScanDesc scan;
 	HeapTuple	tup;
 
-	/* Look up table name.	Can't lock it - we might not have privileges. */
+	/* Look up table name.  Can't lock it - we might not have privileges. */
 	tablerv = makeRangeVarFromNameList(textToQualifiedNameList(tablename));
 	tableOid = RangeVarGetRelid(tablerv, NoLock, false);
 
@@ -2186,6 +2188,7 @@ deparse_expression_pretty(Node *expr, List *dpcontext,
 	context.finalise_aggs = false;
 #endif /* XCP */
 #endif /* PGXC */
+	context.wrapColumn = WRAP_COLUMN_DEFAULT;
 	context.indentLevel = startIndent;
 
 	get_rule_expr(expr, &context, showimplicit);
@@ -2198,7 +2201,7 @@ deparse_expression_pretty(Node *expr, List *dpcontext,
  *
  * Given the reference name (alias) and OID of a relation, build deparsing
  * context for an expression referencing only that relation (as varno 1,
- * varlevelsup 0).	This is sufficient for many uses of deparse_expression.
+ * varlevelsup 0).  This is sufficient for many uses of deparse_expression.
  * ----------
  */
 List *
@@ -2325,7 +2328,7 @@ set_deparse_planstate(deparse_namespace *dpns, PlanState *ps)
 	 * We special-case Append and MergeAppend to pretend that the first child
 	 * plan is the OUTER referent; we have to interpret OUTER Vars in their
 	 * tlists according to one of the children, and the first one is the most
-	 * natural choice.	Likewise special-case ModifyTable to pretend that the
+	 * natural choice.  Likewise special-case ModifyTable to pretend that the
 	 * first child plan is the OUTER referent; this is to support RETURNING
 	 * lists containing references to non-target relations.
 	 */
@@ -2688,7 +2691,7 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 		query = getInsertSelectQuery(query, NULL);
 
 		/* Must acquire locks right away; see notes in get_query_def() */
-		AcquireRewriteLocks(query, false);
+		AcquireRewriteLocks(query, false, false);
 
 		context.buf = buf;
 		context.namespaces = list_make1(&dpns);
@@ -2696,6 +2699,7 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 		context.windowTList = NIL;
 		context.varprefix = (list_length(query->rtable) != 1);
 		context.prettyFlags = prettyFlags;
+		context.wrapColumn = WRAP_COLUMN_DEFAULT;
 		context.indentLevel = PRETTYINDENT_STD;
 #ifdef PGXC
 #ifndef XCP
@@ -2728,7 +2732,8 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 		foreach(action, actions)
 		{
 			query = (Query *) lfirst(action);
-			get_query_def(query, buf, NIL, NULL, prettyFlags, 0);
+			get_query_def(query, buf, NIL, NULL,
+						  prettyFlags, WRAP_COLUMN_DEFAULT, 0);
 			if (prettyFlags)
 				appendStringInfo(buf, ";\n");
 			else
@@ -2745,7 +2750,8 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 		Query	   *query;
 
 		query = (Query *) linitial(actions);
-		get_query_def(query, buf, NIL, NULL, prettyFlags, 0);
+		get_query_def(query, buf, NIL, NULL,
+					  prettyFlags, WRAP_COLUMN_DEFAULT, 0);
 		appendStringInfo(buf, ";");
 	}
 }
@@ -2758,7 +2764,7 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
  */
 static void
 make_viewdef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
-			 int prettyFlags)
+			 int prettyFlags, int wrapColumn)
 {
 	Query	   *query;
 	char		ev_type;
@@ -2813,7 +2819,7 @@ make_viewdef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 	ev_relation = heap_open(ev_class, AccessShareLock);
 
 	get_query_def(query, buf, NIL, RelationGetDescr(ev_relation),
-				  prettyFlags, 0);
+				  prettyFlags, wrapColumn, 0);
 	appendStringInfo(buf, ";");
 
 	heap_close(ev_relation, AccessShareLock);
@@ -3002,18 +3008,26 @@ get_query_def_from_valuesList(Query *query, StringInfo buf)
  */
 static void
 get_query_def(Query *query, StringInfo buf, List *parentnamespace,
-			  TupleDesc resultDesc, int prettyFlags, int startIndent)
+			  TupleDesc resultDesc,
+			  int prettyFlags, int wrapColumn, int startIndent)
 {
 	deparse_context context;
 	deparse_namespace dpns;
 
+	/* Guard against excessively long or deeply-nested queries */
+	CHECK_FOR_INTERRUPTS();
+	check_stack_depth();
+
 	/*
 	 * Before we begin to examine the query, acquire locks on referenced
-	 * relations, and fix up deleted columns in JOIN RTEs.	This ensures
-	 * consistent results.	Note we assume it's OK to scribble on the passed
+	 * relations, and fix up deleted columns in JOIN RTEs.  This ensures
+	 * consistent results.  Note we assume it's OK to scribble on the passed
 	 * querytree!
+	 *
+	 * We are only deparsing the query (we are not about to execute it), so we
+	 * only need AccessShareLock on the relations it mentions.
 	 */
-	AcquireRewriteLocks(query, false);
+	AcquireRewriteLocks(query, false, false);
 
 	context.buf = buf;
 	context.namespaces = lcons(&dpns, list_copy(parentnamespace));
@@ -3022,6 +3036,7 @@ get_query_def(Query *query, StringInfo buf, List *parentnamespace,
 	context.varprefix = (parentnamespace != NIL ||
 						 list_length(query->rtable) != 1);
 	context.prettyFlags = prettyFlags;
+	context.wrapColumn = wrapColumn;
 	context.indentLevel = startIndent;
 #ifdef PGXC
 #ifndef XCP
@@ -3165,7 +3180,8 @@ get_with_clause(Query *query, deparse_context *context)
 		if (PRETTY_INDENT(context))
 			appendContextKeyword(context, "", 0, 0, 0);
 		get_query_def((Query *) cte->ctequery, buf, context->namespaces, NULL,
-					  context->prettyFlags, context->indentLevel);
+					  context->prettyFlags, context->wrapColumn,
+					  context->indentLevel);
 		if (PRETTY_INDENT(context))
 			appendContextKeyword(context, "", 0, 0, 0);
 		appendStringInfoChar(buf, ')');
@@ -3395,13 +3411,17 @@ get_target_list(List *targetList, deparse_context *context,
 				TupleDesc resultDesc)
 {
 	StringInfo	buf = context->buf;
+	StringInfoData targetbuf;
+	bool		last_was_multiline = false;
 	char	   *sep;
 	int			colno;
 	ListCell   *l;
-	bool		last_was_multiline = false;
 #ifdef PGXC
 	bool no_targetlist = true;
 #endif
+
+	/* we use targetbuf to hold each TLE's text temporarily */
+	initStringInfo(&targetbuf);
 
 	sep = " ";
 	colno = 0;
@@ -3410,10 +3430,6 @@ get_target_list(List *targetList, deparse_context *context,
 		TargetEntry *tle = (TargetEntry *) lfirst(l);
 		char	   *colname;
 		char	   *attname;
-		StringInfoData targetbuf;
-		int			leading_nl_pos = -1;
-		char	   *trailing_nl;
-		int			pos;
 
 		if (tle->resjunk)
 			continue;			/* ignore junk entries */
@@ -3429,11 +3445,10 @@ get_target_list(List *targetList, deparse_context *context,
 		colno++;
 
 		/*
-		 * Put the new field spec into targetbuf so we can decide after we've
+		 * Put the new field text into targetbuf so we can decide after we've
 		 * got it whether or not it needs to go on a new line.
 		 */
-
-		initStringInfo(&targetbuf);
+		resetStringInfo(&targetbuf);
 		context->buf = &targetbuf;
 
 		/*
@@ -3457,7 +3472,7 @@ get_target_list(List *targetList, deparse_context *context,
 		}
 
 		/*
-		 * Figure out what the result column should be called.	In the context
+		 * Figure out what the result column should be called.  In the context
 		 * of a view, use the view's tuple descriptor (so as to pick up the
 		 * effects of any column RENAME that's been done on the view).
 		 * Otherwise, just use what we can find in the TLE.
@@ -3474,62 +3489,56 @@ get_target_list(List *targetList, deparse_context *context,
 				appendStringInfo(&targetbuf, " AS %s", quote_identifier(colname));
 		}
 
-		/* Restore context buffer */
-
+		/* Restore context's output buffer */
 		context->buf = buf;
 
-		/* Does the new field start with whitespace plus a new line? */
-
-		for (pos = 0; pos < targetbuf.len; pos++)
+		/* Consider line-wrapping if enabled */
+		if (PRETTY_INDENT(context) && context->wrapColumn >= 0)
 		{
-			if (targetbuf.data[pos] == '\n')
+			int			leading_nl_pos = -1;
+			char	   *trailing_nl;
+			int			pos;
+
+			/* Does the new field start with whitespace plus a new line? */
+			for (pos = 0; pos < targetbuf.len; pos++)
 			{
-				leading_nl_pos = pos;
-				break;
+				if (targetbuf.data[pos] == '\n')
+				{
+					leading_nl_pos = pos;
+					break;
+				}
+				if (targetbuf.data[pos] != ' ')
+					break;
 			}
-			if (targetbuf.data[pos] > ' ')
-				break;
-		}
 
-		/* Locate the start of the current	line in the buffer */
+			/* Locate the start of the current line in the output buffer */
+			trailing_nl = strrchr(buf->data, '\n');
+			if (trailing_nl == NULL)
+				trailing_nl = buf->data;
+			else
+				trailing_nl++;
 
-		trailing_nl = (strrchr(buf->data, '\n'));
-		if (trailing_nl == NULL)
-			trailing_nl = buf->data;
-		else
-			trailing_nl++;
+			/*
+			 * If the field we're adding is the first in the list, or it
+			 * already has a leading newline, don't add anything. Otherwise,
+			 * add a newline, plus some indentation, if either the new field
+			 * would cause an overflow or the last field used more than one
+			 * line.
+			 */
+			if (colno > 1 &&
+				leading_nl_pos == -1 &&
+				((strlen(trailing_nl) + strlen(targetbuf.data) > context->wrapColumn) ||
+				 last_was_multiline))
+				appendContextKeyword(context, "", -PRETTYINDENT_STD,
+									 PRETTYINDENT_STD, PRETTYINDENT_VAR);
 
-		/*
-		 * If the field we're adding is the first in the list, or it already
-		 * has a leading newline, or wrap mode is disabled (pretty_wrap < 0),
-		 * don't add anything. Otherwise, add a newline, plus some
-		 * indentation, if either the new field would cause an overflow or the
-		 * last field used more than one line.
-		 */
-
-		if (colno > 1 &&
-			leading_nl_pos == -1 &&
-			pretty_wrap >= 0 &&
-			((strlen(trailing_nl) + strlen(targetbuf.data) > pretty_wrap) ||
-			 last_was_multiline))
-		{
-			appendContextKeyword(context, "", -PRETTYINDENT_STD,
-								 PRETTYINDENT_STD, PRETTYINDENT_VAR);
+			/* Remember this field's multiline status for next iteration */
+			last_was_multiline =
+				(strchr(targetbuf.data + leading_nl_pos + 1, '\n') != NULL);
 		}
 
 		/* Add the new field */
-
 		appendStringInfoString(buf, targetbuf.data);
-
-
-		/* Keep track of this field's status for next iteration */
-
-		last_was_multiline =
-			(strchr(targetbuf.data + leading_nl_pos + 1, '\n') != NULL);
-
-		/* cleanup */
-
-		pfree(targetbuf.data);
 	}
 
 #ifdef PGXC
@@ -3542,6 +3551,8 @@ get_target_list(List *targetList, deparse_context *context,
 	if (no_targetlist)
 		appendStringInfo(buf, " *");
 #endif
+	/* clean up */
+	pfree(targetbuf.data);
 }
 
 static void
@@ -3550,6 +3561,10 @@ get_setop_query(Node *setOp, Query *query, deparse_context *context,
 {
 	StringInfo	buf = context->buf;
 	bool		need_paren;
+
+	/* Guard against excessively long or deeply-nested queries */
+	CHECK_FOR_INTERRUPTS();
+	check_stack_depth();
 
 	if (IsA(setOp, RangeTblRef))
 	{
@@ -3568,7 +3583,8 @@ get_setop_query(Node *setOp, Query *query, deparse_context *context,
 		if (need_paren)
 			appendStringInfoChar(buf, '(');
 		get_query_def(subquery, buf, context->namespaces, resultDesc,
-					  context->prettyFlags, context->indentLevel);
+					  context->prettyFlags, context->wrapColumn,
+					  context->indentLevel);
 		if (need_paren)
 			appendStringInfoChar(buf, ')');
 	}
@@ -3661,7 +3677,7 @@ get_rule_sortgroupclause(SortGroupClause *srt, List *tlist, bool force_colno,
 	 * expression is a constant, force it to be dumped with an explicit cast
 	 * as decoration --- this is because a simple integer constant is
 	 * ambiguous (and will be misinterpreted by findTargetlistEntry()) if we
-	 * dump it without any decoration.	Otherwise, just dump the expression
+	 * dump it without any decoration.  Otherwise, just dump the expression
 	 * normally.
 	 */
 	if (force_colno)
@@ -3901,8 +3917,8 @@ get_insert_query_def(Query *query, deparse_context *context)
 #endif
 
 	/*
-	 * If it's an INSERT ... SELECT or VALUES (...), (...), ... there will be
-	 * a single RTE for the SELECT or VALUES.
+	 * If it's an INSERT ... SELECT or multi-row VALUES, there will be a
+	 * single RTE for the SELECT or VALUES.  Plain VALUES has neither.
 	 */
 	foreach(l, query->rtable)
 	{
@@ -3950,7 +3966,7 @@ get_insert_query_def(Query *query, deparse_context *context)
 		context->indentLevel += PRETTYINDENT_STD;
 		appendStringInfoChar(buf, ' ');
 	}
-	appendStringInfo(buf, "INSERT INTO %s (",
+	appendStringInfo(buf, "INSERT INTO %s ",
 					 generate_relation_name(rte->relid, NIL));
 
 	/*
@@ -3967,6 +3983,8 @@ get_insert_query_def(Query *query, deparse_context *context)
 		values_cell = NULL;
 	strippedexprs = NIL;
 	sep = "";
+	if (query->targetList)
+		appendStringInfoChar(buf, '(');
 	foreach(l, query->targetList)
 	{
 		TargetEntry *tle = (TargetEntry *) lfirst(l);
@@ -4003,26 +4021,33 @@ get_insert_query_def(Query *query, deparse_context *context)
 													   context, true));
 		}
 	}
-	appendStringInfo(buf, ") ");
+	if (query->targetList)
+		appendStringInfo(buf, ") ");
 
 	if (select_rte)
 	{
 		/* Add the SELECT */
 		get_query_def(select_rte->subquery, buf, NIL, NULL,
-					  context->prettyFlags, context->indentLevel);
+					  context->prettyFlags, context->wrapColumn,
+					  context->indentLevel);
 	}
 	else if (values_rte)
 	{
 		/* Add the multi-VALUES expression lists */
 		get_values_def(values_rte->values_lists, context);
 	}
-	else
+	else if (strippedexprs)
 	{
 		/* Add the single-VALUES expression list */
 		appendContextKeyword(context, "VALUES (",
 							 -PRETTYINDENT_STD, PRETTYINDENT_STD, 2);
 		get_rule_expr((Node *) strippedexprs, context, false);
 		appendStringInfoChar(buf, ')');
+	}
+	else
+	{
+		/* No expressions, so it must be DEFAULT VALUES */
+		appendStringInfo(buf, "DEFAULT VALUES");
 	}
 
 	/* Add RETURNING if present */
@@ -4625,7 +4650,8 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 				Var		   *aliasvar;
 
 				aliasvar = (Var *) list_nth(rte->joinaliasvars, attnum - 1);
-				if (IsA(aliasvar, Var))
+				/* we intentionally don't strip implicit coercions here */
+				if (aliasvar && IsA(aliasvar, Var))
 				{
 					return get_variable(aliasvar, var->varlevelsup + levelsup,
 										istoplevel, context);
@@ -4671,7 +4697,7 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 
 
 /*
- * Get the name of a field of an expression of composite type.	The
+ * Get the name of a field of an expression of composite type.  The
  * expression is usually a Var, but we handle other cases too.
  *
  * levelsup is an extra offset to interpret the Var's varlevelsup correctly.
@@ -4681,7 +4707,7 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
  * could also be RECORD.  Since no actual table or view column is allowed to
  * have type RECORD, a Var of type RECORD must refer to a JOIN or FUNCTION RTE
  * or to a subquery output.  We drill down to find the ultimate defining
- * expression and attempt to infer the field name from it.	We ereport if we
+ * expression and attempt to infer the field name from it.  We ereport if we
  * can't determine the name.
  *
  * Similarly, a PARAM of type RECORD has to refer to some expression of
@@ -4935,6 +4961,8 @@ get_name_for_var_field(Var *var, int fieldno,
 				elog(ERROR, "cannot decompile join alias var in plan tree");
 			Assert(attnum > 0 && attnum <= list_length(rte->joinaliasvars));
 			expr = (Node *) list_nth(rte->joinaliasvars, attnum - 1);
+			Assert(expr != NULL);
+			/* we intentionally don't strip implicit coercions here */
 			if (IsA(expr, Var))
 				return get_name_for_var_field((Var *) expr, fieldno,
 											  var->varlevelsup + levelsup,
@@ -5057,7 +5085,7 @@ get_name_for_var_field(Var *var, int fieldno,
 
 	/*
 	 * We now have an expression we can't expand any more, so see if
-	 * get_expr_result_type() can do anything with it.	If not, pass to
+	 * get_expr_result_type() can do anything with it.  If not, pass to
 	 * lookup_rowtype_tupdesc() which will probably fail, but will give an
 	 * appropriate error message while failing.
 	 */
@@ -5116,7 +5144,7 @@ find_rte_by_refname(const char *refname, deparse_context *context)
  * reference a parameter supplied by an upper NestLoop or SubPlan plan node.
  *
  * If successful, return the expression and set *dpns_p and *ancestor_cell_p
- * appropriately for calling push_ancestor_plan().	If no referent can be
+ * appropriately for calling push_ancestor_plan().  If no referent can be
  * found, return NULL.
  */
 static Node *
@@ -5248,7 +5276,7 @@ get_parameter(Param *param, deparse_context *context)
 
 	/*
 	 * If it's a PARAM_EXEC parameter, try to locate the expression from which
-	 * the parameter was computed.	Note that failing to find a referent isn't
+	 * the parameter was computed.  Note that failing to find a referent isn't
 	 * an error, since the Param might well be a subplan output rather than an
 	 * input.
 	 */
@@ -5616,6 +5644,10 @@ get_rule_expr(Node *node, deparse_context *context,
 	if (node == NULL)
 		return;
 
+	/* Guard against excessively long or deeply-nested queries */
+	CHECK_FOR_INTERRUPTS();
+	check_stack_depth();
+
 	/*
 	 * Each level of get_rule_expr must emit an indivisible term
 	 * (parenthesized if necessary) to ensure result is reparsed into the same
@@ -5681,10 +5713,10 @@ get_rule_expr(Node *node, deparse_context *context,
 
 				/*
 				 * If there's a refassgnexpr, we want to print the node in the
-				 * format "array[subscripts] := refassgnexpr".	This is not
+				 * format "array[subscripts] := refassgnexpr".  This is not
 				 * legal SQL, so decompilation of INSERT or UPDATE statements
 				 * should always use processIndirection as part of the
-				 * statement-level syntax.	We should only see this when
+				 * statement-level syntax.  We should only see this when
 				 * EXPLAIN tries to print the targetlist of a plan resulting
 				 * from such a statement.
 				 */
@@ -5843,7 +5875,7 @@ get_rule_expr(Node *node, deparse_context *context,
 
 				/*
 				 * We cannot see an already-planned subplan in rule deparsing,
-				 * only while EXPLAINing a query plan.	We don't try to
+				 * only while EXPLAINing a query plan.  We don't try to
 				 * reconstruct the original SQL, just reference the subplan
 				 * that appears elsewhere in EXPLAIN's result.
 				 */
@@ -5916,14 +5948,14 @@ get_rule_expr(Node *node, deparse_context *context,
 				 * There is no good way to represent a FieldStore as real SQL,
 				 * so decompilation of INSERT or UPDATE statements should
 				 * always use processIndirection as part of the
-				 * statement-level syntax.	We should only get here when
+				 * statement-level syntax.  We should only get here when
 				 * EXPLAIN tries to print the targetlist of a plan resulting
 				 * from such a statement.  The plan case is even harder than
 				 * ordinary rules would be, because the planner tries to
 				 * collapse multiple assignments to the same field or subfield
 				 * into one FieldStore; so we can see a list of target fields
 				 * not just one, and the arguments could be FieldStores
-				 * themselves.	We don't bother to try to print the target
+				 * themselves.  We don't bother to try to print the target
 				 * field names; we just print the source arguments, with a
 				 * ROW() around them if there's more than one.  This isn't
 				 * terribly complete, but it's probably good enough for
@@ -6788,6 +6820,7 @@ get_windowfunc_expr(WindowFunc *wfunc, deparse_context *context)
 	StringInfo	buf = context->buf;
 	Oid			argtypes[FUNC_MAX_ARGS];
 	int			nargs;
+	List	   *argnames;
 	ListCell   *l;
 
 	if (list_length(wfunc->args) > FUNC_MAX_ARGS)
@@ -6795,18 +6828,20 @@ get_windowfunc_expr(WindowFunc *wfunc, deparse_context *context)
 				(errcode(ERRCODE_TOO_MANY_ARGUMENTS),
 				 errmsg("too many arguments")));
 	nargs = 0;
+	argnames = NIL;
 	foreach(l, wfunc->args)
 	{
 		Node	   *arg = (Node *) lfirst(l);
 
-		Assert(!IsA(arg, NamedArgExpr));
+		if (IsA(arg, NamedArgExpr))
+			argnames = lappend(argnames, ((NamedArgExpr *) arg)->name);
 		argtypes[nargs] = exprType(arg);
 		nargs++;
 	}
 
 	appendStringInfo(buf, "%s(",
 					 generate_function_name(wfunc->winfnoid, nargs,
-											NIL, argtypes, NULL));
+											argnames, argtypes, NULL));
 	/* winstar can be set only in zero-argument aggregates */
 	if (wfunc->winstar)
 		appendStringInfoChar(buf, '*');
@@ -6858,7 +6893,7 @@ get_coercion_expr(Node *arg, deparse_context *context,
 	 * Since parse_coerce.c doesn't immediately collapse application of
 	 * length-coercion functions to constants, what we'll typically see in
 	 * such cases is a Const with typmod -1 and a length-coercion function
-	 * right above it.	Avoid generating redundant output. However, beware of
+	 * right above it.  Avoid generating redundant output. However, beware of
 	 * suppressing casts when the user actually wrote something like
 	 * 'foo'::text::char(3).
 	 */
@@ -6940,7 +6975,7 @@ get_const_expr(Const *constval, deparse_context *context, int showtype)
 				/*
 				 * These types are printed without quotes unless they contain
 				 * values that aren't accepted by the scanner unquoted (e.g.,
-				 * 'NaN').	Note that strtod() and friends might accept NaN,
+				 * 'NaN').  Note that strtod() and friends might accept NaN,
 				 * so we can't use that to test.
 				 *
 				 * In reality we only need to defend against infinity and NaN,
@@ -7184,7 +7219,8 @@ get_sublink_expr(SubLink *sublink, deparse_context *context)
 		appendStringInfoChar(buf, '(');
 
 	get_query_def(query, buf, context->namespaces, NULL,
-				  context->prettyFlags, context->indentLevel);
+				  context->prettyFlags, context->wrapColumn,
+				  context->indentLevel);
 
 	if (need_paren)
 		appendStringInfo(buf, "))");
@@ -7238,47 +7274,49 @@ get_from_clause(Query *query, const char *prefix, deparse_context *context)
 		}
 		else
 		{
-			StringInfoData targetbuf;
-			char	   *trailing_nl;
+			StringInfoData itembuf;
 
 			appendStringInfoString(buf, ", ");
 
-			initStringInfo(&targetbuf);
-			context->buf = &targetbuf;
+			/*
+			 * Put the new FROM item's text into itembuf so we can decide
+			 * after we've got it whether or not it needs to go on a new line.
+			 */
+			initStringInfo(&itembuf);
+			context->buf = &itembuf;
 
 			get_from_clause_item(jtnode, query, context);
 
+			/* Restore context's output buffer */
 			context->buf = buf;
 
-			/* Locate the start of the current	line in the buffer */
-
-			trailing_nl = (strrchr(buf->data, '\n'));
-			if (trailing_nl == NULL)
-				trailing_nl = buf->data;
-			else
-				trailing_nl++;
-
-			/*
-			 * Add a newline, plus some  indentation, if pretty_wrap is on and
-			 * the new from-clause item would cause an overflow.
-			 */
-
-			if (pretty_wrap >= 0 &&
-				(strlen(trailing_nl) + strlen(targetbuf.data) > pretty_wrap))
+			/* Consider line-wrapping if enabled */
+			if (PRETTY_INDENT(context) && context->wrapColumn >= 0)
 			{
-				appendContextKeyword(context, "", -PRETTYINDENT_STD,
-									 PRETTYINDENT_STD, PRETTYINDENT_VAR);
+				char	   *trailing_nl;
+
+				/* Locate the start of the current line in the buffer */
+				trailing_nl = strrchr(buf->data, '\n');
+				if (trailing_nl == NULL)
+					trailing_nl = buf->data;
+				else
+					trailing_nl++;
+
+				/*
+				 * Add a newline, plus some indentation, if the new item would
+				 * cause an overflow.
+				 */
+				if (strlen(trailing_nl) + strlen(itembuf.data) > context->wrapColumn)
+					appendContextKeyword(context, "", -PRETTYINDENT_STD,
+										 PRETTYINDENT_STD, PRETTYINDENT_VAR);
 			}
 
 			/* Add the new item */
+			appendStringInfoString(buf, itembuf.data);
 
-			appendStringInfoString(buf, targetbuf.data);
-
-			/* cleanup */
-
-			pfree(targetbuf.data);
+			/* clean up */
+			pfree(itembuf.data);
 		}
-
 	}
 }
 
@@ -7306,7 +7344,8 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 				/* Subquery RTE */
 				appendStringInfoChar(buf, '(');
 				get_query_def(rte->subquery, buf, context->namespaces, NULL,
-							  context->prettyFlags, context->indentLevel);
+							  context->prettyFlags, context->wrapColumn,
+							  context->indentLevel);
 				appendStringInfoChar(buf, ')');
 				break;
 			case RTE_FUNCTION:
@@ -7652,7 +7691,7 @@ get_opclass_name(Oid opclass, Oid actual_datatype,
 	if (!OidIsValid(actual_datatype) ||
 		GetDefaultOpClass(actual_datatype, opcrec->opcmethod) != opclass)
 	{
-		/* Okay, we need the opclass name.	Do we need to qualify it? */
+		/* Okay, we need the opclass name.  Do we need to qualify it? */
 		opcname = NameStr(opcrec->opcname);
 		if (OpclassIsVisible(opclass))
 			appendStringInfo(buf, " %s", quote_identifier(opcname));
@@ -7947,9 +7986,9 @@ generate_relation_name(Oid relid, List *namespaces)
  * generate_function_name
  *		Compute the name to display for a function specified by OID,
  *		given that it is being called with the specified actual arg names and
- *		types.	(Those matter because of ambiguous-function resolution rules.)
+ *		types.  (Those matter because of ambiguous-function resolution rules.)
  *
- * The result includes all necessary quoting and schema-prefixing.	We can
+ * The result includes all necessary quoting and schema-prefixing.  We can
  * also pass back an indication of whether the function is variadic.
  */
 static char *
@@ -7977,7 +8016,7 @@ generate_function_name(Oid funcid, int nargs, List *argnames,
 	/*
 	 * The idea here is to schema-qualify only if the parser would fail to
 	 * resolve the correct function given the unqualified func name with the
-	 * specified argtypes.	If the function is variadic, we should presume
+	 * specified argtypes.  If the function is variadic, we should presume
 	 * that VARIADIC will be included in the call.
 	 */
 	p_result = func_get_detail(list_make1(makeString(proname)),

@@ -22,7 +22,6 @@
 #include <signal.h>
 #include <unistd.h>
 
-#include "bootstrap/bootstrap.h"
 #include "commands/async.h"
 #include "miscadmin.h"
 #include "storage/latch.h"
@@ -146,6 +145,13 @@ CleanupProcSignalState(int status, Datum arg)
 
 	slot = &ProcSignalSlots[pss_idx - 1];
 	Assert(slot == MyProcSignalSlot);
+
+	/*
+	 * Clear MyProcSignalSlot, so that a SIGUSR1 received after this point
+	 * won't try to access it after it's no longer ours (and perhaps even
+	 * after we've unmapped the shared memory segment).
+	 */
+	MyProcSignalSlot = NULL;
 
 	/* sanity check */
 	if (slot->pss_pid != MyProcPid)

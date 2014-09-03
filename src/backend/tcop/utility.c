@@ -108,49 +108,6 @@ ProcessUtility_hook_type ProcessUtility_hook = NULL;
 
 
 /*
- * Verify user has ownership of specified relation, else ereport.
- *
- * If noCatalogs is true then we also deny access to system catalogs,
- * except when allowSystemTableMods is true.
- */
-void
-CheckRelationOwnership(RangeVar *rel, bool noCatalogs)
-{
-	Oid			relOid;
-	HeapTuple	tuple;
-
-	/*
-	 * XXX: This is unsafe in the presence of concurrent DDL, since it is
-	 * called before acquiring any lock on the target relation.  However,
-	 * locking the target relation (especially using something like
-	 * AccessExclusiveLock) before verifying that the user has permissions is
-	 * not appealing either.
-	 */
-	relOid = RangeVarGetRelid(rel, NoLock, false);
-
-	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relOid));
-	if (!HeapTupleIsValid(tuple))		/* should not happen */
-		elog(ERROR, "cache lookup failed for relation %u", relOid);
-
-	if (!pg_class_ownercheck(relOid, GetUserId()))
-		aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_CLASS,
-					   rel->relname);
-
-	if (noCatalogs)
-	{
-		if (!allowSystemTableMods &&
-			IsSystemClass((Form_pg_class) GETSTRUCT(tuple)))
-			ereport(ERROR,
-					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("permission denied: \"%s\" is a system catalog",
-							rel->relname)));
-	}
-
-	ReleaseSysCache(tuple);
-}
-
-
-/*
  * CommandIsReadOnly: is an executable query read-only?
  *
  * This is a much stricter test than we apply for XactReadOnly mode;
@@ -300,7 +257,7 @@ PreventCommandIfReadOnly(const char *cmdname)
  * PreventCommandDuringRecovery: throw error if RecoveryInProgress
  *
  * The majority of operations that are unsafe in a Hot Standby slave
- * will be rejected by XactReadOnly tests.	However there are a few
+ * will be rejected by XactReadOnly tests.  However there are a few
  * commands that are allowed in "read-only" xacts but cannot be allowed
  * in Hot Standby mode.  Those commands should call this function.
  */
@@ -1155,7 +1112,7 @@ standard_ProcessUtility(Node *parsetree,
 				LOCKMODE	lockmode;
 
 				/*
-				 * Figure out lock mode, and acquire lock.	This also does
+				 * Figure out lock mode, and acquire lock.  This also does
 				 * basic permissions checks, so that we won't wait for a lock
 				 * on (for example) a relation on which we have no
 				 * permissions.
@@ -1166,7 +1123,8 @@ standard_ProcessUtility(Node *parsetree,
 				if (OidIsValid(relid))
 				{
 					/* Run parse analysis ... */
-					stmts = transformAlterTableStmt(atstmt, queryString);
+					stmts = transformAlterTableStmt(relid, atstmt,
+													queryString);
 
 #ifdef PGXC
 					/*
@@ -1496,6 +1454,8 @@ standard_ProcessUtility(Node *parsetree,
 		case T_IndexStmt:		/* CREATE INDEX */
 			{
 				IndexStmt  *stmt = (IndexStmt *) parsetree;
+				Oid			relid;
+				LOCKMODE	lockmode;
 
 #ifdef PGXC
 				Oid relid;
@@ -1523,32 +1483,34 @@ standard_ProcessUtility(Node *parsetree,
 					PreventTransactionChain(isTopLevel,
 											"CREATE INDEX CONCURRENTLY");
 
-				CheckRelationOwnership(stmt->relation, true);
+				/*
+				 * Look up the relation OID just once, right here at the
+				 * beginning, so that we don't end up repeating the name
+				 * lookup later and latching onto a different relation
+				 * partway through.  To avoid lock upgrade hazards, it's
+				 * important that we take the strongest lock that will
+				 * eventually be needed here, so the lockmode calculation
+				 * needs to match what DefineIndex() does.
+				 */
+				lockmode = stmt->concurrent ? ShareUpdateExclusiveLock
+					: ShareLock;
+				relid =
+					RangeVarGetRelidExtended(stmt->relation, lockmode,
+											 false, false,
+											 RangeVarCallbackOwnsRelation,
+											 NULL);
 
 				/* Run parse analysis ... */
-				stmt = transformIndexStmt(stmt, queryString);
+				stmt = transformIndexStmt(relid, stmt, queryString);
 
 				/* ... and do it */
-				DefineIndex(stmt->relation,		/* relation */
-							stmt->idxname,		/* index name */
+				DefineIndex(relid,	/* OID of heap relation */
+							stmt,
 							InvalidOid, /* no predefined OID */
-							InvalidOid, /* no previous storage */
-							stmt->accessMethod, /* am name */
-							stmt->tableSpace,
-							stmt->indexParams,	/* parameters */
-							(Expr *) stmt->whereClause,
-							stmt->options,
-							stmt->excludeOpNames,
-							stmt->unique,
-							stmt->primary,
-							stmt->isconstraint,
-							stmt->deferrable,
-							stmt->initdeferred,
 							false,		/* is_alter_table */
 							true,		/* check_rights */
 							false,		/* skip_build */
-							false,		/* quiet */
-							stmt->concurrent);	/* concurrent */
+							false);		/* quiet */
 #ifdef PGXC
 				if (IS_PGXC_COORDINATOR && !stmt->isconstraint && !IsConnFromCoord())
 					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote,
@@ -1758,8 +1720,12 @@ standard_ProcessUtility(Node *parsetree,
 			break;
 
 		case T_VacuumStmt:
-			/* we choose to allow this during "read only" transactions */
-			PreventCommandDuringRecovery("VACUUM");
+			{
+				VacuumStmt *stmt = (VacuumStmt *) parsetree;
+
+				/* we choose to allow this during "read only" transactions */
+				PreventCommandDuringRecovery((stmt->options & VACOPT_VACUUM) ?
+											 "VACUUM" : "ANALYZE");
 #ifdef PGXC
 				/*
 				 * We have to run the command on nodes before Coordinator because
@@ -1768,8 +1734,8 @@ standard_ProcessUtility(Node *parsetree,
 				if (IS_PGXC_COORDINATOR)
 					ExecUtilityStmtOnNodes(queryString, NULL, sentToRemote, true, EXEC_ON_DATANODES, false);
 #endif
-			vacuum((VacuumStmt *) parsetree, InvalidOid, true, NULL, false,
-				   isTopLevel);
+				vacuum(stmt, InvalidOid, true, NULL, false, isTopLevel);
+			}
 			break;
 
 		case T_ExplainStmt:
@@ -1836,7 +1802,8 @@ standard_ProcessUtility(Node *parsetree,
 
 		case T_CreateTrigStmt:
 			(void) CreateTrigger((CreateTrigStmt *) parsetree, queryString,
-								 InvalidOid, InvalidOid, false);
+								 InvalidOid, InvalidOid, InvalidOid,
+								 InvalidOid, false);
 #ifdef PGXC
 			/* Postgres-XC does not support yet triggers */
 			ereport(ERROR,
@@ -2489,26 +2456,35 @@ QueryReturnsTuples(Query *parsetree)
  * UtilityContainsQuery
  *		Return the contained Query, or NULL if there is none
  *
- * Certain utility statements, such as EXPLAIN, contain a Query.
+ * Certain utility statements, such as EXPLAIN, contain a plannable Query.
  * This function encapsulates knowledge of exactly which ones do.
  * We assume it is invoked only on already-parse-analyzed statements
  * (else the contained parsetree isn't a Query yet).
+ *
+ * In some cases (currently, only EXPLAIN of CREATE TABLE AS/SELECT INTO),
+ * potentially Query-containing utility statements can be nested.  This
+ * function will drill down to a non-utility Query, or return NULL if none.
  */
 Query *
 UtilityContainsQuery(Node *parsetree)
 {
+	Query	   *qry;
+
 	switch (nodeTag(parsetree))
 	{
 		case T_ExplainStmt:
-			Assert(IsA(((ExplainStmt *) parsetree)->query, Query));
-			return (Query *) ((ExplainStmt *) parsetree)->query;
+			qry = (Query *) ((ExplainStmt *) parsetree)->query;
+			Assert(IsA(qry, Query));
+			if (qry->commandType == CMD_UTILITY)
+				return UtilityContainsQuery(qry->utilityStmt);
+			return qry;
 
 		case T_CreateTableAsStmt:
-			/* might or might not contain a Query ... */
-			if (IsA(((CreateTableAsStmt *) parsetree)->query, Query))
-				return (Query *) ((CreateTableAsStmt *) parsetree)->query;
-			Assert(IsA(((CreateTableAsStmt *) parsetree)->query, ExecuteStmt));
-			return NULL;
+			qry = (Query *) ((CreateTableAsStmt *) parsetree)->query;
+			Assert(IsA(qry, Query));
+			if (qry->commandType == CMD_UTILITY)
+				return UtilityContainsQuery(qry->utilityStmt);
+			return qry;
 
 		default:
 			return NULL;

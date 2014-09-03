@@ -186,7 +186,7 @@ main(int argc, char **argv)
 
 	/*
 	 * Build the query we'll use to detect lock contention among sessions in
-	 * the test specification.	Most of the time, we could get away with
+	 * the test specification.  Most of the time, we could get away with
 	 * simply checking whether a session is waiting for *any* lock: we don't
 	 * exactly expect concurrent use of test tables.  However, autovacuum will
 	 * occasionally take AccessExclusiveLock to truncate a table, and we must
@@ -512,9 +512,9 @@ run_permutation(TestSpec * testspec, int nsteps, Step ** steps)
 	printf("\n");
 
 	/* Perform setup */
-	if (testspec->setupsql)
+	for (i = 0; i < testspec->nsetupsqls; i++)
 	{
-		res = PQexec(conns[0], testspec->setupsql);
+		res = PQexec(conns[0], testspec->setupsqls[i]);
 		if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		{
 			fprintf(stderr, "setup failed: %s", PQerrorMessage(conns[0]));
@@ -572,7 +572,8 @@ run_permutation(TestSpec * testspec, int nsteps, Step ** steps)
 			{
 				char		buf[256];
 
-				PQcancel(cancel, buf, sizeof(buf));
+				if (!PQcancel(cancel, buf, sizeof(buf)))
+					fprintf(stderr, "PQcancel failed: %s\n", buf);
 
 				/* Be sure to consume the error message. */
 				while ((res = PQgetResult(conn)) != NULL)
@@ -674,11 +675,11 @@ teardown:
 /*
  * Our caller already sent the query associated with this step.  Wait for it
  * to either complete or (if given the STEP_NONBLOCK flag) to block while
- * waiting for a lock.	We assume that any lock wait will persist until we
+ * waiting for a lock.  We assume that any lock wait will persist until we
  * have executed additional steps in the permutation.
  *
  * When calling this function on behalf of a given step for a second or later
- * time, pass the STEP_RETRY flag.	This only affects the messages printed.
+ * time, pass the STEP_RETRY flag.  This only affects the messages printed.
  *
  * If the connection returns an error, the message is saved in step->errormsg.
  * Caller should call report_error_message shortly after this, to have it
@@ -708,6 +709,8 @@ try_complete_step(Step * step, int flags)
 		ret = select(sock + 1, &read_set, NULL, NULL, &timeout);
 		if (ret < 0)			/* error in select() */
 		{
+			if (errno == EINTR)
+				continue;
 			fprintf(stderr, "select failed: %s\n", strerror(errno));
 			exit_nicely();
 		}
@@ -764,14 +767,26 @@ try_complete_step(Step * step, int flags)
 					printf("WARNING: this step had a leftover error message\n");
 					printf("%s\n", step->errormsg);
 				}
-				/* Detail may contain xid values, so just show primary. */
-				step->errormsg = malloc(5 +
-						  strlen(PQresultErrorField(res, PG_DIAG_SEVERITY)) +
-										strlen(PQresultErrorField(res,
-												  PG_DIAG_MESSAGE_PRIMARY)));
-				sprintf(step->errormsg, "%s:  %s",
-						PQresultErrorField(res, PG_DIAG_SEVERITY),
-						PQresultErrorField(res, PG_DIAG_MESSAGE_PRIMARY));
+
+				/*
+				 * Detail may contain XID values, so we want to just show
+				 * primary.  Beware however that libpq-generated error results
+				 * may not contain subfields, only an old-style message.
+				 */
+				{
+					const char *sev = PQresultErrorField(res,
+														 PG_DIAG_SEVERITY);
+					const char *msg = PQresultErrorField(res,
+													PG_DIAG_MESSAGE_PRIMARY);
+
+					if (sev && msg)
+					{
+						step->errormsg = malloc(5 + strlen(sev) + strlen(msg));
+						sprintf(step->errormsg, "%s:  %s", sev, msg);
+					}
+					else
+						step->errormsg = strdup(PQresultErrorMessage(res));
+				}
 				break;
 			default:
 				printf("unexpected result status: %s\n",

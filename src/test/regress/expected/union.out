@@ -504,9 +504,39 @@ explain (costs off)
                Index Cond: (ab = 'ab'::text)
 (6 rows)
 
+--
+-- Test that ORDER BY for UNION ALL can be pushed down to inheritance
+-- children.
+--
 reset enable_seqscan;
 reset enable_indexscan;
 reset enable_bitmapscan;
+set enable_indexonlyscan = off;
+create table events (event_id int primary key);
+NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "events_pkey" for table "events"
+create table other_events (event_id int primary key);
+NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "other_events_pkey" for table "other_events"
+create table events_child () inherits (events);
+explain (costs off)
+select event_id
+ from (select event_id from events
+       union all
+       select event_id from other_events) ss
+ order by event_id;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Result
+   ->  Merge Append
+         Sort Key: public.events.event_id
+         ->  Index Scan using events_pkey on events
+         ->  Sort
+               Sort Key: public.events.event_id
+               ->  Seq Scan on events_child events
+         ->  Index Scan using other_events_pkey on other_events
+(8 rows)
+
+drop table events_child, events, other_events;
+reset enable_indexonlyscan;
 -- Test constraint exclusion of UNION ALL subqueries
 explain (costs off)
  SELECT * FROM
@@ -521,3 +551,125 @@ explain (costs off)
          ->  Seq Scan on tenk1 b
 (3 rows)
 
+-- Test that we push quals into UNION sub-selects only when it's safe
+explain (costs off)
+SELECT * FROM
+  (SELECT 1 AS t, 2 AS x
+   UNION
+   SELECT 2 AS t, 4 AS x) ss
+WHERE x < 4;
+                 QUERY PLAN                 
+--------------------------------------------
+ Unique
+   ->  Sort
+         Sort Key: (1), (2)
+         ->  Append
+               ->  Result
+               ->  Result
+                     One-Time Filter: false
+(7 rows)
+
+SELECT * FROM
+  (SELECT 1 AS t, 2 AS x
+   UNION
+   SELECT 2 AS t, 4 AS x) ss
+WHERE x < 4;
+ t | x 
+---+---
+ 1 | 2
+(1 row)
+
+explain (costs off)
+SELECT * FROM
+  (SELECT 1 AS t, generate_series(1,10) AS x
+   UNION
+   SELECT 2 AS t, 4 AS x) ss
+WHERE x < 4
+ORDER BY x;
+           QUERY PLAN           
+--------------------------------
+ Sort
+   Sort Key: ss.x
+   ->  Subquery Scan on ss
+         Filter: (ss.x < 4)
+         ->  HashAggregate
+               ->  Append
+                     ->  Result
+                     ->  Result
+(8 rows)
+
+SELECT * FROM
+  (SELECT 1 AS t, generate_series(1,10) AS x
+   UNION
+   SELECT 2 AS t, 4 AS x) ss
+WHERE x < 4
+ORDER BY x;
+ t | x 
+---+---
+ 1 | 1
+ 1 | 2
+ 1 | 3
+(3 rows)
+
+explain (costs off)
+SELECT * FROM
+  (SELECT 1 AS t, (random()*3)::int AS x
+   UNION
+   SELECT 2 AS t, 4 AS x) ss
+WHERE x > 3;
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Subquery Scan on ss
+   Filter: (ss.x > 3)
+   ->  Unique
+         ->  Sort
+               Sort Key: (1), (((random() * 3::double precision))::integer)
+               ->  Append
+                     ->  Result
+                     ->  Result
+(8 rows)
+
+SELECT * FROM
+  (SELECT 1 AS t, (random()*3)::int AS x
+   UNION
+   SELECT 2 AS t, 4 AS x) ss
+WHERE x > 3;
+ t | x 
+---+---
+ 2 | 4
+(1 row)
+
+-- Test proper handling of parameterized appendrel paths when the
+-- potential join qual is expensive
+create function expensivefunc(int) returns int
+language plpgsql immutable strict cost 10000
+as $$begin return $1; end$$;
+create temp table t3 as select generate_series(-1000,1000) as x;
+create index t3i on t3 (expensivefunc(x));
+analyze t3;
+explain (costs off)
+select * from
+  (select * from t3 a union all select * from t3 b) ss
+  join int4_tbl on f1 = expensivefunc(x);
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Nested Loop
+   ->  Seq Scan on int4_tbl
+   ->  Append
+         ->  Index Scan using t3i on t3 a
+               Index Cond: (expensivefunc(x) = int4_tbl.f1)
+         ->  Index Scan using t3i on t3 b
+               Index Cond: (expensivefunc(x) = int4_tbl.f1)
+(7 rows)
+
+select * from
+  (select * from t3 a union all select * from t3 b) ss
+  join int4_tbl on f1 = expensivefunc(x);
+ x | f1 
+---+----
+ 0 |  0
+ 0 |  0
+(2 rows)
+
+drop table t3;
+drop function expensivefunc(int);

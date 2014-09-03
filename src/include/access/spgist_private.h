@@ -184,7 +184,7 @@ typedef struct SpGistCache
 
 
 /*
- * SPGiST tuple types.	Note: inner, leaf, and dead tuple structs
+ * SPGiST tuple types.  Note: inner, leaf, and dead tuple structs
  * must have the same tupstate field in the same position!	Real inner and
  * leaf tuples always have tupstate = LIVE; if the state is something else,
  * use the SpGistDeadTuple struct to inspect the tuple.
@@ -591,6 +591,7 @@ typedef struct spgxlogVacuumRedirect
 	BlockNumber blkno;			/* block number to clean */
 	uint16		nToPlaceholder; /* number of redirects to make placeholders */
 	OffsetNumber firstPlaceholder;		/* first placeholder tuple to remove */
+	TransactionId newestRedirectXid;	/* newest XID of removed redirects */
 
 	/* offsets of redirect tuples to make placeholders follow */
 } spgxlogVacuumRedirect;
@@ -650,7 +651,7 @@ extern void spgPageIndexMultiDelete(SpGistState *state, Page page,
 						OffsetNumber *itemnos, int nitems,
 						int firststate, int reststate,
 						BlockNumber blkno, OffsetNumber offnum);
-extern void spgdoinsert(Relation index, SpGistState *state,
+extern bool spgdoinsert(Relation index, SpGistState *state,
 			ItemPointer heapPtr, Datum datum, bool isnull);
 
 #endif   /* SPGIST_PRIVATE_H */

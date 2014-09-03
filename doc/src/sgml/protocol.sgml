@@ -1617,7 +1617,10 @@ The commands accepted in walsender mode are:
       </term>
       <listitem>
       <para>
-          The standby's current xmin.
+          The standby's current xmin. This may be 0, if the standby is
+          sending notification that Hot Standby feedback will no
+          longer be sent on this connection. Later non-zero messages may
+          reinitiate the feedback mechanism.
       </para>
       </listitem>
       </varlistentry>
@@ -1759,9 +1762,11 @@ The commands accepted in walsender mode are:
       After the second regular result set, one or more CopyResponse results
       will be sent, one for PGDATA and one for each additional tablespace other
       than <literal>pg_default</> and <literal>pg_global</>. The data in
-      the CopyResponse results will be a tar format (using ustar00
-      extensions) dump of the tablespace contents. After the tar data is
-      complete, a final ordinary result set will be sent.
+      the CopyResponse results will be a tar format (following the
+      <quote>ustar interchange format</> specified in the POSIX 1003.1-2008
+      standard) dump of the tablespace contents, except that the two trailing
+      blocks of zeroes specified in the standard are omitted.
+      After the tar data is complete, a final ordinary result set will be sent.
      </para>
 
      <para>

@@ -31,11 +31,11 @@
  * where there can be zero to four backup blocks (as signaled by xl_info flag
  * bits).  XLogRecord structs always start on MAXALIGN boundaries in the WAL
  * files, and we round up SizeOfXLogRecord so that the rmgr data is also
- * guaranteed to begin on a MAXALIGN boundary.	However, no padding is added
+ * guaranteed to begin on a MAXALIGN boundary.  However, no padding is added
  * to align BkpBlock structs or backup block data.
  *
  * NOTE: xl_len counts only the rmgr data, not the XLogRecord header,
- * and also not any backup blocks.	xl_tot_len counts everything.  Neither
+ * and also not any backup blocks.  xl_tot_len counts everything.  Neither
  * length field is rounded up to an alignment boundary.
  */
 typedef struct XLogRecord
@@ -70,6 +70,9 @@ typedef struct XLogRecord
  */
 #define XLR_BKP_BLOCK_MASK		0x0F	/* all info bits used for bkp blocks */
 #define XLR_MAX_BKP_BLOCKS		4
+#define XLR_BKP_BLOCK(iblk)		(0x08 >> (iblk))		/* iblk in 0..3 */
+
+/* These macros are deprecated and will be removed in 9.3; use XLR_BKP_BLOCK */
 #define XLR_SET_BKP_BLOCK(iblk) (0x08 >> (iblk))
 #define XLR_BKP_BLOCK_1			XLR_SET_BKP_BLOCK(0)	/* 0x08 */
 #define XLR_BKP_BLOCK_2			XLR_SET_BKP_BLOCK(1)	/* 0x04 */
@@ -93,17 +96,17 @@ extern int	sync_method;
  * If buffer is valid then XLOG will check if buffer must be backed up
  * (ie, whether this is first change of that page since last checkpoint).
  * If so, the whole page contents are attached to the XLOG record, and XLOG
- * sets XLR_BKP_BLOCK_X bit in xl_info.  Note that the buffer must be pinned
+ * sets XLR_BKP_BLOCK(N) bit in xl_info.  Note that the buffer must be pinned
  * and exclusive-locked by the caller, so that it won't change under us.
  * NB: when the buffer is backed up, we DO NOT insert the data pointed to by
  * this XLogRecData struct into the XLOG record, since we assume it's present
  * in the buffer.  Therefore, rmgr redo routines MUST pay attention to
- * XLR_BKP_BLOCK_X to know what is actually stored in the XLOG record.
- * The i'th XLR_BKP_BLOCK bit corresponds to the i'th distinct buffer
+ * XLR_BKP_BLOCK(N) to know what is actually stored in the XLOG record.
+ * The N'th XLR_BKP_BLOCK bit corresponds to the N'th distinct buffer
  * value (ignoring InvalidBuffer) appearing in the rdata chain.
  *
  * When buffer is valid, caller must set buffer_std to indicate whether the
- * page uses standard pd_lower/pd_upper header fields.	If this is true, then
+ * page uses standard pd_lower/pd_upper header fields.  If this is true, then
  * XLOG is allowed to omit the free space between pd_lower and pd_upper from
  * the backed-up page image.  Note that even when buffer_std is false, the
  * page MUST have an LSN field as its first eight bytes!
@@ -276,10 +279,12 @@ extern int XLogFileInit(uint32 log, uint32 seg,
 extern int	XLogFileOpen(uint32 log, uint32 seg);
 
 
-extern void XLogGetLastRemoved(uint32 *log, uint32 *seg);
+extern void CheckXLogRemoved(uint32 log, uint32 seg, TimeLineID tli);
 extern void XLogSetAsyncXactLSN(XLogRecPtr record);
 
-extern void RestoreBkpBlocks(XLogRecPtr lsn, XLogRecord *record, bool cleanup);
+extern Buffer RestoreBackupBlock(XLogRecPtr lsn, XLogRecord *record,
+				   int block_index,
+				   bool get_cleanup_lock, bool keep_buffer);
 
 extern void xlog_redo(XLogRecPtr lsn, XLogRecord *record);
 extern void xlog_desc(StringInfo buf, uint8 xl_info, char *rec);
@@ -288,10 +293,11 @@ extern void issue_xlog_fsync(int fd, uint32 log, uint32 seg);
 
 extern bool RecoveryInProgress(void);
 extern bool HotStandbyActive(void);
+extern bool HotStandbyActiveInReplay(void);
 extern bool XLogInsertAllowed(void);
 extern void GetXLogReceiptTime(TimestampTz *rtime, bool *fromStream);
-extern XLogRecPtr GetXLogReplayRecPtr(XLogRecPtr *restoreLastRecPtr);
-extern XLogRecPtr GetStandbyFlushRecPtr(void);
+extern XLogRecPtr GetXLogReplayRecPtr(TimeLineID *targetTLI);
+extern XLogRecPtr GetStandbyFlushRecPtr(TimeLineID *targetTLI);
 extern XLogRecPtr GetXLogInsertRecPtr(void);
 extern XLogRecPtr GetXLogWriteRecPtr(void);
 extern bool RecoveryIsPaused(void);

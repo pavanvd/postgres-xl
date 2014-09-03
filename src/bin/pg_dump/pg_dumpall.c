@@ -49,6 +49,7 @@ static void makeAlterConfigCommand(PGconn *conn, const char *arrayitem,
 static void dumpDatabases(PGconn *conn);
 static void dumpTimestamp(char *msg);
 static void doShellQuoting(PQExpBuffer buf, const char *str);
+static void doConnStrQuoting(PQExpBuffer buf, const char *str);
 
 static int	runPgDump(const char *dbname);
 static void buildShSecLabels(PGconn *conn, const char *catalog_name,
@@ -464,6 +465,9 @@ main(int argc, char *argv[])
 	 * database we're connected to at the moment is fine.
 	 */
 
+	/* Restore will need to write to the target cluster */
+	fprintf(OPF, "SET default_transaction_read_only = off;\n\n");
+
 	/* Replicate encoding and std_strings in output */
 	fprintf(OPF, "SET client_encoding = '%s';\n",
 			pg_encoding_to_char(encoding));
@@ -475,9 +479,9 @@ main(int argc, char *argv[])
 	if (!data_only)
 	{
 		/*
-		 * If asked to --clean, do that first.	We can avoid detailed
+		 * If asked to --clean, do that first.  We can avoid detailed
 		 * dependency analysis because databases never depend on each other,
-		 * and tablespaces never depend on each other.	Roles could have
+		 * and tablespaces never depend on each other.  Roles could have
 		 * grants to each other, but DROP ROLE will clean those up silently.
 		 */
 		if (output_clean)
@@ -564,9 +568,9 @@ help(void)
 
 	printf(_("\nGeneral options:\n"));
 	printf(_("  -f, --file=FILENAME          output file name\n"));
+	printf(_("  -V, --version                output version information, then exit\n"));
 	printf(_("  --lock-wait-timeout=TIMEOUT  fail after waiting TIMEOUT for a table lock\n"));
-	printf(_("  --help                       show this help, then exit\n"));
-	printf(_("  --version                    output version information, then exit\n"));
+	printf(_("  -?, --help                   show this help, then exit\n"));
 	printf(_("\nOptions controlling the output content:\n"));
 	printf(_("  -a, --data-only              dump only the data, not the schema\n"));
 	printf(_("  -c, --clean                  clean (drop) databases before recreating\n"));
@@ -1198,7 +1202,7 @@ dumpCreateDB(PGconn *conn)
 	 * commands for just those databases with values different from defaults.
 	 *
 	 * We consider template0's encoding and locale (or, pre-7.1, template1's)
-	 * to define the installation default.	Pre-8.4 installations do not have
+	 * to define the installation default.  Pre-8.4 installations do not have
 	 * per-database locale settings; for them, every database must necessarily
 	 * be using the installation default, so there's no need to do anything
 	 * (which is good, since in very old versions there is no good way to find
@@ -1615,6 +1619,17 @@ dumpDatabases(PGconn *conn)
 
 		fprintf(OPF, "\\connect %s\n\n", fmtId(dbname));
 
+		/*
+		 * Restore will need to write to the target cluster.  This connection
+		 * setting is emitted for pg_dumpall rather than in the code also used
+		 * by pg_dump, so that a cluster with databases or users which have
+		 * this flag turned on can still be replicated through pg_dumpall
+		 * without editing the file or stream.  With pg_dump there are many
+		 * other ways to allow the file to be used, and leaving it out allows
+		 * users to protect databases from being accidental restore targets.
+		 */
+		fprintf(OPF, "SET default_transaction_read_only = off;\n\n");
+
 		if (filename)
 			fclose(OPF);
 
@@ -1649,6 +1664,7 @@ dumpDatabases(PGconn *conn)
 static int
 runPgDump(const char *dbname)
 {
+	PQExpBuffer connstr = createPQExpBuffer();
 	PQExpBuffer cmd = createPQExpBuffer();
 	int			ret;
 
@@ -1664,7 +1680,17 @@ runPgDump(const char *dbname)
 	else
 		appendPQExpBuffer(cmd, " -Fp ");
 
-	doShellQuoting(cmd, dbname);
+	/*
+	 * Construct a connection string from the database name, like
+	 * dbname='<database name>'. pg_dump would usually also accept the
+	 * database name as is, but if it contains any = characters, it would
+	 * incorrectly treat it as a connection string.
+	 */
+	appendPQExpBuffer(connstr, "dbname='");
+	doConnStrQuoting(connstr, dbname);
+	appendPQExpBuffer(connstr, "'");
+
+	doShellQuoting(cmd, connstr->data);
 
 	appendPQExpBuffer(cmd, "%s", SYSTEMQUOTE);
 
@@ -1677,6 +1703,7 @@ runPgDump(const char *dbname)
 	ret = system(cmd->data);
 
 	destroyPQExpBuffer(cmd);
+	destroyPQExpBuffer(connstr);
 
 	return ret;
 }
@@ -1915,6 +1942,25 @@ dumpTimestamp(char *msg)
 		fprintf(OPF, "-- %s %s\n\n", msg, buf);
 }
 
+
+/*
+ * Append the given string to the buffer, with suitable quoting for passing
+ * the string as a value, in a keyword/pair value in a libpq connection
+ * string
+ */
+static void
+doConnStrQuoting(PQExpBuffer buf, const char *str)
+{
+	while (*str)
+	{
+		/* ' and \ must be escaped by to \' and \\ */
+		if (*str == '\'' || *str == '\\')
+			appendPQExpBufferChar(buf, '\\');
+
+		appendPQExpBufferChar(buf, *str);
+		str++;
+	}
+}
 
 /*
  * Append the given string to the shell command being built in the buffer,

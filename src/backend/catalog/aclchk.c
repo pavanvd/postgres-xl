@@ -306,7 +306,7 @@ restrict_and_check_grant(bool is_grant, AclMode avail_goptions, bool all_privs,
 
 	/*
 	 * Restrict the operation to what we can actually grant or revoke, and
-	 * issue a warning if appropriate.	(For REVOKE this isn't quite what the
+	 * issue a warning if appropriate.  (For REVOKE this isn't quite what the
 	 * spec says to do: the spec seems to want a warning only if no privilege
 	 * bits actually change in the ACL. In practice that behavior seems much
 	 * too noisy, as well as inconsistent with the GRANT case.)
@@ -1030,27 +1030,26 @@ SetDefaultACLsInSchemas(InternalDefaultACL *iacls, List *nspnames)
 	}
 	else
 	{
-		/* Look up the schema OIDs and do permissions checks */
+		/* Look up the schema OIDs and set permissions for each one */
 		ListCell   *nspcell;
 
 		foreach(nspcell, nspnames)
 		{
 			char	   *nspname = strVal(lfirst(nspcell));
-			AclResult	aclresult;
 
-			/*
-			 * Note that we must do the permissions check against the target
-			 * role not the calling user.  We require CREATE privileges, since
-			 * without CREATE you won't be able to do anything using the
-			 * default privs anyway.
-			 */
 			iacls->nspid = get_namespace_oid(nspname, false);
 
-			aclresult = pg_namespace_aclcheck(iacls->nspid, iacls->roleid,
-											  ACL_CREATE);
-			if (aclresult != ACLCHECK_OK)
-				aclcheck_error(aclresult, ACL_KIND_NAMESPACE,
-							   nspname);
+			/*
+			 * We used to insist that the target role have CREATE privileges
+			 * on the schema, since without that it wouldn't be able to create
+			 * an object for which these default privileges would apply.
+			 * However, this check proved to be more confusing than helpful,
+			 * and it also caused certain database states to not be
+			 * dumpable/restorable, since revoking CREATE doesn't cause
+			 * default privileges for the schema to go away.  So now, we just
+			 * allow the ALTER; if the user lacks CREATE he'll find out when
+			 * he tries to create an object.
+			 */
 
 			SetDefaultACL(iacls);
 		}
@@ -1085,7 +1084,7 @@ SetDefaultACL(InternalDefaultACL *iacls)
 
 	/*
 	 * The default for a global entry is the hard-wired default ACL for the
-	 * particular object type.	The default for non-global entries is an empty
+	 * particular object type.  The default for non-global entries is an empty
 	 * ACL.  This must be so because global entries replace the hard-wired
 	 * defaults, while others are added on.
 	 */
@@ -1340,10 +1339,13 @@ RemoveRoleFromObjectACL(Oid roleid, Oid classid, Oid objid)
 			case DEFACLOBJ_FUNCTION:
 				iacls.objtype = ACL_OBJECT_FUNCTION;
 				break;
+			case DEFACLOBJ_TYPE:
+				iacls.objtype = ACL_OBJECT_TYPE;
+				break;
 			default:
 				/* Shouldn't get here */
-				elog(ERROR, "unexpected default ACL type %d",
-					 pg_default_acl_tuple->defaclobjtype);
+				elog(ERROR, "unexpected default ACL type: %d",
+					 (int) pg_default_acl_tuple->defaclobjtype);
 				break;
 		}
 
@@ -1645,7 +1647,7 @@ ExecGrant_Attribute(InternalGrant *istmt, Oid relOid, const char *relname,
 	 * If the updated ACL is empty, we can set attacl to null, and maybe even
 	 * avoid an update of the pg_attribute row.  This is worth testing because
 	 * we'll come through here multiple times for any relation-level REVOKE,
-	 * even if there were never any column GRANTs.	Note we are assuming that
+	 * even if there were never any column GRANTs.  Note we are assuming that
 	 * the "default" ACL state for columns is empty.
 	 */
 	if (ACL_NUM(new_acl) > 0)
@@ -1770,7 +1772,7 @@ ExecGrant_Relation(InternalGrant *istmt)
 				{
 					/*
 					 * Mention the object name because the user needs to know
-					 * which operations succeeded.	This is required because
+					 * which operations succeeded.  This is required because
 					 * WARNING allows the command to continue.
 					 */
 					ereport(WARNING,
@@ -1799,7 +1801,7 @@ ExecGrant_Relation(InternalGrant *istmt)
 
 		/*
 		 * Set up array in which we'll accumulate any column privilege bits
-		 * that need modification.	The array is indexed such that entry [0]
+		 * that need modification.  The array is indexed such that entry [0]
 		 * corresponds to FirstLowInvalidHeapAttributeNumber.
 		 */
 		num_col_privileges = pg_class_tuple->relnatts - FirstLowInvalidHeapAttributeNumber + 1;
@@ -3389,6 +3391,19 @@ aclcheck_error_col(AclResult aclerr, AclObjectKind objectkind,
 }
 
 
+/*
+ * Special common handling for types: use element type instead of array type,
+ * and format nicely
+ */
+void
+aclcheck_error_type(AclResult aclerr, Oid typeOid)
+{
+	Oid element_type = get_element_type(typeOid);
+
+	aclcheck_error(aclerr, ACL_KIND_TYPE, format_type_be(element_type ? element_type : typeOid));
+}
+
+
 /* Check if given user has rolcatupdate privilege according to pg_authid */
 static bool
 has_rolcatupdate(Oid roleid)
@@ -3469,7 +3484,7 @@ pg_aclmask(AclObjectKind objkind, Oid table_oid, AttrNumber attnum, Oid roleid,
  *
  * Note: this considers only privileges granted specifically on the column.
  * It is caller's responsibility to take relation-level privileges into account
- * as appropriate.	(For the same reason, we have no special case for
+ * as appropriate.  (For the same reason, we have no special case for
  * superuser-ness here.)
  */
 AclMode
@@ -3582,12 +3597,12 @@ pg_class_aclmask(Oid table_oid, Oid roleid,
 
 	/*
 	 * Deny anyone permission to update a system catalog unless
-	 * pg_authid.rolcatupdate is set.	(This is to let superusers protect
+	 * pg_authid.rolcatupdate is set.   (This is to let superusers protect
 	 * themselves from themselves.)  Also allow it if allowSystemTableMods.
 	 *
 	 * As of 7.4 we have some updatable system views; those shouldn't be
 	 * protected in this way.  Assume the view rules can take care of
-	 * themselves.	ACL_USAGE is if we ever have system sequences.
+	 * themselves.  ACL_USAGE is if we ever have system sequences.
 	 */
 	if ((mask & (ACL_INSERT | ACL_UPDATE | ACL_DELETE | ACL_TRUNCATE | ACL_USAGE)) &&
 		IsSystemClass(classForm) &&
@@ -4290,7 +4305,7 @@ pg_attribute_aclcheck_all(Oid table_oid, Oid roleid, AclMode mode,
 	ReleaseSysCache(classTuple);
 
 	/*
-	 * Initialize result in case there are no non-dropped columns.	We want to
+	 * Initialize result in case there are no non-dropped columns.  We want to
 	 * report failure in such cases for either value of 'how'.
 	 */
 	result = ACLCHECK_NO_PRIV;

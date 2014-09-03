@@ -19,8 +19,11 @@
 #endif
 
 #include "postgres_fe.h"
-#include "libpq-fe.h"
 
+#include "libpq-fe.h"
+#include "pqexpbuffer.h"
+
+#include <fcntl.h>
 #include <locale.h>
 #include <signal.h>
 #include <time.h>
@@ -237,6 +240,9 @@ pg_malloc(size_t size)
 {
 	void	   *result;
 
+	/* Avoid unportable behavior of malloc(0) */
+	if (size == 0)
+		size = 1;
 	result = malloc(size);
 	if (!result)
 	{
@@ -311,50 +317,84 @@ get_pgpid(void)
 static char **
 readfile(const char *path)
 {
-	FILE	   *infile;
-	int			maxlength = 1,
-				linelen = 0;
-	int			nlines = 0;
+	int			fd;
+	int			nlines;
 	char	  **result;
 	char	   *buffer;
-	int			c;
+	char	   *linebegin;
+	int			i;
+	int			n;
+	int			len;
+	struct stat	statbuf;
 
-	if ((infile = fopen(path, "r")) == NULL)
+	/*
+	 * Slurp the file into memory.
+	 *
+	 * The file can change concurrently, so we read the whole file into memory
+	 * with a single read() call. That's not guaranteed to get an atomic
+	 * snapshot, but in practice, for a small file, it's close enough for the
+	 * current use.
+	 */
+	fd = open(path, O_RDONLY | PG_BINARY, 0);
+	if (fd < 0)
 		return NULL;
-
-	/* pass over the file twice - the first time to size the result */
-
-	while ((c = fgetc(infile)) != EOF)
+	if (fstat(fd, &statbuf) < 0)
 	{
-		linelen++;
-		if (c == '\n')
-		{
-			nlines++;
-			if (linelen > maxlength)
-				maxlength = linelen;
-			linelen = 0;
-		}
+		close(fd);
+		return NULL;
+	}
+	if (statbuf.st_size == 0)
+	{
+		/* empty file */
+		close(fd);
+		result = (char **) pg_malloc(sizeof(char *));
+		*result = NULL;
+		return result;
+	}
+	buffer = pg_malloc(statbuf.st_size + 1);
+
+	len = read(fd, buffer, statbuf.st_size + 1);
+	close(fd);
+	if (len != statbuf.st_size)
+	{
+		/* oops, the file size changed between fstat and read */
+		free(buffer);
+		return NULL;
 	}
 
-	/* handle last line without a terminating newline (yuck) */
-	if (linelen)
-		nlines++;
-	if (linelen > maxlength)
-		maxlength = linelen;
-
-	/* set up the result and the line buffer */
-	result = (char **) pg_malloc((nlines + 1) * sizeof(char *));
-	buffer = (char *) pg_malloc(maxlength + 1);
-
-	/* now reprocess the file and store the lines */
-	rewind(infile);
+	/*
+	 * Count newlines. We expect there to be a newline after each full line,
+	 * including one at the end of file. If there isn't a newline at the end,
+	 * any characters after the last newline will be ignored.
+	 */
 	nlines = 0;
-	while (fgets(buffer, maxlength + 1, infile) != NULL)
-		result[nlines++] = xstrdup(buffer);
+	for (i = 0; i < len; i++)
+	{
+		if (buffer[i] == '\n')
+			nlines++;
+	}
 
-	fclose(infile);
+	/* set up the result buffer */
+	result = (char **) pg_malloc((nlines + 1) * sizeof(char *));
+
+	/* now split the buffer into lines */
+	linebegin = buffer;
+	n = 0;
+	for (i = 0; i < len; i++)
+	{
+		if (buffer[i] == '\n')
+		{
+			int		slen = &buffer[i] - linebegin + 1;
+			char   *linebuf = pg_malloc(slen + 1);
+			memcpy(linebuf, linebegin, slen);
+			linebuf[slen] = '\0';
+			result[n++] = linebuf;
+			linebegin = &buffer[i + 1];
+		}
+	}
+	result[n] = NULL;
+
 	free(buffer);
-	result[nlines] = NULL;
 
 	return result;
 }
@@ -463,7 +503,7 @@ test_postmaster_connection(bool do_checkpoint)
 			 *		6	9.1+ server, shared memory not created
 			 *		7	9.1+ server, shared memory created
 			 *
-			 * This code does not support pre-9.1 servers.	On Unix machines
+			 * This code does not support pre-9.1 servers.  On Unix machines
 			 * we could consider extracting the port number from the shmem
 			 * key, but that (a) is not robust, and (b) doesn't help with
 			 * finding out the socket directory.  And it wouldn't work anyway
@@ -496,7 +536,7 @@ test_postmaster_connection(bool do_checkpoint)
 					time_t		pmstart;
 
 					/*
-					 * Make sanity checks.	If it's for a standalone backend
+					 * Make sanity checks.  If it's for a standalone backend
 					 * (negative PID), or the recorded start time is before
 					 * pg_ctl started, then either we are looking at the wrong
 					 * data directory, or this is a pre-existing pidfile that
@@ -610,7 +650,7 @@ test_postmaster_connection(bool do_checkpoint)
 
 		/*
 		 * If we've been able to identify the child postmaster's PID, check
-		 * the process is still alive.	This covers cases where the postmaster
+		 * the process is still alive.  This covers cases where the postmaster
 		 * successfully created the pidfile but then crashed without removing
 		 * it.
 		 */
@@ -1151,7 +1191,7 @@ postmaster_is_alive(pid_t pid)
 	 * postmaster we are after.
 	 *
 	 * Don't believe that our own PID or parent shell's PID is the postmaster,
-	 * either.	(Windows hasn't got getppid(), though.)
+	 * either.  (Windows hasn't got getppid(), though.)
 	 */
 	if (pid == getpid())
 		return false;
@@ -1242,16 +1282,13 @@ pgwin32_IsInstalled(SC_HANDLE hSCM)
 static char *
 pgwin32_CommandLine(bool registration)
 {
-	static char cmdLine[MAXPGPATH];
+	PQExpBuffer cmdLine = createPQExpBuffer();
+	char		cmdPath[MAXPGPATH];
 	int			ret;
-
-#ifdef __CYGWIN__
-	char		buf[MAXPGPATH];
-#endif
 
 	if (registration)
 	{
-		ret = find_my_exec(argv0, cmdLine);
+		ret = find_my_exec(argv0, cmdPath);
 		if (ret != 0)
 		{
 			write_stderr(_("%s: could not find own program executable\n"), progname);
@@ -1261,7 +1298,7 @@ pgwin32_CommandLine(bool registration)
 	else
 	{
 		ret = find_other_exec(argv0, "postgres", PG_BACKEND_VERSIONSTR,
-							  cmdLine);
+							  cmdPath);
 		if (ret != 0)
 		{
 			write_stderr(_("%s: could not find postgres program executable\n"), progname);
@@ -1271,54 +1308,57 @@ pgwin32_CommandLine(bool registration)
 
 #ifdef __CYGWIN__
 	/* need to convert to windows path */
+	{
+		char		buf[MAXPGPATH];
+
 #if CYGWIN_VERSION_DLL_MAJOR >= 1007
-	cygwin_conv_path(CCP_POSIX_TO_WIN_A, cmdLine, buf, sizeof(buf));
+		cygwin_conv_path(CCP_POSIX_TO_WIN_A, cmdPath, buf, sizeof(buf));
 #else
-	cygwin_conv_to_full_win32_path(cmdLine, buf);
+		cygwin_conv_to_full_win32_path(cmdPath, buf);
 #endif
-	strcpy(cmdLine, buf);
+		strcpy(cmdPath, buf);
+	}
 #endif
+
+	/* if path does not end in .exe, append it */
+	if (strlen(cmdPath) < 4 ||
+		pg_strcasecmp(cmdPath + strlen(cmdPath) - 4, ".exe") != 0)
+		snprintf(cmdPath + strlen(cmdPath), sizeof(cmdPath) - strlen(cmdPath),
+				 ".exe");
+
+	/* use backslashes in path to avoid problems with some third-party tools */
+	make_native_path(cmdPath);
+
+	/* be sure to double-quote the executable's name in the command */
+	appendPQExpBuffer(cmdLine, "\"%s\"", cmdPath);
+
+	/* append assorted switches to the command line, as needed */
 
 	if (registration)
-	{
-		if (pg_strcasecmp(cmdLine + strlen(cmdLine) - 4, ".exe") != 0)
-		{
-			/* If commandline does not end in .exe, append it */
-			strcat(cmdLine, ".exe");
-		}
-		strcat(cmdLine, " runservice -N \"");
-		strcat(cmdLine, register_servicename);
-		strcat(cmdLine, "\"");
-	}
+		appendPQExpBuffer(cmdLine, " runservice -N \"%s\"",
+						  register_servicename);
 
 	if (pg_config)
-	{
-		strcat(cmdLine, " -D \"");
-		strcat(cmdLine, pg_config);
-		strcat(cmdLine, "\"");
-	}
+		appendPQExpBuffer(cmdLine, " -D \"%s\"", pg_config);
 
 	if (registration && do_wait)
-		strcat(cmdLine, " -w");
+		appendPQExpBuffer(cmdLine, " -w");
 
 	if (registration && wait_seconds != DEFAULT_WAIT)
-		/* concatenate */
-		sprintf(cmdLine + strlen(cmdLine), " -t %d", wait_seconds);
+		appendPQExpBuffer(cmdLine, " -t %d", wait_seconds);
 
 	if (registration && silent_mode)
-		strcat(cmdLine, " -s");
+		appendPQExpBuffer(cmdLine, " -s");
 
 	if (post_opts)
 	{
-		strcat(cmdLine, " ");
 		if (registration)
-			strcat(cmdLine, " -o \"");
-		strcat(cmdLine, post_opts);
-		if (registration)
-			strcat(cmdLine, "\"");
+			appendPQExpBuffer(cmdLine, " -o \"%s\"", post_opts);
+		else
+			appendPQExpBuffer(cmdLine, " %s", post_opts);
 	}
 
-	return cmdLine;
+	return cmdLine->data;
 }
 
 static void
@@ -1749,7 +1789,7 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_ser
 	 */
 	return r;
 }
-#endif
+#endif   /* defined(WIN32) || defined(__CYGWIN__) */
 
 static void
 do_advice(void)
@@ -1789,9 +1829,10 @@ do_help(void)
 	printf(_("  -D, --pgdata=DATADIR   location of the database storage area\n"));
 	printf(_("  -s, --silent           only print errors, no informational messages\n"));
 	printf(_("  -t, --timeout=SECS     seconds to wait when using -w option\n"));
+	printf(_("  -V, --version          output version information, then exit\n"));
 	printf(_("  -w                     wait until operation completes\n"));
 	printf(_("  -W                     do not wait until operation completes\n"));
-	printf(_("  --help                 show this help, then exit\n"));
+	printf(_("  -?, --help             show this help, then exit\n"));
 	printf(_("  --version              output version information, then exit\n"));
 #ifdef PGXC
 #ifdef XCP
@@ -1960,14 +2001,16 @@ adjust_data_dir(void)
 	else
 		my_exec_path = xstrdup(exec_path);
 
-	snprintf(cmd, MAXPGPATH, SYSTEMQUOTE "\"%s\" %s%s -C data_directory" SYSTEMQUOTE,
-			 my_exec_path, pgdata_opt ? pgdata_opt : "", post_opts ?
-			 post_opts : "");
+	/* it's important for -C to be the first option, see main.c */
+	snprintf(cmd, MAXPGPATH, SYSTEMQUOTE "\"%s\" -C data_directory %s%s" SYSTEMQUOTE,
+			 my_exec_path,
+			 pgdata_opt ? pgdata_opt : "",
+			 post_opts ? post_opts : "");
 
 	fd = popen(cmd, "r");
 	if (fd == NULL || fgets(filename, sizeof(filename), fd) == NULL)
 	{
-		write_stderr(_("%s: could not determine the data directory using \"%s\"\n"), progname, cmd);
+		write_stderr(_("%s: could not determine the data directory using command \"%s\"\n"), progname, cmd);
 		exit(1);
 	}
 	pclose(fd);

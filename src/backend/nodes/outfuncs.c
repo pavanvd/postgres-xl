@@ -18,7 +18,7 @@
  * NOTES
  *	  Every node type that can appear in stored rules' parsetrees *must*
  *	  have an output function defined here (as well as an input function
- *	  in readfuncs.c).	For use in debugging, we also provide output
+ *	  in readfuncs.c).  For use in debugging, we also provide output
  *	  functions for nodes that appear in raw parsetrees, path, and plan trees.
  *	  These nodes however need not have input functions.
  *
@@ -64,8 +64,8 @@ set_portable_output(bool value)
 
 
 /*
- * Macros to simplify output of different kinds of fields.	Use these
- * wherever possible to reduce the chance for silly typos.	Note that these
+ * Macros to simplify output of different kinds of fields.  Use these
+ * wherever possible to reduce the chance for silly typos.  Note that these
  * hard-wire conventions about the names of the local variables in an Out
  * routine.
  */
@@ -2708,7 +2708,6 @@ _outPlannerGlobal(StringInfo str, const PlannerGlobal *node)
 	WRITE_NODE_TYPE("PLANNERGLOBAL");
 
 	/* NB: this isn't a complete set of fields */
-	WRITE_NODE_FIELD(paramlist);
 	WRITE_NODE_FIELD(subplans);
 	WRITE_BITMAPSET_FIELD(rewindPlanIDs);
 	WRITE_NODE_FIELD(finalrtable);
@@ -2716,6 +2715,7 @@ _outPlannerGlobal(StringInfo str, const PlannerGlobal *node)
 	WRITE_NODE_FIELD(resultRelations);
 	WRITE_NODE_FIELD(relationOids);
 	WRITE_NODE_FIELD(invalItems);
+	WRITE_INT_FIELD(nParamExec);
 	WRITE_UINT_FIELD(lastPHId);
 	WRITE_UINT_FIELD(lastRowMarkId);
 	WRITE_BOOL_FIELD(transientPlan);
@@ -2730,7 +2730,9 @@ _outPlannerInfo(StringInfo str, const PlannerInfo *node)
 	WRITE_NODE_FIELD(parse);
 	WRITE_NODE_FIELD(glob);
 	WRITE_UINT_FIELD(query_level);
+	WRITE_NODE_FIELD(plan_params);
 	WRITE_BITMAPSET_FIELD(all_baserels);
+	WRITE_BITMAPSET_FIELD(nullable_baserels);
 	WRITE_NODE_FIELD(join_rel_list);
 	WRITE_INT_FIELD(join_cur_level);
 	WRITE_NODE_FIELD(init_plans);
@@ -2861,6 +2863,7 @@ _outEquivalenceMember(StringInfo str, const EquivalenceMember *node)
 
 	WRITE_NODE_FIELD(em_expr);
 	WRITE_BITMAPSET_FIELD(em_relids);
+	WRITE_BITMAPSET_FIELD(em_nullable_relids);
 	WRITE_BOOL_FIELD(em_is_const);
 	WRITE_BOOL_FIELD(em_is_child);
 	WRITE_OID_FIELD(em_datatype);
@@ -2994,7 +2997,7 @@ _outPlannerParamItem(StringInfo str, const PlannerParamItem *node)
 	WRITE_NODE_TYPE("PLANNERPARAMITEM");
 
 	WRITE_NODE_FIELD(item);
-	WRITE_UINT_FIELD(abslevel);
+	WRITE_INT_FIELD(paramId);
 }
 
 /*****************************************************************************
@@ -3052,6 +3055,7 @@ _outIndexStmt(StringInfo str, const IndexStmt *node)
 	WRITE_NODE_FIELD(options);
 	WRITE_NODE_FIELD(whereClause);
 	WRITE_NODE_FIELD(excludeOpNames);
+	WRITE_STRING_FIELD(idxcomment);
 	WRITE_OID_FIELD(indexOid);
 	WRITE_OID_FIELD(oldNode);
 	WRITE_BOOL_FIELD(unique);
@@ -3738,6 +3742,7 @@ _outConstraint(StringInfo str, const Constraint *node)
 			WRITE_CHAR_FIELD(fk_upd_action);
 			WRITE_CHAR_FIELD(fk_del_action);
 			WRITE_NODE_FIELD(old_conpfeqop);
+			WRITE_OID_FIELD(old_pktable_oid);
 			WRITE_BOOL_FIELD(skip_validation);
 			WRITE_BOOL_FIELD(initially_valid);
 			break;

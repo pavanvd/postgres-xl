@@ -38,6 +38,7 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include "access/transam.h"
 #include "access/xlog_internal.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
@@ -52,10 +53,8 @@
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
 
-/* Global variable to indicate if this process is a walreceiver process */
-bool		am_walreceiver;
 
-/* GUC variable */
+/* GUC variables */
 int			wal_receiver_status_interval;
 bool		hot_standby_feedback;
 
@@ -68,10 +67,12 @@ walrcv_disconnect_type walrcv_disconnect = NULL;
 #define NAPTIME_PER_CYCLE 100	/* max sleep time between cycles (100ms) */
 
 /*
- * These variables are used similarly to openLogFile/Id/Seg/Off,
- * but for walreceiver to write the XLOG.
+ * These variables are used similarly to openLogFile/SegNo/Off,
+ * but for walreceiver to write the XLOG. recvFileTLI is the TimeLineID
+ * corresponding the filename of recvFile.
  */
 static int	recvFile = -1;
+static TimeLineID	recvFileTLI = 0;
 static uint32 recvId = 0;
 static uint32 recvSeg = 0;
 static uint32 recvOff = 0;
@@ -123,7 +124,7 @@ static void XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len);
 static void XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr);
 static void XLogWalRcvFlush(bool dying);
 static void XLogWalRcvSendReply(void);
-static void XLogWalRcvSendHSFeedback(void);
+static void XLogWalRcvSendHSFeedback(bool immed);
 static void ProcessWalSndrMessage(XLogRecPtr walEnd, TimestampTz sendTime);
 
 /* Signal handlers */
@@ -175,8 +176,6 @@ WalReceiverMain(void)
 	/* use volatile pointer to prevent code rearrangement */
 	volatile WalRcvData *walrcv = WalRcv;
 
-	am_walreceiver = true;
-
 	/*
 	 * WalRcv should be set up already (if we are a backend, we inherit this
 	 * by fork() or EXEC_BACKEND mechanism from the postmaster).
@@ -221,7 +220,7 @@ WalReceiverMain(void)
 	startpoint = walrcv->receiveStart;
 
 	/* Initialise to a sanish value */
-	walrcv->lastMsgSendTime = walrcv->lastMsgReceiptTime = GetCurrentTimestamp();
+	walrcv->lastMsgSendTime = walrcv->lastMsgReceiptTime = walrcv->latestWalEndTime = GetCurrentTimestamp();
 
 	SpinLockRelease(&walrcv->mutex);
 
@@ -230,7 +229,7 @@ WalReceiverMain(void)
 
 	/*
 	 * If possible, make this process a group leader, so that the postmaster
-	 * can signal any child processes too.	(walreceiver probably never has
+	 * can signal any child processes too.  (walreceiver probably never has
 	 * any child processes, but for consistency we make all postmaster child
 	 * processes do this.)
 	 */
@@ -280,6 +279,11 @@ WalReceiverMain(void)
 	walrcv_connect(conninfo, startpoint);
 	DisableWalRcvImmediateExit();
 
+	/* Initialize LogstreamResult, reply_message and feedback_message */
+	LogstreamResult.Write = LogstreamResult.Flush = GetXLogReplayRecPtr(NULL);
+	MemSet(&reply_message, 0, sizeof(reply_message));
+	MemSet(&feedback_message, 0, sizeof(feedback_message));
+
 	/* Loop until end-of-streaming or error */
 	for (;;)
 	{
@@ -309,6 +313,7 @@ WalReceiverMain(void)
 		{
 			got_SIGHUP = false;
 			ProcessConfigFile(PGC_SIGHUP);
+			XLogWalRcvSendHSFeedback(true);
 		}
 
 		/* Wait a while for data to arrive */
@@ -337,7 +342,7 @@ WalReceiverMain(void)
 			 * master anyway, to report any progress in applying WAL.
 			 */
 			XLogWalRcvSendReply();
-			XLogWalRcvSendHSFeedback();
+			XLogWalRcvSendHSFeedback(false);
 		}
 	}
 }
@@ -410,7 +415,7 @@ WalRcvQuickDieHandler(SIGNAL_ARGS)
 	on_exit_reset();
 
 	/*
-	 * Note we do exit(2) not exit(0).	This is to force the postmaster into a
+	 * Note we do exit(2) not exit(0).  This is to force the postmaster into a
 	 * system reset cycle if some idiot DBA sends a manual SIGQUIT to a random
 	 * backend.  This is necessary precisely because we don't clean up our
 	 * shared memory state.  (The "dead man switch" mechanism in pmsignal.c
@@ -491,6 +496,8 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 			 */
 			if (recvFile >= 0)
 			{
+				char		xlogfname[MAXFNAMELEN];
+
 				XLogWalRcvFlush(false);
 
 				/*
@@ -503,6 +510,13 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 							(errcode_for_file_access(),
 						errmsg("could not close log file %u, segment %u: %m",
 							   recvId, recvSeg)));
+
+				/*
+				 * Create .done file forcibly to prevent the restored segment from
+				 * being archived again later.
+				 */
+				XLogFileName(xlogfname, recvFileTLI, recvId, recvSeg);
+				XLogArchiveForceDone(xlogfname);
 			}
 			recvFile = -1;
 
@@ -510,6 +524,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 			XLByteToSeg(recptr, recvId, recvSeg);
 			use_existent = true;
 			recvFile = XLogFileInit(recvId, recvSeg, &use_existent, true);
+			recvFileTLI = ThisTimeLineID;
 			recvOff = 0;
 		}
 
@@ -608,7 +623,7 @@ XLogWalRcvFlush(bool dying)
 		if (!dying)
 		{
 			XLogWalRcvSendReply();
-			XLogWalRcvSendHSFeedback();
+			XLogWalRcvSendHSFeedback(false);
 		}
 	}
 }
@@ -668,45 +683,62 @@ XLogWalRcvSendReply(void)
 /*
  * Send hot standby feedback message to primary, plus the current time,
  * in case they don't have a watch.
+ *
+ * If the user disables feedback, send one final message to tell sender
+ * to forget about the xmin on this standby.
  */
 static void
-XLogWalRcvSendHSFeedback(void)
+XLogWalRcvSendHSFeedback(bool immed)
 {
 	char		buf[sizeof(StandbyHSFeedbackMessage) + 1];
 	TimestampTz now;
 	TransactionId nextXid;
 	uint32		nextEpoch;
 	TransactionId xmin;
+	static TimestampTz sendTime = 0;
+	static bool master_has_standby_xmin = false;
 
 	/*
 	 * If the user doesn't want status to be reported to the master, be sure
 	 * to exit before doing anything at all.
 	 */
-	if (wal_receiver_status_interval <= 0 || !hot_standby_feedback)
+	if ((wal_receiver_status_interval <= 0 || !hot_standby_feedback) &&
+		!master_has_standby_xmin)
 		return;
 
 	/* Get current timestamp. */
 	now = GetCurrentTimestamp();
 
-	/*
-	 * Send feedback at most once per wal_receiver_status_interval.
-	 */
-	if (!TimestampDifferenceExceeds(feedback_message.sendTime, now,
+	if (!immed)
+	{
+		/*
+		 * Send feedback at most once per wal_receiver_status_interval.
+		 */
+		if (!TimestampDifferenceExceeds(sendTime, now,
 									wal_receiver_status_interval * 1000))
-		return;
+			return;
+	}
+
+	sendTime = now;
 
 	/*
 	 * If Hot Standby is not yet active there is nothing to send. Check this
 	 * after the interval has expired to reduce number of calls.
 	 */
 	if (!HotStandbyActive())
+	{
+		Assert(!master_has_standby_xmin);
 		return;
+	}
 
 	/*
 	 * Make the expensive call to get the oldest xmin once we are certain
 	 * everything else has been checked.
 	 */
-	xmin = GetOldestXmin(true, false);
+	if (hot_standby_feedback)
+		xmin = GetOldestXmin(true, false);
+	else
+		xmin = InvalidTransactionId;
 
 	/*
 	 * Get epoch and adjust if nextXid and oldestXmin are different sides of
@@ -731,6 +763,10 @@ XLogWalRcvSendHSFeedback(void)
 	buf[0] = 'h';
 	memcpy(&buf[1], &feedback_message, sizeof(StandbyHSFeedbackMessage));
 	walrcv_send(buf, sizeof(StandbyHSFeedbackMessage) + 1);
+	if (TransactionIdIsValid(xmin))
+		master_has_standby_xmin = true;
+	else
+		master_has_standby_xmin = false;
 }
 
 /*
@@ -746,14 +782,27 @@ ProcessWalSndrMessage(XLogRecPtr walEnd, TimestampTz sendTime)
 
 	/* Update shared-memory status */
 	SpinLockAcquire(&walrcv->mutex);
+	if (XLByteLT(walrcv->latestWalEnd, walEnd))
+		walrcv->latestWalEndTime = sendTime;
+	walrcv->latestWalEnd = walEnd;
 	walrcv->lastMsgSendTime = sendTime;
 	walrcv->lastMsgReceiptTime = lastMsgReceiptTime;
 	SpinLockRelease(&walrcv->mutex);
 
 	if (log_min_messages <= DEBUG2)
+	{
+		char	   *sendtime;
+		char	   *receipttime;
+
+		/* Copy because timestamptz_to_str returns a static buffer */
+		sendtime = pstrdup(timestamptz_to_str(sendTime));
+		receipttime = pstrdup(timestamptz_to_str(lastMsgReceiptTime));
 		elog(DEBUG2, "sendtime %s receipttime %s replication apply delay %d ms transfer latency %d ms",
-			 timestamptz_to_str(sendTime),
-			 timestamptz_to_str(lastMsgReceiptTime),
+			 sendtime,
+			 receipttime,
 			 GetReplicationApplyDelay(),
 			 GetReplicationTransferLatency());
+		pfree(sendtime);
+		pfree(receipttime);
+	}
 }

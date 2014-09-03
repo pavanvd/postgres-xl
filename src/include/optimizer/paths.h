@@ -106,6 +106,7 @@ extern Expr *canonicalize_ec_expression(Expr *expr,
 extern void reconsider_outer_join_clauses(PlannerInfo *root);
 extern EquivalenceClass *get_eclass_for_sort_expr(PlannerInfo *root,
 						 Expr *expr,
+						 Relids nullable_relids,
 						 List *opfamilies,
 						 Oid opcintype,
 						 Oid collation,
@@ -124,7 +125,8 @@ extern void add_child_rel_equivalences(PlannerInfo *root,
 						   RelOptInfo *child_rel);
 extern void mutate_eclass_expressions(PlannerInfo *root,
 						  Node *(*mutator) (),
-						  void *context);
+						  void *context,
+						  bool include_child_exprs);
 extern List *generate_implied_equalities_for_indexcol(PlannerInfo *root,
 										 IndexOptInfo *index,
 										 int indexcol);

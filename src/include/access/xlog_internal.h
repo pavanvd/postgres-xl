@@ -50,7 +50,7 @@ typedef struct BkpBlock
 
 /*
  * When there is not enough space on current page for whole record, we
- * continue on the next page with continuation record.	(However, the
+ * continue on the next page with continuation record.  (However, the
  * XLogRecord header will never be split across pages; if there's less than
  * SizeOfXLogRecord space left at the end of a page, we just waste it.)
  *
@@ -170,7 +170,7 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
  * Compute ID and segment from an XLogRecPtr.
  *
  * For XLByteToSeg, do the computation at face value.  For XLByteToPrevSeg,
- * a boundary byte is taken to be in the previous segment.	This is suitable
+ * a boundary byte is taken to be in the previous segment.  This is suitable
  * for deciding which segment to write given a pointer to a record end,
  * for example.  (We can assume xrecoff is not zero, since no valid recptr
  * can have that.)
@@ -262,6 +262,11 @@ extern const RmgrData RmgrTable[];
  */
 extern pg_time_t GetLastSegSwitchTime(void);
 extern XLogRecPtr RequestXLogSwitch(void);
+
+/*
+ * Exported to support xlog archive status setting from WALReceiver
+ */
+extern void XLogArchiveForceDone(const char *xlog);
 
 /*
  * These aren't in xlog.h because I'd rather not include fmgr.h there.

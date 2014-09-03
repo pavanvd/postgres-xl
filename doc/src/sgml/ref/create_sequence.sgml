@@ -24,7 +24,7 @@ PostgreSQL documentation
 CREATE [ TEMPORARY | TEMP ] SEQUENCE <replaceable class="parameter">name</replaceable> [ INCREMENT [ BY ] <replaceable class="parameter">increment</replaceable> ]
     [ MINVALUE <replaceable class="parameter">minvalue</replaceable> | NO MINVALUE ] [ MAXVALUE <replaceable class="parameter">maxvalue</replaceable> | NO MAXVALUE ]
     [ START [ WITH ] <replaceable class="parameter">start</replaceable> ] [ CACHE <replaceable class="parameter">cache</replaceable> ] [ [ NO ] CYCLE ]
-    [ OWNED BY { <replaceable class="parameter">table</replaceable>.<replaceable class="parameter">column</replaceable> | NONE } ]
+    [ OWNED BY { <replaceable class="parameter">table_name</replaceable>.<replaceable class="parameter">column_name</replaceable> | NONE } ]
 </synopsis>
  </refsynopsisdiv>
 
@@ -197,7 +197,7 @@ SELECT * FROM <replaceable>name</replaceable>;
    </varlistentry>
 
    <varlistentry>
-    <term><literal>OWNED BY</literal> <replaceable class="parameter">table</replaceable>.<replaceable class="parameter">column</replaceable></term>
+    <term><literal>OWNED BY</literal> <replaceable class="parameter">table_name</replaceable>.<replaceable class="parameter">column_name</replaceable></term>
     <term><literal>OWNED BY NONE</literal></term>
     <listitem>
      <para>
@@ -224,10 +224,7 @@ SELECT * FROM <replaceable>name</replaceable>;
   <para>
    Sequences are based on <type>bigint</> arithmetic, so the range
    cannot exceed the range of an eight-byte integer
-   (-9223372036854775808 to 9223372036854775807).  On some older
-   platforms, there might be no compiler support for eight-byte
-   integers, in which case sequences use regular <type>integer</>
-   arithmetic (range -2147483648 to +2147483647).
+   (-9223372036854775808 to 9223372036854775807).
   </para>
 
   <para>
