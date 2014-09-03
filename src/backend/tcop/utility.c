@@ -1457,28 +1457,6 @@ standard_ProcessUtility(Node *parsetree,
 				Oid			relid;
 				LOCKMODE	lockmode;
 
-#ifdef PGXC
-				Oid relid;
-				bool is_temp = false;
-				RemoteQueryExecType exec_type = EXEC_ON_ALL_NODES;
-
-				if (stmt->concurrent)
-				{
-					ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("PGXC does not support concurrent INDEX yet"),
-						 errdetail("The feature is not currently supported")));
-				}
-
-				/* INDEX on a temporary table cannot use 2PC at commit */
-				relid = RangeVarGetRelid(stmt->relation, NoLock, true);
-
-				if (OidIsValid(relid))
-					exec_type = ExecUtilityFindNodes(OBJECT_INDEX, relid, &is_temp);
-				else
-					exec_type = EXEC_ON_NONE;
-#endif
-
 				if (stmt->concurrent)
 					PreventTransactionChain(isTopLevel,
 											"CREATE INDEX CONCURRENTLY");
@@ -1499,6 +1477,25 @@ standard_ProcessUtility(Node *parsetree,
 											 false, false,
 											 RangeVarCallbackOwnsRelation,
 											 NULL);
+
+#ifdef PGXC
+				bool is_temp = false;
+				RemoteQueryExecType exec_type = EXEC_ON_ALL_NODES;
+
+				if (stmt->concurrent)
+				{
+					ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("PGXC does not support concurrent INDEX yet"),
+						 errdetail("The feature is not currently supported")));
+				}
+
+				if (OidIsValid(relid))
+					exec_type = ExecUtilityFindNodes(OBJECT_INDEX, relid, &is_temp);
+				else
+					exec_type = EXEC_ON_NONE;
+#endif
+
 
 				/* Run parse analysis ... */
 				stmt = transformIndexStmt(relid, stmt, queryString);

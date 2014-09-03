@@ -2837,7 +2837,7 @@ make_viewdef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 void
 deparse_query(Query *query, StringInfo buf, List *parentnamespace)
 {
-	get_query_def(query, buf, parentnamespace, NULL, 0, 0);
+	get_query_def(query, buf, parentnamespace, NULL, 0, WRAP_COLUMN_DEFAULT, 0);
 }
 
 /* code borrowed from get_insert_query_def */
@@ -2861,7 +2861,7 @@ get_query_def_from_valuesList(Query *query, StringInfo buf)
 	 * consistent results.	Note we assume it's OK to scribble on the passed
 	 * querytree!
 	 */
-	AcquireRewriteLocks(query, false);
+	AcquireRewriteLocks(query, false, false);
 
 	context.buf = buf;
 	context.namespaces = NIL;
@@ -2970,7 +2970,7 @@ get_query_def_from_valuesList(Query *query, StringInfo buf)
 	{
 		/* Add the SELECT */
 		get_query_def(select_rte->subquery, buf, NIL, NULL,
-					  context.prettyFlags, context.indentLevel);
+					  context.prettyFlags, context.wrapColumn, context.indentLevel);
 	}
 	else if (values_rte)
 	{
