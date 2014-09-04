@@ -457,7 +457,6 @@ GetPoolManagerHandle(void)
 }
 
 
-#ifndef XCP
 /*
  * XXX May create on_proc_exit callback instead
  */
@@ -467,7 +466,6 @@ PoolManagerCloseHandle(PoolHandle *handle)
 	close(Socket(handle->port));
 	free(handle);
 }
-#endif
 
 /*
  * Create agent
