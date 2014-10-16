@@ -1867,7 +1867,6 @@ int
 pgxc_node_send_gxid(PGXCNodeHandle *handle, GlobalTransactionId gxid)
 {
 	int			msglen = 8;
-	int			i32;
 
 	/* Invalid connection state, return error */
 	if (handle->state != DN_CONNECTION_STATE_IDLE)
@@ -1884,9 +1883,9 @@ pgxc_node_send_gxid(PGXCNodeHandle *handle, GlobalTransactionId gxid)
 	msglen = htonl(msglen);
 	memcpy(handle->outBuffer + handle->outEnd, &msglen, 4);
 	handle->outEnd += 4;
-	i32 = htonl(gxid);
-	memcpy(handle->outBuffer + handle->outEnd, &i32, 4);
-	handle->outEnd += 4;
+	memcpy(handle->outBuffer + handle->outEnd, &gxid, sizeof
+			(TransactionId));
+	handle->outEnd += sizeof (TransactionId);
 
 	return 0;
 }
@@ -1957,17 +1956,14 @@ pgxc_node_send_snapshot(PGXCNodeHandle *handle, Snapshot snapshot)
 	memcpy(handle->outBuffer + handle->outEnd, &msglen, 4);
 	handle->outEnd += 4;
 
-	nval = htonl(snapshot->xmin);
-	memcpy(handle->outBuffer + handle->outEnd, &nval, 4);
-	handle->outEnd += 4;
+	memcpy(handle->outBuffer + handle->outEnd, &snapshot->xmin, sizeof (TransactionId));
+	handle->outEnd += sizeof (TransactionId);
 
-	nval = htonl(snapshot->xmax);
-	memcpy(handle->outBuffer + handle->outEnd, &nval, 4);
-	handle->outEnd += 4;
+	memcpy(handle->outBuffer + handle->outEnd, &snapshot->xmax, sizeof (TransactionId));
+	handle->outEnd += sizeof (TransactionId);
 
-	nval = htonl(RecentGlobalXmin);
-	memcpy(handle->outBuffer + handle->outEnd, &nval, 4);
-	handle->outEnd += 4;
+	memcpy(handle->outBuffer + handle->outEnd, &RecentGlobalXmin, sizeof (TransactionId));
+	handle->outEnd += sizeof (TransactionId);
 
 	nval = htonl(snapshot->xcnt);
 	memcpy(handle->outBuffer + handle->outEnd, &nval, 4);
@@ -1975,9 +1971,9 @@ pgxc_node_send_snapshot(PGXCNodeHandle *handle, Snapshot snapshot)
 
 	for (i = 0; i < snapshot->xcnt; i++)
 	{
-		nval = htonl(snapshot->xip[i]);
-		memcpy(handle->outBuffer + handle->outEnd, &nval, 4);
-		handle->outEnd += 4;
+		memcpy(handle->outBuffer + handle->outEnd, &snapshot->xip[i], sizeof
+				(TransactionId));
+		handle->outEnd += sizeof (TransactionId);
 	}
 
 	return 0;
