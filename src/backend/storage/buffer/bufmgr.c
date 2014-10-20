@@ -2052,12 +2052,8 @@ DropRelFileNodeBuffers(RelFileNodeBackend rnode, ForkNumber forkNum,
 {
 	int			i;
 
-#ifdef XCP
-	if (!OidIsValid(MyCoordId) && rnode.backend != InvalidBackendId)
-#else
 	/* If it's a local relation, it's localbuf.c's problem. */
 	if (RelFileNodeBackendIsTemp(rnode))
-#endif
 	{
 		if (rnode.backend == MyBackendId)
 			DropRelFileNodeLocalBuffers(rnode.node, forkNum, firstDelBlock);
