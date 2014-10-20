@@ -1182,7 +1182,9 @@ GTMProxy_ThreadMain(void *argp)
 		{
 			for (ii = 0; ii < thrinfo->thr_conn_count; ii++)
 			{
-				GTMProxy_ConnectionInfo *conninfo = thrinfo->thr_all_conns[ii];
+				int connIndx = thrinfo->thr_conn_map[ii];
+				GTMProxy_ConnectionInfo *conninfo = thrinfo->thr_all_conns[connIndx];
+				
 				/*
 				 * Now clean up disconnected connections
 				 */
@@ -1286,7 +1288,8 @@ GTMProxy_ThreadMain(void *argp)
 				 */
 				for (ii = 0; ii < thrinfo->thr_conn_count; ii++)
 				{
-					GTMProxy_ConnectionInfo *conninfo = thrinfo->thr_all_conns[ii];
+					int connIndx = thrinfo->thr_conn_map[ii];
+					GTMProxy_ConnectionInfo *conninfo = thrinfo->thr_all_conns[connIndx];
 
 					/*
 					 * Detect if the connection has been dropped to avoid
@@ -1387,7 +1390,8 @@ setjmp_again:
 		 */
 		for (ii = 0; ii < thrinfo->thr_conn_count; ii++)
 		{
-			GTMProxy_ConnectionInfo *conninfo = thrinfo->thr_all_conns[ii];
+			int connIndx = thrinfo->thr_conn_map[ii];
+			GTMProxy_ConnectionInfo *conninfo = thrinfo->thr_all_conns[connIndx];
 			thrinfo->thr_conn = conninfo;
 
 			if (thrinfo->thr_poll_fds[ii].revents & POLLHUP)
@@ -1402,7 +1406,7 @@ setjmp_again:
 				continue;
 			}
 
-			if ((thrinfo->thr_any_backup[ii]) ||
+			if ((thrinfo->thr_any_backup[connIndx]) ||
 				(thrinfo->thr_poll_fds[ii].revents & POLLIN))
 			{
 				/*
@@ -1521,7 +1525,8 @@ setjmp_again:
 		 */
 		for (ii = 0; ii < thrinfo->thr_conn_count; ii++)
 		{
-			GTMProxy_ConnectionInfo *conninfo = thrinfo->thr_all_conns[ii];
+			int connIndx = thrinfo->thr_conn_map[ii];
+			GTMProxy_ConnectionInfo *conninfo = thrinfo->thr_all_conns[connIndx];
 			if (conninfo->con_disconnected)
 			{
 				GTMProxy_ThreadRemoveConnection(thrinfo, conninfo);
@@ -2587,6 +2592,7 @@ GTMProxy_HandshakeConnection(GTMProxy_ConnectionInfo *conninfo)
 	 * expects that in the current protocol
 	 */
 	pq_beginmessage(&buf, 'R');
+	pq_sendint(&buf, 0, 4);
 	pq_endmessage(conninfo->con_port, &buf);
 	pq_flush(conninfo->con_port);
 
@@ -3368,6 +3374,7 @@ workerThreadReconnectToGTM(void)
 {
 	char gtm_connect_string[1024];
 	MemoryContext   oldContext;
+	uint32 saveMyClientId = 0;
 
 	/*
 	 * First of all, we should acquire reconnect control lock in READ mode
@@ -3380,10 +3387,21 @@ workerThreadReconnectToGTM(void)
 	/* Disconnect the current connection and re-connect to the new GTM */
 	oldContext = MemoryContextSwitchTo(TopMostMemoryContext);
 
+	/*
+	 * Before cleaning the old connection, remember the client identifier
+	 * issued to us by the old GTM master. We send that identifier back to the
+	 * new master so that it can re-establish our association with any
+	 * transactions currently open by us
+	 */
 	if (GetMyThreadInfo->thr_gtm_conn)
+	{
+		saveMyClientId = GetMyThreadInfo->thr_gtm_conn->my_id;
 		GTMPQfinish(GetMyThreadInfo->thr_gtm_conn);
-	sprintf(gtm_connect_string, "host=%s port=%d node_name=%s remote_type=%d",
-			GTMServerHost, GTMServerPortNumber, GTMProxyNodeName, GTM_NODE_GTM_PROXY);
+	}
+
+	sprintf(gtm_connect_string, "host=%s port=%d node_name=%s remote_type=%d client_id=%u",
+			GTMServerHost, GTMServerPortNumber, GTMProxyNodeName,
+			GTM_NODE_GTM_PROXY, saveMyClientId);
 	elog(DEBUG1, "Worker thread connecting to %s", gtm_connect_string);
 	GetMyThreadInfo->thr_gtm_conn = PQconnectGTM(gtm_connect_string);
 
