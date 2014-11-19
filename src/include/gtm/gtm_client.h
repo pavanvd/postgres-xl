@@ -299,8 +299,9 @@ int set_val(GTM_Conn *conn, GTM_SequenceKey key, char *coord_name,
 int bkup_set_val(GTM_Conn *conn, GTM_SequenceKey key, char *coord_name,
 			 int coord_procid, GTM_Sequence nextval, bool iscalled);
 #else
-int get_next(GTM_Conn *conn, GTM_SequenceKey key, GTM_Sequence *result);
-int bkup_get_next(GTM_Conn *conn, GTM_SequenceKey key, GTM_Sequence *result);
+GTM_Sequence get_current(GTM_Conn *conn, GTM_SequenceKey key);
+GTM_Sequence get_next(GTM_Conn *conn, GTM_SequenceKey key);
+GTM_Sequence bkup_get_next(GTM_Conn *conn, GTM_SequenceKey key);
 int set_val(GTM_Conn *conn, GTM_SequenceKey key, GTM_Sequence nextval, bool is_called);
 int bkup_set_val(GTM_Conn *conn, GTM_SequenceKey key, GTM_Sequence nextval, bool is_called);
 #endif

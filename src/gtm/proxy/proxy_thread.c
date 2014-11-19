@@ -339,7 +339,6 @@ GTMProxy_ThreadMainWrapper(void *argp)
 GTMProxy_ThreadInfo *
 GTMProxy_ThreadAddConnection(GTMProxy_ConnectionInfo *conninfo)
 {
-	int con_id = -1, con_idx = 0;
 	GTMProxy_ThreadInfo *thrinfo = NULL;
 	GTMProxy_ConnID connIndx, ii;
 
@@ -507,13 +506,6 @@ GTMProxy_ThreadRemoveConnection(GTMProxy_ThreadInfo *thrinfo, GTMProxy_Connectio
 	 */
 	if ((ii + 1) < thrinfo->thr_conn_count)
 	{
-		GTMProxy_ConnectionInfo *ci_moved;
-		int last_idx;
-
-		/* Pick up last slot */
-		last_idx = thrinfo->thr_conn_count - 1;
-		ci_moved = thrinfo->thr_all_conns[last_idx];
-		
 		/* Copy the last entry in this slot */
 		thrinfo->thr_conn_map[ii] = thrinfo->thr_conn_map[thrinfo->thr_conn_count - 1];
 

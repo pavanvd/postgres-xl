@@ -64,8 +64,7 @@ static int set_val_internal(GTM_Conn *conn, GTM_SequenceKey key,
 				 char *coord_name, int coord_procid, GTM_Sequence nextval,
 				 bool iscalled, bool is_backup);
 #else
-static int get_next_internal(GTM_Conn *conn, GTM_SequenceKey key,
-									  GTM_Sequence *result, bool is_backup);
+static GTM_Sequence get_next_internal(GTM_Conn *conn, GTM_SequenceKey key, bool is_backup);
 static int set_val_internal(GTM_Conn *conn, GTM_SequenceKey key, GTM_Sequence nextval, bool iscalled, bool is_backup);
 #endif
 static int reset_sequence_internal(GTM_Conn *conn, GTM_SequenceKey key, bool is_backup);
@@ -1475,16 +1474,16 @@ bkup_get_next(GTM_Conn *conn, GTM_SequenceKey key,
 							 range, result, rangemax, true);
 }
 #else
-int
-get_next(GTM_Conn *conn, GTM_SequenceKey key, GTM_Sequence *result)
+GTM_Sequence
+get_next(GTM_Conn *conn, GTM_SequenceKey key)
 {
-	return get_next_internal(conn, key, result, false);
+	return get_next_internal(conn, key, false);
 }
 
-int
-bkup_get_next(GTM_Conn *conn, GTM_SequenceKey key, GTM_Sequence *result)
+GTM_Sequence
+bkup_get_next(GTM_Conn *conn, GTM_SequenceKey key)
 {
-	return get_next_internal(conn, key, result, true);
+	return get_next_internal(conn, key, true);
 }
 #endif
 
@@ -1494,9 +1493,8 @@ get_next_internal(GTM_Conn *conn, GTM_SequenceKey key,
 				  char *coord_name, int coord_procid, GTM_Sequence range,
 				  GTM_Sequence *result, GTM_Sequence *rangemax, bool is_backup)
 #else
-static int
-get_next_internal(GTM_Conn *conn, GTM_SequenceKey key,
-				  GTM_Sequence *result, bool is_backup)
+static GTM_Sequence
+get_next_internal(GTM_Conn *conn, GTM_SequenceKey key, bool is_backup)
 #endif
 {
 	GTM_Result *res = NULL;
@@ -1550,8 +1548,9 @@ get_next_internal(GTM_Conn *conn, GTM_SequenceKey key,
 		return res->gr_status;
 #else
 		if (res->gr_status == GTM_RESULT_OK)
-			*result = res->gr_resdata.grd_seq.seqval;
-		return res->gr_status;
+			return res->gr_resdata.grd_seq.seqval;
+		else
+			return InvalidSequenceValue;
 #endif
 	}
 	return GTM_RESULT_OK;

@@ -141,9 +141,6 @@ static int ServerLoop(void);
 static int initMasks(fd_set *rmask);
 void *GTMProxy_ThreadMain(void *argp);
 static int GTMProxyAddConnection(Port *port);
-static GTMProxy_ConnectionInfo *GTMProxy_GetConnInfo(GTMProxy_ThreadInfo *thrinfo,
-													 GTMProxy_ConnID con_id);
-static int GTMProxy_GetConnInfoIndex(GTMProxy_ThreadInfo *thrinfo, GTMProxy_ConnID con_id);
 static int ReadCommand(GTMProxy_ConnectionInfo *conninfo, StringInfo inBuf);
 static void GTMProxy_HandshakeConnection(GTMProxy_ConnectionInfo *conninfo);
 static void GTMProxy_HandleDisconnect(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn);
@@ -1484,7 +1481,6 @@ setjmp_again:
 		gtm_foreach(elem, thrinfo->thr_processed_commands)
 		{
 			GTMProxy_CommandInfo *cmdinfo = (GTMProxy_CommandInfo *)gtm_lfirst(elem);
-			thrinfo->thr_conn = cmdinfo->ci_conn;
 
 			/*
 			 * If this is a continuation of a multi-part command response, we
@@ -1540,6 +1536,8 @@ setjmp_again:
 
 	/* can't get here because the above loop never exits */
 	Assert(false);
+
+	return thrinfo;
 }
 
 /*
@@ -1569,27 +1567,6 @@ GTMProxyAddConnection(Port *port)
 	GTMProxy_ThreadAddConnection(conninfo);
 
 	return STATUS_OK;
-}
-
-/* Convert a connection id to a index in GTMProxy_ThreadInfo::thr_all_conns */
-static int
-GTMProxy_GetConnInfoIndex(GTMProxy_ThreadInfo *thrinfo, GTMProxy_ConnID con_id)
-{
-	if (con_id == InvalidGTMProxyConnID)
-		return -1;
-	return thrinfo->thr_conid2idx[con_id];
-}
-
-static GTMProxy_ConnectionInfo *
-GTMProxy_GetConnInfo(GTMProxy_ThreadInfo *thrinfo, GTMProxy_ConnID con_id)
-{
-	int con_idx;
-
-	con_idx = GTMProxy_GetConnInfoIndex(thrinfo, con_id);
-	if (con_idx < 0)
-		return NULL;
-
-	return thrinfo->thr_all_conns[con_idx];
 }
 
 void
@@ -1727,9 +1704,7 @@ HandleGTMError(GTM_Conn *gtm_conn)
 static GTM_Conn *
 HandlePostCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn)
 {
-	int connIdx;
-
-	connIdx = GTMProxy_GetConnInfoIndex(GetMyThreadInfo, conninfo->con_id);
+	int		connIdx = conninfo->con_id;
 
 	Assert(conninfo && gtm_conn);
 	/*
@@ -1832,7 +1807,6 @@ ProcessResponse(GTMProxy_ThreadInfo *thrinfo, GTMProxy_CommandInfo *cmdinfo,
 				pq_beginmessage(&buf, 'S');
 				pq_sendint(&buf, TXN_COMMIT_RESULT, 4);
 				pq_sendbytes(&buf, (char *)&cmdinfo->ci_data.cd_rc.gxid, sizeof (GlobalTransactionId));
-				pq_sendint(&buf, STATUS_OK, sizeof (int));
 				pq_endmessage(cmdinfo->ci_conn->con_port, &buf);
 				pq_flush(cmdinfo->ci_conn->con_port);
 			}
@@ -1867,7 +1841,6 @@ ProcessResponse(GTMProxy_ThreadInfo *thrinfo, GTMProxy_CommandInfo *cmdinfo,
 				pq_beginmessage(&buf, 'S');
 				pq_sendint(&buf, TXN_ROLLBACK_RESULT, 4);
 				pq_sendbytes(&buf, (char *)&cmdinfo->ci_data.cd_rc.gxid, sizeof (GlobalTransactionId));
-				pq_sendint(&buf, STATUS_OK, sizeof (int));
 				pq_endmessage(cmdinfo->ci_conn->con_port, &buf);
 				pq_flush(cmdinfo->ci_conn->con_port);
 			}
@@ -1945,15 +1918,12 @@ ProcessResponse(GTMProxy_ThreadInfo *thrinfo, GTMProxy_CommandInfo *cmdinfo,
 		case MSG_SEQUENCE_CLOSE:
 		case MSG_SEQUENCE_RENAME:
 		case MSG_SEQUENCE_ALTER:
+			if ((res->gr_proxyhdr.ph_conid == InvalidGTMProxyConnID) ||
+				(res->gr_proxyhdr.ph_conid >= GTM_PROXY_MAX_CONNECTIONS) ||
+				(thrinfo->thr_all_conns[res->gr_proxyhdr.ph_conid] != cmdinfo->ci_conn))
 			{
-				GTMProxy_ConnID con_id = res->gr_proxyhdr.ph_conid;
-				if ((con_id == InvalidGTMProxyConnID) ||
-					(con_id >= GTM_PROXY_MAX_CONNECTIONS) ||
-					(GTMProxy_GetConnInfo(thrinfo, con_id) != cmdinfo->ci_conn))
-				{
-					ReleaseCmdBackup(cmdinfo);
-					elog(PANIC, "Invalid response or synchronization loss");
-				}
+				ReleaseCmdBackup(cmdinfo);
+				elog(PANIC, "Invalid response or synchronization loss");
 			}
 
 			/*
@@ -2027,10 +1997,9 @@ static int
 ReadCommand(GTMProxy_ConnectionInfo *conninfo, StringInfo inBuf)
 {
 	int 			qtype;
-	int				connIdx;
+	int				connIdx = conninfo->con_id;
 	int				anyBackup;
 
-	connIdx = GTMProxy_GetConnInfoIndex(GetMyThreadInfo, conninfo->con_id);
 	anyBackup = (GetMyThreadInfo->thr_any_backup[connIdx] ? TRUE : FALSE);
 
 	/*
@@ -2398,7 +2367,7 @@ ProcessSequenceCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn,
 	 *
 	 * Write the message, but don't flush it just yet.
 	 */
-	GTMProxy_ProxyCommand(conninfo, gtm_conn, mtype, message);
+	return GTMProxy_ProxyCommand(conninfo, gtm_conn, mtype, message);
 }
 
 static void
@@ -3272,7 +3241,7 @@ UnregisterProxy(void)
 	return;
 
 failed:
-	elog(ERROR, "can not Unregister Proxy on GTM");
+	return elog(ERROR, "can not Unregister Proxy on GTM");
 }
 
 /*
@@ -3401,9 +3370,7 @@ ConnectGTM(void)
  */
 static void ReleaseCmdBackup(GTMProxy_CommandInfo *cmdinfo)
 {
-	GTMProxy_ConnID connIdx;
-
-	connIdx = GTMProxy_GetConnInfoIndex(GetMyThreadInfo, cmdinfo->ci_conn->con_id);
+	GTMProxy_ConnID connIdx = cmdinfo->ci_conn->con_id;
 
 	GetMyThreadInfo->thr_any_backup[connIdx] = FALSE;
 	GetMyThreadInfo->thr_qtype[connIdx] = 0;

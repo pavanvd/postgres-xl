@@ -439,6 +439,7 @@ Recovery_PGXCNodeRegister(GTM_PGXCNodeType	type,
 
 
 
+
 /*
  * Called at GTM shutdown, rewrite on disk register information
  * and write only data of nodes currently registered.
@@ -446,7 +447,6 @@ Recovery_PGXCNodeRegister(GTM_PGXCNodeType	type,
 void
 Recovery_SaveRegisterInfo(void)
 {
-#define Write(x, y, z) do{if (write(x, y, z) != (z)) elog(WARNING, "Write error in Recovery_SaveRegisterInfo");}while(0)
 	GTM_PGXCNodeInfoHashBucket *bucket;
 	gtm_ListCell *elem;
 	GTM_PGXCNodeInfo *nodeinfo = NULL;
@@ -484,62 +484,62 @@ Recovery_SaveRegisterInfo(void)
 
 			GTM_RWLockAcquire(&nodeinfo->node_lock, GTM_LOCKMODE_READ);
 
-			Write(ctlfd, &NodeRegisterMagic, sizeof (NodeRegisterMagic));
+			write(ctlfd, &NodeRegisterMagic, sizeof (NodeRegisterMagic));
 
-			Write(ctlfd, &nodeinfo->type, sizeof (GTM_PGXCNodeType));
+			write(ctlfd, &nodeinfo->type, sizeof (GTM_PGXCNodeType));
 			if (nodeinfo->nodename)
 			{
 				len = strlen(nodeinfo->nodename);
-				Write(ctlfd, &len, sizeof(uint32));
-				Write(ctlfd, nodeinfo->nodename, len);
+				write(ctlfd, &len, sizeof(uint32));
+				write(ctlfd, nodeinfo->nodename, len);
 			}
 			else
 			{
 				len = 0;
-				Write(ctlfd, &len, sizeof(uint32));
+				write(ctlfd, &len, sizeof(uint32));
 			}
 
-			Write(ctlfd, &nodeinfo->port, sizeof (GTM_PGXCNodePort));
+			write(ctlfd, &nodeinfo->port, sizeof (GTM_PGXCNodePort));
 
 			if (nodeinfo->proxyname)
 			{
 				len = strlen(nodeinfo->proxyname);
-				Write(ctlfd, &len, sizeof(uint32));
-				Write(ctlfd, nodeinfo->proxyname, len);
+				write(ctlfd, &len, sizeof(uint32));
+				write(ctlfd, nodeinfo->proxyname, len);
 			}
 			else
 			{
 				len = 0;
-				Write(ctlfd, &len, sizeof(uint32));
+				write(ctlfd, &len, sizeof(uint32));
 			}
 
-			Write(ctlfd, &nodeinfo->status, sizeof (GTM_PGXCNodeStatus));
+			write(ctlfd, &nodeinfo->status, sizeof (GTM_PGXCNodeStatus));
 
 			if (nodeinfo->ipaddress)
 			{
 				len = strlen(nodeinfo->ipaddress);
-				Write(ctlfd, &len, sizeof(uint32));
-				Write(ctlfd, nodeinfo->ipaddress, len);
+				write(ctlfd, &len, sizeof(uint32));
+				write(ctlfd, nodeinfo->ipaddress, len);
 			}
 			else
 			{
 				len = 0;
-				Write(ctlfd, &len, sizeof(uint32));
+				write(ctlfd, &len, sizeof(uint32));
 			}
 
 			if (nodeinfo->datafolder)
 			{
 				len = strlen(nodeinfo->datafolder);
-				Write(ctlfd, &len, sizeof(uint32));
-				Write(ctlfd, nodeinfo->datafolder, len);
+				write(ctlfd, &len, sizeof(uint32));
+				write(ctlfd, nodeinfo->datafolder, len);
 			}
 			else
 			{
 				len = 0;
-				Write(ctlfd, &len, sizeof(uint32));
+				write(ctlfd, &len, sizeof(uint32));
 			}
 
-			Write(ctlfd, &NodeEndMagic, sizeof(NodeEndMagic));
+			write(ctlfd, &NodeEndMagic, sizeof(NodeEndMagic));
 
 			GTM_RWLockRelease(&nodeinfo->node_lock);
 		}
@@ -556,7 +556,6 @@ Recovery_SaveRegisterInfo(void)
 	}
 
 	GTM_RWLockRelease(&RegisterFileLock);
-#undef Write
 }
 
 /*
@@ -565,7 +564,6 @@ Recovery_SaveRegisterInfo(void)
 void
 Recovery_RecordRegisterInfo(GTM_PGXCNodeInfo *nodeinfo, bool is_register)
 {
-#define Write(x, y, z) do{if (write(x, y, z) != (z)) elog(WARNING, "Write error in Recovery_RecordRegisterInfo");}while(0)
 	int ctlfd;
 	int len;
 
@@ -583,76 +581,75 @@ Recovery_RecordRegisterInfo(GTM_PGXCNodeInfo *nodeinfo, bool is_register)
 	GTM_RWLockAcquire(&nodeinfo->node_lock, GTM_LOCKMODE_READ);
 
 	if (is_register)
-		Write(ctlfd, &NodeRegisterMagic, sizeof (NodeRegisterMagic));
+		write(ctlfd, &NodeRegisterMagic, sizeof (NodeRegisterMagic));
 	else
-		Write(ctlfd, &NodeUnregisterMagic, sizeof (NodeUnregisterMagic));
+		write(ctlfd, &NodeUnregisterMagic, sizeof (NodeUnregisterMagic));
 
-	Write(ctlfd, &nodeinfo->type, sizeof (GTM_PGXCNodeType));
+	write(ctlfd, &nodeinfo->type, sizeof (GTM_PGXCNodeType));
 
 	if (nodeinfo->nodename)
 	{
 		len = strlen(nodeinfo->nodename);
-		Write(ctlfd, &len, sizeof(uint32));
-		Write(ctlfd, nodeinfo->nodename, len);
+		write(ctlfd, &len, sizeof(uint32));
+		write(ctlfd, nodeinfo->nodename, len);
 	}
 	else
 	{
 		len = 0;
-		Write(ctlfd, &len, sizeof(uint32));
+		write(ctlfd, &len, sizeof(uint32));
 	}
 
 	if (is_register)
 	{
 		int len;
 
-		Write(ctlfd, &nodeinfo->port, sizeof (GTM_PGXCNodePort));
+		write(ctlfd, &nodeinfo->port, sizeof (GTM_PGXCNodePort));
 
 		if (nodeinfo->proxyname)
 		{
 			len = strlen(nodeinfo->proxyname);
-			Write(ctlfd, &len, sizeof(uint32));
-			Write(ctlfd, nodeinfo->proxyname, len);
+			write(ctlfd, &len, sizeof(uint32));
+			write(ctlfd, nodeinfo->proxyname, len);
 		}
 		else
 		{
 			len = 0;
-			Write(ctlfd, &len, sizeof(uint32));
+			write(ctlfd, &len, sizeof(uint32));
 		}
 
-		Write(ctlfd, &nodeinfo->status, sizeof (GTM_PGXCNodeStatus));
+		write(ctlfd, &nodeinfo->status, sizeof (GTM_PGXCNodeStatus));
 
 		if (nodeinfo->ipaddress)
 		{
 			len = strlen(nodeinfo->ipaddress);
-			Write(ctlfd, &len, sizeof(uint32));
-			Write(ctlfd, nodeinfo->ipaddress, len);
+			write(ctlfd, &len, sizeof(uint32));
+			write(ctlfd, nodeinfo->ipaddress, len);
 		}
 		else
 		{
 			len = 0;
-			Write(ctlfd, &len, sizeof(uint32));
+			write(ctlfd, &len, sizeof(uint32));
 		}
 
 		if (nodeinfo->datafolder)
 		{
 			len = strlen(nodeinfo->datafolder);
-			Write(ctlfd, &len, sizeof(uint32));
-			Write(ctlfd, nodeinfo->datafolder, len);
+			write(ctlfd, &len, sizeof(uint32));
+			write(ctlfd, nodeinfo->datafolder, len);
 		}
 		else
 		{
 			len = 0;
-			Write(ctlfd, &len, sizeof(uint32));
+			write(ctlfd, &len, sizeof(uint32));
 		}
 	}
 
-	Write(ctlfd, &NodeEndMagic, sizeof(NodeEndMagic));
+	write(ctlfd, &NodeEndMagic, sizeof(NodeEndMagic));
 
 	GTM_RWLockRelease(&nodeinfo->node_lock);
 
 	close(ctlfd);
 	GTM_RWLockRelease(&RegisterFileLock);
-#undef Write
 }
 
 void
@@ -661,8 +658,6 @@ Recovery_RestoreRegisterInfo(void)
 #ifndef XCP
 	int magic;
 	int ctlfd;
-
-#define Read(x, y, z) do{if (read(x, y, z) != (z)) elog(WARNING, "Read error in Recovery_RestoreRegisterInfo");}while(0)
 
 	/* This is made when GTM/Proxy restarts, so it is not necessary to take a lock */
 	ctlfd = open(GTMPGXCNodeFile, O_RDONLY);
@@ -684,32 +679,32 @@ Recovery_RestoreRegisterInfo(void)
 			break;
 		}
 
-		Read(ctlfd, &type, sizeof (GTM_PGXCNodeType));
+		read(ctlfd, &type, sizeof (GTM_PGXCNodeType));
 		/* Read size of nodename string */
-		Read(ctlfd, &len, sizeof (uint32));
+		read(ctlfd, &len, sizeof (uint32));
 		nodename = (char *) palloc(len);
-		Read(ctlfd, nodename, len);
+		read(ctlfd, nodename, len);
 
 		if (magic == NodeRegisterMagic)
 		{
-			Read(ctlfd, &port, sizeof (GTM_PGXCNodePort));
+			read(ctlfd, &port, sizeof (GTM_PGXCNodePort));
 
 			/* Read size of proxyname string */
-			Read(ctlfd, &len, sizeof (uint32));
+			read(ctlfd, &len, sizeof (uint32));
 			proxyname = (char *) palloc(len);
-			Read(ctlfd, proxyname, len);
+			read(ctlfd, proxyname, len);
 
-			Read(ctlfd, &status, sizeof (GTM_PGXCNodeStatus));
+			read(ctlfd, &status, sizeof (GTM_PGXCNodeStatus));
 
 			/* Read size of ipaddress string */
-			Read(ctlfd, &len, sizeof (uint32));
+			read(ctlfd, &len, sizeof (uint32));
 			ipaddress = (char *) palloc(len);
-			Read(ctlfd, ipaddress, len);
+			read(ctlfd, ipaddress, len);
 
 			/* Read size of datafolder string */
-			Read(ctlfd, &len, sizeof (uint32));
+			read(ctlfd, &len, sizeof (uint32));
 			datafolder = (char *) palloc(len);
-			Read(ctlfd, datafolder, len);
+			read(ctlfd, datafolder, len);
 		}
 
 		/* Rebuild based on the records */
@@ -719,7 +714,7 @@ Recovery_RestoreRegisterInfo(void)
 		else
 			Recovery_PGXCNodeUnregister(type, nodename, true, 0);
 
-		Read(ctlfd, &magic, sizeof(NodeEndMagic));
+		read(ctlfd, &magic, sizeof(NodeEndMagic));
 
 		if (magic != NodeEndMagic)
 		{
@@ -730,7 +725,6 @@ Recovery_RestoreRegisterInfo(void)
 
 	close(ctlfd);
 #endif
-#undef Read
 }
 
 void

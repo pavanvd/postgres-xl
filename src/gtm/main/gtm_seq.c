@@ -1686,7 +1686,7 @@ ProcessSequenceGetNextCommand(Port *myport, StringInfo message, bool is_backup)
 						  coord_name, coord_procid,
 						  range, &loc_seq, &rangemax);
 #else
-			bkup_get_next(GetMyThreadInfo->thr_conn->standby, &seqkey, &loc_seq);
+			loc_seq = bkup_get_next(GetMyThreadInfo->thr_conn->standby, &seqkey);
 #endif
 
 			if (gtm_standby_check_communication_error(&count, oldconn))
