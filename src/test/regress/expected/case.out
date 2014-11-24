@@ -269,25 +269,29 @@ SELECT '' AS "Two", *
 UPDATE CASE_TBL
   SET i = CASE WHEN i >= 3 THEN (- i)
                 ELSE (2 * i) END;
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SELECT * FROM CASE_TBL ORDER BY i, f;
- i  |   f   
-----+-------
- -4 |      
- -3 | -30.3
-  2 |  10.1
-  4 |  20.2
+ i |   f   
+---+-------
+ 1 |  10.1
+ 2 |  20.2
+ 3 | -30.3
+ 4 |      
 (4 rows)
 
 UPDATE CASE_TBL
   SET i = CASE WHEN i >= 2 THEN (2 * i)
                 ELSE (3 * i) END;
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SELECT * FROM CASE_TBL ORDER BY i, f;
-  i  |   f   
------+-------
- -12 |      
-  -9 | -30.3
-   4 |  10.1
-   8 |  20.2
+ i |   f   
+---+-------
+ 1 |  10.1
+ 2 |  20.2
+ 3 | -30.3
+ 4 |      
 (4 rows)
 
 UPDATE CASE_TBL
@@ -295,13 +299,15 @@ UPDATE CASE_TBL
                 ELSE (3 * j) END
   FROM CASE2_TBL b
   WHERE j = -CASE_TBL.i;
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SELECT * FROM CASE_TBL ORDER BY i, f;
-  i  |   f   
------+-------
- -12 |      
-  -9 | -30.3
-  -8 |  10.1
-   8 |  20.2
+ i |   f   
+---+-------
+ 1 |  10.1
+ 2 |  20.2
+ 3 | -30.3
+ 4 |      
 (4 rows)
 
 --
