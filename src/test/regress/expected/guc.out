@@ -147,113 +147,61 @@ SELECT '2006-08-13 12:34:56'::timestamptz;
 (1 row)
 
 SAVEPOINT first_sp;
+ERROR:  SAVEPOINT is not yet supported.
 SET vacuum_cost_delay TO 80;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW vacuum_cost_delay;
- vacuum_cost_delay 
--------------------
- 80ms
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SET datestyle = 'German, DMY';
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW datestyle;
-  DateStyle  
--------------
- German, DMY
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '2006-08-13 12:34:56'::timestamptz;
-       timestamptz       
--------------------------
- 13.08.2006 12:34:56 PDT
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK TO first_sp;
+ERROR:  no such savepoint
 SHOW datestyle;
- DateStyle 
------------
- ISO, MDY
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '2006-08-13 12:34:56'::timestamptz;
-      timestamptz       
-------------------------
- 2006-08-13 12:34:56-07
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SAVEPOINT second_sp;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SET vacuum_cost_delay TO 90;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SET datestyle = 'SQL, YMD';
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW datestyle;
- DateStyle 
------------
- SQL, YMD
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '2006-08-13 12:34:56'::timestamptz;
-       timestamptz       
--------------------------
- 08/13/2006 12:34:56 PDT
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SAVEPOINT third_sp;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SET vacuum_cost_delay TO 100;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW vacuum_cost_delay;
- vacuum_cost_delay 
--------------------
- 100ms
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SET datestyle = 'Postgres, MDY';
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW datestyle;
-   DateStyle   
----------------
- Postgres, MDY
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '2006-08-13 12:34:56'::timestamptz;
-         timestamptz          
-------------------------------
- Sun Aug 13 12:34:56 2006 PDT
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK TO third_sp;
+ERROR:  no such savepoint
 SHOW vacuum_cost_delay;
- vacuum_cost_delay 
--------------------
- 90ms
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW datestyle;
- DateStyle 
------------
- SQL, YMD
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '2006-08-13 12:34:56'::timestamptz;
-       timestamptz       
--------------------------
- 08/13/2006 12:34:56 PDT
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK TO second_sp;
+ERROR:  no such savepoint
 SHOW vacuum_cost_delay;
- vacuum_cost_delay 
--------------------
- 70ms
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW datestyle;
- DateStyle 
------------
- ISO, MDY
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '2006-08-13 12:34:56'::timestamptz;
-      timestamptz       
-------------------------
- 2006-08-13 12:34:56-07
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK;
 SHOW vacuum_cost_delay;
  vacuum_cost_delay 
@@ -294,45 +242,25 @@ SELECT '2006-08-13 12:34:56'::timestamptz;
 (1 row)
 
 SAVEPOINT sp;
+ERROR:  SAVEPOINT is not yet supported.
 SET LOCAL vacuum_cost_delay TO 30;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW vacuum_cost_delay;
- vacuum_cost_delay 
--------------------
- 30ms
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SET LOCAL datestyle = 'Postgres, MDY';
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW datestyle;
-   DateStyle   
----------------
- Postgres, MDY
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '2006-08-13 12:34:56'::timestamptz;
-         timestamptz          
-------------------------------
- Sun Aug 13 12:34:56 2006 PDT
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK TO sp;
+ERROR:  no such savepoint
 SHOW vacuum_cost_delay;
- vacuum_cost_delay 
--------------------
- 40ms
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW datestyle;
- DateStyle 
------------
- ISO, YMD
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '2006-08-13 12:34:56'::timestamptz;
-      timestamptz       
-------------------------
- 2006-08-13 12:34:56-07
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK;
 SHOW vacuum_cost_delay;
  vacuum_cost_delay 
@@ -373,45 +301,25 @@ SELECT '2006-08-13 12:34:56'::timestamptz;
 (1 row)
 
 SAVEPOINT sp;
+ERROR:  SAVEPOINT is not yet supported.
 SET LOCAL vacuum_cost_delay TO 30;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW vacuum_cost_delay;
- vacuum_cost_delay 
--------------------
- 30ms
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SET LOCAL datestyle = 'Postgres, MDY';
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW datestyle;
-   DateStyle   
----------------
- Postgres, MDY
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '2006-08-13 12:34:56'::timestamptz;
-         timestamptz          
-------------------------------
- Sun Aug 13 12:34:56 2006 PDT
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 RELEASE SAVEPOINT sp;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW vacuum_cost_delay;
- vacuum_cost_delay 
--------------------
- 30ms
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SHOW datestyle;
-   DateStyle   
----------------
- Postgres, MDY
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '2006-08-13 12:34:56'::timestamptz;
-         timestamptz          
-------------------------------
- Sun Aug 13 12:34:56 2006 PDT
-(1 row)
-
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK;
 SHOW vacuum_cost_delay;
  vacuum_cost_delay 
@@ -568,6 +476,9 @@ SELECT current_user = 'temp_reset_user';
  t
 (1 row)
 
+RESET SESSION AUTHORIZATION;
+DROP TABLE tmp_foo; -- Need to release the ON COMMIT actions
+SET SESSION AUTHORIZATION temp_reset_user;
 -- discard everything
 DISCARD ALL;
 -- look again
