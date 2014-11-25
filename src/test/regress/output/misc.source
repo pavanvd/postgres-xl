@@ -6,8 +6,12 @@
 --
 UPDATE onek
    SET unique1 = onek.unique1 + 1;
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 UPDATE onek
    SET unique1 = onek.unique1 - 1;
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 --
 -- BTREE partial
 --
@@ -27,11 +31,15 @@ UPDATE tmp
    FROM onek
    WHERE onek.stringu1 = 'JBAAAA' and
 	  onek.stringu1 = tmp.stringu1;
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 UPDATE tmp
    SET stringu1 = reverse_name(onek2.stringu1)
    FROM onek2
    WHERE onek2.stringu1 = 'JCAAAA' and
 	  onek2.stringu1 = tmp.stringu1;
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 DROP TABLE tmp;
 --UPDATE person*
 --   SET age = age + 1;
@@ -346,7 +354,7 @@ ALTER TABLE f_star ADD COLUMN f int4;
 UPDATE f_star SET f = 10;
 ALTER TABLE e_star* ADD COLUMN e int4;
 --UPDATE e_star* SET e = 42;
-SELECT * FROM e_star* ORDER BY 1,2;
+SELECT * FROM e_star* ORDER BY 1,2,3,4;
  class | aa |     cc      | ee  | e 
 -------+----+-------------+-----+---
  e     | 15 | hi carol    |  -1 |  
@@ -354,8 +362,8 @@ SELECT * FROM e_star* ORDER BY 1,2;
  e     | 17 |             |  -2 |  
  e     | 18 |             |     |  
  e     |    | hi elisa    |     |  
- e     |    |             |  -4 |  
  e     |    | hi michelle |  -3 |  
+ e     |    |             |  -4 |  
  f     | 19 | hi claire   |  -5 |  
  f     | 20 | hi mike     |  -6 |  
  f     | 21 | hi marcel   |     |  
@@ -364,13 +372,13 @@ SELECT * FROM e_star* ORDER BY 1,2;
  f     | 25 |             |  -9 |  
  f     | 26 |             |     |  
  f     | 27 |             |     |  
- f     |    |             |     |  
- f     |    | hi keith    |  -8 |  
  f     |    | hi allison  | -10 |  
- f     |    | hi jeff     |     |  
- f     |    |             | -11 |  
  f     |    | hi carl     |     |  
+ f     |    | hi jeff     |     |  
+ f     |    | hi keith    |  -8 |  
  f     |    |             | -12 |  
+ f     |    |             | -11 |  
+ f     |    |             |     |  
  f     |    |             |     |  
 (23 rows)
 
@@ -729,13 +737,13 @@ SELECT name(equipment_named_ambiguous_2a(text 'skywalking'));
  guts
 (1 row)
 
-SELECT name(equipment_named_ambiguous_2b(text 'skywalking'));
+SELECT name(equipment_named_ambiguous_2b(text 'skywalking')) ORDER BY 1;
      name      
 ---------------
  advil
- peet's coffee
- hightops
  guts
+ hightops
+ peet's coffee
 (4 rows)
 
 SELECT hobbies_by_name('basketball');
