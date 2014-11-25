@@ -157,10 +157,10 @@ SET SESSION AUTHORIZATION regressuser4;
 
 SELECT * FROM atestv1; -- ok
 SELECT * FROM atestv2; -- fail
-SELECT * FROM atestv3; -- fail due to issue 3520503, see above
+SELECT * FROM atestv3; -- ok
 
 CREATE VIEW atestv4 AS SELECT * FROM atestv3; -- nested view
-SELECT * FROM atestv4; -- fail due to issue 3520503, see above
+SELECT * FROM atestv4; -- ok
 GRANT SELECT ON atestv4 TO regressuser2;
 
 SET SESSION AUTHORIZATION regressuser2;
@@ -168,7 +168,6 @@ SET SESSION AUTHORIZATION regressuser2;
 -- Two complex cases:
 
 SELECT * FROM atestv3; -- fail
--- fail due to issue 3520503, see above
 SELECT * FROM atestv4; -- ok (even though regressuser2 cannot access underlying atestv3)
 
 SELECT * FROM atest2; -- ok
@@ -193,16 +192,16 @@ COPY atest5 (two) TO stdout; -- fail
 SELECT atest5 FROM atest5; -- fail
 COPY atest5 (one,two) TO stdout; -- fail
 SELECT 1 FROM atest5; -- ok
-SELECT 1 FROM atest5 a JOIN atest5 b USING (one); -- ok 
+SELECT 1 FROM atest5 a JOIN atest5 b USING (one); -- ok
 SELECT 1 FROM atest5 a JOIN atest5 b USING (two); -- fail
 SELECT 1 FROM atest5 a NATURAL JOIN atest5 b; -- fail
 SELECT (j.*) IS NULL FROM (atest5 a JOIN atest5 b USING (one)) j; -- fail
 SELECT 1 FROM atest5 WHERE two = 2; -- fail
 SELECT * FROM atest1, atest5; -- fail
 SELECT atest1.* FROM atest1, atest5; -- ok
-SELECT atest1.*,atest5.one FROM atest1, atest5; -- ok 
+SELECT atest1.*,atest5.one FROM atest1, atest5; -- ok
 SELECT atest1.*,atest5.one FROM atest1 JOIN atest5 ON (atest1.a = atest5.two); -- fail
-SELECT atest1.*,atest5.one FROM atest1 JOIN atest5 ON (atest1.a = atest5.one); -- ok 
+SELECT atest1.*,atest5.one FROM atest1 JOIN atest5 ON (atest1.a = atest5.one); -- ok
 SELECT one, two FROM atest5; -- fail
 
 SET SESSION AUTHORIZATION regressuser1;
@@ -215,10 +214,10 @@ SET SESSION AUTHORIZATION regressuser1;
 GRANT SELECT (two) ON atest5 TO regressuser4;
 
 SET SESSION AUTHORIZATION regressuser4;
-SELECT one, two FROM atest5 NATURAL JOIN atest6; -- ok now 
+SELECT one, two FROM atest5 NATURAL JOIN atest6; -- ok now
 
 -- test column-level privileges for INSERT and UPDATE
-INSERT INTO atest5 (two) VALUES (3); -- fail due to issue 3520503, see above
+INSERT INTO atest5 (two) VALUES (3); -- ok
 COPY atest5 FROM stdin; -- fail
 COPY atest5 (two) FROM stdin; -- ok
 1
@@ -256,7 +255,7 @@ ALTER TABLE atest6 DROP COLUMN three;
 
 SET SESSION AUTHORIZATION regressuser4;
 SELECT atest6 FROM atest6; -- ok
-SELECT one FROM atest5 NATURAL JOIN atest6; -- ok 
+SELECT one FROM atest5 NATURAL JOIN atest6; -- ok
 
 SET SESSION AUTHORIZATION regressuser1;
 ALTER TABLE atest6 DROP COLUMN two;
@@ -280,9 +279,9 @@ GRANT SELECT(fx) ON atestc TO regressuser2;
 
 SET SESSION AUTHORIZATION regressuser2;
 SELECT fx FROM atestp2; -- ok
-SELECT fy FROM atestp2; -- fail due to issue 3520503, see above
-SELECT atestp2 FROM atestp2; -- fail due to issue 3520503, see above
-SELECT oid FROM atestp2; -- fail due to issue 3520503, see above
+SELECT fy FROM atestp2; -- ok
+SELECT atestp2 FROM atestp2; -- ok
+SELECT oid FROM atestp2; -- ok
 SELECT fy FROM atestc; -- fail
 
 SET SESSION AUTHORIZATION regressuser1;
@@ -291,7 +290,7 @@ GRANT SELECT(fy,oid) ON atestc TO regressuser2;
 SET SESSION AUTHORIZATION regressuser2;
 SELECT fx FROM atestp2; -- still ok
 SELECT fy FROM atestp2; -- ok
-SELECT atestp2 FROM atestp2; -- fail due to issue 3520503, see above
+SELECT atestp2 FROM atestp2; -- ok
 SELECT oid FROM atestp2; -- ok
 
 -- privileges on functions, languages
@@ -326,7 +325,7 @@ CREATE FUNCTION testfunc3(int) RETURNS int AS 'select 2 * $1;' LANGUAGE sql; -- 
 SET SESSION AUTHORIZATION regressuser3;
 SELECT testfunc1(5); -- fail
 SELECT col1 FROM atest2 WHERE col2 = true; -- fail
-SELECT testfunc4(true); -- fail due to issue 3520503, see above
+SELECT testfunc4(true); -- ok
 
 SET SESSION AUTHORIZATION regressuser4;
 SELECT testfunc1(5); -- ok

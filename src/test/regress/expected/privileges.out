@@ -50,6 +50,8 @@ SELECT * FROM atest1;
 INSERT INTO atest1 VALUES (1, 'one');
 DELETE FROM atest1;
 UPDATE atest1 SET a = 1 WHERE b = 'blech';
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 TRUNCATE atest1;
 BEGIN;
 LOCK atest1 IN ACCESS EXCLUSIVE MODE;
@@ -95,16 +97,18 @@ INSERT INTO atest2 VALUES ('foo', true); -- fail
 ERROR:  permission denied for relation atest2
 INSERT INTO atest1 SELECT 1, b FROM atest1; -- ok
 UPDATE atest1 SET a = 1 WHERE a = 2; -- ok
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 UPDATE atest2 SET col2 = NOT col2; -- fail
 ERROR:  permission denied for relation atest2
-SELECT * FROM atest1 FOR UPDATE; -- ok
+SELECT * FROM atest1 ORDER BY 1 FOR UPDATE; -- ok
  a |  b  
 ---+-----
  1 | two
- 1 | two
+ 2 | two
 (2 rows)
 
-SELECT * FROM atest2 FOR UPDATE; -- fail
+SELECT * FROM atest2 ORDER BY 1 FOR UPDATE; -- fail
 ERROR:  permission denied for relation atest2
 DELETE FROM atest2; -- fail
 ERROR:  permission denied for relation atest2
@@ -136,11 +140,11 @@ SELECT session_user, current_user;
  regressuser3 | regressuser3
 (1 row)
 
-SELECT * FROM atest1; -- ok
+SELECT * FROM atest1 ORDER BY 1; -- ok
  a |  b  
 ---+-----
  1 | two
- 1 | two
+ 2 | two
 (2 rows)
 
 SELECT * FROM atest2; -- fail
@@ -152,11 +156,14 @@ ERROR:  permission denied for relation atest2
 INSERT INTO atest1 SELECT 1, b FROM atest1; -- fail
 ERROR:  permission denied for relation atest1
 UPDATE atest1 SET a = 1 WHERE a = 2; -- fail
-ERROR:  permission denied for relation atest1
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 UPDATE atest2 SET col2 = NULL; -- ok
 UPDATE atest2 SET col2 = NOT col2; -- fails; requires SELECT on atest2
 ERROR:  permission denied for relation atest2
 UPDATE atest2 SET col2 = true FROM atest1 WHERE atest1.a = 5; -- ok
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SELECT * FROM atest1 FOR UPDATE; -- fail
 ERROR:  permission denied for relation atest1
 SELECT * FROM atest2 FOR UPDATE; -- fail
@@ -177,11 +184,11 @@ SELECT * FROM atest2 WHERE ( col1 IN ( SELECT b FROM atest1 ) );
 ERROR:  permission denied for relation atest2
 SET SESSION AUTHORIZATION regressuser4;
 COPY atest2 FROM stdin; -- ok
-SELECT * FROM atest1; -- ok
+SELECT * FROM atest1 ORDER BY 1; -- ok
  a |  b  
 ---+-----
  1 | two
- 1 | two
+ 2 | two
 (2 rows)
 
 -- groups
@@ -201,7 +208,7 @@ CREATE VIEW atestv3 AS SELECT * FROM atest3; -- ok
 SELECT * FROM atestv1; -- ok
  a |  b  
 ---+-----
- 1 | two
+ 2 | two
  1 | two
 (2 rows)
 
@@ -213,19 +220,19 @@ SET SESSION AUTHORIZATION regressuser4;
 SELECT * FROM atestv1; -- ok
  a |  b  
 ---+-----
- 1 | two
+ 2 | two
  1 | two
 (2 rows)
 
 SELECT * FROM atestv2; -- fail
 ERROR:  permission denied for relation atestv2
-SELECT * FROM atestv3; -- ok
+SELECT * FROM atestv3; -- fail due to issue 3520503, see above
  one | two | three 
 -----+-----+-------
 (0 rows)
 
 CREATE VIEW atestv4 AS SELECT * FROM atestv3; -- nested view
-SELECT * FROM atestv4; -- ok
+SELECT * FROM atestv4; -- fail due to issue 3520503, see above
  one | two | three 
 -----+-----+-------
 (0 rows)
@@ -299,14 +306,14 @@ ERROR:  permission denied for relation atest5
 SELECT atest1.* FROM atest1, atest5; -- ok
  a |  b  
 ---+-----
- 1 | two
+ 2 | two
  1 | two
 (2 rows)
 
 SELECT atest1.*,atest5.one FROM atest1, atest5; -- ok
  a |  b  | one 
 ---+-----+-----
- 1 | two |   1
+ 2 | two |   1
  1 | two |   1
 (2 rows)
 
@@ -316,8 +323,7 @@ SELECT atest1.*,atest5.one FROM atest1 JOIN atest5 ON (atest1.a = atest5.one); -
  a |  b  | one 
 ---+-----+-----
  1 | two |   1
- 1 | two |   1
-(2 rows)
+(1 row)
 
 SELECT one, two FROM atest5; -- fail
 ERROR:  permission denied for relation atest5
@@ -345,9 +351,11 @@ INSERT INTO atest5 VALUES (5,5,5); -- fail
 ERROR:  permission denied for relation atest5
 UPDATE atest5 SET three = 10; -- ok
 UPDATE atest5 SET one = 8; -- fail
-ERROR:  permission denied for relation atest5
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 UPDATE atest5 SET three = 5, one = 2; -- fail
-ERROR:  permission denied for relation atest5
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SET SESSION AUTHORIZATION regressuser1;
 REVOKE ALL (one) ON atest5 FROM regressuser4;
 GRANT SELECT (one,two,blue) ON atest6 TO regressuser4;
@@ -355,7 +363,8 @@ SET SESSION AUTHORIZATION regressuser4;
 SELECT one FROM atest5; -- fail
 ERROR:  permission denied for relation atest5
 UPDATE atest5 SET one = 1; -- fail
-ERROR:  permission denied for relation atest5
+ERROR:  could not plan this distributed update
+DETAIL:  correlated UPDATE or updating distribution column currently not supported in Postgres-XL.
 SELECT atest6 FROM atest6; -- ok
  atest6 
 --------
@@ -459,7 +468,6 @@ REVOKE ALL PRIVILEGES ON LANGUAGE sql FROM PUBLIC;
 GRANT USAGE ON LANGUAGE sql TO regressuser1; -- ok
 GRANT USAGE ON LANGUAGE c TO PUBLIC; -- fail
 ERROR:  language "c" is not trusted
-HINT:  Only superusers can use untrusted languages.
 SET SESSION AUTHORIZATION regressuser1;
 GRANT USAGE ON LANGUAGE sql TO regressuser2; -- fail
 WARNING:  no privileges were granted for "sql"
@@ -517,7 +525,6 @@ REVOKE USAGE ON TYPE testtype1 FROM PUBLIC;
 GRANT USAGE ON TYPE testtype1 TO regressuser2;
 GRANT USAGE ON TYPE _testtype1 TO regressuser2; -- fail
 ERROR:  cannot set privileges of array types
-HINT:  Set the privileges of the element type instead.
 GRANT USAGE ON DOMAIN testtype1 TO regressuser2; -- fail
 ERROR:  "testtype1" is not a domain
 CREATE DOMAIN testdomain1 AS int;
@@ -909,7 +916,6 @@ SELECT has_table_privilege('regressuser3', 'atest4', 'SELECT'); -- true
 
 REVOKE SELECT ON atest4 FROM regressuser2; -- fail
 ERROR:  dependent privileges exist
-HINT:  Use CASCADE to revoke them too.
 REVOKE GRANT OPTION FOR SELECT ON atest4 FROM regressuser2 CASCADE; -- ok
 SELECT has_table_privilege('regressuser2', 'atest4', 'SELECT'); -- true
  has_table_privilege 
@@ -943,11 +949,8 @@ ERROR:  must have admin option on role "regressgroup2"
 SELECT dogrant_ok();			-- ok: SECURITY DEFINER conveys ADMIN
 NOTICE:  role "regressuser5" is already a member of role "regressgroup2"
 CONTEXT:  SQL function "dogrant_ok" statement 1
- dogrant_ok 
-------------
- 
-(1 row)
-
+ERROR:  must have admin option on role "regressgroup2"
+CONTEXT:  SQL function "dogrant_ok" statement 1
 SET ROLE regressgroup2;
 GRANT regressgroup2 TO regressuser5; -- fails: SET ROLE did not help
 ERROR:  must have admin option on role "regressgroup2"
@@ -962,7 +965,9 @@ CONTEXT:  SQL function "dogrant_fails" statement 1
 DROP FUNCTION dogrant_fails();
 SET SESSION AUTHORIZATION regressuser4;
 DROP FUNCTION dogrant_ok();
+ERROR:  must be owner of function dogrant_ok
 REVOKE regressgroup2 FROM regressuser5;
+ERROR:  must have admin option on role "regressgroup2"
 -- has_sequence_privilege tests
 \c -
 CREATE SEQUENCE x_seq;
@@ -988,190 +993,142 @@ SELECT has_sequence_privilege('x_seq', 'USAGE');
 \c -
 SET SESSION AUTHORIZATION regressuser1;
 SELECT lo_create(1001);
- lo_create 
------------
-      1001
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_create(1002);
- lo_create 
------------
-      1002
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_create(1003);
- lo_create 
------------
-      1003
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_create(1004);
- lo_create 
------------
-      1004
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_create(1005);
- lo_create 
------------
-      1005
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 GRANT ALL ON LARGE OBJECT 1001 TO PUBLIC;
+ERROR:  large object 1001 does not exist
 GRANT SELECT ON LARGE OBJECT 1003 TO regressuser2;
+ERROR:  large object 1003 does not exist
 GRANT SELECT,UPDATE ON LARGE OBJECT 1004 TO regressuser2;
+ERROR:  large object 1004 does not exist
 GRANT ALL ON LARGE OBJECT 1005 TO regressuser2;
+ERROR:  large object 1005 does not exist
 GRANT SELECT ON LARGE OBJECT 1005 TO regressuser2 WITH GRANT OPTION;
+ERROR:  large object 1005 does not exist
 GRANT SELECT, INSERT ON LARGE OBJECT 1001 TO PUBLIC;	-- to be failed
-ERROR:  invalid privilege type INSERT for large object
+ERROR:  large object 1001 does not exist
 GRANT SELECT, UPDATE ON LARGE OBJECT 1001 TO nosuchuser;	-- to be failed
-ERROR:  role "nosuchuser" does not exist
+ERROR:  large object 1001 does not exist
 GRANT SELECT, UPDATE ON LARGE OBJECT  999 TO PUBLIC;	-- to be failed
 ERROR:  large object 999 does not exist
 \c -
 SET SESSION AUTHORIZATION regressuser2;
 SELECT lo_create(2001);
- lo_create 
------------
-      2001
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_create(2002);
- lo_create 
------------
-      2002
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT loread(lo_open(1001, x'40000'::int), 32);
- loread 
---------
- \x
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT loread(lo_open(1002, x'40000'::int), 32);	-- to be denied
-ERROR:  permission denied for large object 1002
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT loread(lo_open(1003, x'40000'::int), 32);
- loread 
---------
- \x
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT loread(lo_open(1004, x'40000'::int), 32);
- loread 
---------
- \x
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lowrite(lo_open(1001, x'20000'::int), 'abcd');
- lowrite 
----------
-       4
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lowrite(lo_open(1002, x'20000'::int), 'abcd');	-- to be denied
-ERROR:  permission denied for large object 1002
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lowrite(lo_open(1003, x'20000'::int), 'abcd');	-- to be denied
-ERROR:  permission denied for large object 1003
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lowrite(lo_open(1004, x'20000'::int), 'abcd');
- lowrite 
----------
-       4
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 GRANT SELECT ON LARGE OBJECT 1005 TO regressuser3;
+ERROR:  large object 1005 does not exist
 GRANT UPDATE ON LARGE OBJECT 1006 TO regressuser3;	-- to be denied
 ERROR:  large object 1006 does not exist
 REVOKE ALL ON LARGE OBJECT 2001, 2002 FROM PUBLIC;
+ERROR:  large object 2001 does not exist
 GRANT ALL ON LARGE OBJECT 2001 TO regressuser3;
+ERROR:  large object 2001 does not exist
 SELECT lo_unlink(1001);		-- to be denied
-ERROR:  must be owner of large object 1001
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_unlink(2002);
- lo_unlink 
------------
-         1
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 \c -
 -- confirm ACL setting
 SELECT oid, pg_get_userbyid(lomowner) ownername, lomacl FROM pg_largeobject_metadata;
- oid  |  ownername   |                                          lomacl                                          
-------+--------------+------------------------------------------------------------------------------------------
- 1002 | regressuser1 | 
- 1001 | regressuser1 | {regressuser1=rw/regressuser1,=rw/regressuser1}
- 1003 | regressuser1 | {regressuser1=rw/regressuser1,regressuser2=r/regressuser1}
- 1004 | regressuser1 | {regressuser1=rw/regressuser1,regressuser2=rw/regressuser1}
- 1005 | regressuser1 | {regressuser1=rw/regressuser1,regressuser2=r*w/regressuser1,regressuser3=r/regressuser2}
- 2001 | regressuser2 | {regressuser2=rw/regressuser2,regressuser3=rw/regressuser2}
-(6 rows)
+ oid | ownername | lomacl 
+-----+-----------+--------
+(0 rows)
 
 SET SESSION AUTHORIZATION regressuser3;
 SELECT loread(lo_open(1001, x'40000'::int), 32);
-   loread   
-------------
- \x61626364
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT loread(lo_open(1003, x'40000'::int), 32);	-- to be denied
-ERROR:  permission denied for large object 1003
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT loread(lo_open(1005, x'40000'::int), 32);
- loread 
---------
- \x
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_truncate(lo_open(1005, x'20000'::int), 10);	-- to be denied
-ERROR:  permission denied for large object 1005
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_truncate(lo_open(2001, x'20000'::int), 10);
- lo_truncate 
--------------
-           0
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 -- compatibility mode in largeobject permission
 \c -
 SET lo_compat_privileges = false;	-- default setting
 SET SESSION AUTHORIZATION regressuser4;
 SELECT loread(lo_open(1002, x'40000'::int), 32);	-- to be denied
-ERROR:  permission denied for large object 1002
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lowrite(lo_open(1002, x'20000'::int), 'abcd');	-- to be denied
-ERROR:  permission denied for large object 1002
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_truncate(lo_open(1002, x'20000'::int), 10);	-- to be denied
-ERROR:  permission denied for large object 1002
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_unlink(1002);					-- to be denied
-ERROR:  must be owner of large object 1002
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_export(1001, '/dev/null');			-- to be denied
-ERROR:  must be superuser to use server-side lo_export()
-HINT:  Anyone can use the client-side lo_export() provided by libpq.
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 \c -
 SET lo_compat_privileges = true;	-- compatibility mode
 SET SESSION AUTHORIZATION regressuser4;
 SELECT loread(lo_open(1002, x'40000'::int), 32);
- loread 
---------
- \x
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lowrite(lo_open(1002, x'20000'::int), 'abcd');
- lowrite 
----------
-       4
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_truncate(lo_open(1002, x'20000'::int), 10);
- lo_truncate 
--------------
-           0
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_unlink(1002);
- lo_unlink 
------------
-         1
-(1 row)
-
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 SELECT lo_export(1001, '/dev/null');			-- to be denied
-ERROR:  must be superuser to use server-side lo_export()
-HINT:  Anyone can use the client-side lo_export() provided by libpq.
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 -- don't allow unpriv users to access pg_largeobject contents
 \c -
 SELECT * FROM pg_largeobject LIMIT 0;
@@ -1440,12 +1397,7 @@ DROP TABLE atestp2;
 SELECT lo_unlink(oid) FROM pg_largeobject_metadata;
  lo_unlink 
 -----------
-         1
-         1
-         1
-         1
-         1
-(5 rows)
+(0 rows)
 
 DROP GROUP regressgroup1;
 DROP GROUP regressgroup2;
