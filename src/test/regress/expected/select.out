@@ -779,7 +779,7 @@ select * from (values (2),(null),(1)) v(k) where k = k order by k;
  2
 (2 rows)
 
-select * from (values (2),(null),(1)) v(k) where k = k;
+select * from (values (2),(null),(1)) v(k) where k = k order by k desc;
  k 
 ---
  2
