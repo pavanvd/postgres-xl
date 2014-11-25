@@ -69,19 +69,19 @@ SELECT test_missing_target.b, count(*)
 (4 rows)
 
 --   w/o existing GROUP BY target
-SELECT c FROM test_missing_target ORDER BY c;
+SELECT c FROM test_missing_target ORDER BY a;
     c     
 ----------
- ABAB    
- ABAB    
- BBBB    
- BBBB    
- CCCC    
- CCCC    
  XXXX    
+ ABAB    
+ ABAB    
+ BBBB    
+ BBBB    
  bbbb    
  cccc    
  cccc    
+ CCCC    
+ CCCC    
 (10 rows)
 
 --   w/o existing ORDER BY target
