@@ -4,11 +4,13 @@
 -- ensure consistent test output regardless of the default bytea format
 SET bytea_output TO escape;
 -- Load a file
-CREATE TABLE lotest_stash_values (loid oid, fd integer);
+CREATE TABLE lotest_stash_values (loid oid, junk integer, fd integer);
 -- lo_creat(mode integer) returns oid
 -- The mode arg to lo_creat is unused, some vestigal holdover from ancient times
 -- returns the large object id
-INSERT INTO lotest_stash_values (loid) SELECT lo_creat(42);
+INSERT INTO lotest_stash_values (loid) VALUES( lo_creat(42) );
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 -- NOTE: large objects require transactions
 BEGIN;
 -- lo_open(lobjId oid, mode integer) returns integer
@@ -54,16 +56,14 @@ And dances with the daffodils.
 ') FROM lotest_stash_values;
  lowrite 
 ---------
-     848
-(1 row)
+(0 rows)
 
 -- lo_close(fd integer) returns integer
 -- return value is 0 for success, or <0 for error (actually only -1, but...)
 SELECT lo_close(fd) FROM lotest_stash_values;
  lo_close 
 ----------
-        0
-(1 row)
+(0 rows)
 
 END;
 -- Read out a portion
@@ -78,52 +78,44 @@ UPDATE lotest_stash_values SET fd=lo_open(loid, CAST(x'20000' | x'40000' AS inte
 SELECT lo_lseek(fd, 104, 0) FROM lotest_stash_values;
  lo_lseek 
 ----------
-      104
-(1 row)
+(0 rows)
 
 -- loread/lowrite names are wonky, different from other functions which are lo_*
 -- loread(fd integer, len integer) returns bytea
 SELECT loread(fd, 28) FROM lotest_stash_values;
-            loread            
-------------------------------
- A host, of golden daffodils;
-(1 row)
+ loread 
+--------
+(0 rows)
 
 SELECT lo_lseek(fd, -19, 1) FROM lotest_stash_values;
  lo_lseek 
 ----------
-      113
-(1 row)
+(0 rows)
 
 SELECT lowrite(fd, 'n') FROM lotest_stash_values;
  lowrite 
 ---------
-       1
-(1 row)
+(0 rows)
 
 SELECT lo_tell(fd) FROM lotest_stash_values;
  lo_tell 
 ---------
-     114
-(1 row)
+(0 rows)
 
 SELECT lo_lseek(fd, -744, 2) FROM lotest_stash_values;
  lo_lseek 
 ----------
-      104
-(1 row)
+(0 rows)
 
 SELECT loread(fd, 28) FROM lotest_stash_values;
-            loread            
-------------------------------
- A host, on golden daffodils;
-(1 row)
+ loread 
+--------
+(0 rows)
 
 SELECT lo_close(fd) FROM lotest_stash_values;
  lo_close 
 ----------
-        0
-(1 row)
+(0 rows)
 
 END;
 -- Test resource management
@@ -131,8 +123,7 @@ BEGIN;
 SELECT lo_open(loid, x'40000'::int) from lotest_stash_values;
  lo_open 
 ---------
-       0
-(1 row)
+(0 rows)
 
 ABORT;
 -- Test truncation.
@@ -141,62 +132,52 @@ UPDATE lotest_stash_values SET fd=lo_open(loid, CAST(x'20000' | x'40000' AS inte
 SELECT lo_truncate(fd, 11) FROM lotest_stash_values;
  lo_truncate 
 -------------
-           0
-(1 row)
+(0 rows)
 
 SELECT loread(fd, 15) FROM lotest_stash_values;
-     loread     
-----------------
- \012I wandered
-(1 row)
+ loread 
+--------
+(0 rows)
 
 SELECT lo_truncate(fd, 10000) FROM lotest_stash_values;
  lo_truncate 
 -------------
-           0
-(1 row)
+(0 rows)
 
 SELECT loread(fd, 10) FROM lotest_stash_values;
-                  loread                  
-------------------------------------------
- \000\000\000\000\000\000\000\000\000\000
-(1 row)
+ loread 
+--------
+(0 rows)
 
 SELECT lo_lseek(fd, 0, 2) FROM lotest_stash_values;
  lo_lseek 
 ----------
-    10000
-(1 row)
+(0 rows)
 
 SELECT lo_tell(fd) FROM lotest_stash_values;
  lo_tell 
 ---------
-   10000
-(1 row)
+(0 rows)
 
 SELECT lo_truncate(fd, 5000) FROM lotest_stash_values;
  lo_truncate 
 -------------
-           0
-(1 row)
+(0 rows)
 
 SELECT lo_lseek(fd, 0, 2) FROM lotest_stash_values;
  lo_lseek 
 ----------
-     5000
-(1 row)
+(0 rows)
 
 SELECT lo_tell(fd) FROM lotest_stash_values;
  lo_tell 
 ---------
-    5000
-(1 row)
+(0 rows)
 
 SELECT lo_close(fd) FROM lotest_stash_values;
  lo_close 
 ----------
-        0
-(1 row)
+(0 rows)
 
 END;
 -- lo_unlink(lobjId oid) returns integer
@@ -204,11 +185,12 @@ END;
 SELECT lo_unlink(loid) from lotest_stash_values;
  lo_unlink 
 -----------
-         1
-(1 row)
+(0 rows)
 
 TRUNCATE lotest_stash_values;
-INSERT INTO lotest_stash_values (loid) SELECT lo_import('@abs_srcdir@/data/tenk.data');
+INSERT INTO lotest_stash_values (loid) VALUES( lo_import('/Users/pavan/work/SOURCES/postgres-xl/src/test/regress/data/tenk.data') );
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 BEGIN;
 UPDATE lotest_stash_values SET fd=lo_open(loid, CAST(x'20000' | x'40000' AS integer));
 -- with the default BLKSZ, LOBLKSZ = 2048, so this positions us for a block
@@ -216,64 +198,60 @@ UPDATE lotest_stash_values SET fd=lo_open(loid, CAST(x'20000' | x'40000' AS inte
 SELECT lo_lseek(fd, 2030, 0) FROM lotest_stash_values;
  lo_lseek 
 ----------
-     2030
-(1 row)
+(0 rows)
 
 -- this should get half of the value from page 0 and half from page 1 of the
 -- large object
 SELECT loread(fd, 36) FROM lotest_stash_values;
-                             loread                              
------------------------------------------------------------------
- AAA\011FBAAAA\011VVVVxx\0122513\01132\0111\0111\0113\01113\0111
-(1 row)
+ loread 
+--------
+(0 rows)
 
 SELECT lo_tell(fd) FROM lotest_stash_values;
  lo_tell 
 ---------
-    2066
-(1 row)
+(0 rows)
 
 SELECT lo_lseek(fd, -26, 1) FROM lotest_stash_values;
  lo_lseek 
 ----------
-     2040
-(1 row)
+(0 rows)
 
 SELECT lowrite(fd, 'abcdefghijklmnop') FROM lotest_stash_values;
  lowrite 
 ---------
-      16
-(1 row)
+(0 rows)
 
 SELECT lo_lseek(fd, 2030, 0) FROM lotest_stash_values;
  lo_lseek 
 ----------
-     2030
-(1 row)
+(0 rows)
 
 SELECT loread(fd, 36) FROM lotest_stash_values;
-                       loread                        
------------------------------------------------------
- AAA\011FBAAAAabcdefghijklmnop1\0111\0113\01113\0111
-(1 row)
+ loread 
+--------
+(0 rows)
 
 SELECT lo_close(fd) FROM lotest_stash_values;
  lo_close 
 ----------
-        0
-(1 row)
+(0 rows)
 
 END;
 SELECT lo_export(loid, '@abs_builddir@/results/lotest.txt') FROM lotest_stash_values;
  lo_export 
 -----------
-         1
-(1 row)
+(0 rows)
 
-\lo_import 'results/lotest.txt'
+COPY lotest_stash_values TO '@abs_builddir@/results/lotest.txt';
+\lo_import '@abs_builddir@/results/lotest.txt'
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 \set newloid :LASTOID
 -- just make sure \lo_export does not barf
-\lo_export :newloid 'results/lotest2.txt'
+\lo_export :newloid '@abs_builddir@/results/lotest2.txt'
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 -- This is a hack to test that export/import are reversible
 -- This uses knowledge about the inner workings of large object mechanism
 -- which should not be used outside it.  This makes it a HACK
@@ -287,8 +265,9 @@ SELECT pageno, data FROM pg_largeobject WHERE loid = :newloid;
 SELECT lo_unlink(loid) FROM lotest_stash_values;
  lo_unlink 
 -----------
-         1
-(1 row)
+(0 rows)
 
 \lo_unlink :newloid
+ERROR:  Postgres-XL does not yet support large objects
+DETAIL:  The feature is not currently supported
 TRUNCATE lotest_stash_values;
