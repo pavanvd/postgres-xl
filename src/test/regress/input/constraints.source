@@ -83,7 +83,7 @@ SELECT '' AS two, * from CHECK2_TBL ORDER BY x,y,z;
 --
 
 CREATE SEQUENCE INSERT_SEQ;
--- PGXCTODO : Feature ID 3520518
+
 CREATE TABLE INSERT_TBL (x INT DEFAULT nextval('insert_seq'),
 	y TEXT DEFAULT '-NULL-',
 	z INT DEFAULT -1 * currval('insert_seq'),
@@ -291,7 +291,7 @@ DROP TABLE UNIQUE_TBL;
 --
 -- Deferrable unique constraints
 --
--- PGXCTODO : Feature ID 3520518
+
 CREATE TABLE unique_tbl (i int UNIQUE DEFERRABLE, t text) DISTRIBUTE BY REPLICATION;
 
 INSERT INTO unique_tbl VALUES (0, 'one');
@@ -431,7 +431,7 @@ REINDEX INDEX circles_c1_c2_excl;
 DROP TABLE circles;
 
 -- Check deferred exclusion constraint
--- PGXCTODO : Feature ID 3520518
+
 CREATE TABLE deferred_excl (
   f1 int,
   CONSTRAINT deferred_excl_con EXCLUDE (f1 WITH =) INITIALLY DEFERRED

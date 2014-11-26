@@ -113,11 +113,12 @@ SELECT '' AS two, * from CHECK2_TBL ORDER BY x,y,z;
 -- Check constraints on INSERT
 --
 CREATE SEQUENCE INSERT_SEQ;
+
 CREATE TABLE INSERT_TBL (x INT DEFAULT nextval('insert_seq'),
 	y TEXT DEFAULT '-NULL-',
 	z INT DEFAULT -1 * currval('insert_seq'),
 	CONSTRAINT INSERT_CON CHECK (x >= 3 AND y <> 'check failed' AND x < 8),
-	CHECK (x + z = 0));
+	CHECK (x + z = 0)) DISTRIBUTE BY REPLICATION;
 INSERT INTO INSERT_TBL(x,z) VALUES (2, -2);
 ERROR:  new row for relation "insert_tbl" violates check constraint "insert_con"
 DETAIL:  Failing row contains (2, -NULL-, -2).
@@ -331,7 +332,6 @@ SELECT '' AS two, * FROM COPY_TBL order by x,y,z;
 COPY COPY_TBL FROM '@abs_srcdir@/data/constrf.data';
 ERROR:  new row for relation "copy_tbl" violates check constraint "copy_con"
 DETAIL:  Failing row contains (7, check failed, 6).
-CONTEXT:  COPY copy_tbl, line 2: "7	check failed	6"
 SELECT * FROM COPY_TBL order by x,y,z;
  x |       y       | z 
 ---+---------------+---
@@ -437,7 +437,8 @@ DROP TABLE UNIQUE_TBL;
 --
 -- Deferrable unique constraints
 --
-CREATE TABLE unique_tbl (i int UNIQUE DEFERRABLE, t text);
+
+CREATE TABLE unique_tbl (i int UNIQUE DEFERRABLE, t text) DISTRIBUTE BY REPLICATION;
 NOTICE:  CREATE TABLE / UNIQUE will create implicit index "unique_tbl_i_key" for table "unique_tbl"
 INSERT INTO unique_tbl VALUES (0, 'one');
 INSERT INTO unique_tbl VALUES (1, 'two');
@@ -452,7 +453,7 @@ DETAIL:  Key (i)=(1) already exists.
 ROLLBACK;
 -- check is done at end of statement, so this should succeed
 UPDATE unique_tbl SET i = i+1;
-SELECT * FROM unique_tbl;
+SELECT * FROM unique_tbl ORDER BY 1,t;
  i |  t   
 ---+------
  1 | one
@@ -468,14 +469,14 @@ SET CONSTRAINTS unique_tbl_i_key DEFERRED;
 INSERT INTO unique_tbl VALUES (3, 'three');
 DELETE FROM unique_tbl WHERE t = 'tree'; -- makes constraint valid again
 COMMIT; -- should succeed
-SELECT * FROM unique_tbl;
+SELECT * FROM unique_tbl ORDER BY 1,t;
  i |   t   
 ---+-------
  1 | one
  2 | two
+ 3 | three
  4 | four
  5 | five
- 3 | three
 (5 rows)
 
 -- try adding an initially deferred constraint
@@ -491,14 +492,14 @@ UPDATE unique_tbl SET i = 2 WHERE i = 4 AND t = 'four';
 DELETE FROM unique_tbl WHERE i = 1 AND t = 'one';
 DELETE FROM unique_tbl WHERE i = 5 AND t = 'five';
 COMMIT;
-SELECT * FROM unique_tbl;
+SELECT * FROM unique_tbl ORDER BY 1,t;
  i |   t   
 ---+-------
- 3 | three
  1 | five
- 5 | one
- 4 | two
  2 | four
+ 3 | three
+ 4 | two
+ 5 | one
 (5 rows)
 
 -- should fail at commit-time
@@ -530,14 +531,14 @@ UPDATE unique_tbl SET t = 'THREE' WHERE i = 3 AND t = 'Three';
 COMMIT; -- should fail
 ERROR:  duplicate key value violates unique constraint "unique_tbl_i_key"
 DETAIL:  Key (i)=(3) already exists.
-SELECT * FROM unique_tbl;
+SELECT * FROM unique_tbl ORDER BY 1,t;
  i |   t   
 ---+-------
- 3 | three
  1 | five
- 5 | one
- 4 | two
  2 | four
+ 3 | three
+ 4 | two
+ 5 | one
 (5 rows)
 
 -- test a HOT update that modifies the newly inserted tuple,
@@ -546,25 +547,25 @@ BEGIN;
 INSERT INTO unique_tbl VALUES(3, 'tree'); -- should succeed for now
 UPDATE unique_tbl SET t = 'threex' WHERE t = 'tree';
 DELETE FROM unique_tbl WHERE t = 'three';
-SELECT * FROM unique_tbl;
+SELECT * FROM unique_tbl ORDER BY 1,t;
  i |   t    
 ---+--------
  1 | five
- 5 | one
- 4 | two
  2 | four
  3 | threex
+ 4 | two
+ 5 | one
 (5 rows)
 
 COMMIT;
-SELECT * FROM unique_tbl;
+SELECT * FROM unique_tbl ORDER BY 1,t;
  i |   t    
 ---+--------
  1 | five
- 5 | one
- 4 | two
  2 | four
  3 | threex
+ 4 | two
+ 5 | one
 (5 rows)
 
 DROP TABLE unique_tbl;
@@ -605,7 +606,7 @@ DROP TABLE circles;
 CREATE TABLE deferred_excl (
   f1 int,
   CONSTRAINT deferred_excl_con EXCLUDE (f1 WITH =) INITIALLY DEFERRED
-);
+) DISTRIBUTE BY REPLICATION;
 NOTICE:  CREATE TABLE / EXCLUDE will create implicit index "deferred_excl_con" for table "deferred_excl"
 INSERT INTO deferred_excl VALUES(1);
 INSERT INTO deferred_excl VALUES(2);
