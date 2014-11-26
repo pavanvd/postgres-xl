@@ -417,11 +417,11 @@ ERROR:  column "q2" does not exist
 LINE 1: ... int8_tbl EXCEPT SELECT q2 FROM int8_tbl ORDER BY q2 LIMIT 1...
                                                              ^
 -- But this should work:
-SELECT q1 FROM int8_tbl EXCEPT (((SELECT q2 FROM int8_tbl ORDER BY q2 LIMIT 1)));
+SELECT q1 FROM int8_tbl EXCEPT (((SELECT q2 FROM int8_tbl ORDER BY q2 LIMIT 1))) ORDER BY q1;
         q1        
 ------------------
- 4567890123456789
               123
+ 4567890123456789
 (2 rows)
 
 --
@@ -472,37 +472,41 @@ INSERT INTO t2 VALUES ('ab'), ('xy');
 set enable_seqscan = off;
 set enable_indexscan = on;
 set enable_bitmapscan = off;
-explain (costs off)
+explain (num_nodes off, nodes off, costs off)
  SELECT * FROM
  (SELECT a || b AS ab FROM t1
   UNION ALL
   SELECT * FROM t2) t
  WHERE ab = 'ab';
-                    QUERY PLAN                     
----------------------------------------------------
+                       QUERY PLAN                        
+---------------------------------------------------------
  Result
    ->  Append
-         ->  Index Scan using t1_ab_idx on t1
-               Index Cond: ((a || b) = 'ab'::text)
-         ->  Index Only Scan using t2_pkey on t2
-               Index Cond: (ab = 'ab'::text)
-(6 rows)
+         ->  Remote Subquery Scan on all
+               ->  Index Scan using t1_ab_idx on t1
+                     Index Cond: ((a || b) = 'ab'::text)
+         ->  Remote Subquery Scan on all
+               ->  Index Only Scan using t2_pkey on t2
+                     Index Cond: (ab = 'ab'::text)
+(8 rows)
 
-explain (costs off)
+explain (num_nodes off, nodes off, costs off)
  SELECT * FROM
  (SELECT a || b AS ab FROM t1
   UNION
   SELECT * FROM t2) t
  WHERE ab = 'ab';
-                    QUERY PLAN                     
----------------------------------------------------
+                       QUERY PLAN                        
+---------------------------------------------------------
  HashAggregate
    ->  Append
-         ->  Index Scan using t1_ab_idx on t1
-               Index Cond: ((a || b) = 'ab'::text)
-         ->  Index Only Scan using t2_pkey on t2
-               Index Cond: (ab = 'ab'::text)
-(6 rows)
+         ->  Remote Subquery Scan on all
+               ->  Index Scan using t1_ab_idx on t1
+                     Index Cond: ((a || b) = 'ab'::text)
+         ->  Remote Subquery Scan on all
+               ->  Index Only Scan using t2_pkey on t2
+                     Index Cond: (ab = 'ab'::text)
+(8 rows)
 
 --
 -- Test that ORDER BY for UNION ALL can be pushed down to inheritance
@@ -523,33 +527,37 @@ select event_id
        union all
        select event_id from other_events) ss
  order by event_id;
-                           QUERY PLAN                           
-----------------------------------------------------------------
+                              QUERY PLAN                              
+----------------------------------------------------------------------
  Result
    ->  Merge Append
          Sort Key: public.events.event_id
-         ->  Index Scan using events_pkey on events
-         ->  Sort
-               Sort Key: public.events.event_id
-               ->  Seq Scan on events_child events
-         ->  Index Scan using other_events_pkey on other_events
-(8 rows)
+         ->  Remote Subquery Scan on all (datanode_1,datanode_2)
+               ->  Index Scan using events_pkey on events
+         ->  Remote Subquery Scan on all (datanode_1,datanode_2)
+               ->  Sort
+                     Sort Key: public.events.event_id
+                     ->  Seq Scan on events_child events
+         ->  Remote Subquery Scan on all (datanode_1,datanode_2)
+               ->  Index Scan using other_events_pkey on other_events
+(11 rows)
 
 drop table events_child, events, other_events;
 reset enable_indexonlyscan;
 -- Test constraint exclusion of UNION ALL subqueries
-explain (costs off)
+explain (num_nodes off, nodes off, costs off)
  SELECT * FROM
   (SELECT 1 AS t, * FROM tenk1 a
    UNION ALL
    SELECT 2 AS t, * FROM tenk1 b) c
  WHERE t = 2;
-           QUERY PLAN            
----------------------------------
- Result
-   ->  Append
-         ->  Seq Scan on tenk1 b
-(3 rows)
+              QUERY PLAN               
+---------------------------------------
+ Remote Subquery Scan on all
+   ->  Result
+         ->  Append
+               ->  Seq Scan on tenk1 b
+(4 rows)
 
 -- Test that we push quals into UNION sub-selects only when it's safe
 explain (costs off)
@@ -651,16 +659,19 @@ explain (costs off)
 select * from
   (select * from t3 a union all select * from t3 b) ss
   join int4_tbl on f1 = expensivefunc(x);
-                         QUERY PLAN                         
-------------------------------------------------------------
- Nested Loop
-   ->  Seq Scan on int4_tbl
-   ->  Append
-         ->  Index Scan using t3i on t3 a
-               Index Cond: (expensivefunc(x) = int4_tbl.f1)
-         ->  Index Scan using t3i on t3 b
-               Index Cond: (expensivefunc(x) = int4_tbl.f1)
-(7 rows)
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Remote Subquery Scan on all (datanode_1)
+   ->  Nested Loop
+         ->  Seq Scan on int4_tbl
+         ->  Append
+               ->  Remote Subquery Scan on all (datanode_1,datanode_2)
+                     ->  Index Scan using t3i on t3 a
+                           Index Cond: (expensivefunc(x) = int4_tbl.f1)
+               ->  Remote Subquery Scan on all (datanode_1,datanode_2)
+                     ->  Index Scan using t3i on t3 b
+                           Index Cond: (expensivefunc(x) = int4_tbl.f1)
+(10 rows)
 
 select * from
   (select * from t3 a union all select * from t3 b) ss
