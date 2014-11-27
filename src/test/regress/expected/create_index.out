@@ -2448,8 +2448,7 @@ DETAIL:  The feature is not currently supported
 -- You can't do a concurrent index build in a transaction
 BEGIN;
 CREATE INDEX CONCURRENTLY concur_index7 ON concur_heap(f1);
-ERROR:  PGXC does not support concurrent INDEX yet
-DETAIL:  The feature is not currently supported
+ERROR:  CREATE INDEX CONCURRENTLY cannot run inside a transaction block
 COMMIT;
 -- But you can do a regular index build in a transaction
 BEGIN;
@@ -2458,8 +2457,6 @@ COMMIT;
 -- Failed builds are left invalid by VACUUM FULL, fixed by REINDEX
 VACUUM FULL concur_heap;
 REINDEX TABLE concur_heap;
-ERROR:  could not create unique index "concur_index3"
-DETAIL:  Key (f2)=(b) is duplicated.
 DELETE FROM concur_heap WHERE f1 = 'b';
 VACUUM FULL concur_heap;
 \d concur_heap
@@ -2479,12 +2476,6 @@ Table "public.concur_heap"
  f1     | text | 
  f2     | text | 
 Indexes:
-    "concur_index2" UNIQUE, btree (f1)
-    "concur_index3" UNIQUE, btree (f2)
-    "concur_heap_expr_idx" btree ((f2 || f1))
-    "concur_index1" btree (f2, f1)
-    "concur_index4" btree (f2) WHERE f1 = 'a'::text
-    "concur_index5" btree (f2) WHERE f1 = 'x'::text
     "std_index" btree (f2)
 
 --
@@ -2737,19 +2728,13 @@ DROP TABLE onek_with_null;
 EXPLAIN (NODES OFF, COSTS OFF)
 SELECT * FROM tenk1
   WHERE thousand = 42 AND (tenthous = 1 OR tenthous = 3 OR tenthous = 42);
-                                                                  QUERY PLAN                                                                   
------------------------------------------------------------------------------------------------------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Remote Subquery Scan on all
-   ->  Bitmap Heap Scan on tenk1
-         Recheck Cond: (((thousand = 42) AND (tenthous = 1)) OR ((thousand = 42) AND (tenthous = 3)) OR ((thousand = 42) AND (tenthous = 42)))
-         ->  BitmapOr
-               ->  Bitmap Index Scan on tenk1_thous_tenthous
-                     Index Cond: ((thousand = 42) AND (tenthous = 1))
-               ->  Bitmap Index Scan on tenk1_thous_tenthous
-                     Index Cond: ((thousand = 42) AND (tenthous = 3))
-               ->  Bitmap Index Scan on tenk1_thous_tenthous
-                     Index Cond: ((thousand = 42) AND (tenthous = 42))
-(10 rows)
+   ->  Index Scan using tenk1_thous_tenthous on tenk1
+         Index Cond: (thousand = 42)
+         Filter: ((tenthous = 1) OR (tenthous = 3) OR (tenthous = 42))
+(4 rows)
 
 SELECT * FROM tenk1
   WHERE thousand = 42 AND (tenthous = 1 OR tenthous = 3 OR tenthous = 42);
@@ -2761,22 +2746,17 @@ SELECT * FROM tenk1
 EXPLAIN (NODES OFF, COSTS OFF)
 SELECT count(*) FROM tenk1
   WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
-                                         QUERY PLAN                                          
----------------------------------------------------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Aggregate
    ->  Remote Subquery Scan on all
          ->  Aggregate
                ->  Bitmap Heap Scan on tenk1
-                     Recheck Cond: ((hundred = 42) AND ((thousand = 42) OR (thousand = 99)))
-                     ->  BitmapAnd
-                           ->  Bitmap Index Scan on tenk1_hundred
-                                 Index Cond: (hundred = 42)
-                           ->  BitmapOr
-                                 ->  Bitmap Index Scan on tenk1_thous_tenthous
-                                       Index Cond: (thousand = 42)
-                                 ->  Bitmap Index Scan on tenk1_thous_tenthous
-                                       Index Cond: (thousand = 99)
-(13 rows)
+                     Recheck Cond: (hundred = 42)
+                     Filter: ((thousand = 42) OR (thousand = 99))
+                     ->  Bitmap Index Scan on tenk1_hundred
+                           Index Cond: (hundred = 42)
+(8 rows)
 
 SELECT count(*) FROM tenk1
   WHERE hundred = 42 AND (thousand = 42 OR thousand = 99);
@@ -2794,16 +2774,16 @@ CREATE INDEX dupindexcols_i ON dupindexcols (f1, id, f1 text_pattern_ops);
 ANALYZE dupindexcols;
 EXPLAIN (NODES OFF, COSTS OFF)
   SELECT count(*) FROM dupindexcols
-    WHERE f1 > 'WA' and id < 1000 and f1 ~<~ 'YX';
-                                            QUERY PLAN                                             
----------------------------------------------------------------------------------------------------
+    WHERE f1 BETWEEN 'WA' AND 'ZZZ' and id < 1000 and f1 ~<~ 'YX';
+                                                         QUERY PLAN                                                         
+----------------------------------------------------------------------------------------------------------------------------
  Aggregate
    ->  Remote Subquery Scan on all
          ->  Aggregate
                ->  Bitmap Heap Scan on dupindexcols
-                     Recheck Cond: ((f1 > 'WA'::text) AND (id < 1000) AND (f1 ~<~ 'YX'::text))
+                     Recheck Cond: ((f1 >= 'WA'::text) AND (f1 <= 'ZZZ'::text) AND (id < 1000) AND (f1 ~<~ 'YX'::text))
                      ->  Bitmap Index Scan on dupindexcols_i
-                           Index Cond: ((f1 > 'WA'::text) AND (id < 1000) AND (f1 ~<~ 'YX'::text))
+                           Index Cond: ((f1 >= 'WA'::text) AND (f1 <= 'ZZZ'::text) AND (id < 1000) AND (f1 ~<~ 'YX'::text))
 (7 rows)
 
 SELECT count(*) FROM dupindexcols
@@ -2816,7 +2796,7 @@ SELECT count(*) FROM dupindexcols
 --
 -- Check ordering of =ANY indexqual results (bug in 9.2.0)
 --
-vacuum analyze tenk1;		-- ensure we get consistent plans here
+vacuum tenk1;		-- ensure we get consistent plans here
 explain (costs off)
 SELECT unique1 FROM tenk1
 WHERE unique1 IN (1,42,7)
@@ -2863,4 +2843,16 @@ ORDER BY thousand;
         0 |     3000
         1 |     1001
 (2 rows)
+
+--
+-- Check elimination of constant-NULL subexpressions
+--
+explain (costs off)
+  select * from tenk1 where (thousand, tenthous) in ((1,1001), (null,null));
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Remote Subquery Scan on all (datanode_1,datanode_2)
+   ->  Index Scan using tenk1_thous_tenthous on tenk1
+         Index Cond: ((thousand = 1) AND (tenthous = 1001))
+(3 rows)
 
