@@ -226,13 +226,13 @@ SELECT * FROM atestv1; -- ok
 
 SELECT * FROM atestv2; -- fail
 ERROR:  permission denied for relation atestv2
-SELECT * FROM atestv3; -- fail due to issue 3520503, see above
+SELECT * FROM atestv3; -- ok
  one | two | three 
 -----+-----+-------
 (0 rows)
 
 CREATE VIEW atestv4 AS SELECT * FROM atestv3; -- nested view
-SELECT * FROM atestv4; -- fail due to issue 3520503, see above
+SELECT * FROM atestv4; -- ok
  one | two | three 
 -----+-----+-------
 (0 rows)
