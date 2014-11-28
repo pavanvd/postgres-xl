@@ -401,9 +401,9 @@ select * from tab1_rr where val = 7;
 (0 rows)
 
 -- Testset 2 for distributed tables (by hash)
-select cr_table('tab1_hash(val int, val2 int)', '{1, 2, 3}'::int[], 'hash(val)');
- cr_table 
-----------
+select create_table_nodes('tab1_hash(val int, val2 int)', '{1, 2, 3}'::int[], 'hash(val)', NULL);
+ create_table_nodes 
+--------------------
  
 (1 row)
 
@@ -415,7 +415,7 @@ insert into tab1_hash values (9, 2);
 explain verbose insert into tab1_hash values (9, 2);
                                     QUERY PLAN                                    
 ----------------------------------------------------------------------------------
- Remote Subquery Scan on all (d01)  (cost=0.00..0.01 rows=1 width=0)
+ Remote Subquery Scan on all (datanode_1)  (cost=0.00..0.01 rows=1 width=0)
    ->  Insert on public.tab1_hash  (cost=0.00..0.01 rows=1 width=0)
          ->  Remote Subquery Scan on local node  (cost=0.00..0.01 rows=1 width=0)
                Output: 9, 2
@@ -464,9 +464,29 @@ explain (verbose on, nodes off, costs off) select sum(val), avg(val), count(*) f
 
 -- should not get FQSed because of window functions
 select first_value(val) over (partition by val2 order by val) from tab1_hash;
-ERROR:  Window functions are not supported yet
+ first_value 
+-------------
+           1
+           1
+           5
+           2
+           7
+(5 rows)
+
 explain (verbose on, nodes off, costs off) select first_value(val) over (partition by val2 order by val) from tab1_hash;
-ERROR:  Window functions are not supported yet
+                      QUERY PLAN                       
+-------------------------------------------------------
+ WindowAgg
+   Output: first_value(val) OVER (?), val, val2
+   ->  Remote Subquery Scan on all
+         Output: val, val2
+         ->  Sort
+               Output: val, val2
+               Sort Key: tab1_hash.val2, tab1_hash.val
+               ->  Seq Scan on public.tab1_hash
+                     Output: val, val2
+(9 rows)
+
 -- should not get FQSed because of LIMIT clause
 select * from tab1_hash where val2 = 3 limit 1;
  val | val2 
@@ -763,7 +783,7 @@ delete from tab1_hash where val = 7;
 explain verbose delete from tab1_hash where val = 7; 
                                   QUERY PLAN                                   
 -------------------------------------------------------------------------------
- Remote Subquery Scan on all (d01)  (cost=0.00..36.75 rows=11 width=14)
+ Remote Subquery Scan on all (datanode_2)  (cost=0.00..36.75 rows=11 width=14)
    ->  Delete on public.tab1_hash  (cost=0.00..36.75 rows=11 width=14)
          ->  Seq Scan on public.tab1_hash  (cost=0.00..36.75 rows=11 width=14)
                Output: val, ctid, xc_node_id, val
@@ -776,9 +796,9 @@ select * from tab1_hash where val = 7;
 (0 rows)
 
 -- Testset 3 for distributed tables (by modulo)
-select cr_table('tab1_modulo(val int, val2 int)', '{1, 2, 3}'::int[], 'modulo(val)');
- cr_table 
-----------
+select create_table_nodes('tab1_modulo(val int, val2 int)', '{1, 2, 3}'::int[], 'modulo(val)', NULL);
+ create_table_nodes 
+--------------------
  
 (1 row)
 
@@ -790,7 +810,7 @@ insert into tab1_modulo values (9, 2);
 explain verbose insert into tab1_modulo values (9, 2);
                                     QUERY PLAN                                    
 ----------------------------------------------------------------------------------
- Remote Subquery Scan on all (d01)  (cost=0.00..0.01 rows=1 width=0)
+ Remote Subquery Scan on all (datanode_2)  (cost=0.00..0.01 rows=1 width=0)
    ->  Insert on public.tab1_modulo  (cost=0.00..0.01 rows=1 width=0)
          ->  Remote Subquery Scan on local node  (cost=0.00..0.01 rows=1 width=0)
                Output: 9, 2
@@ -839,9 +859,29 @@ explain (verbose on, nodes off, costs off) select sum(val), avg(val), count(*) f
 
 -- should not get FQSed because of window functions
 select first_value(val) over (partition by val2 order by val) from tab1_modulo;
-ERROR:  Window functions are not supported yet
+ first_value 
+-------------
+           1
+           1
+           5
+           2
+           7
+(5 rows)
+
 explain (verbose on, nodes off, costs off) select first_value(val) over (partition by val2 order by val) from tab1_modulo;
-ERROR:  Window functions are not supported yet
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ WindowAgg
+   Output: first_value(val) OVER (?), val, val2
+   ->  Remote Subquery Scan on all
+         Output: val, val2
+         ->  Sort
+               Output: val, val2
+               Sort Key: tab1_modulo.val2, tab1_modulo.val
+               ->  Seq Scan on public.tab1_modulo
+                     Output: val, val2
+(9 rows)
+
 -- should not get FQSed because of LIMIT clause
 select * from tab1_modulo where val2 = 3 limit 1;
  val | val2 
@@ -1138,7 +1178,7 @@ delete from tab1_modulo where val = 7;
 explain verbose delete from tab1_modulo where val = 7; 
                                    QUERY PLAN                                    
 ---------------------------------------------------------------------------------
- Remote Subquery Scan on all (d01)  (cost=0.00..36.75 rows=11 width=14)
+ Remote Subquery Scan on all (datanode_2)  (cost=0.00..36.75 rows=11 width=14)
    ->  Delete on public.tab1_modulo  (cost=0.00..36.75 rows=11 width=14)
          ->  Seq Scan on public.tab1_modulo  (cost=0.00..36.75 rows=11 width=14)
                Output: val, ctid, xc_node_id, val
@@ -1152,9 +1192,9 @@ select * from tab1_modulo where val = 7;
 
 -- Testset 4 for replicated tables, for replicated tables, unless the expression
 -- is itself unshippable, any query involving a single replicated table is shippable
-select cr_table('tab1_replicated(val int, val2 int)', '{1, 2, 3}'::int[], 'replication');
- cr_table 
-----------
+select create_table_nodes('tab1_replicated(val int, val2 int)', '{1, 2, 3}'::int[], 'replication', NULL);
+ create_table_nodes 
+--------------------
  
 (1 row)
 
@@ -1164,11 +1204,11 @@ insert into tab1_replicated values (5, 3);
 insert into tab1_replicated values (7, 8);
 insert into tab1_replicated values (9, 2);
 explain (verbose on, nodes off, costs off) insert into tab1_replicated values (9, 2);
-                   QUERY PLAN                   
-------------------------------------------------
- Remote Subquery Scan on all
+               QUERY PLAN                
+-----------------------------------------
+ Remote Subquery Scan on any
    ->  Insert on public.tab1_replicated
-         ->  Remote Subquery Scan on local node
+         ->  Remote Subquery Scan on all
                Output: 9, 2
                Distribute results by R
                ->  Result
@@ -1213,9 +1253,29 @@ explain (num_nodes on, verbose on, nodes off, costs off) select sum(val), avg(va
 (6 rows)
 
 select first_value(val) over (partition by val2 order by val) from tab1_replicated;
-ERROR:  Window functions are not supported yet
+ first_value 
+-------------
+           1
+           1
+           5
+           2
+           7
+(5 rows)
+
 explain (num_nodes on, verbose on, nodes off, costs off) select first_value(val) over (partition by val2 order by val) from tab1_replicated;
-ERROR:  Window functions are not supported yet
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ WindowAgg
+   Output: first_value(val) OVER (?), val, val2
+   ->  Sort
+         Output: val, val2
+         Sort Key: tab1_replicated.val2, tab1_replicated.val
+         ->  Remote Subquery Scan on all
+               Output: val, val2
+               ->  Seq Scan on public.tab1_replicated
+                     Output: val, val2
+(9 rows)
+
 select * from tab1_replicated where val2 = 2 limit 2;
  val | val2 
 -----+------
@@ -1346,7 +1406,7 @@ update tab1_replicated set val2 = 1000 where val = 7;
 explain (verbose on, nodes off, costs off) update tab1_replicated set val2 = 1000 where val = 7; 
                    QUERY PLAN                    
 -------------------------------------------------
- Remote Subquery Scan on all
+ Remote Subquery Scan on any
    ->  Update on public.tab1_replicated
          ->  Seq Scan on public.tab1_replicated
                Output: val, 1000, val, ctid
@@ -1361,9 +1421,9 @@ select * from tab1_replicated where val = 7;
 
 delete from tab1_replicated where val = 7; 
 explain verbose delete from tab1_replicated where val = 7; 
-                                     QUERY PLAN                                      
--------------------------------------------------------------------------------------
- Remote Subquery Scan on all (d01)  (cost=0.00..36.75 rows=11 width=10)
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ Remote Subquery Scan on any (datanode_1,datanode_2)  (cost=0.00..36.75 rows=11 width=10)
    ->  Delete on public.tab1_replicated  (cost=0.00..36.75 rows=11 width=10)
          ->  Seq Scan on public.tab1_replicated  (cost=0.00..36.75 rows=11 width=10)
                Output: val, ctid
@@ -1379,4 +1439,3 @@ drop table tab1_rr;
 drop table tab1_hash;
 drop table tab1_modulo;
 drop table tab1_replicated;
-drop function cr_table(varchar, int[], varchar); 

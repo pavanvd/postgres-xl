@@ -68,7 +68,7 @@ explain verbose delete from tab1_rr where val = 7;
 select * from tab1_rr where val = 7;
 
 -- Testset 2 for distributed tables (by hash)
-select cr_table('tab1_hash(val int, val2 int)', '{1, 2, 3}'::int[], 'hash(val)');
+select create_table_nodes('tab1_hash(val int, val2 int)', '{1, 2, 3}'::int[], 'hash(val)', NULL);
 insert into tab1_hash values (1, 2);
 insert into tab1_hash values (2, 4);
 insert into tab1_hash values (5, 3);
@@ -133,7 +133,7 @@ explain verbose delete from tab1_hash where val = 7;
 select * from tab1_hash where val = 7;
 
 -- Testset 3 for distributed tables (by modulo)
-select cr_table('tab1_modulo(val int, val2 int)', '{1, 2, 3}'::int[], 'modulo(val)');
+select create_table_nodes('tab1_modulo(val int, val2 int)', '{1, 2, 3}'::int[], 'modulo(val)', NULL);
 insert into tab1_modulo values (1, 2);
 insert into tab1_modulo values (2, 4);
 insert into tab1_modulo values (5, 3);
@@ -199,7 +199,7 @@ select * from tab1_modulo where val = 7;
 
 -- Testset 4 for replicated tables, for replicated tables, unless the expression
 -- is itself unshippable, any query involving a single replicated table is shippable
-select cr_table('tab1_replicated(val int, val2 int)', '{1, 2, 3}'::int[], 'replication');
+select create_table_nodes('tab1_replicated(val int, val2 int)', '{1, 2, 3}'::int[], 'replication', NULL);
 insert into tab1_replicated values (1, 2);
 insert into tab1_replicated values (2, 4);
 insert into tab1_replicated values (5, 3);
@@ -237,4 +237,3 @@ drop table tab1_rr;
 drop table tab1_hash;
 drop table tab1_modulo;
 drop table tab1_replicated;
-drop function cr_table(varchar, int[], varchar); 
