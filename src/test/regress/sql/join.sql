@@ -715,14 +715,12 @@ create temp table nt2 (
   id int primary key,
   nt1_id int,
   b1 boolean,
-  b2 boolean,
-  foreign key (nt1_id) references nt1(id)
+  b2 boolean
 );
 create temp table nt3 (
   id int primary key,
   nt2_id int,
-  c1 boolean,
-  foreign key (nt2_id) references nt2(id)
+  c1 boolean
 );
 
 insert into nt1 values (1,true,true);
