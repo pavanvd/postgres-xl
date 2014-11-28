@@ -31,8 +31,6 @@ INSERT INTO xc_alter_table_2 VALUES (1, 'John', true, 'Master', '01:00:10');
 INSERT INTO xc_alter_table_2 VALUES (2, 'Neo', true, 'Slave', '02:34:00');
 INSERT INTO xc_alter_table_2 VALUES (3, 'James', false, 'Cascading slave', '00:12:05');
 SELECT a, b, c, d, e FROM xc_alter_table_2 ORDER BY a;
--- Go through standard planner
-SET enable_fast_query_shipping TO false;
 -- Drop a couple of columns
 ALTER TABLE xc_alter_table_2 DROP COLUMN a;
 ALTER TABLE xc_alter_table_2 DROP COLUMN d;
