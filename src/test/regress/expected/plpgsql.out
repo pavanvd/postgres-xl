@@ -2131,11 +2131,8 @@ begin
 	return 1;
 end$$ language plpgsql;
 select trap_foreign_key(1);
- trap_foreign_key 
-------------------
-                1
-(1 row)
-
+ERROR:  Internal subtransactions not supported in Postgres-XL
+CONTEXT:  PL/pgSQL function trap_foreign_key(integer) line 3 during statement block entry
 select trap_foreign_key(2);	-- detects FK violation
 ERROR:  Internal subtransactions not supported in Postgres-XL
 CONTEXT:  PL/pgSQL function trap_foreign_key(integer) line 3 during statement block entry
@@ -4395,7 +4392,7 @@ begin
   end loop;
 end;
 $$ language plpgsql;
-select * from conflict_test();
+select * from conflict_test() order by 1,2;
         q1        |        q2         
 ------------------+-------------------
               123 |               456
