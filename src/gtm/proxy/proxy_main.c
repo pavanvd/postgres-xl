@@ -153,7 +153,7 @@ static void GTMProxy_ProxyPGXCNodeCommand(GTMProxy_ConnectionInfo *conninfo,
 static void ProcessCommand(GTMProxy_ConnectionInfo *conninfo,
 		GTM_Conn *gtm_conn, StringInfo input_message);
 static GTM_Conn *HandleGTMError(GTM_Conn *gtm_conn);
-static GTM_Conn *HandlePostCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn);
+static void HandlePostCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn);
 static void ProcessPGXCNodeCommand(GTMProxy_ConnectionInfo *conninfo,
 		GTM_Conn *gtm_conn, GTM_MessageType mtype, StringInfo message);
 static void ProcessTransactionCommand(GTMProxy_ConnectionInfo *conninfo,
@@ -1702,31 +1702,21 @@ HandleGTMError(GTM_Conn *gtm_conn)
 	}
 }
 
-static GTM_Conn *
+static void
 HandlePostCommand(GTMProxy_ConnectionInfo *conninfo, GTM_Conn *gtm_conn)
 {
 	int		connIdx = conninfo->con_id;
 
 	Assert(conninfo && gtm_conn);
-	/*
-	 * Check if the response was handled without error.
-	 * In this case, use last_errno to detect the error
-	 * because system call error is only one case to detect GTM error.
-	 */
-	if (gtm_conn->last_errno != 0)
-	{
-		return(HandleGTMError(gtm_conn));
-	}
-	else
+
+	if (gtm_conn->last_errno == 0)
 	{
 		/*
 		 * Command handled without error.  Clear the backup.
 		 */
 		resetStringInfo(&GetMyThreadInfo->thr_inBufData[connIdx]);
 		GetMyThreadInfo->thr_any_backup[connIdx] = FALSE;
-		return(gtm_conn);
 	}
-
 }
 
 static void

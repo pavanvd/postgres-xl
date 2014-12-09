@@ -90,6 +90,7 @@ PQconnectGTM(const char *conninfo)
 		(void) connectGTMComplete(conn);
 	else if (conn != NULL)
 	{
+		closeGTM_Conn(conn);
 		freeGTM_Conn(conn);
 		conn = NULL;
 	}
