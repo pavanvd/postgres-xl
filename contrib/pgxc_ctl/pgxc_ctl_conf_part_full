@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Postgres-XC Configuration file for pgxc_ctl utility. 
 #
@@ -59,10 +59,9 @@
 pgxcInstallDir=$HOME/pgxc
 #---- OVERALL ----------------------------------------------------
 #
-pgxcOwner=koichi		# owner of the Postgres-XC database cluster.
-						# Here, we use this both as linux user and
-						# database user.  This must be the super
-						# user of each coordinator and datanode.
+pgxcOwner=$USER			# owner of the Postgres-XC databaseo cluster.  Here, we use this
+						# both as linus user and database user.  This must be
+						# the super user of each coordinator and datanode.
 pgxcUser=$pgxcOwner		# OS user of Postgres-XC owner
 
 tmpDir=/tmp				# temporary dir used in XC servers
@@ -84,12 +83,11 @@ configBackupFile=pgxc_ctl.bak	# Backup file name --> Need to
 # command to remove it.  This command will not stop the current GTM.
 # It is up to the operator.
 
-#---- Overall -------
-gtmName=gtm
 
 #---- GTM Master -----------------------------------------------
 
 #---- Overall ----
+gtmName=gtm
 gtmMasterServer=node13
 gtmMasterPort=20001
 gtmMasterDir=$HOME/pgxc/nodes/gtm
@@ -107,16 +105,13 @@ gtmMasterSpecificExtraConfig=none	# Will be added to Master's
 # you may want to configure GTM slave for backup.
 
 #---- Overall ------
-gtmSlave=y			# Specify y if you configure GTM Slave.   Otherwise,
-					# GTM slave will not be configured and all the
-					# following variables will be reset.
-gtmSlaveServer=node12	# value none means GTM slave is not available.
-						# Give none if you don't configure GTM Slave.
-gtmSlavePort=20001		# Not used if you don't configure GTM slave.
-gtmSlaveDir=$HOME/pgxc/nodes/gtm	# Not used if you don't configure
-									# GTM slave.
-# Please note that when you have GTM failover, then there will be no
-# slave available until you configure the slave
+gtmSlave=y					# Specify y if you configure GTM Slave.   Otherwise, GTM slave will not be configured and
+							# all the following variables will be reset.
+gtmSlaveName=gtmSlave
+gtmSlaveServer=node12		# value none means GTM slave is not available.  Give none if you don't configure GTM Slave.
+gtmSlavePort=20001			# Not used if you don't configure GTM slave.
+gtmSlaveDir=$HOME/pgxc/nodes/gtm	# Not used if you don't configure GTM slave.
+# Please note that when you have GTM failover, then there will be no slave available until you configure the slave
 # again. (pgxc_add_gtm_slave function will handle it)
 
 #---- Configuration ----
@@ -185,6 +180,7 @@ coordPgHbaEntries=(192.168.1.0/24)
 # such setups, specify the value () to this variable and supply what you
 # want using coordExtraPgHba
 # and/or coordSpecificExtraPgHba variables.
+#coordPgHbaEntries=(::1/128)	# Same as above but for IPv6 addresses
 
 #---- Master -------------
 coordMasterServers=(node06 node07 node08 node09)
@@ -282,16 +278,15 @@ datanodePorts=(20008 20009 20008 20009)	# Master ports
 #ifdef XCP
 datanodePoolerPorts=(20012 20013 20012 20013)	# Master pooler ports
 #endif
-datanodePgHbaEntries=(192.168.1.0/24)
-				# Assumes that all the coordinator (master/slave) accepts
-				# the same connection. This list sets up pg_hba.conf for
-				# $pgxcOwner user.  If you'd like to setup other entries,
-				# supply them through extra configuration files specified
-				# below.  Note: The above parameter is extracted as "host
-				# all all 0.0.0.0/0 trust".   If you don't want
-				# such setups, specify the value () to this variable and
-				# supply what you want using datanodeExtraPgHba
-				# and/or datanodeSpecificExtraPgHba variables.
+datanodePgHbaEntries=(192.168.1.0/24)	# Assumes that all the coordinator (master/slave) accepts
+										# the same connection
+										# This list sets up pg_hba.conf for $pgxcOwner user.
+										# If you'd like to setup other entries, supply them
+										# through extra configuration files specified below.
+# Note: The above parameter is extracted as "host all all 0.0.0.0/0 trust".   If you don't want
+# such setups, specify the value () to this variable and suplly what you want using datanodeExtraPgHba
+# and/or datanodeSpecificExtraPgHba variables.
+#datanodePgHbaEntries=(::1/128)	# Same as above but for IPv6 addresses
 
 #---- Master ----------------
 datanodeMasterServers=(node06 node07 node08 node09)
