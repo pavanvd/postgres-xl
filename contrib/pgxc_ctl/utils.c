@@ -384,7 +384,6 @@ char *getIpAddress(char *hostName)
 	return ipAddr;
 }
 
-<<<<<<< HEAD
 static void myUsleep(long microsec)
 {
 	struct timeval delay;
@@ -395,7 +394,7 @@ static void myUsleep(long microsec)
 	delay.tv_sec = microsec / 1000000L;
 	delay.tv_usec = microsec % 1000000L;
 	(void) select(0, NULL, NULL, NULL, &delay);
-=======
+}
 
 /*
  * Test to see if a directory exists and is empty or not.
@@ -451,5 +450,4 @@ pgxc_check_dir(const char *dir)
 		result = -1;			/* some kind of I/O error? */
 
 	return result;
->>>>>>> 389fc54... Do not force remove data directories if they are not empty.
 }
