@@ -2192,7 +2192,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 							distributePlan->scan.plan.lefttree = lefttree;
 						}
 						/* Update all the hierarchy */
-						for (plan = result_plan; plan != lefttree; plan = plan->lefttree)
+						for (plan = result_plan; plan != NULL; plan = plan->lefttree)
 							plan->targetlist = lefttree->targetlist;
 					}
 				}
